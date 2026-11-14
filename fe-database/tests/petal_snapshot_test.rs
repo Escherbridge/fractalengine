@@ -1,6 +1,8 @@
-//! Petal snapshot export (and, from HEXON-10, import) through the DB-thread handler; see `src/handlers/AGENTS.md` §petal-snapshot.
+//! Petal snapshot export then import through the DB-thread handlers; see `src/handlers/AGENTS.md` §petal-snapshot.
 
-use fe_database::handlers::petal_snapshot::export_petal_snapshot;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use fe_database::handlers::petal_snapshot::{export_petal_snapshot, import_petal_snapshot, ImportError};
 use fe_database::op_log::commit_operation;
 use fe_database::types::{NodeId, OpLogEntry, OpType};
 use serde_json::{json, Value};
@@ -18,8 +20,14 @@ fn petal_scope(petal_id: &str) -> String {
     format!("VERSE#{VERSE}-FRACTAL#{FRACTAL}-PETAL#{petal_id}")
 }
 
+/// First DB of the journey: resets the process HLC, then opens a schema'd in-memory DB.
 async fn setup_db() -> Db {
     fe_database::op_log::init_hlc(0);
+    fresh_db().await
+}
+
+/// Another schema'd in-memory DB that leaves the process HLC untouched.
+async fn fresh_db() -> Db {
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .expect("in-memory SurrealDB");
@@ -67,8 +75,7 @@ async fn seed_op(db: &Db, node_id: &str, op_type: OpType, payload: Value) {
 
 /// Two petals, a verse-level role and decoy rows; only the exported petal's state may come back.
 async fn seed_two_petals(db: &Db) {
-    run(db, "CREATE fractal CONTENT { fractal_id: $fid, verse_id: $vid, owner_did: 'did:key:owner', name: 'F', created_at: '2026-11-13T00:00:00Z' }",
-        json!({"fid": FRACTAL, "vid": VERSE})).await;
+    seed_fractal(db).await;
     for petal_id in [PETAL, SIBLING] {
         run(db, "CREATE petal CONTENT { petal_id: $pid, name: $pid, node_id: 'did:key:owner', created_at: '2026-11-13T00:00:00Z', visibility: 'private', tags: [], fractal_id: $fid }",
             json!({"pid": petal_id, "fid": FRACTAL})).await;
@@ -110,6 +117,16 @@ async fn seed_two_petals(db: &Db) {
     seed_op(db, "did:key:owner", OpType::AssignRole, json!({"peer_did": "did:key:sibling-editor", "scope": petal_scope(SIBLING), "role": "editor"})).await;
     seed_op(db, "node-b1", OpType::PropertySet, json!({"node_id": "node-b1", "key": "k", "value": 1})).await;
     seed_op(db, "did:key:owner", OpType::ElevatedQuery, json!({"sql": "SELECT 1", "actor_did": "did:key:owner"})).await;
+}
+
+async fn seed_fractal(db: &Db) {
+    run(db, "CREATE fractal CONTENT { fractal_id: $fid, verse_id: $vid, owner_did: 'did:key:owner', name: 'F', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"fid": FRACTAL, "vid": VERSE})).await;
+}
+
+async fn select(db: &Db, sql: &'static str) -> Vec<Value> {
+    let mut response = db.query(sql).await.expect(sql).check().expect(sql);
+    response.take(0).expect(sql)
 }
 
 fn lamports(rows: &[Value]) -> Vec<u64> {
@@ -162,5 +179,73 @@ async fn petal_snapshot_export_then_import_journey() {
 
     assert!(export_petal_snapshot(&db, "petal-missing").await.is_err(), "an unknown petal is refused");
 
-    // Import leg: HEXON-10.
+    // Import leg: restore into a fresh DB whose hierarchy already holds the parent fractal.
+    let restored_db = fresh_db().await;
+    seed_fractal(&restored_db).await;
+    import_petal_snapshot(&restored_db, snapshot.clone()).await.expect("import into a fresh DB");
+    let restored = export_petal_snapshot(&restored_db, PETAL).await.expect("export the restored petal");
+    assert_eq!(restored.petal, snapshot.petal, "petal row restored verbatim");
+    assert_eq!(restored.nodes, snapshot.nodes, "node rows restored verbatim, record ids and geometry included");
+    assert_eq!(restored.node_log, snapshot.node_log);
+    assert_eq!(restored.field_defs, snapshot.field_defs);
+    assert_eq!(restored.rooms, snapshot.rooms);
+    assert_eq!(restored.models, snapshot.models);
+    assert_eq!(restored.assets, snapshot.assets);
+    assert_eq!(restored.iot_readings, snapshot.iot_readings);
+    assert!(restored.roles.is_empty(), "role rows are a materialized cache of signed statements and are never restored");
+    let imported = snapshot.oplog.len();
+    assert_eq!(&restored.oplog[..imported], &snapshot.oplog[..], "op-log restored verbatim, same count and order");
+    let audit_types: Vec<&str> = restored.oplog[imported..].iter().filter_map(|e| e["op_type"].as_str()).collect();
+    assert_eq!(audit_types, ["ImportPetal"], "the import is audited once, after the restored entries");
+    assert!(lamports(&restored.oplog[imported..])[0] > *exported_lamports.last().unwrap());
+    let again = import_petal_snapshot(&restored_db, snapshot.clone()).await;
+    assert!(matches!(again, Err(ImportError::PetalExists)), "a second import is refused: {again:?}");
+
+    // HLC leg: an imported clock just inside the five-minute future bound must order every later write after it.
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_millis() as u64;
+    let far_wall = now_ms + 240_000;
+    let far_lamport = (far_wall << 16) | 7;
+    let mut ahead = snapshot.clone();
+    ahead.oplog.push(json!({
+        "id": "op_log:far_future", "lamport_clock": far_lamport, "hlc_timestamp": format!("{far_wall}:0007"),
+        "node_id": "node-a1", "op_type": "TransformUpdate", "payload": {"node_id": "node-a1"}, "sig": "00".repeat(64),
+    }));
+    let clock_db = fresh_db().await;
+    run(&clock_db, "CREATE asset CONTENT { asset_id: 'asset-node', name: 'local', content_type: 'model/gltf-binary', size_bytes: 4, created_at: '2026-11-13T00:00:00Z' }",
+        json!({})).await;
+    import_petal_snapshot(&clock_db, ahead).await.expect("import carrying a near-future clock");
+    let audit_lamport = select(&clock_db, "SELECT VALUE lamport_clock FROM op_log WHERE op_type = 'ImportPetal'").await;
+    assert!(audit_lamport[0].as_u64().unwrap() > far_lamport, "the ImportPetal entry is stamped after the HLC advance");
+    let write = OpLogEntry {
+        lamport_clock: 0,
+        hlc_timestamp: String::new(),
+        node_id: NodeId("node-a1".to_string()),
+        op_type: OpType::TransformUpdate,
+        payload: json!({"node_id": "node-a1", "position": [3.0, 0.0, 3.0]}),
+        sig: "00".repeat(64),
+    };
+    let next = commit_operation(&clock_db, write, |lamport| async move { Ok::<u64, anyhow::Error>(lamport) })
+        .await
+        .expect("first write after import");
+    assert!(next > far_lamport, "post-import write {next} must order after the imported max {far_lamport}");
+    let local_asset = select(&clock_db, "SELECT VALUE name FROM asset WHERE asset_id = 'asset-node'").await;
+    assert_eq!(local_asset, [json!("local")], "an existing asset with the same id is kept, not duplicated");
+
+    // Refusal leg: rows outside the petal are refused up front; a SCHEMAFULL rejection mid-transaction leaves nothing.
+    let refused_db = fresh_db().await;
+    let mut foreign_node = snapshot.clone();
+    foreign_node.nodes[0]["petal_id"] = json!(SIBLING);
+    let mut unreferenced_asset = snapshot.clone();
+    unreferenced_asset.assets[0]["asset_id"] = json!("asset-unplaced");
+    for (case, rows) in [("foreign node", foreign_node), ("unreferenced asset", unreferenced_asset)] {
+        let outcome = import_petal_snapshot(&refused_db, rows).await;
+        assert!(matches!(outcome, Err(ImportError::Invalid(_))), "{case}: {outcome:?}");
+    }
+    let mut corrupted = snapshot.clone();
+    corrupted.nodes[1]["elevation"] = json!("high");
+    let outcome = import_petal_snapshot(&refused_db, corrupted).await;
+    assert!(matches!(outcome, Err(ImportError::Db(_))), "the schema rejects the corrupted node: {outcome:?}");
+    for sql in ["SELECT * FROM petal", "SELECT * FROM node", "SELECT * FROM node_log", "SELECT * FROM asset", "SELECT * FROM op_log"] {
+        assert!(select(&refused_db, sql).await.is_empty(), "{sql}: no partial petal survives a refused import");
+    }
 }

@@ -43,6 +43,15 @@ pub struct PetalSnapshotRows {
 }
 
 impl PetalSnapshotRows {
+    /// The snapshot petal row's `petal_id` (empty when the row lacks one).
+    pub fn petal_id(&self) -> String {
+        self.petal
+            .get("petal_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// Row count per snapshot table, keyed by the `snapshot/state/<table>.json` stem.
     pub fn table_row_counts(&self) -> BTreeMap<String, usize> {
         let petal_rows = usize::from(!self.petal.is_null());
