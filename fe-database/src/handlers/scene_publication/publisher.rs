@@ -10,7 +10,7 @@ use crate::field_clock::{
 };
 use crate::{repo::Db, BlobStoreHandle, ReplicationEvent, ReplicationSender};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const RECOVERY_LIMIT: usize = 1024;
 const RECOVERY_BYTES: usize = 8 * 1024 * 1024;
@@ -70,10 +70,11 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     let mut guard_labels = vec!["authority_ancestry"; statements.len()];
     let current = super::super::node_history::normalize_snapshot(row.clone())?;
     let latest = super::super::node_history::latest(db, id).await?;
-    let (hlc, proof, proof_binding) = if let Some(fact) = latest.filter(|fact| {
+    let stored = load_stored_clock(db, id).await?;
+    let (hlc, proof, proof_binding, journaled) = if let Some(fact) = latest.filter(|fact| {
         fact["payload"]["journal_version"] == super::super::node_history::JOURNAL_VERSION
             && fact["payload"]["scope"].as_str() == Some(scope.as_str())
-            && fact["payload"]["after_state"] == current
+            && journal_covers(&fact["payload"]["after_state"], &current, &row, &stored.winners)
     }) {
         anyhow::ensure!(
             fact["node_id"].as_str() == Some(id)
@@ -91,7 +92,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
             .as_u64()
             .filter(|hlc| *hlc > 0)
             .ok_or_else(|| anyhow::anyhow!("local journal HLC is unavailable"))?;
-        (hlc,"IF (SELECT * OMIT id FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1) != [$scene_proof] { THROW 'local scene journal changed'; }",fact)
+        (hlc,"IF (SELECT * OMIT id FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT 1) != [$scene_proof] { THROW 'local scene journal changed'; }",fact,true)
     } else {
         let marker = row
             .get("tombstone")
@@ -125,7 +126,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
             "tombstone local provenance mismatch"
         );
         bindings.push(("scene_original_hlc".into(), json!(i64::try_from(hlc)?)));
-        (hlc,"IF (SELECT * OMIT id FROM op_log WHERE op_type='NodeTombstoned' AND lamport_clock=$scene_original_hlc) != [$scene_proof] { THROW 'local tombstone proof changed'; }",op.clone())
+        (hlc,"IF (SELECT * OMIT id FROM op_log WHERE op_type='NodeTombstoned' AND lamport_clock=$scene_original_hlc) != [$scene_proof] { THROW 'local tombstone proof changed'; }",op.clone(),false)
     };
     crate::op_log::admit_scene_hlc(hlc)?;
     let clock = SceneClock {
@@ -133,13 +134,16 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         publisher: actor.into(),
     };
     let clocks = read_clock(db, id).await?;
+    let known = clock_of(&clocks)?;
+    let stamped = stamp_own_versions(stored, id, &verse, actor, hlc, &row)?;
+    // Per-key rule: below a known later clock a journaled edit still publishes while it holds a winning key;
+    // a tombstone keeps the strict rule. See AGENTS.md §Wire and ordering "Per-key clock".
     anyhow::ensure!(
-        clock_of(&clocks)?
-            .as_ref()
-            .is_none_or(|known| *known <= clock),
+        known.as_ref().is_none_or(|known| *known <= clock) || (journaled && stamped.holds_winner),
         "local snapshot was superseded by a known scene version"
     );
-    let stamped = stamp_own_versions(db, id, &verse, actor, hlc, &row).await?;
+    // The clock row is never lowered: below a known later clock it is rewritten unchanged.
+    let scene_clock = known.filter(|known| *known > clock).unwrap_or_else(|| clock.clone());
     let mut without_position = row.clone();
     without_position.as_object_mut().unwrap().remove("position");
     statements.extend([
@@ -175,8 +179,9 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         ("scene_z".into(), row["position"]["coordinates"][1].clone()),
         ("scene_proof".into(), proof_binding),
         ("scene_clock_before".into(), json!(clocks)),
-        ("scene_hlc".into(), json!(i64::try_from(hlc)?)),
-        ("scene_publisher".into(), json!(actor)),
+        ("scene_hlc".into(), json!(i64::try_from(scene_clock.hlc)?)),
+        ("scene_publisher".into(), json!(scene_clock.publisher)),
+        ("scene_own_author".into(), json!(actor)),
     ]);
     let (dependencies, deferred_dependencies) =
         dependencies(db, &row, &scope, &mut statements, &mut bindings).await?;
@@ -201,7 +206,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
 /// The node's cached per-key winners must be the ones the stamp was computed from (order-independent).
 const FIELD_CLOCK_FENCE: &str = "IF array::sort((SELECT VALUE [field_key, hlc, author] FROM row_field_clock WHERE tbl='node' AND rid=$scene_id)) != array::sort($scene_field_clock_before) { THROW 'field clock changed'; }";
 /// The publisher's own stored versions must be the ones the stamp was folded against.
-const OWN_VERSIONS_FENCE: &str = "IF array::sort((SELECT VALUE [field_key, hlc] FROM row_field_version WHERE tbl='node' AND rid=$scene_id AND author=$scene_publisher)) != array::sort($scene_own_before) { THROW 'own field versions changed'; }";
+const OWN_VERSIONS_FENCE: &str = "IF array::sort((SELECT VALUE [field_key, hlc] FROM row_field_version WHERE tbl='node' AND rid=$scene_id AND author=$scene_own_author)) != array::sort($scene_own_before) { THROW 'own field versions changed'; }";
 
 /// The publisher's per-key own versions for one committed node row, plus the in-transaction writes.
 struct StampedOwnVersions {
@@ -210,18 +215,20 @@ struct StampedOwnVersions {
     clock_before: Value,
     own_before: Value,
     writes: Vec<field_clock::store::SqlFragment>,
+    /// Whether `actor` holds at least one key's winner once the stamp is folded in.
+    holds_winner: bool,
 }
 
-/// Stamp every key whose committed value is not its cached winner as `actor`'s version at `hlc`;
-/// unchanged keys keep their versions (never restamped). See AGENTS.md §Wire and ordering "Per-key clock".
-async fn stamp_own_versions(
-    db: &Db,
-    id: &str,
-    verse: &str,
-    actor: &str,
-    hlc: u64,
-    row: &Value,
-) -> anyhow::Result<StampedOwnVersions> {
+/// One node's stored per-key versions and cached winners, read once per publication.
+struct StoredClock {
+    versions: Vec<FieldVersion>,
+    cached: Vec<Value>,
+    /// Cached winners backed by their stored version; a stale cache entry is left out.
+    winners: BTreeMap<String, FieldVersion>,
+}
+
+/// Read the node's stored versions and the cached winners they back.
+async fn load_stored_clock(db: &Db, id: &str) -> anyhow::Result<StoredClock> {
     let versions = field_clock::load_versions(db, "node", id).await?;
     let mut response = db
         .query("SELECT field_key, hlc, author FROM row_field_clock WHERE tbl='node' AND rid=$scene_id TIMEOUT 5s")
@@ -245,6 +252,75 @@ async fn stamp_own_versions(
             winners.insert(field.to_owned(), version.clone());
         }
     }
+    Ok(StoredClock { versions, cached, winners })
+}
+
+/// The journal's after-state is the committed state except on keys a stored non-floor winner now
+/// holds (merged after the edit); those keys are never stamped as the publisher's own.
+fn journal_covers(
+    after_state: &Value,
+    current: &Value,
+    row: &Value,
+    winners: &BTreeMap<String, FieldVersion>,
+) -> bool {
+    if after_state == current {
+        return true;
+    }
+    let canonical_keys = |source: &Value| -> BTreeMap<String, Value> {
+        field_clock::keys_of("node", source)
+            .into_iter()
+            .map(|(field, value)| (field, canonical_value(&value)))
+            .collect()
+    };
+    let journal = canonical_keys(after_state);
+    let normalized = canonical_keys(current);
+    let committed = canonical_keys(row);
+    let fields: BTreeSet<&String> = journal.keys().chain(normalized.keys()).collect();
+    let mut merged = Vec::new();
+    for field in fields {
+        let value = normalized.get(field);
+        if journal.get(field) == value {
+            continue;
+        }
+        // A merged tombstone is never re-published under a live journal fact.
+        if field == "tombstone" {
+            return false;
+        }
+        let held = winners.get(field).is_some_and(|winner| {
+            !winner.is_legacy_floor()
+                && match committed.get(field) {
+                    Some(stored) => {
+                        !winner.deleted && winner.value.as_ref().map(canonical_value).as_ref() == Some(stored)
+                    }
+                    None => winner.deleted || winner.value.is_none(),
+                }
+        });
+        if !held {
+            return false;
+        }
+        merged.push(FieldVersion {
+            field: field.clone(),
+            author: String::new(),
+            hlc: 0,
+            deleted: value.is_none(),
+            value: value.cloned(),
+        });
+    }
+    // Every column outside the merged keys must still match the journal exactly.
+    field_clock::apply_keys("node", after_state, &merged) == *current
+}
+
+/// Stamp every key whose committed value is not its cached winner as `actor`'s version at `hlc`;
+/// unchanged keys keep their versions (never restamped). See AGENTS.md §Wire and ordering "Per-key clock".
+fn stamp_own_versions(
+    stored: StoredClock,
+    id: &str,
+    verse: &str,
+    actor: &str,
+    hlc: u64,
+    row: &Value,
+) -> anyhow::Result<StampedOwnVersions> {
+    let StoredClock { versions, cached, mut winners } = stored;
     let mut own: BTreeMap<String, FieldVersion> = versions
         .iter()
         .filter(|version| version.author == actor)
@@ -312,6 +388,7 @@ async fn stamp_own_versions(
         ),
         own_before: Value::Array(own_before),
         writes,
+        holds_winner: winners.values().any(|winner| winner.author == actor),
     })
 }
 

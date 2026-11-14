@@ -64,6 +64,8 @@ impl Transaction {
                 "local scene journal changed" => "journal_changed",
                 "local tombstone proof changed" => "tombstone_proof_changed",
                 "scene version changed" => "scene_clock_changed",
+                "field clock changed" => "field_clock_changed",
+                "own field versions changed" => "own_versions_changed",
                 "replica current asset metadata changed" | "scene asset changed" => {
                     "asset_metadata_changed"
                 }
