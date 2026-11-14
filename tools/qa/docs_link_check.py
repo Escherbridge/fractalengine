@@ -20,11 +20,15 @@ EXTENSION_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 NOT_A_PATH_CHARS = re.compile(r"[\s*<>{}$|()=,;:\\]")
 
 
-def looks_like_repo_file(text):
-    """True for a backticked token shaped like a repo-relative file path."""
+def looks_like_repo_file(text, root):
+    """True for a backticked file-shaped path rooted at a real top-level repo directory (or ./, ../)."""
     if "/" not in text or NOT_A_PATH_CHARS.search(text) or "://" in text or "..." in text:
         return False
-    return bool(EXTENSION_SUFFIX.search(text.rstrip("/"))) and not text.endswith("/")
+    if not EXTENSION_SUFFIX.search(text) or text.endswith("/"):
+        return False
+    # Archive members (`plugin/extension.json`) and crate-relative names (`src/AGENTS.md`) are not repo paths.
+    first_segment = text.split("/", 1)[0]
+    return first_segment in (".", "..") or (root / first_segment).is_dir()
 
 
 def resolve_existing(target, doc_path, root):
@@ -56,14 +60,15 @@ def is_external_or_anchor(target):
     return target.startswith(("#", "http://", "https://", "mailto:", "tel:")) or not target.strip()
 
 
-def references_in_line(line):
+def references_in_line(line, root):
     """Yield (kind, target) for every markdown link and file-shaped backtick span on a line."""
     for match in MARKDOWN_LINK.finditer(line):
         yield "link", match.group(1)
-    without_links = MARKDOWN_LINK.sub(lambda m: m.group(0).split("](")[0], line)
+    # Link text is a label (often abbreviated); only the link target is checked.
+    without_links = MARKDOWN_LINK.sub("", line)
     for match in BACKTICK_SPAN.finditer(without_links):
         token = match.group(1).strip()
-        if looks_like_repo_file(token):
+        if looks_like_repo_file(token, root):
             yield "path", token
 
 
@@ -75,10 +80,16 @@ def parse_blocks(lines):
         fence = FENCE_OPEN.match(line)
         if open_marker is None:
             if fence:
-                open_marker, open_language, open_start = fence.group(1)[0], fence.group(2).lower(), index
+                open_marker, open_language, open_start = fence.group(1), fence.group(2).lower(), index
             else:
                 prose.append(index)
-        elif fence and fence.group(1)[0] == open_marker and not fence.group(2):
+        # CommonMark: a closing fence uses the same character, at least as long, with no info string.
+        elif (
+            fence
+            and fence.group(1)[0] == open_marker[0]
+            and len(fence.group(1)) >= len(open_marker)
+            and not fence.group(2)
+        ):
             blocks.append((open_start, index, open_language))
             open_marker = None
     if open_marker is not None:
@@ -93,7 +104,7 @@ def check_document(doc_path, root):
     prose, blocks = parse_blocks(lines)
 
     for index in prose:
-        for kind, target in references_in_line(lines[index]):
+        for kind, target in references_in_line(lines[index], root):
             if kind == "link" and is_external_or_anchor(target):
                 continue
             if resolve_existing(target, doc_path, root) is None:
@@ -113,7 +124,7 @@ def check_document(doc_path, root):
 
 
 def line_names_example_file(line, doc_path, root):
-    for kind, target in references_in_line(line):
+    for kind, target in references_in_line(line, root):
         if kind == "link" and is_external_or_anchor(target):
             continue
         resolved = resolve_existing(target, doc_path, root)

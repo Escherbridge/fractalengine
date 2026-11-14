@@ -2855,6 +2855,7 @@ mod tests {
         };
         let mut app = App::new();
         app.init_resource::<UiManager>()
+            .init_resource::<Time>()
             .init_resource::<PendingHexonOps>()
             .insert_resource(TilesetDownloads::default())
             .insert_resource(SharedTilesetRegistry(tileset_registry))
@@ -2928,7 +2929,6 @@ mod tests {
         let (drain_tx, drain_rx) = crossbeam::channel::unbounded();
         drain_tx.send(failed).expect("drain channel open");
         app.insert_resource(HexonAssembleResults(drain_rx))
-            .init_resource::<Time>()
             .add_systems(Update, drain_hexon_assemble_results);
         app.update();
         let notices: Vec<_> = app
@@ -4528,6 +4528,7 @@ mod tests {
             );
         }
         app.init_resource::<UiManager>()
+            .init_resource::<Time>()
             .insert_resource(downloads)
             .insert_resource(HexonAssembleResults(result_rx))
             .insert_resource(fe_sync::SyncCommandSenderRes(cmd_tx))

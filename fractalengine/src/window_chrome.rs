@@ -110,17 +110,42 @@ pub fn window_title(
     verse: Option<&str>,
     petal: Option<&str>,
 ) -> String {
+    let mut title = String::new();
+    write_window_title(&mut title, peer_label, verse, petal);
+    title
+}
+
+/// Writes [`window_title`] into `out` (cleared first) so the per-frame system reuses one buffer.
+fn write_window_title(
+    out: &mut String,
+    peer_label: Option<&str>,
+    verse: Option<&str>,
+    petal: Option<&str>,
+) {
+    out.clear();
+    if let Some(label) = peer_label.filter(|label| !label.is_empty()) {
+        out.push('[');
+        out.push_str(label);
+        out.push_str("] ");
+    }
     let verse = verse.filter(|name| !name.is_empty());
     let petal = petal.filter(|name| !name.is_empty());
-    let base = match (verse, petal) {
-        (Some(verse), Some(petal)) => format!("{petal} · {verse} — {APP_TITLE}"),
-        (Some(verse), None) => format!("{verse} — {APP_TITLE}"),
-        _ => APP_TITLE.to_string(),
-    };
-    match peer_label.filter(|label| !label.is_empty()) {
-        Some(label) => format!("[{label}] {base}"),
-        None => base,
+    if let Some(verse) = verse {
+        if let Some(petal) = petal {
+            out.push_str(petal);
+            out.push_str(" · ");
+        }
+        out.push_str(verse);
+        out.push_str(" — ");
     }
+    out.push_str(APP_TITLE);
+}
+
+/// Last title written and a scratch buffer, so an unchanged title costs no allocation.
+#[derive(Default)]
+pub struct WindowTitleBuffers {
+    written: String,
+    scratch: String,
 }
 
 /// Bevy system: title the primary window after the active petal and verse; writes only on change.
@@ -128,9 +153,9 @@ pub fn sync_window_title(
     nav: Res<fe_ui::navigation_manager::NavigationManager>,
     verses: Res<fe_ui::verse_manager::VerseManager>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut last: Local<String>,
+    mut buffers: Local<WindowTitleBuffers>,
 ) {
-    if !last.is_empty() && !nav.is_changed() && !verses.is_changed() {
+    if !buffers.written.is_empty() && !nav.is_changed() && !verses.is_changed() {
         return;
     }
     let petal_name = nav
@@ -142,15 +167,16 @@ pub fn sync_window_title(
         .active_verse_id
         .as_ref()
         .map(|_| nav.active_verse_name.as_str());
-    let title = window_title(peer_label(), verse_name, petal_name);
-    if *last == title {
+    let WindowTitleBuffers { written, scratch } = &mut *buffers;
+    write_window_title(scratch, peer_label(), verse_name, petal_name);
+    if written == scratch {
         return;
     }
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    window.title.clone_from(&title);
-    *last = title;
+    window.title.clone_from(scratch);
+    std::mem::swap(written, scratch);
 }
 
 #[cfg(test)]
