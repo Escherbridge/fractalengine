@@ -128,6 +128,20 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   "wf_00887a68-005"})`. It is the ONLY builder: run no cargo and edit no source while it runs. (2) a sonnet
   security audit of the 15 inbox entries against code at HEAD (read-only; its report lists OPEN entries with fix
   briefs). (3) the QA scribe refreshing `conductor/qa-checklist-round4.md` from all 210 slices.
+  **Security audit result (00:30, sonnet, read-only, no tests run; full report with fix briefs in
+  `.omc/state/turn4-security-audit.md`):** of the 15 inbox entries, **FIXED** by the gates: 1 (relay URL
+  classes + REST handler), 3 (per-author quarantine cap), 4 (grant windows re-derived locally, HIGH), 5 and 8
+  (snapshot import id collisions, HIGH), 10 (gossip latch uses the handlers' decoder, HIGH). **PARTLY:** 2
+  (`object_creation.rs` scale/position still only finite-f64; terrain write does not refuse an out-of-range
+  `world_scale`), 6 (snapshot op_log uses a deny-list of two op types: `AssignRole`, `RevokeSession` pass), 9
+  (REST snapshot import does not call `scene_gate::admit`), 15 (`ServedVerses::AllHosted` serves any verse in
+  the snapshot). **OPEN:** 7 (non-member denials trip the relay breaker), 13 (dial-back settles on the first
+  record even when `ok=false`), 14 (DNS outside the probe timeout), 11 and 12 (private harness adapter; a sonnet
+  fix agent is on these now, Python only). Not determined by the audit: whether every relay dial site calls the
+  resolved-address check; whether anything authorizes from op_log rows. **The seven public fixes wait for the
+  refine pass to finish** (one writer in the source tree), then one sonnet executor per file cluster from the
+  audit's briefs (fe-sync relay_server + dialback; fe-database object_creation + petal_terrain + snapshot
+  op_log; fe-api snapshot route), then `cargo check` on fe-database, fe-sync, fe-api.
   **Then, in order:** fix every OPEN/PARTLY security entry (sonnet executors from the audit's briefs, opus for
   the clock grant-window one), re-check the touched crates; a round-5 slice list from the 32 partials + the
   critics' gaps (`turn4-result.py partial`); §7 step 3 whole-surface review; tests when the user names batches.
