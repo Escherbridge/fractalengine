@@ -2164,7 +2164,7 @@ struct BindingSignals {
 impl BindingSignals {
     fn send(&self, signal: BindingSignal) {
         if self.sender.send(signal).is_err() {
-            tracing::debug!("extension binding worker is gone");
+            tracing::warn!("extension binding worker is gone");
         }
     }
 

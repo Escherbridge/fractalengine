@@ -444,6 +444,21 @@ fn main() {
         tracing::warn!(%error, "network diagnostics bridge did not start; the diagnostics route answers 503");
     }
 
+    // One-shot: list the local user's verses for the relay consent step, even while the serve toggle is off.
+    {
+        let servable_db = shared_db.clone();
+        let servable_did = node_kp.to_did_key();
+        let spawned = std::thread::Builder::new().name("relay-servable-verses".into()).spawn(move || {
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime.block_on(relay_serve_bridge::publish_servable_verses(&servable_db, servable_did)),
+                Err(error) => tracing::warn!(%error, "servable verse list not published: runtime build failed"),
+            }
+        });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "servable verse list thread did not start");
+        }
+    }
+
     // NET-30: desktop relay-capable mode; consent, feature, self-test and dial-back are checked off the main thread.
     if app_settings.serve_relay {
         spawn_desktop_relay_gate(app_settings.clone(), sync_cmd_tx.clone(), shared_db.clone(), node_kp.to_did_key());
