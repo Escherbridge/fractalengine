@@ -68,3 +68,4 @@ and expects every peer to show A within 30 s. Run only when the user names `p2p-
 - `fleet-terrain` (`scenarios/fleet-terrain.json`): fixture terrain, three roadway GPX tracks imported, then fleet-sim movers
   on those tracks (turn-3 analytics finding 6). The REST GPX route is multipart and the driver has no multipart op, so the
   MCP `import_gpx` door carries the same bytes inline as base64.
+- `upload_gpx {petal_id, path}`: multipart POST of a .gpx file to `/api/v1/petals/{id}/import/gpx` (`gpx_upload.py`); fleet-terrain reads `assets/roads/*.gpx` through it.

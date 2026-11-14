@@ -329,12 +329,13 @@ Manifest v2 replaces both fields with declared `ingress[]`/`egress[]` (docs/exte
 - **Licensed packages are refused** (`EntitlementUnavailable`, `registry_client.rs:295`) by this v1 client, which fails
   closed on every paid `license.json`. `fe_format::entitlement` has shipped; the paid path is the v2 call site, governance
   row 6 (`fractalengine/src/extension_host/governance.rs`, feature `entitlement`).
-- **Interim v1 layout**: `plugin/manifest.json` (CapabilityManifest 1.0 + `id`), `plugin/payload.wasm`
+- **Retired v1 layout** (still read by this client, `registry_client.rs` `MANIFEST_MEMBER`/`PAYLOAD_MEMBER`/
+  `SIGNATURES_MEMBER`): `plugin/manifest.json` (CapabilityManifest 1.0 + `id`), `plugin/payload.wasm`
   (core module), `plugin/signatures.json` (`{package_id, content_hash, signatures}`), read with
-  `HexonArchive::read_member` and no sealed-hexon check. docs/extensions/package-format.md supersedes it
+  `HexonArchive::read_member` and no sealed-hexon check. The current layout is `docs/extensions/package-format.md`
   (sealed `HexonType::Plugin`, `plugin/extension.json`, `plugin/component.wasm`, counter-signatures,
-  `content_hash` over the sealed manifest) when extension_platform E9/E13 land; this client then moves to
-  fe-hexon as the protocol-v1 `RegistrySource`.
+  `content_hash` over the sealed manifest). The live registry path is the protocol-v1 `RegistrySource` and
+  `RemoteRegistryClient` in `fe-hexon/src/remote.rs` (trait in `fe-hexon/src/registry_source.rs`), not this module.
 
 ## §consent-ux
 

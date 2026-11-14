@@ -344,6 +344,17 @@ JSON. There is no variable `eval`; `evaluate_script` appears only for fixed `his
 client through `Bus::open_portal_client(installing_did, role_ceiling, ..)`. Residuals: SP-3 (an envelope queued just before
 a leave may still reach the new page) and the OD-3 cadence question for the sibling.
 
+## §qa-rows
+
+`ipc-post` (QA only, `fe-api` `portal_ipc_post`) posts one of seven fixed rows through `PortalBridge::ingress`
+(`qa_rows.rs`, `post_row`). Each row has a fixed source: `unsigned` and `unadmitted` the named build's static label origin,
+`external` `https://example.org/`, `foreign_frame` the bundle's first declared https frame origin, `hidden`, `stale` and
+`control` the admitted document's own origin. Every row sends one fixed `hello` envelope with id `4000000000`, far above
+any page id, so the control reply never settles a real page request. `stale` sends an all-zero foreign token because tokens
+are random per process; minting the real previous one would replace the live page's token. `hidden` restores the surface
+visibility it found. The receipt reports `delivered` (`Ingress::Accepted`) and `replied` (`Ingress::Replied`) at receipt.
+No caller-supplied JS, URL or body reaches the bridge.
+
 ## §reviews-and-open — where the verdicts live
 
 The per-gate verdicts are in the track directory, one file per gate, with one verdict line per finding:

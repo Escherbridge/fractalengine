@@ -1417,6 +1417,8 @@ fingerprint stays null until the main owner reconciles the final build inputs. N
 
 Reconciled at source commit `8a7157db`; the staged fingerprint remains null.
 
+Round-4 DATA-06 maps `fe-ui/src/editor_batch/ui.rs`, `CheckSelectionSave` and `SelectionBatch` to F010 in `catalog_source_rules.json` (committed `8b156111`). The census still runs at `audited_source_commit` `09923b5d`; re-run it at the audited HEAD at the staged-build phase. The remaining unmapped extension, portal and scene_assets files belong to other families.
+
 `catalog_source_rules.json` supplies explicit shared-source and action ownership where a file serves multiple
 families. `catalog_sources.py` uses only stdlib file reads and writes the catalog views; it never calls Git,
 launches processes/apps, reads token stores or accesses network. After reviewing source and the canonical JSON,
