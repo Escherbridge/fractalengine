@@ -137,6 +137,20 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   Do NOT `git push origin main` while the swarm runs: it would publish unbuilt swarm commits and cancel the CI
   run. Push a named commit (`git push -4 origin <sha>:main`) only for a CI fix that sits below the swarm commits;
   everything else waits for the refine pass.
+  **Model economy (user, 22:30: "be model efficient and not use fable for all of these").** The swarm itself
+  runs no Fable: 95 sonnet / 82 opus / 33 haiku slices plus haiku commit steps. The Fable cost is the
+  orchestrator session's own wake-ups, so: (a) an automated security notice is appended, untriaged, to
+  `.omc/state/turn4-security-inbox.md` and answered in one line; a standing steer makes every gate and critic
+  triage the entries on its own files; (b) the swarm script now carries a `RETIER` list (10 completeness
+  critics and the UI/CITY-2/DATA/REL gates go opus -> sonnet); it takes effect only on a resume (journal keys are
+  per call, so finished slices stay cached); not worth stopping a healthy run for, apply it if the run has to
+  be resumed anyway; (c) compile jobs go to sonnet agents.
+  **QA checklist (user, 22:40: "write out a qa checklist as we go").** `conductor/qa-checklist-round4.md`
+  (private slices: the same path in the private repo), compiled by a sonnet scribe from
+  `.omc/state/turn4-qa-feed.json`. Refresh: run `python -I .omc/plans/turn4-qa-feed.py <journal.jsonl>
+  .omc/state/turn4-args.json .omc/state/turn4-qa-feed.json`, then message the scribe agent (or start a new sonnet
+  agent with the same brief: update mode keeps the user's ticks). A standing steer makes every later slice return
+  `QA <app|api|sim|batch>: <step> -> <observed>` lines. Refresh at about every 50 slices and at the end.
   **Open security finding (21:40, MEDIUM, confirmed):** `fe-runtime/src/relay_advertisement.rs::
   validate_advertised_relay_url` (NET-05, `35e366bc`) accepts any http/https host, and advertised relay rows are
   peer-authored, so a member could make this node dial loopback, link-local/metadata or LAN addresses. Not
