@@ -1773,3 +1773,141 @@ async fn query_channel_fallback_with_dead_db_bridge_is_an_honest_error() {
         String::from_utf8_lossy(&body)
     );
 }
+
+// ---------------------------------------------------------------------------
+// HEXON-12 — petal snapshot export/import routes (Manager+)
+// ---------------------------------------------------------------------------
+
+/// Manager+ snapshot export and import: Editor and out-of-fractal callers are denied, a Manager's
+/// export opens with its op-log lamport-ascending, and re-importing onto the source node refuses (409).
+#[tokio::test]
+async fn petal_snapshot_export_import_authz_journey() {
+    use axum::extract::FromRequest;
+    use axum_extra::extract::Multipart;
+    use fe_api::petal_snapshot::{export_petal_snapshot, import_petal_snapshot};
+    use fe_database::types::{NodeId, OpLogEntry, OpType};
+    use fe_runtime::messages::{ApiCommand, DbCommand};
+
+    let db = setup_test_db().await;
+    let petal_id = ulid();
+    seed_petal(&db, &petal_id, false).await;
+    seed_node(&db, &petal_id, "snapshot-node", 1.0, 2.0, 0.0).await;
+    for op_type in [OpType::CreatePetal, OpType::SetPetalTerrain] {
+        let entry = OpLogEntry {
+            lamport_clock: 0,
+            hlc_timestamp: String::new(),
+            node_id: NodeId(petal_id.clone()),
+            op_type,
+            payload: serde_json::json!({ "petal_id": petal_id }),
+            sig: "00".repeat(64),
+        };
+        fe_database::op_log::commit_operation(&db, entry, |_| async { Ok::<(), anyhow::Error>(()) })
+            .await
+            .expect("seed op-log entry");
+    }
+
+    // Scope resolution reads `db_reader`; the snapshot commands ride the channel to the real DB handlers.
+    let (api_cmd_tx, api_cmd_rx) = crossbeam::channel::bounded::<ApiCommand>(8);
+    let mut state = channel_only_state(api_cmd_tx);
+    state.db_reader = Some(Arc::new(fe_api::db_reader::ReadDb::new(db.clone())));
+    let state = Arc::new(state);
+    tokio::spawn(async move {
+        use fe_database::handlers::petal_snapshot::{export_petal_snapshot_reply, import_petal_snapshot_reply};
+        loop {
+            let request = match api_cmd_rx.try_recv() {
+                Ok(request) => request,
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    continue;
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => break,
+            };
+            let ApiCommand::DbRequest { cmd, reply_tx } = request else {
+                continue;
+            };
+            let reply = match cmd {
+                DbCommand::ExportPetalSnapshot { petal_id, correlation_id } => {
+                    export_petal_snapshot_reply(&db, petal_id, correlation_id).await
+                }
+                DbCommand::ImportPetalSnapshot { rows, correlation_id } => {
+                    import_petal_snapshot_reply(&db, *rows, correlation_id).await
+                }
+                other => panic!("only snapshot commands ride the channel here: {other:?}"),
+            };
+            let _ = reply_tx.send(reply);
+        }
+    });
+
+    let fractal_scope = "VERSE#v1-FRACTAL#f1";
+    let manager = test_claims(fractal_scope, "manager");
+    let editor = test_claims(fractal_scope, "editor");
+    let foreign_manager = test_claims("VERSE#v1-FRACTAL#elsewhere", "manager");
+
+    // Export: Editor is denied with the existence-safe 404; Manager gets the archive.
+    let response = export_petal_snapshot(
+        State(state.clone()),
+        Extension(editor.clone()),
+        Path(petal_id.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "Editor must not export a snapshot");
+
+    let response = export_petal_snapshot(
+        State(state.clone()),
+        Extension(manager.clone()),
+        Path(petal_id.clone()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header_str(&response, "content-type"), "application/x-hexon+zip");
+    assert!(
+        header_str(&response, "content-disposition").contains(&format!("{petal_id}.snapshot.hexon")),
+        "attachment filename names the petal snapshot"
+    );
+    let archive = body_bytes(response).await;
+    let opened = fe_format::snapshot::import_petal_snapshot(&archive).expect("snapshot archive opens");
+    assert_eq!(opened.data.petal["petal_id"], petal_id.as_str());
+    assert_eq!(opened.data.nodes.len(), 1, "the petal's node travels with it");
+    let lamports: Vec<u64> = opened
+        .data
+        .oplog
+        .iter()
+        .map(|entry| entry["lamport_clock"].as_u64().expect("lamport_clock"))
+        .collect();
+    assert_eq!(lamports.len(), 2, "both petal op-log entries are exported: {lamports:?}");
+    assert!(lamports.windows(2).all(|pair| pair[0] < pair[1]), "op-log lamport-ascending: {lamports:?}");
+
+    // Import: the archive is one `archive` multipart field.
+    let upload = |bytes: &[u8]| {
+        let boundary = "PETALSNAPSHOTBOUNDARY";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"archive\"; filename=\"petal.snapshot.hexon\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: application/x-hexon+zip\r\n\r\n");
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/petals/import-snapshot")
+            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+            .body(axum::body::Body::from(body))
+            .expect("multipart request")
+    };
+
+    // Manager onto the source node: the petal already exists, so the import is refused, never merged.
+    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager), multipart).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let refused = body_json(response).await;
+    assert_eq!(refused["error"], "refused", "{refused}");
+    assert_eq!(refused["petal_id"], petal_id.as_str(), "{refused}");
+
+    // Editor, and a Manager of another fractal, are denied before anything is restored.
+    for caller in [editor, foreign_manager] {
+        let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+        let response = import_petal_snapshot(State(state.clone()), Extension(caller), multipart).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "import denied with the existence-safe 404");
+    }
+}
