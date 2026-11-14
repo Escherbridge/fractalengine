@@ -31,5 +31,16 @@ services:
       RUST_LOG: "info"
     restart: unless-stopped
 
+  # Optional self-hosted iroh relay; start with `--profile relay`. Operator steps: docs/relay-operations.md §3.
+  iroh-relay:
+    profiles: ["relay"]
+    image: n0computer/iroh-relay:v1.3.0@sha256:7a51e3826531dba5eee73d8b48a8f27284684d98c4d0da271d99127cc43b9d57
+    command: ["--config-path", "/etc/iroh-relay/iroh-relay.toml"]
+    ports:
+      - "127.0.0.1:3340:3340"
+    volumes:
+      - ./iroh-relay:/etc/iroh-relay:ro
+    restart: unless-stopped
+
 volumes:
   relay-data:

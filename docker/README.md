@@ -64,6 +64,14 @@ cd docker
 docker compose up -d
 ```
 
+## Self-hosted relay operations
+
+Operator guidance for the relay (env table, SurrealKV backup and restore, reverse-proxy TLS, verse-advertised
+relays) is in [`docs/relay-operations.md`](../docs/relay-operations.md). The dev compose file also defines an
+`iroh-relay` service under the `relay` profile, published on `127.0.0.1:3340` only; `docker compose up` does
+not start it. Start it with `docker compose -f compose.dev.yml --profile relay up -d iroh-relay` after creating
+`docker/iroh-relay/iroh-relay.toml`.
+
 ## Environment Variables
 
 | Variable | Default | Description |
