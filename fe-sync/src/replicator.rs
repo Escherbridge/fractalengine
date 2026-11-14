@@ -2538,7 +2538,16 @@ mod tests {
             .expect("alice's doc serves entries");
 
         // Alice writes a row through the real Doc::set_bytes path.
-        let payload = br#"{"verse_id":"verse-a2","name":"Real Transport Verse"}"#.to_vec();
+        // Rows are clocked (`_fe_clock` own map built by hand: fe-sync tests stay off fe-database internals).
+        let clocked = |name: &str, author: &str, hlc: u64| {
+            serde_json::to_vec(&serde_json::json!({
+                "verse_id": "verse-a2",
+                "name": name,
+                "_fe_clock": {"v": 1, "author": author, "own": {"name": {"hlc": hlc.to_string(), "value": name}}},
+            }))
+            .expect("clocked row serializes")
+        };
+        let payload = clocked("Real Transport Verse", "did:key:alice", 100);
         alice
             .write_row("verse", "verse-a2", &payload)
             .await
@@ -2580,7 +2589,7 @@ mod tests {
 
         // QA-0164: an identical rewrite is not a new version, so Bob's next event is the real change.
         alice.write_row("verse", "verse-a2", &payload).await.expect("identical rewrite");
-        let renamed = br#"{"verse_id":"verse-a2","name":"Renamed Verse"}"#.to_vec();
+        let renamed = clocked("Renamed Verse", "did:key:alice", 200);
         alice.write_row("verse", "verse-a2", &renamed).await.expect("alice renames");
         let next = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
             .await
@@ -2588,7 +2597,7 @@ mod tests {
             .expect("pump stays alive");
         assert_eq!(next.data, renamed, "the identical rewrite published nothing");
         // ...unless another author's newer entry holds the key: then the same bytes must win it back.
-        let bobs = br#"{"verse_id":"verse-a2","name":"Bob's Name"}"#.to_vec();
+        let bobs = clocked("Bob's Name", "did:key:bob", 300);
         bob.write_row("verse", "verse-a2", &bobs).await.expect("bob renames");
         let alice_doc = alice.live_doc().expect("alice's doc is live");
         let newest = || iroh_docs::store::Query::single_latest_per_key().key_exact(b"verse/verse-a2").build();
@@ -2599,6 +2608,8 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }).await.expect("bob's rename reaches alice");
+        // A restore restamps with a newer hlc, so its bytes differ and the unchanged-rewrite skip cannot hide it.
+        let renamed = clocked("Renamed Verse", "did:key:alice", 400);
         alice.write_row("verse", "verse-a2", &renamed).await.expect("alice restores her name");
         let restored = tokio::time::timeout(std::time::Duration::from_secs(20), bob_rx.recv())
             .await
