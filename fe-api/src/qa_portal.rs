@@ -405,10 +405,11 @@ pub async fn portal_killswitch(
 #[serde(deny_unknown_fields)]
 pub struct IpcPostRequest {
     row: IpcPostRowName,
-    /// Informational in the scenario; when present the open mount must have this package id (else 409).
+    /// When present the open mount must have this package id (else 409); ignored by `unsigned`/`unadmitted`.
     #[serde(default)]
     package_id: Option<String>,
-    /// Informational in the scenario; when present the open mount must have this content hash (else 409).
+    /// When present the open mount must have this content hash (else 409); for `unsigned`/`unadmitted` it names the
+    /// sender build whose static origin posts instead.
     #[serde(default)]
     content_hash: Option<String>,
 }

@@ -1,0 +1,24 @@
+---
+type: Review
+---
+
+# R-EXT-4 — adversarial + security review of EXT-05 (portal_ipc_post) and EXT-06/EXT-07 (WebView2 spike harness)
+
+Base `7af0a144`; commits a41c859b (EXT-05), c538e582 (EXT-06), 185eae0d (EXT-07). Prompted to refute. No cargo run.
+
+SEC-INBOX: no entry in `.omc/state/turn4-security-inbox.md` names an owned path (grep for portal, qa_rows, driver.py, spike).
+
+R4-01 FIXED - fractalengine/src/qa_portal_bridge.rs:96 - portal-core PJ2 pins `r_unsigned` to the unsigned dashboard build, which is never the open mount (an unsigned bundle never gets a bridge), so the strict mount pin refused it with 409 `portal_fixture_mount_mismatch`; an `unsigned`/`unadmitted` row's `content_hash` pin now names the sender build and `qa_rows::post_row` (fe-webview/src/portal_bundle/qa_rows.rs:79, new `named_build` argument) posts from that build's static origin; other rows keep the strict pin.
+R4-02 HANDED-OFF (fe-webview/src/portal_bundle/ipc.rs owner, next EXT round) - fe-webview/src/portal_bundle/qa_rows.rs:124 - the `hidden` row calls `set_visible(false)` then unconditionally `set_visible(true)`; on a portal whose bridge was already hidden (check 2 closed) the op re-opens check 2 and `take_outbox` until the next show/hide; needs `PortalBridge::is_visible()` (or a `with_hidden` scope) so qa_rows restores the prior state or refuses the row while hidden. Owner+FE_API_INPUT_ALLOW debug op only, so LOW.
+R4-03 HANDED-OFF (portal QA lane / portal-core.json owner, step 4) - tools/qa/sim/scenarios/portal-core.json:432 - `r_frame`, `r_hidden`, `r_stale`, `r_control` pin `qa.portal.actions` but no step opens the actions bundle before them (the open mount is the dashboard from `open_dash`), so each answers 409 mount mismatch; add a `click "Open bundle"` on the Actions repo node after `adm_act`, or drop those pins.
+R4-04 KEPT (QA-only counter; documented as process-total) - fe-webview/src/portal_bundle/qa_rows.rs:122 - `dropped_origin_delta` is a before/after read of the process-total counter, so a concurrent foreign post from the live page in the same window inflates it; the bridge is mutex-guarded and the serve system runs on the main thread with the native IPC handler, so the window is one frame; the scenario oracle is `>= 1` semantics in practice.
+R4-05 KEPT (by design) - fe-webview/src/portal_bundle/qa_rows.rs:107 - the `control` row posts a `hello` as the admitted document with its live token; the reply id 4_000_000_000 is ignored by portal-v1.js (`pending.get(message.re)` miss) and the token never leaves the process (receipt carries counts only); costs one message-rate token.
+R4-06 KEPT (approximation recorded) - fe-webview/src/portal_bundle/qa_rows.rs:112 - the `stale` row models "stale document after reload" as the live document carrying a never-minted token rather than a real previous-generation token; check 2 drops both identically (constant-time prefix compare against the current token).
+R4-07 KEPT (security confirmed) - fe-api/src/qa_portal.rs:419 - ipc-post is behind `QA_GATE.admit` (input opt-in), Owner role, current credential (`admitted`), scope containment, a 256-byte `DefaultBodyLimit` (server.rs:396), `deny_unknown_fields`, no query string, a fixed row enum (no caller-chosen origin or body), and the binary re-checks Owner via `context()` and `view.covers`; fail-closed on every miss.
+R4-08 KEPT (no defect) - fe-runtime/src/qa_portal.rs:34 - `IpcPostRowName` mirrors `IpcPostRow`; `web_row` is exhaustive over the fe-runtime side only, so a new fe-webview row compiles without a wire name; acceptable because rows are a fixed PJ2 table.
+R4-09 KEPT (no defect) - fe-webview/tests/portal_ipc_journey.rs:595 - the journey extension walks all seven rows through the public `post_row` seam and asserts drop/deliver/reply plus exactly one answered control envelope; inverting the origin check or leaving `hidden` visible turns it red; reachable by the existing batch filter `cargo test -p fe-webview --test portal_ipc_journey` (conductor/test-batches.md:213).
+R4-10 KEPT (no defect) - fe-webview/examples/portal_spikes/spikes_b.rs:488 - spike servers bind loopback only (`127.0.0.1:0`; SP-1 watch on 127.0.0.1/::1:443), SP-9 children are bounded by `CHILD_LIMIT`, killed and waited on timeout, pipes drained; temp fixture bundles removed on drop; examples are cfg(windows, backend-tauri) and never shipped.
+R4-11 KEPT (unverifiable without cargo) - fe-webview/examples/portal_spikes/main.rs:149 - the harness uses dev-dependency `ed25519-dalek` and `windows::core`, both available to examples; compile is confirmed only at the wave-barrier `cargo check -p fe-webview --examples`.
+R4-12 KEPT (no defect) - tools/qa/sim/driver.py:1038 - the driver forwards only `row` and truthy pins as strings to the fixed route; leak scan of every added line in the reviewed diff is clean.
+
+Verdict: PASS-WITH-FIXES

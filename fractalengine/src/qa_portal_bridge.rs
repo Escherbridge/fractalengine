@@ -78,7 +78,8 @@ fn kill_switch(resolver: &crate::portal_host::resolver::PortalResolver, engage: 
     )
 }
 
-/// One fixed PJ2 row through the open bundle's bridge (`qa_rows::post_row`); a pinned mount that differs is refused.
+/// One fixed PJ2 row through the open bundle's bridge (`qa_rows::post_row`); a pinned mount that differs is refused,
+/// except that an `unsigned`/`unadmitted` row's `content_hash` pin names its sender build instead.
 fn ipc_post(
     resource: &WebViewBackendRes,
     row: IpcPostRowName,
@@ -92,8 +93,15 @@ fn ipc_post(
         return Err(fixture::unavailable());
     };
     let mounts = host.mounts();
+    let posted_row = web_row(row);
+    // An unsigned/unadmitted row's content-hash pin names its sender build (never opened with a bridge), not the mount.
+    let named_build = expect
+        .content_hash
+        .filter(|_| posted_row.sender_is_named_build())
+        .map(hex::encode);
     let pinned = expect != MountExpectation::default();
     if pinned
+        && !posted_row.sender_is_named_build()
         && !mounts
             .current()
             .is_some_and(|mount| expect.matches(&mount.package_id, &mount.content_hash))
@@ -103,7 +111,7 @@ fn ipc_post(
             "The open bundle is not the package or build the request names",
         ));
     }
-    let Some(outcome) = qa_rows::post_row(bridge, mounts, web_row(row), std::time::Instant::now()) else {
+    let Some(outcome) = qa_rows::post_row(bridge, mounts, posted_row, named_build.as_deref(), std::time::Instant::now()) else {
         return Err(fixture::failure(
             "portal_fixture_row_unavailable",
             "This row needs an open bundle (admitted for hidden, stale and control)",

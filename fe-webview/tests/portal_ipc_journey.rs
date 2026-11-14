@@ -596,7 +596,7 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     // drop, never delivered or answered; control is heard and answered. Mutation check: a row posted from the admitted
     // document with its live token (or `hidden` left visible) goes red here.
     for row in IpcPostRow::ALL {
-        let outcome = qa_rows::post_row(&page.bridge, &page.mounts, row, page.now).expect("an admitted bundle is open");
+        let outcome = qa_rows::post_row(&page.bridge, &page.mounts, row, None, page.now).expect("an admitted bundle is open");
         let heard = row == IpcPostRow::Control;
         assert_eq!(
             (outcome.dropped_origin_delta, outcome.delivered, outcome.replied),

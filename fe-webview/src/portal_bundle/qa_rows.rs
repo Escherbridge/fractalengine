@@ -19,9 +19,9 @@ const FOREIGN_TOKEN: &str = "00000000000000000000000000000000";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IpcPostRow {
-    /// Sender: the open build's static label origin (an unsigned bundle never gets the bridge).
+    /// Sender: the named build's static label origin, else the open build's (an unsigned bundle never gets the bridge).
     Unsigned,
-    /// Sender: the open build's static label origin (signed but not admitted here).
+    /// Sender: the named build's static label origin, else the open build's (signed but not admitted here).
     Unadmitted,
     /// Sender: [`EXTERNAL_ORIGIN`].
     External,
@@ -51,6 +51,11 @@ impl IpcPostRow {
     pub fn needs_admitted_mount(self) -> bool {
         matches!(self, Self::Hidden | Self::Stale | Self::Control)
     }
+
+    /// True for the rows whose sender is a named build's static origin: a content-hash pin names the sender, not the open mount.
+    pub fn sender_is_named_build(self) -> bool {
+        matches!(self, Self::Unsigned | Self::Unadmitted)
+    }
 }
 
 /// What one row did to the bridge.
@@ -67,15 +72,26 @@ pub struct RowOutcome {
 
 /// Post `row`'s fixed envelope from its fixed source through [`PortalBridge::ingress`].
 ///
-/// `None` when the row needs a live mount (admitted, for the document rows) and there is none; nothing is posted then.
+/// `named_build` (hex content hash) is the `unsigned`/`unadmitted` sender's build, which need not be open; other rows
+/// ignore it. `None` when the row needs a live mount (admitted, for the document rows) and there is none, or the
+/// named build is not a valid hash; nothing is posted then.
 /// The `hidden` row leaves the surface visible afterwards: the fixture only runs it on an open, shown portal.
-pub fn post_row(bridge: &PortalBridge, mounts: &PortalMounts, row: IpcPostRow, now: Instant) -> Option<RowOutcome> {
+pub fn post_row(
+    bridge: &PortalBridge,
+    mounts: &PortalMounts,
+    row: IpcPostRow,
+    named_build: Option<&str>,
+    now: Instant,
+) -> Option<RowOutcome> {
     let mount = mounts.current().filter(|mount| !mount.is_faulted());
     let admitted = mount.as_ref().filter(|mount| mount.mode == MountMode::Admitted);
     let foreign_body = envelope(FOREIGN_TOKEN);
     let (source, body) = match row {
         IpcPostRow::Unsigned | IpcPostRow::Unadmitted => {
-            let label = static_label(&mount.as_ref()?.content_hash)?;
+            let label = match named_build {
+                Some(content_hash) => static_label(content_hash)?,
+                None => static_label(&mount.as_ref()?.content_hash)?,
+            };
             (format!("{}/", label.https_origin()), foreign_body)
         }
         IpcPostRow::External => (EXTERNAL_ORIGIN.to_owned(), foreign_body),
