@@ -166,12 +166,15 @@ RUST_LOG=debug cargo run -p fractalengine
 
 ## Testing
 
-```bash
-# Run all tests
-cargo test --workspace
+Tests run in selectable batches listed in `conductor/test-batches.md`; each batch is a short
+list of `cargo test -p <crate> ...` commands you can also run directly. Do not run
+`cargo test --workspace`: it links every test binary at once and has filled a disk. The
+PowerShell runner executes one command at a time and prunes its test executables:
 
-# Run with env-based keystore (for CI / headless)
-FE_KEYSTORE_BACKEND=env cargo test --workspace
+```powershell
+tools\qa\test_batches.ps1                     # list the batches
+tools\qa\test_batches.ps1 -Batches R1,R8      # run two batches
+tools\qa\test_batches.ps1 -Batches All        # the full suite, one chunk at a time
 ```
 
 ### Platform-specific test notes

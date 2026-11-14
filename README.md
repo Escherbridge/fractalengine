@@ -206,7 +206,7 @@ show all, `Alt+H` isolate (Esc clears it).
 ## Architecture Overview
 
 FractalEngine runs as a single native desktop application with a
-**seven-thread topology** (`fe-relay` runs T2 through T6 without a window and does not start the plugin host, T7):
+**seven-thread topology** (`fe-relay` runs T2 through T6 without a window and starts the plugin host, T7, only when built with the opt-in `plugin-host` feature):
 
 ```
 ┌─────────────────────────────────────────────────────┐
