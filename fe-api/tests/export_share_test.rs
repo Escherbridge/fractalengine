@@ -1781,6 +1781,79 @@ async fn query_channel_fallback_with_dead_db_bridge_is_an_honest_error() {
 
 /// Manager+ snapshot export and import: Editor and out-of-fractal callers are denied, a Manager's
 /// export opens with its op-log lamport-ascending, and re-importing onto the source node refuses (409).
+
+/// What the process-wide test hook does at one petal.
+#[derive(Debug, Clone, Copy)]
+enum GateMode {
+    Unbound,
+    Refuse,
+    Augment,
+}
+
+/// A scene-hook backend whose behavior is keyed by petal id, so other journeys in this binary stay unbound.
+struct SnapshotGateBackend {
+    modes: std::sync::Mutex<std::collections::HashMap<String, GateMode>>,
+}
+
+impl SnapshotGateBackend {
+    fn set(&self, petal_id: &str, mode: GateMode) {
+        self.modes.lock().unwrap().insert(petal_id.to_owned(), mode);
+    }
+}
+
+impl fe_runtime::scene_hook_gate::SceneHookBackend for SnapshotGateBackend {
+    fn local_did(&self) -> &str {
+        "did:key:local"
+    }
+    fn bound(
+        &self,
+        _hook: fe_runtime::scene_hook_gate::SceneHook,
+        petal_id: &str,
+    ) -> Option<fe_runtime::scene_hook_gate::SceneBinding> {
+        let mode = self.modes.lock().unwrap().get(petal_id).copied()?;
+        matches!(mode, GateMode::Refuse | GateMode::Augment).then(|| fe_runtime::scene_hook_gate::SceneBinding {
+            package_id: "org.example.zoning".into(),
+            binding_scope: "VERSE#v1-FRACTAL#f1".into(),
+            config: serde_json::json!({}),
+            property_scope: vec!["zone*".into()],
+            may_augment: true,
+        })
+    }
+    fn dispatch(
+        &self,
+        call: fe_runtime::scene_hook_gate::SceneHookCall,
+        reply: fe_runtime::scene_hook_gate::SceneHookReplySender,
+    ) {
+        let mode = self.modes.lock().unwrap().get(&call.petal_id).copied();
+        let output = match mode {
+            Some(GateMode::Refuse) => serde_json::json!({"verdict": "refuse", "reason": "zone locked"}),
+            _ => serde_json::json!({"verdict": "allow", "augment": [{"key": "zone", "value": "A"}]}),
+        };
+        let _ = reply.send(fe_runtime::scene_hook_gate::SceneHookReply::Output(output));
+    }
+    fn stage_augment(
+        &self,
+        _petal_id: &str,
+        _package_id: &str,
+        _node_id: &str,
+        _ops: Vec<fe_runtime::scene_hook_gate::AugmentOp>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Install the process gate once over the petal-keyed backend and return that backend.
+fn snapshot_gate_backend() -> Arc<SnapshotGateBackend> {
+    static BACKEND: std::sync::OnceLock<Arc<SnapshotGateBackend>> = std::sync::OnceLock::new();
+    BACKEND
+        .get_or_init(|| {
+            let backend = Arc::new(SnapshotGateBackend { modes: Default::default() });
+            fe_runtime::scene_hook_gate::SceneHookGate::install(backend.clone()).expect("install scene gate");
+            backend
+        })
+        .clone()
+}
+
 #[tokio::test]
 async fn petal_snapshot_export_import_authz_journey() {
     use axum::extract::FromRequest;
@@ -1896,6 +1969,21 @@ async fn petal_snapshot_export_import_authz_journey() {
             .body(axum::body::Body::from(body))
             .expect("multipart request")
     };
+
+    // Scene gate: a hook bound at the snapshot's petal judges the import before anything is restored.
+    let gate = snapshot_gate_backend();
+    let hook_manager = manager.clone();
+    for (mode, expected_error) in [(GateMode::Refuse, "refused"), (GateMode::Augment, "hook-augment-unsupported")] {
+        gate.set(&petal_id, mode);
+        let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+        let response = import_petal_snapshot(State(state.clone()), Extension(hook_manager.clone()), multipart).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{mode:?}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"], expected_error, "{mode:?}: {body}");
+        // The DB thread never saw the import: its refusal body names the petal, the gate's does not.
+        assert!(body.get("petal_id").is_none(), "{mode:?}: refused at the gate, before the DB: {body}");
+    }
+    gate.set(&petal_id, GateMode::Unbound);
 
     // Manager onto the source node: the petal already exists, so the import is refused, never merged.
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");

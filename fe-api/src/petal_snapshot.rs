@@ -36,6 +36,9 @@ pub const SNAPSHOT_ROUTE_BODY_LIMIT: usize = MAX_SNAPSHOT_ARCHIVE_BYTES + 1024 *
 /// Multipart field carrying the archive.
 const ARCHIVE_FIELD: &str = "archive";
 /// Prefix of the DB refusal reason for a malformed or out-of-petal snapshot (`ImportError::Invalid`).
+/// Error code when a bound scene hook admits an import only with augments, which an import cannot apply.
+pub const HOOK_AUGMENT_UNSUPPORTED: &str = "hook-augment-unsupported";
+
 const INVALID_SNAPSHOT_REASON: &str = "invalid petal snapshot";
 
 /// The one existence-safe denial: missing, out of scope, or under-privileged look the same.
@@ -206,6 +209,9 @@ async fn read_archive_field(multipart: &mut Multipart) -> Result<Vec<u8>, Upload
 /// POST /api/v1/petals/import-snapshot — restore a snapshot under its original fractal. Manager+ there.
 ///
 /// Multipart with one file field `archive`. Authorization runs on a parse-only pass, before any blob is written.
+///
+/// Scene hooks judge each node's name, position and initial properties only (not scale, rotation, node_log, op_log or
+/// rooms); a hook admitting with augments refuses the import (409 `hook-augment-unsupported`), see fe-api/AGENTS.md §petal-snapshot.
 pub async fn import_petal_snapshot(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
@@ -264,6 +270,8 @@ pub async fn import_petal_snapshot(
     }
 
     // Scene gate: bound extensions judge the import (one create per node) before any blob is written.
+    // Hooks see per node only: display name, position (x, elevation, z) and initial property keys/values; never
+    // scale, rotation, node_log, op_log or rooms. Augments are refused (409 hook-augment-unsupported).
     // A call count over MAX_HOOK_CALLS_PER_WRITE is refused by the door (413), never skipped.
     let gate_rows = PetalSnapshotRows {
         petal: petal_row.clone(),
@@ -272,11 +280,23 @@ pub async fn import_petal_snapshot(
     };
     let gate_command = DbCommand::ImportPetalSnapshot { rows: Box::new(gate_rows), correlation_id: None };
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
-    // Node ids are only known to the DB; the admission's create augments cannot be staged here, so drop them.
-    let _admission = match admit(door, &snapshot_petal_id, gate_command).await {
+    // Node ids are only known to the DB, so augments cannot be staged: refuse rather than drop them silently.
+    let admission = match admit(door, &snapshot_petal_id, gate_command).await {
         Ok((_, admission)) => admission,
         Err(denied) => return crate::rest::scene_denied_response(denied),
     };
+    if !admission.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false, "data": null, "error": HOOK_AUGMENT_UNSUPPORTED,
+                "reason": "a bound scene hook requires changes an import cannot apply",
+            })),
+        )
+            .into_response();
+    }
+    // Empty: consume the admission explicitly (nothing to stage).
+    admission.stage(None);
 
     let restore_bytes = Arc::clone(&archive);
     let restored = tokio::task::spawn_blocking(move || {

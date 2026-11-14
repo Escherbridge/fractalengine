@@ -2461,6 +2461,11 @@ Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-on
   `DbCommand::ImportPetalSnapshot`. An archive refused at that step never reaches the DB thread.
 - **Op-log entries are written DB-side.** `ExportPetal` and `ImportPetal` are recorded by fe-database
   (`handlers/petal_snapshot.rs`), not by this route.
+- **Scene hooks on import (limit).** The gate judges one `scene.create` per node from display name, position
+  (x, elevation, z) and one `scene.property` per initial property key/value, and nothing else: hooks never see scale,
+  rotation, `node_log`, `op_log` or rooms. Node ids exist only DB-side, so augments cannot be staged: an admission
+  carrying any augment is refused 409 `hook-augment-unsupported` (nothing written); an empty one proceeds. Hook
+  refusals keep the shared 409/413 forms. Tested in `tests/export_share_test.rs` (`petal_snapshot_export_import_authz_journey`).
 - **Import trust is not closed here.** Identity collisions with rows under another petal, and op-log entries carried by the
   archive, are tracked in the petal-snapshot review files; do not read this section as a claim that they are refused.
 
