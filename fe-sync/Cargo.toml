@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "iroh-based P2P synchronization and replication for FractalEngine"
 
 [features]
-relay-server = ["dep:iroh-relay", "iroh-relay/server"]
+relay-server = ["dep:iroh-relay", "iroh-relay/server", "dep:rustls"]
 
 [dependencies]
 bevy = { workspace = true }
@@ -43,6 +43,8 @@ crossbeam = { workspace = true }
 # dial-back prober (https GET to an advertised relay) and signed dial-back records
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 ed25519-dalek = { workspace = true }
+# relay-server TLS config (relay_server.rs build_cert_config): ring provider, same crate iroh-relay links
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 
 [dev-dependencies]
 iroh = { workspace = true, features = ["test-utils"] }

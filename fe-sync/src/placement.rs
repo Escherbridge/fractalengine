@@ -312,6 +312,7 @@ mod tests {
         PeerDeclaration {
             capacity_bytes: capacity,
             seeder,
+            gossip_sig: None,
         }
     }
 

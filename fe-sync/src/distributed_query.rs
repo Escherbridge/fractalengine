@@ -2582,6 +2582,7 @@ mod tests {
             PeerDeclaration {
                 capacity_bytes: None,
                 seeder: false,
+                gossip_sig: None,
             }
         );
     }
