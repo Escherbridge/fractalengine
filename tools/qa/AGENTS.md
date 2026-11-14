@@ -748,7 +748,7 @@ From the main checkout, the operator sequence for both committed history and
 measurement durability is:
 
 ```powershell
-$ownedRun = 'C:\Users\atooz\Programming\fractalengine-workspace\fractalengine\.qa\run\<actual-timestamp>'
+$ownedRun = Join-Path (Get-Location) '.qa\run\<actual-timestamp>'
 $before = Get-Content -LiteralPath (Join-Path $ownedRun 'current.json') -Raw | ConvertFrom-Json
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/qa/restart.ps1 -Run $ownedRun
 if ($LASTEXITCODE -ne 0) { throw 'Restart failed; inspect this start before continuing' }

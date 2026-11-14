@@ -352,7 +352,7 @@ a leave may still reach the new page) and the OD-3 cadence question for the sibl
 `control` the admitted document's own origin. Every row sends one fixed `hello` envelope with id `4000000000`, far above
 any page id, so the control reply never settles a real page request. `stale` sends an all-zero foreign token because tokens
 are random per process; minting the real previous one would replace the live page's token. `hidden` restores the surface
-visibility it found. The receipt reports `delivered` (`Ingress::Accepted`) and `replied` (`Ingress::Replied`) at receipt.
+visibility it found (read through `PortalBridge::is_visible`, `ipc.rs:382`, and written back afterwards) rather than forcing it visible. The receipt reports `delivered` (`Ingress::Accepted`) and `replied` (`Ingress::Replied`) at receipt.
 No caller-supplied JS, URL or body reaches the bridge.
 
 ## §reviews-and-open — where the verdicts live
