@@ -292,7 +292,7 @@ async fn petal_snapshot_export_then_import_journey() {
     let counts = snapshot.table_row_counts();
     let expected = [
         ("petal", 1), ("nodes", 2), ("node_log", 1), ("field_defs", 1), ("rooms", 1),
-        ("models", 1), ("assets", 2), ("roles", 1), ("iot_readings", 1), ("oplog", 3),
+        ("models", 1), ("assets", 2), ("roles", 1), ("iot_readings", 1), ("oplog", 2),
     ];
     for (table, count) in expected {
         assert_eq!(counts[table], count, "{table} row count");
@@ -305,7 +305,7 @@ async fn petal_snapshot_export_then_import_journey() {
     let exported_lamports = lamports(&snapshot.oplog);
     assert!(exported_lamports.windows(2).all(|pair| pair[0] < pair[1]), "op-log strictly lamport-ascending: {exported_lamports:?}");
     let op_types: Vec<&str> = snapshot.oplog.iter().filter_map(|e| e["op_type"].as_str()).collect();
-    assert_eq!(op_types, ["CreatePetal", "TransformUpdate", "AssignRole"]);
+    assert_eq!(op_types, ["CreatePetal", "TransformUpdate"], "role statements are not data operations and are never exported");
 
     // The export is audited after collection: one ExportPetal entry, newer than every exported entry.
     let mut audit = db
@@ -420,13 +420,33 @@ async fn petal_snapshot_export_then_import_journey() {
     unreferenced_asset.assets[0]["asset_id"] = json!("asset-unplaced");
     // Still names PETAL#petal-a, but under another fractal: history may not reach outside the petal's scope.
     let mut foreign_scope = snapshot.clone();
-    foreign_scope.oplog[2]["payload"]["scope"] = json!(format!("VERSE#{VERSE}-FRACTAL#elsewhere-PETAL#{PETAL}"));
+    foreign_scope.oplog.push(json!({
+        "id": "op_log:foreign_scope", "lamport_clock": 1, "hlc_timestamp": "1:0001", "node_id": "node-a1",
+        "op_type": "TransformUpdate", "payload": {"node_id": "node-a1", "scope": format!("VERSE#{VERSE}-FRACTAL#elsewhere-PETAL#{PETAL}")},
+        "sig": "00".repeat(64),
+    }));
     // An owner-level audit row is never exported, so a snapshot carrying one was forged.
     let mut forged_audit = snapshot.clone();
     forged_audit.oplog.push(json!({
         "id": "op_log:forged_audit", "lamport_clock": 1, "hlc_timestamp": "1:0001", "node_id": "did:key:owner",
         "op_type": "ElevatedQuery", "payload": {"petal_id": PETAL, "sql": "DELETE role"}, "sig": "00".repeat(64),
     }));
+    // Security-relevant and unknown op types are refused by the data allow-list, not by a deny-list.
+    let forged_op = |op_type: &str, payload: Value| {
+        let mut rows = snapshot.clone();
+        rows.oplog.push(json!({
+            "id": "op_log:forged_op", "lamport_clock": 1, "hlc_timestamp": "1:0001", "node_id": "did:key:owner",
+            "op_type": op_type, "payload": payload, "sig": "00".repeat(64),
+        }));
+        rows
+    };
+    let forged_role = forged_op("AssignRole", json!({"peer_did": "did:key:mallory", "scope": petal_scope(PETAL), "role": "owner"}));
+    let forged_revoke = forged_op("RevokeSession", json!({"petal_id": PETAL, "session": "s1"}));
+    let unknown_type = forged_op("FutureOp", json!({"petal_id": PETAL}));
+    let mut malformed_node_id = snapshot.clone();
+    malformed_node_id.nodes[0]["node_id"] = json!("node-a1'; DELETE role; --");
+    let mut overlong_node_id = snapshot.clone();
+    overlong_node_id.nodes[0]["node_id"] = json!("n".repeat(129));
     let mut missing_fractal = snapshot.clone();
     missing_fractal.petal["fractal_id"] = json!("fractal-gone");
     for (case, rows) in [
@@ -434,6 +454,11 @@ async fn petal_snapshot_export_then_import_journey() {
         ("unreferenced asset", unreferenced_asset),
         ("op-log scope outside the petal", foreign_scope),
         ("forged owner audit", forged_audit),
+        ("forged role statement", forged_role),
+        ("forged session revocation", forged_revoke),
+        ("unknown op type", unknown_type),
+        ("malformed node_id", malformed_node_id),
+        ("overlong node_id", overlong_node_id),
         ("parent fractal absent", missing_fractal),
     ] {
         let outcome = import_petal_snapshot(&refused_db, rows).await;

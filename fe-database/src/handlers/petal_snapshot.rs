@@ -115,6 +115,7 @@ async fn collect_petal_rows(db: &Db, petal_id: &str, scope: &str) -> anyhow::Res
     let oplog: Vec<Value> = candidate_oplog
         .into_iter()
         .filter(|entry| oplog_entry_matches_petal(entry, petal_id, &petal_node_ids))
+        .filter(|entry| is_importable_op_type(entry["op_type"].as_str().unwrap_or_default()))
         .collect();
 
     Ok(PetalSnapshotRows {
@@ -193,8 +194,29 @@ pub enum ImportError {
 const PETAL_EXISTS_MARKER: &str = "petal_snapshot_import_petal_exists";
 /// THROW text of the in-transaction identity guards, mapped back to [`ImportError::Collision`].
 const COLLISION_MARKER: &str = "petal_snapshot_import_collision";
-/// Op types an honest exporter never emits (no petal attribution) and whose rows act as owner-level audit.
-const REFUSED_OP_TYPES: [&str; 2] = ["ExtensionAudit", "ElevatedQuery"];
+/// Allow-list of data op types a snapshot may carry; role, session, audit and elevated-query types never travel.
+const IMPORTABLE_OP_TYPES: [&str; 23] = [
+    "SceneAssetAdopted", "EditorTransaction", "PluginTransaction", "CreatePetal", "CreateRoom", "PlaceModel",
+    "DeletePetal", "UpdatePetalMeta", "UpdateRoomMeta", "UpdateModelMeta", "ExportPetal", "ImportPetal",
+    "TransformUpdate", "PropertySet", "PropertyDeleted", "NodeCreated", "NodeRenamed", "NodeDeleted",
+    "NodeTombstoned", "NodePromoted", "SetPetalRenderDistance", "SetPetalTerrain",
+    "SetPetalRequirements",
+];
+
+/// Whether an op_log row's `op_type` is on the data allow-list.
+fn is_importable_op_type(op_type: &str) -> bool {
+    IMPORTABLE_OP_TYPES.contains(&op_type)
+}
+
+/// Longest accepted node_id; stamp ids are `<path_id>#inst-<n>`.
+const MAX_NODE_ID_LEN: usize = 128;
+
+/// Node ids are ULIDs or `<path_id>#inst-<n>` stamp ids: a bounded, printable charset with no quotes or whitespace.
+fn is_well_formed_node_id(node_id: &str) -> bool {
+    !node_id.is_empty()
+        && node_id.len() <= MAX_NODE_ID_LEN
+        && node_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'#' | b'.' | b':'))
+}
 /// Payload fields other writers look op-log rows up by (request and operation ids); imported ones must be fresh.
 const OPLOG_MARKER_FIELDS: [&str; 5] = [
     "editor_batch_request_id",
@@ -363,6 +385,9 @@ impl RestorePlan {
                 .filter(|node_id| !node_id.is_empty())
                 .ok_or_else(|| invalid("a node row has no node_id"))?
                 .to_string();
+            if !is_well_formed_node_id(&node_id) {
+                return Err(invalid("a node row has a malformed node_id"));
+            }
             if node_ids.contains(&node_id) {
                 return Err(invalid(format!("node_id {node_id} appears twice in the snapshot")));
             }
@@ -472,8 +497,8 @@ impl RestorePlan {
                 return Err(invalid("an op_log entry is not attributable to the snapshot petal"));
             }
             let op_type = string_field(&entry, "op_type").unwrap_or_default();
-            if REFUSED_OP_TYPES.contains(&op_type) {
-                return Err(invalid(format!("an op_log entry of type {op_type} is never part of a petal snapshot")));
+            if !is_importable_op_type(op_type) {
+                return Err(invalid(format!("an op_log entry of type {op_type:?} is not a data operation a petal snapshot may carry")));
             }
             // Containment: every petal, scope and node reference the payload carries stays inside this petal.
             let payload = &entry["payload"];

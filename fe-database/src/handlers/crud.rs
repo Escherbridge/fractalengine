@@ -1865,6 +1865,36 @@ mod delete_node_tests {
         assert_eq!(placement_scale_vec(1e300), vec![1.0; 3]);
         assert_eq!(placement_scale_vec(1e-300), vec![1.0; 3]);
         assert_eq!(placement_scale_vec(f64::MAX), vec![1.0; 3]);
+
+        // The creation door refuses scales that are non-positive or overflow/vanish in the f32 row cast.
+        let db = setup_mem_db().await;
+        for (case, scale) in [
+            ("overflow", vec![1e300; 3]),
+            ("underflow", vec![1e-300; 3]),
+            ("f64::MAX", vec![f64::MAX; 3]),
+            ("zero", vec![0.0, 1.0, 1.0]),
+            ("negative", vec![1.0, -1.0, 1.0]),
+            ("short", vec![1.0, 1.0]),
+        ] {
+            let refused = super::super::object_creation::prepare(
+                &db,
+                super::super::object_creation::ObjectCreation {
+                    petal_id: "petal-1",
+                    name: "n",
+                    asset: super::super::object_creation::SceneAsset::Existing(None),
+                    position: [0.0; 3],
+                    rotation: vec![0.0, 0.0, 0.0, 1.0],
+                    scale,
+                    properties: serde_json::Map::new(),
+                    actor: "did:key:z6MkA",
+                    grant: &fe_runtime::node_history::NodeAccessGrant::Local,
+                },
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{case}: scale must be refused"));
+            assert!(refused.to_string().contains("finite complete transform"), "{case}: {refused:#}");
+        }
     }
 
     #[tokio::test]

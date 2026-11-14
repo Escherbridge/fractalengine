@@ -172,10 +172,11 @@ pub(crate) async fn prepare(
     anyhow::ensure!(
         !name.trim().is_empty()
             && name.len() <= 1024
-            && position.iter().all(|v| v.is_finite())
+            && position.iter().all(|v| v.is_finite() && (*v as f32).is_finite())
             && matches!(rotation.len(), 3 | 4)
             && scale.len() == 3
-            && rotation.iter().chain(&scale).all(|v| v.is_finite()),
+            && rotation.iter().all(|v| v.is_finite())
+            && scale.iter().all(|v| v.is_finite() && *v > 0.0 && (*v as f32).is_finite() && (*v as f32) > 0.0),
         "object requires a non-empty bounded name and finite complete transform"
     );
     let (mut statements, mut bindings) = node_history::scope_fence(&scope, None)?;

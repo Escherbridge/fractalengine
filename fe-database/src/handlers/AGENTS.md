@@ -658,3 +658,7 @@ notes:
 
 `device_payload::AcceptedPayloadEvent` is a type alias of `fe_runtime::messages::AcceptedPayload` (the pinned
 `ingest.decode` trigger), so the sink and the host's decode job read one struct.
+
+## petal-snapshot op_log allow-list
+
+`petal_snapshot.rs` exports and imports only data op types (`IMPORTABLE_OP_TYPES`); role, session, audit and elevated-query rows never travel, so an archive cannot plant a grant. Nothing replays op_log rows to rebuild state, but several handlers use them as proof or idempotency markers (editor batch request ids, `SceneAssetAdopted`, `NodeTombstoned`), which is why imported ids are collision-guarded. Imported `node_id`s are bounded to 128 chars of `[A-Za-z0-9_#.:-]` (ULIDs and `<path>#inst-<n>` stamp ids). Creation and local/API terrain writes are strict on scale (`> 0`, finite after the f32 cast, `world_scale` in the global range); inbound terrain reads stay tolerant.

@@ -100,6 +100,13 @@ async fn prepare_terrain_write(
             super::replicated_row::is_valid_inbound_petal_terrain(config),
             "SetPetalTerrain: terrain fails the shared shape check (tileset ids, cache_dir, size)"
         );
+        // Local and API writes are strict; inbound replicated reads stay tolerant (sanitized at read).
+        if let Some(world_scale) = config.get("world_scale").filter(|value| !value.is_null()) {
+            anyhow::ensure!(
+                world_scale.as_f64().is_some_and(fe_format::scale::is_world_scale_in_range),
+                "SetPetalTerrain: world_scale is outside the accepted range"
+            );
+        }
     }
     Ok(PreparedTerrainWrite {
         scope,
@@ -462,7 +469,12 @@ mod tests {
         for bad in [
             serde_json::json!({ "elevation_api_key_env": "AWS_SECRET_ACCESS_KEY" }),
             serde_json::json!({ "cache_dir": "../../outside" }),
+            serde_json::json!({ "world_scale": 1e300 }),
+            serde_json::json!({ "world_scale": 1e-300 }),
+            serde_json::json!({ "world_scale": f64::MAX }),
+            serde_json::json!({ "world_scale": 0.0 }),
         ] {
+            let range = bad.get("world_scale").is_some();
             let err = set_petal_terrain_handler(
                 &db,
                 "owner-did",
@@ -474,13 +486,14 @@ mod tests {
             )
             .await
             .expect_err("refused");
-            assert!(err.to_string().contains("shape check"), "{err:#}");
+            let reason = if range { "world_scale is outside" } else { "shape check" };
+            assert!(err.to_string().contains(reason), "{err:#}");
         }
         assert_eq!(get_petal_terrain_handler(&db, "p1").await.unwrap(), None);
         assert!(repl_rx.try_recv().is_err(), "nothing was replicated");
 
         let good =
-            serde_json::json!({ "cache_dir": "terrain_cache", "tileset_hexon_uris": ["ts-1"] });
+            serde_json::json!({ "cache_dir": "terrain_cache", "tileset_hexon_uris": ["ts-1"], "world_scale": 0.01 });
         let stored = set_petal_terrain_handler(
             &db,
             "owner-did",
