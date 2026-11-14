@@ -109,8 +109,8 @@ What already exists (do not re-do):
   import) are correct with zero migration. `gpx_type: "track"` is kept
   unchanged for renderer compat.
 - **D-5 — New tool, existing router.** A new `Tool::Road` toolbar tool (hotkey
-  `B`), a new viewport system (`road_builder_interaction.rs`) claiming a new
-  `ClickPriority::RoadPlace` variant ranked alongside `PathPlace` (mutually
+  `L`), a new viewport system (`road_builder_interaction.rs`) claiming a new
+  `ClickPriority::Road` variant ranked alongside `PathPlace` (mutually
   exclusive by tool gating; a distinct variant keeps ownership attribution
   clear per `node_manager/AGENTS.md` §input-router "adding a consumer").
 - **D-6 — Ghost + guidelines render via Bevy `Gizmos`** (immediate mode): no
@@ -135,11 +135,11 @@ Three placement modes, selectable via Tools-panel Road section and shortcuts:
   anchor), click ② commits a 2-point segment.
 - **Curved (three-click quadratic Bezier, per D-1):** clicks ① start /
   ② control / ③ end; on click ③ the segment commits as the polyline sampled by
-  `curve::bezier([start, control, end], samples_per_segment)` (default 12,
+  `curve::bezier([start, control, end], samples_per_segment)` (default 16,
   panel-tunable). Intermediate state shows the ghost curve live.
 - **Freeform (drag):** press-drag-release; cursor samples are decimated to a
-  minimum arc spacing (default 1.0 m via world_scale, fallback 1.0 world
-  unit) and committed as a polyline on release.
+  minimum arc spacing (default 2.0 m, converted to world units through the petal map; 1:1 fallback)
+  and committed as a polyline on release.
 
 **Acceptance criteria**
 - AC-1.1 (scripted): straight mode, two clicks on an empty petal → op queue
@@ -183,7 +183,7 @@ Three placement modes, selectable via Tools-panel Road section and shortcuts:
   increment (45° default, 90° selectable) **relative to the previous
   segment's end tangent** when chaining, or to the world X/Z axes for the
   first segment of a chain.
-- Toggleable (panel toggle + shortcut); holding `Alt` temporarily suspends all
+- Toggleable (panel toggle only; `A` is the camera fly-left key, RC2-06); holding `Alt` temporarily suspends all
   snapping (Priority: Should).
 - Snapping preserves the cursor's distance from the anchor (quantizes
   direction only).
@@ -280,25 +280,25 @@ Three placement modes, selectable via Tools-panel Road section and shortcuts:
 
 ### FR-8 — Toolbar + Tools-panel UX and shortcuts (Priority: Must)
 
-- New `Tool::Road` in the top toolbar (`panels/toolbar.rs`) with hotkey `B`
+- New `Tool::Road` in the top toolbar (`panels/toolbar.rs`) with hotkey `L`
   (`shortcuts.rs`, standard egui `wants_keyboard_input` gating).
 - A compact C:S-style **Road section in the Tools panel**
-  (`panels/tool_panel.rs`): mode buttons (Straight/Curved/Freeform), snap
+  (`panels/tool_options.rs`): mode buttons (Straight/Curved/Freeform), snap
   toggles (angle snap + 45°/90° increment, snap-to-paths, guidelines), snap
   radius, curve samples, freeform min spacing, pending/total length readout.
 - While `Tool::Road` is active (and egui not capturing): `1`/`2`/`3` select
-  Straight/Curved/Freeform; `A` toggles angle snap; `Esc`/`Backspace` per
+  Straight/Curved/Freeform; angle snap is a panel-only toggle (`A` is the camera fly-left key, RC2-06); `Esc`/`Backspace` per
   FR-2. Shortcut handling follows the existing `shortcuts.rs` conventions
   (input_router: shortcuts never fire while egui wants keyboard).
-- Router integration per D-5: `ClickPriority::RoadPlace` claim; `NodePick`
+- Router integration per D-5: `ClickPriority::Road` claim; `NodePick`
   yields while placing; gimbal handler early-returns for `Tool::Road` exactly
   as it does for `Tool::Pen`.
 
 **Acceptance criteria**
-- AC-8.1 (unit): mode/toggle state transitions from shortcut + button inputs
+- AC-8.1 (unit): mode/toggle state transitions from button inputs and the panel toggle (tested through `apply_road_setting`, `tool_options.rs:655`)
   (pure state functions).
 - AC-8.2 (scripted): with `Tool::Road` active a viewport click claims
-  `RoadPlace` and node-pick does not select (arbiter-level test, mirroring
+  `Road` and node-pick does not select (arbiter-level test, mirroring
   `router.rs` tests).
 
 ### FR-9 — `path_kind` provenance property (Priority: Must)
@@ -401,8 +401,8 @@ Per D-4 (user saw and approved the concern, 2026-07-16):
   decimation/length/chain math + `RoadMode`/state-machine types),
   `node_manager/road_builder_interaction.rs` (viewport system: arbiter claim,
   state machine driving, commit via `UiAction`s), Tools-panel Road section in
-  `panels/tool_panel.rs`, `Tool::Road` in `panels/toolbar.rs` + `shortcuts.rs`,
-  `ClickPriority::RoadPlace` in `node_manager/router.rs`, deferred-flush
+  `panels/tool_options.rs`, `Tool::Road` in `panels/toolbar.rs` + `shortcuts.rs`,
+  `ClickPriority::Road` in `node_manager/router.rs`, deferred-flush
   extension in `verse_manager/db_results` (road pending-create buffer beside
   the pen's).
 - **Touched (fractalengine):** `gpx_bridge.rs` — `PATH_KIND_KEY` constant,
@@ -447,7 +447,7 @@ Also out of scope for this track (not necessarily in `procedural_roads`):
 
 ## Open Questions
 
-- OQ-1: Hotkey `B` for the Road tool — confirm it doesn't collide with
+- OQ-1 (resolved 2026-11-14, default taken: `L`): Hotkey `L` for the Road tool — confirm it doesn't collide with
   planned bindings elsewhere (S/G/R/X/P taken; B free today).
 - OQ-2: Snap radius semantics — spec'd world-space (metersized via
   world_scale). Screen-space radius feels better across zoom levels; revisit

@@ -42,7 +42,7 @@ Tasks:
   `fe_format::scale`, keeping its public API identical. (TDD: fe-terrain's existing
   scale + config `effective_world_scale` tests must pass UNCHANGED — that is the
   parity proof; no test edits allowed in this task.)
-- [ ] Task: Docs — new `fe-format/src/AGENTS.md` §scale (NOT DONE at HEAD: no §scale section; I-DOC-CORE / CITY-14 pending) (canonical-home rationale,
+- [x] Task: Docs — `fe-format/src/AGENTS.md` §scale-accessor (:398; landed, the section was renamed) and `fe-terrain/src/AGENTS.md` §scale (:499) (canonical-home rationale,
   rejected fe-database alternative, the one formula); update `fe-terrain/src/AGENTS.md`
   §scale with the delegation note.
 - [ ] Verification (code done, run pending; user-gated sweep): `cargo test -p fe-format -p fe-terrain` green; confirm no public
@@ -54,19 +54,19 @@ Goal: imported/created nodes default to `scale = [world_scale; 3]` read from the
 petal's terrain JSON; echoes carry the true value; existing nodes untouched.
 
 Tasks:
-- [ ] Task: Add fe-format dep to fe-database (NOT DONE: fe-database/Cargo.toml lacks fe-format, I-DB-1 pending); implement
+- [x] Task: Add fe-format dep to fe-database (landed: fe-database/Cargo.toml:20; `petal_world_scale` at handlers/crud.rs:170); implement
   `petal_world_scale(db, petal_id) -> f64` in `handlers/` (SELECT terrain FROM petal,
   `world_scale_from_terrain_json`; missing petal/terrain → 1.0), reachable by
   fe-api-facing handler code (mcp_scene_primitives seam). (TDD: handler test with
   in-memory DB — petal with terrain `world_scale: 0.01`, petal with null terrain,
   nonexistent petal; then implement.)
-- [ ] Task (partial: `handlers/crud.rs` placement_scale done at :179-202; echo in lib.rs:888 pending I-DB-1): `import_gltf_handler` + `create_node_handler` write
+- [x] Task (landed: `handlers/crud.rs` placement_scale :179-202; echo lib.rs:901-925 after CITY5-04; test crud.rs:1827 `placement_scale_follows_the_petal_map`): `import_gltf_handler` + `create_node_handler` write
   `scale: [ws, ws, ws]` and return the applied scale; update `lib.rs` dispatch so
   `SceneChange::NodeAdded` + `DbResult::NodeCreated`/`GltfImported` echoes carry it
   (kill the hardcoded `[1,1,1]` at lib.rs:368/:397). (TDD: red test asserting the
   created node row scale is `[0.01;3]` on a 1:100 petal and `[1.0;3]` on a
   terrain-less petal, and that the result echo matches the row; then implement.)
-- [ ] Task: Update consumers of the widened handler returns: `fe-test-harness/src/peer.rs`
+- [ ] Task (partial: peer.rs:325 `scale: [1.0; 3]` landed; scenario expectations not re-checked): Update consumers of the widened handler returns: `fe-test-harness/src/peer.rs`
   ImportGltf arm + `scenarios/blob_roundtrip.rs`/`two_peer_blob_exchange.rs`
   expectations; verify the fe-ui spawn path (`verse_manager/db_results/nodes.rs`)
   applies `NodeDto.scale` to the spawned transform. (TDD: adjust/extend scenario
@@ -83,14 +83,14 @@ input converts back through it; local formula copies become thin shims; API unit
 contract documented.
 
 Tasks:
-- [ ] Task: Add fe-format dep to fe-ui; route the scale *read* through the accessor:
+- [x] Task: Add fe-format dep to fe-ui; route the scale *read* through the accessor (landed: fe-ui/Cargo.toml:22; db_results/terrain.rs:67, terrain_map/mod.rs:247, actions/hexon.rs:263; OQ-3 consolidation not re-verified):
   `db_results/terrain.rs` populate of `PetalMapState.world_scale` (raw read →
   `world_scale_from_terrain_json`), `terrain_map/mod.rs::tileset_to_terrain_json`
   inline sanitize, `actions/hexon.rs::clamp_to_bounds`. Resolve OQ-3
   (consolidate `UiManager.world_scale` mirror onto PetalMapState or document the
   single write-path). (TDD: existing tests keep passing; add a test that a terrain
   JSON with out-of-bounds `world_scale` lands clamped in `PetalMapState`.)
-- [ ] Task: Replace conversion copies in landed-track surfaces with accessor
+- [x] Task (landed: geometry.rs:10,16,37; path_segment_interaction.rs:257; path_asset_reconcile.rs:215; inspector sync_inspector_units not re-verified): Replace conversion copies in landed-track surfaces with accessor
   delegation: `path_segment_interaction.rs::guard_world_scale`,
   `path_asset_reconcile.rs::sanitize_world_scale` (thin f32 shim over
   `fe_format::scale`), inspector position/size conversions (node_manager
@@ -103,7 +103,7 @@ Tasks:
   fix commit) in `fe-ui/src/AGENTS.md` §units. (TDD: pure reducer tests per converted
   surface where one exists; display-only egui sites covered by the audit table +
   Phase 5 manual verification.)
-- [ ] Task: Document the API unit contract — `fe-api/AGENTS.md` §units: world units on
+- [x] Task (landed: fe-api/AGENTS.md:2478 §units; pointers types.rs:28,41,82,199): Document the API unit contract — `fe-api/AGENTS.md` §units: world units on
   the wire, meters are a UI-edge concern, formula + `fe_format::scale` pointer,
   caller-supplied y for placement endpoints; one-line `///` pointers on transform DTOs
   in `fe-api/src/types.rs`.
