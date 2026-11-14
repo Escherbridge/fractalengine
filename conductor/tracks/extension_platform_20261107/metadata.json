@@ -28,7 +28,7 @@
   ],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 40, "open": 3, "plan": "./plan.md" },
+  "progress": { "done": 41, "open": 2, "plan": "./plan.md" },
   "open_decisions": [
     "OD-E1 kill switch withdraws host-stamped extension rows, amending the S-PLUGIN text (rec: yes, as a versioned seam change after ratification)",
     "OD-E2 native or Wasm for first-party behaviour extensions (rec: Wasm for simulation and device adapters; native for terrain, the registry client and BI built-ins)",
@@ -42,6 +42,7 @@
     "OD-E10 raw SQL for guests (rec: none in 2.0; host/query through the REST guard)"
   ],
   "notes": [
+    "2026-11-14 round 5 (T5-EXT bookkeeping): P6.5 ticked after EXT5-05 (docs/extensions/extensions-ui.md:3 home path removed) and H4-1/H4-2 closed at HEAD; progress 41 done, 2 open (P4.4 and P6.3 are run/GUI-QA, user-gated). EXT5-06 fleet-terrain upload_gpx verified by R5-EXT (tools/qa/sim/gpx_upload.py, driver.py:477); run pending. Defaults taken, awaiting ratification: EXT-03 package-id list queries stay capped and documented (no per-source opt-in); TrustRoots::verify_revocation_list_fresh left as is; fleet-terrain terrain-height and bounds probe deferred until the first run shows movers leaving the tileset.",
     "2026-11-07: track drafted (docs only) from the user's 2026-11-07 grill. D-X1..D-X4 are ratified, and plugin_host_revival_20261031 OD-9 is closed by D-X1. Coordinator addition the same day: D-X6's integration bus is specified here (spec §6.3; P0.3 contract, P1.5 broker). D-X5, D-X7 and D-X8 are owned by the sibling portal_surface_20261107, which depends on this track.",
     "2026-11-07 evidence: the GUI binary has installed the plugin host unconditionally since 2cc05f27 (fractalengine/src/main.rs:511), but nothing constructs a PluginManager outside a test (fe-plugin/src/lifecycle.rs:405). on_tick is declared (fe-plugin/src/lib.rs:157-161) and never driven; refuel_for_tick has no production caller; UiExtensionRegistry and register_terrain_ui still have no consumer.",
     "2026-11-07 correction to the brief's premise: on the GUI binary, IoT readings do NOT bypass the DB thread. fractalengine/src/main.rs:703 uses spawn_api_service, which marks the API reader command-writes-only (fe-api/src/lib.rs:178-179, since 8a43f89e), so fe-api/src/iot.rs:102 takes the DbCommand::InsertIotReadings fallback. Only the relay (spawn_api_thread) keeps the direct path. The city-lite 'reading write timed out (db thread)' replies come from that fallback (iot.rs:232).",

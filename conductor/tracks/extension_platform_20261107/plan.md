@@ -255,8 +255,7 @@ Each gate also re-checks that the phase still serves `conductor/product.md` and 
 - [ ] P6.3 Two clean runs each + triage (BUILD)
  — run pending (user-gated)
 - [x] P6.4 G6 final advocate + critic + security review (BUILD)
-- [ ] P6.5 Docs consolidation + retro (AUTHOR-ONLY)
- — §8 retro written; AGENTS folds owned by I-DOC-API, not ticked
+- [x] P6.5 Docs consolidation + retro (AUTHOR-ONLY) — round 5: EXT5-05 landed (`docs/extensions/extensions-ui.md:3` home path removed); H4-1 and H4-2 closed at HEAD (`fe-plugin/src/AGENTS.md` "Retired v1 layout", `fe-database/src/AGENTS.md` petal_readings key, `fe-api/AGENTS.md` readings cutoff caveat); §8 retro present; default taken, awaiting ratification
 
 
 ## 8. Retro (P6.5)

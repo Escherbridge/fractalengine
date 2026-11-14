@@ -301,7 +301,7 @@ SI, the integration wiring slice, runs serially at the join of every BUILD wave:
 - [x] R-P2 IPC security review (BUILD) — review-p2.md verdict PASS
 - [x] T4.2 admission integration, revoke, static feeds (BUILD) — fc29e431, unbuilt
 - [x] R-P4 admission security review (BUILD) — eb909b4c, verdict PASS-WITH-FIXES, NEEDS P4-06 still open in review-p4.md
-- [ ] T5.5 run PJ1–PJ9 + sim scenarios (BUILD)
+- [ ] T5.5 run PJ1–PJ9 + sim scenarios (BUILD) — round 5: EXT5-02 (`is_visible`, qa_rows restore) and EXT5-03 (PJ2 Actions bundle open before pin) code landed, R5-EXT PASS; code done, run pending (user-gated)
 - [x] D docs consolidation + test-batches rows (R6, R9), this pass
 - [ ] full sweep once (campaign end, on user request)
 - [x] T6.2 static export (BUILD, later)
