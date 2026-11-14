@@ -43,6 +43,8 @@ async fn harness_health_ready_and_authed_roundtrip() {
     let (status, _) = h.get(&gis_path, Some(&foreign)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    let usage_dir = tempfile::tempdir().expect("usage tempdir");
+    let usage_log = usage_dir.path().join("usage.jsonl");
     let (api_cmd_tx, commands) = crossbeam::channel::bounded(8);
     let (listening_tx, listening_rx) = crossbeam::channel::bounded(1);
     let (_, revocation_rx) = tokio::sync::broadcast::channel(1);
@@ -72,6 +74,12 @@ async fn harness_health_ready_and_authed_roundtrip() {
         extension_host: None,
         binding_host: None,
         import_hooks: None,
+        network_ops: fe_api::network_ops::NetworkOps {
+            usage_sink: std::sync::Arc::new(
+                fe_runtime::usage::JsonLinesUsageSink::open(&usage_log).expect("open usage log"),
+            ),
+            ..Default::default()
+        },
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let address = loop {
@@ -79,6 +87,40 @@ async fn harness_health_ready_and_authed_roundtrip() {
         assert!(std::time::Instant::now() < deadline, "owned API listener did not start");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
+    // Usage metering: one public and one authenticated request through the owned service's real layers.
+    async fn raw_get(address: std::net::SocketAddr, path: &str, token: Option<&str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+        let request = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\n{auth}Connection: close\r\n\r\n");
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(15), stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+    assert!(raw_get(address, "/api/v1/health", None).await.starts_with("HTTP/1.1 200"));
+    let viewer = h.mint_token(&hier.verse_scope(), "viewer");
+    assert!(raw_get(address, &gis_path, Some(&viewer)).await.starts_with("HTTP/1.1 200"));
+    // Events are written by detached tasks: wait on the observable line count, not on timing.
+    let usage_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let usage_lines: Vec<serde_json::Value> = loop {
+        let text = std::fs::read_to_string(&usage_log).unwrap_or_default();
+        let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        if lines.len() >= 2 { break lines; }
+        assert!(std::time::Instant::now() < usage_deadline, "usage events were not written");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(usage_lines.len(), 2, "exactly one event per request: {usage_lines:?}");
+    let health = usage_lines.iter().find(|line| line["route_class"] == "/api/v1/health").expect("health event");
+    assert!(health["caller_did"].is_null() && health["scope"].is_null(), "public route has no caller: {health}");
+    let authed = usage_lines
+        .iter()
+        .find(|line| line["route_class"] == "/api/v1/petals/{petal_id}/gis/nodes")
+        .expect("authenticated event carries the route template, never the concrete id");
+    assert!(authed["caller_did"].is_string(), "authenticated route names its caller: {authed}");
+    assert!(!authed.to_string().contains(&hier.petal_id), "no path id leaks into usage events");
+    assert_eq!(authed["status"], 200);
+
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let editor = h.mint_token(&hier.verse_scope(), "editor");
     let body = serde_json::json!({ "readings": [{ "node_id": node_id, "metric": "maintenance_probe", "value": 7.0 }] }).to_string();

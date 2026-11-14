@@ -491,5 +491,6 @@ fn owned_api_config(
         extension_host: None,
         binding_host: None,
         import_hooks: None,
+        network_ops: Default::default(),
     }
 }
