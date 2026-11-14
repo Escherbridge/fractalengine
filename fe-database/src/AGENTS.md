@@ -696,6 +696,17 @@ one sub-module per domain:
   `canonical_blob_path`, so a DB row cannot name a path outside either
   store. Crash-retry is tested, not assumed:
   `a_crash_mid_migration_is_retried_without_loss_or_legacy_writes`.
+- `node_measurements` — `ReadNodeMeasurements` series and points for one node (handlers/AGENTS.md
+  §Node measurement projections). Point cap keeps the NEWEST rows (query DESC, then reversed) so a live
+  series keeps moving; `truncated` means older points were omitted, not newer ones (turn-3 analytics finding 2).
+- `petal_readings` — Viewer-gated latest-per-(node, metric) summary over the last 60 s, at most 256 rows,
+  feeding the Data window Readings tab. Authorized before and after the read (the same check-both-sides
+  shape as node measurements); the source scan is capped at 5,000 rows and reports `source_capped`.
+- `crud` placement default — `create_node_as` and `import_gltf_handler` write the node scale as `[ws; 3]`
+  where `ws` is the Petal's `world_scale` (`petal_world_scale`, crud.rs). Explicit-scale paths
+  (`create_node_with_asset_as`, `UpdateNodeTransform`) are unchanged. Existing rows are not touched and
+  there is no migration. `DbResult::NodeCreated` carries no scale (deferred); only `SceneChange::NodeAdded`
+  does.
 - `entity` — rename, delete, description updates
 - `entity_property` — custom property CRUD for nodes
 - `field_def` — field definition schema CRUD

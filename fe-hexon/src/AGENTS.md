@@ -266,3 +266,7 @@ in `lib.rs` and reuse `registry_source::{resolve_location, CatalogConfig, CATALO
 
 Extension sources send no credentials; the tileset path sends the operator's bearer token only to URLs built from the
 configured base (`FE_HEXON_REGISTRY_TOKEN`, env-only, never persisted). The token endpoint is the sole signed request.
+
+## §unified-format
+
+PetalSnapshot layout: fe-format/src/AGENTS.md §petal-snapshot; DB seam: fe-database/src/handlers/AGENTS.md ## petal-snapshot.

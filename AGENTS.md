@@ -376,3 +376,5 @@ and per-tile lookup live in fe-format/fe-terrain (`fe-terrain/src/AGENTS.md`
 §bundles, §streamed-tilesets), and the host binary wires the two together
 (`fractalengine/src/AGENTS.md` §tileset-p2p). fe-sync stays format-agnostic —
 it never parses a `TilesetBundleIndex`, only verifies HashSeq children by hash.
+
+Licensed hexons: fe-hexon/src/AGENTS.md §entitlement (in-process) and fe-terrain/src/AGENTS.md §tileset-entitlement (tilesets).

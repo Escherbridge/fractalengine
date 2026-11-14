@@ -387,3 +387,21 @@ so the bevy-free consumers (hosted registry) never compile the crypto. Pure prim
   `iat` within `TOKEN_REQUEST_IAT_WINDOW_SECS`, body at most `MAX_TOKEN_REQUEST_BYTES`.
 - **Errors**: `EntitlementError::wire_code` maps request failures to the contract codes `proof_invalid` / `invalid_request`.
 - **`LocalIssuer`** is the reference issuer used by tests and the private service; it mints, it does not decide who is entitled.
+
+## §scale-accessor (`scale.rs`)
+
+Home of the canonical world-scale accessor (world units per real meter). It lives here because it is
+Bevy-free and this crate already owns the `native_scale` and `scale_bounds` metadata, so fe-terrain,
+fe-database and fe-ui can reach it without a dependency cycle or a Bevy drag-in. Rejected alternative:
+fe-database as the home. fe-terrain cannot depend on SurrealDB, so the accessor would have been unreachable
+from the renderer.
+
+The one formula: `real_m = world / scale` and `world = real_m * scale`. `meters_to_world` and
+`world_to_meters` are the canonical conversions; callers should use them rather than inline the division.
+
+Sanitizing: `sanitize_world_scale` accepts `[MIN_WORLD_SCALE, MAX_WORLD_SCALE]` and returns 1.0 for NaN,
+infinities and out-of-range values. `clamp_world_scale_to_bounds` narrows to `scale_bounds` but never widens
+the global range. `world_scale_from_terrain_json` ignores the terrain `enabled` flag by design: placement and
+the inspector use `world_scale` either way. The Measure tool's NaN-when-no-map rule is a display choice made
+in `node_manager/measure.rs` (line 180), not part of this accessor. A petal with no terrain document
+resolves to 1.0.

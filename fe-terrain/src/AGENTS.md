@@ -508,6 +508,9 @@ Pure math lives in `scale.rs` (not render-gated, unit-tested without `bevy`):
 `world_to_real_height` (the inverse used for zoom selection), `scale_local`,
 `scale_elevations`. `TerrainConfig::effective_world_scale()` wraps the sanitizer
 so bad JSON never divides by zero or flips signs.
+`sanitize_world_scale` and `clamp_world_scale_to_bounds` are re-exported from `fe_format::scale` (the
+canonical home, fe-format/src/AGENTS.md §scale-accessor); the public API of this module is unchanged and
+`scaled_tile_size`, `world_to_real_height`, `scale_local` and `scale_elevations` stay here.
 
 Applied in `terrain_plugin`:
 - `spawn_chunk` scales the **tile mesh size**, the **decoded elevations**, and
@@ -560,8 +563,9 @@ sweep test).
 ## §ruler_plugin
 
 `ruler_plugin.rs` (render-gated) draws the FR-8 scale bar as a bevy_egui 0.39
-foreground layer-painter overlay in `EguiPrimaryContextPass` — same pattern as
-fe-ui's viewport labels; no in-world meshes. It reads the *same* metric frame as
+layer-painter overlay in `EguiPrimaryContextPass` — same pattern as
+fe-ui's viewport labels; no in-world meshes. It paints on `egui::Order::Background`, so floating
+windows (`Order::Middle`) draw above the ruler (QA-0176). It reads the *same* metric frame as
 zoom selection (`ActivePetalTerrain.config.effective_world_scale()` +
 `world_to_real_height`) so the bar always agrees with what the terrain systems
 believe. `RulerSettings.show_scale_bar` (default on) is the reflection-free

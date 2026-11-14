@@ -188,6 +188,22 @@ exact Undo can restore the original compact shape. Position moves still require 
 The existing receipt journey reorders a route after dispatch before readback and proves no write or
 projection; the real-store journey checks metadata inverse and rejects timestamp/multi-row rewrites.
 
+## stamp-transform
+
+`stamp_transform.rs` mirrors a promoted stamp's transform writes into its `stamp.override.*` properties.
+An API rotation or scale write on a stamp also writes `stamp.override.rotation` and `stamp.override.scale`
+in the same transaction, so the transform and its override cannot disagree after a crash or a replay.
+Rotation is converted once, here: radians in Inspector/gimbal order (`EulerRot::XYZ`) become the stored
+quaternion `[x, y, z, w]`. The DB owns the conversion because the renderer reads only the quaternion and
+every peer replicates the row, so no client-side Euler convention can diverge between editors.
+
+## petal-snapshot
+
+`petal_snapshot.rs` exports a Petal in one read transaction and imports it in one restore transaction, so a
+snapshot never mixes rows from two moments. The snapshot document layout is owned by the format crate (see
+`fe-format/src/AGENTS.md` §petal-snapshot when that section lands); Hexon-side readers reach this seam through
+`fe-hexon/src/AGENTS.md` §unified-format.
+
 ## atomic-replay
 
 `node_history` resolves explicit stamp_batch_id and generic atomic_save_id tags independently of
