@@ -4,7 +4,8 @@ use axum::extract::{Path, Query, State};
 use axum::Extension;
 use axum::Json;
 use axum_extra::extract::Multipart;
-use fe_hexon::manifest::HexonKind;
+use fe_format::{AssetEntry, HexonManifest, HexonType};
+use fe_hexon::manifest::InstalledHexon;
 use fe_hexon::package::HexonPackage;
 use fe_identity::api_token::ApiClaims;
 use serde::Deserialize;
@@ -70,7 +71,7 @@ fn err(msg: &str) -> JsonResult {
 #[derive(Debug, serde::Serialize)]
 struct CrateManifestDto {
     hexon_uri: String,
-    crate_id: String,
+    hexon_id: String,
     name: String,
     description: String,
     publisher_name: String,
@@ -90,6 +91,8 @@ struct CrateEntryDto {
     asset_hash: String,
     format: String,
     label: String,
+    tags: Vec<String>,
+    description: Option<String>,
     is_placeable: bool,
 }
 
@@ -102,37 +105,48 @@ struct InstalledCrateDto {
     installed_at: String,
     signature_valid: bool,
     entry_count: usize,
+    hexon_id: String,
 }
 
-fn to_manifest_dto(m: &fe_hexon::manifest::HexonManifest) -> CrateManifestDto {
+fn to_manifest_dto(m: &HexonManifest) -> CrateManifestDto {
     CrateManifestDto {
         hexon_uri: fe_hexon::package::hexon_uri(m),
-        crate_id: m.crate_id.clone(),
+        hexon_id: m.hexon_id.clone(),
         name: m.name.clone(),
-        description: m.description.clone(),
-        publisher_name: m.publisher_name.clone(),
+        description: m.description.clone().unwrap_or_default(),
+        publisher_name: m.publisher_name.clone().unwrap_or_default(),
         publisher_did: m.publisher_did.clone(),
         version: m.version.clone(),
         hexon_type: m.hexon_type.to_string(),
         tags: m.tags.clone(),
-        approx_size_bytes: m.approx_size_bytes,
-        min_engine_version: m.min_engine_version.clone(),
+        approx_size_bytes: m.approx_size_bytes.unwrap_or(0),
+        min_engine_version: m.min_engine_version.clone().unwrap_or_default(),
         created_at: m.created_at.clone(),
     }
 }
 
-fn to_entry_dto(e: &fe_hexon::manifest::AssetEntry) -> CrateEntryDto {
+/// The snake_case wire name of an entry kind (fe-format's serde spelling).
+fn entry_kind_name(kind: &fe_format::EntryKind) -> String {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => "unknown".to_string(),
+    }
+}
+
+fn to_entry_dto(e: &AssetEntry) -> CrateEntryDto {
     CrateEntryDto {
         entry_id: e.entry_id.clone(),
-        kind: e.kind.to_string(),
+        kind: entry_kind_name(&e.kind),
         asset_hash: e.asset_hash.clone(),
         format: e.format.clone(),
         label: e.label.clone(),
+        tags: e.tags.clone(),
+        description: e.description.clone(),
         is_placeable: e.is_placeable,
     }
 }
 
-fn to_installed_dto(ic: &fe_hexon::manifest::InstalledCrate) -> InstalledCrateDto {
+fn to_installed_dto(ic: &InstalledHexon) -> InstalledCrateDto {
     InstalledCrateDto {
         hexon_uri: ic.hexon_uri.clone(),
         name: ic.manifest.name.clone(),
@@ -141,6 +155,7 @@ fn to_installed_dto(ic: &fe_hexon::manifest::InstalledCrate) -> InstalledCrateDt
         installed_at: ic.installed_at.clone(),
         signature_valid: ic.signature_valid,
         entry_count: ic.entries.len(),
+        hexon_id: ic.manifest.hexon_id.clone(),
     }
 }
 
@@ -183,7 +198,7 @@ pub(crate) async fn require_hexon_petal_access(
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /api/v1/crates/publish — Upload a .fecrate package (multipart).
+/// POST /api/v1/crates/publish — Upload a .hexon package (multipart).
 /// Requires Owner+ role.
 pub async fn publish_crate(
     State(state): State<Arc<ApiState>>,
@@ -194,7 +209,7 @@ pub async fn publish_crate(
         return err("insufficient permissions");
     }
 
-    let Some(_registry) = get_registry(&state) else {
+    let Some(registry) = get_registry(&state) else {
         return err("hexon registry not configured");
     };
 
@@ -209,7 +224,7 @@ pub async fn publish_crate(
     }
 
     if crate_bytes.is_empty() {
-        return err("no .fecrate file uploaded");
+        return err("no .hexon file uploaded");
     }
 
     let package = match HexonPackage::open(&crate_bytes) {
@@ -222,18 +237,15 @@ pub async fn publish_crate(
     }
 
     let uri = package.hexon_uri();
-    info!("Publishing hexon crate: {}", uri);
+    info!("Publishing hexon: {}", uri);
 
-    // Install into registry
-    let registry = _registry;
+    let manifest_dto = to_manifest_dto(&package.manifest);
     let mut reg = registry.lock().unwrap();
     let subject = crate::auth::api_token_context(&claims);
-    match reg.publish_as(&subject, package.clone()) {
-        Ok(_) => ok(to_manifest_dto(&package.manifest)),
-        Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => {
-            // Already published — return manifest anyway
-            ok(to_manifest_dto(&package.manifest))
-        }
+    match reg.publish_as(&subject, package) {
+        Ok(_) => ok(manifest_dto),
+        // Already published: return the manifest anyway.
+        Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => ok(manifest_dto),
         Err(fe_hexon::registry::RegistryError::PermissionDenied(_)) => {
             err("insufficient permissions")
         }
@@ -249,7 +261,7 @@ pub async fn install_crate(
     Path(hexon_uri): Path<String>,
     Query(query): Query<InstallQuery>,
 ) -> JsonResult {
-    let _subject = match require_hexon_petal_access(
+    let subject = match require_hexon_petal_access(
         &state,
         &claims,
         &query.petal_id,
@@ -266,31 +278,30 @@ pub async fn install_crate(
         return err("hexon registry not configured");
     };
 
-    let reg = registry.lock().unwrap();
-
-    // Check if the crate is published (exists in global scope)
-    let Some(published) = reg.get_installed(&hexon_uri) else {
-        return err(&format!("crate {} not found — publish it first", hexon_uri));
-    };
-
-    // If already installed for this petal, return success
-    if published.petal_id == query.petal_id {
-        return ok(to_installed_dto(published));
+    let mut reg = registry.lock().unwrap();
+    match reg.install_published_as(&subject, &hexon_uri, &query.petal_id) {
+        Ok(installed) => {
+            info!("Installed {} into petal {}", hexon_uri, query.petal_id);
+            ok(to_installed_dto(&installed))
+        }
+        // Idempotent: a repeat install returns the existing record.
+        Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => {
+            match reg.get_in_petal(&hexon_uri, &query.petal_id) {
+                Some(existing) => ok(to_installed_dto(existing)),
+                None => err(&format!("crate {} not found", hexon_uri)),
+            }
+        }
+        Err(fe_hexon::registry::RegistryError::PermissionDenied(_)) => {
+            err("insufficient permissions")
+        }
+        Err(fe_hexon::registry::RegistryError::NotFound(_)) => {
+            err(&format!("crate {} not found — publish it first", hexon_uri))
+        }
+        Err(e) => {
+            warn!("Install failed: {}", e);
+            err(&format!("install failed: {}", e))
+        }
     }
-
-    // Build a synthetic package from the published crate data for re-install into target petal
-    let installed_dto = to_installed_dto(published);
-    drop(reg);
-
-    // For petal-specific install, we re-use the existing registry entry
-    // The real workflow: the crate was published globally, now we "install" it into a petal
-    // by recording the association
-    info!("Installing {} into petal {}", hexon_uri, query.petal_id);
-    ok(serde_json::json!({
-        "hexon_uri": installed_dto.hexon_uri,
-        "petal_id": query.petal_id,
-        "installed": true
-    }))
 }
 
 /// DELETE /api/v1/crates/:uri/uninstall — Uninstall a crate from a petal.
@@ -358,7 +369,7 @@ pub async fn search_crates(
     let kind = query
         .kind
         .as_ref()
-        .and_then(|k| k.parse::<HexonKind>().ok());
+        .and_then(|k| k.parse::<HexonType>().ok());
 
     let reg = registry.lock().unwrap();
     let manifests = match reg.search_local_in_petal_as(
@@ -553,7 +564,7 @@ pub async fn available_crates(
     let kind = query
         .kind
         .as_ref()
-        .and_then(|k| k.parse::<HexonKind>().ok());
+        .and_then(|k| k.parse::<HexonType>().ok());
 
     let reg = registry.lock().unwrap();
 
