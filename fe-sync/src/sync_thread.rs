@@ -12,7 +12,7 @@
 //! no async API, so a bridge thread forwards commands into a tokio channel
 //! before the select.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,7 +36,11 @@ use crate::endpoint::SyncEndpoint;
 use crate::event_outbox::{EventOutbox, EventSink, SHUTDOWN_FLUSH_TIMEOUT};
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::placement::Retention;
-use crate::relay_config::{RelayConfig, RelayHealth, RelayStatusSummary};
+use crate::relay_config::{
+    advertised_relay_entry, configured_urls, RelayAdvertisePolicy, RelayConfig, RelayHealth,
+    RelayStatusSummary,
+};
+use crate::relay_reconcile::{RelayOp, RelayReconciler};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
     ReplicatorFuture, RowChange, VerseReplicator,
@@ -953,6 +957,13 @@ pub fn spawn_sync_thread_with_sources(
             // NotApplicable. See AGENTS.md §sharding.
             let mut fabrics: HashMap<String, VerseFabric> = HashMap::new();
 
+            // S7: admitted `__relays` adverts reconciled into the relay map under the
+            // LOCAL policy (never replicated); configured relays are never touched.
+            let relay_advertise_policy =
+                RelayAdvertisePolicy::from_env().effective_for(&relay_config);
+            let mut relay_reconciler = RelayReconciler::new(configured_urls(&relay_config));
+            let mut relay_reconcile_open_verses: usize = 0;
+
             // M2/F6: the local peer's shard-hosting declaration, applied to
             // every open verse's fabric (published as `__peers/{local_did}`).
             // Defaults to unlimited capacity, non-seeder — a plain node.
@@ -1014,6 +1025,16 @@ pub fn spawn_sync_thread_with_sources(
                     .await;
                 let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
                 let rows_left = !resend_unsent_rows(&mut fabrics, &db_cmd_tx, &mut scene_assets);
+                // S7: after the inbound batch / re-judge above changed any admitted advert.
+                reconcile_advertised_relays(
+                    &mut fabrics,
+                    &replicas,
+                    &mut relay_reconcile_open_verses,
+                    &mut relay_reconciler,
+                    &relay_advertise_policy,
+                    endpoint.as_ref(),
+                )
+                .await;
                 let prefetch_left = scene_assets.pump_prefetches();
                 let kept_work = reread_left || rejudge_left || rows_left || prefetch_left;
                 tokio::select! {
@@ -1048,6 +1069,7 @@ pub fn spawn_sync_thread_with_sources(
                                 relay_health = apply_relay_status(
                                     relay_health,
                                     &statuses,
+                                    &relay_reconciler,
                                     &evt_tx,
                                 );
                             }
@@ -1592,13 +1614,31 @@ async fn next_relay_status(
 fn apply_relay_status(
     current: RelayHealth,
     statuses: &[iroh::endpoint::RelayStatus],
+    reconciler: &RelayReconciler,
     evt_tx: &dyn EventSink,
 ) -> RelayHealth {
-    let summaries: Vec<RelayStatusSummary> = statuses
-        .iter()
-        .map(RelayStatusSummary::from_status)
-        .collect();
+    let mut summaries: Vec<RelayStatusSummary> = Vec::with_capacity(statuses.len());
     for status in statuses {
+        let mut summary = RelayStatusSummary::from_status(status);
+        let advertised = summary.auth_denied && reconciler.is_inserted(status.url().as_str());
+        if advertised {
+            // OD-10: an advertised relay never gets the configured token; a denial is a
+            // plain connection error (Degraded), never a retry with credentials.
+            summary.auth_denied = false;
+            summary.has_error = true;
+            if current.is_problem() {
+                tracing::debug!(relay = %status.url(), "advertised relay still requires authentication");
+            } else {
+                tracing::warn!(
+                    relay = %status.url(),
+                    "Advertised relay requires authentication; it is not retried with the configured relay token"
+                );
+            }
+        }
+        summaries.push(summary);
+        if advertised {
+            continue;
+        }
         if let Some(reason) = status.auth_denied_reason() {
             // Logged once per descent into `Unreachable`, not on every
             // retry snapshot iroh publishes while the denial persists.
@@ -1636,6 +1676,87 @@ fn fold_relay_health(
         send_sync_event(evt_tx, SyncEvent::RelayHealthChanged { health: next });
     }
     next
+}
+
+/// S7 reconciliation loop: re-plan the advertised relays when adverts or the open-verse set changed, then apply.
+async fn reconcile_advertised_relays(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    open_verses_seen: &mut usize,
+    reconciler: &mut RelayReconciler,
+    policy: &RelayAdvertisePolicy,
+    endpoint: Option<&SyncEndpoint>,
+) {
+    let mut changed = replicas.len() != *open_verses_seen;
+    for fabric in fabrics.values_mut() {
+        changed |= !fabric.drain_relay_advert_changes().is_empty();
+    }
+    if !changed {
+        return;
+    }
+    *open_verses_seen = replicas.len();
+
+    // Only verses this node still has open count toward a relay's refcount.
+    let mut advertised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for fabric in fabrics.values() {
+        for (verse_id, urls) in fabric.advertised_relay_urls() {
+            if replicas.contains_key(&verse_id) {
+                advertised.entry(verse_id).or_default().extend(urls);
+            }
+        }
+    }
+
+    let ops = reconciler.plan(policy, &advertised);
+    let mut known = 0usize;
+    for op in ops {
+        match op {
+            RelayOp::Known(_) => known += 1,
+            RelayOp::Insert(raw) => {
+                let Some(endpoint) = endpoint else {
+                    reconciler.forget_insert(&raw);
+                    continue;
+                };
+                let url = match raw.parse::<iroh::RelayUrl>() {
+                    Ok(url) => url,
+                    Err(error) => {
+                        tracing::warn!(relay = %raw, "advertised relay not inserted: {error}");
+                        reconciler.forget_insert(&raw);
+                        continue;
+                    }
+                };
+                let entry = advertised_relay_entry(url.clone());
+                if let Some(replaced) = endpoint.inner().insert_relay(url.clone(), entry).await {
+                    // Tripwire (OD-10): never shadow an entry that carried a token; put it back.
+                    if replaced.auth_token.is_some() {
+                        tracing::error!(relay = %url, "advertised relay collided with a token-bearing relay entry; restoring it");
+                        endpoint.inner().insert_relay(url, replaced).await;
+                        reconciler.forget_insert(&raw);
+                        continue;
+                    }
+                }
+                tracing::info!(relay = %raw, "inserted pinned advertised relay into the relay map");
+            }
+            RelayOp::Remove(raw) => {
+                if reconciler.configured().contains(&raw) {
+                    tracing::error!(relay = %raw, "refusing to remove a configured relay");
+                    continue;
+                }
+                let Some(endpoint) = endpoint else { continue };
+                match raw.parse::<iroh::RelayUrl>() {
+                    Ok(url) => {
+                        endpoint.inner().remove_relay(&url).await;
+                        tracing::info!(relay = %raw, "removed advertised relay: no open verse advertises it");
+                    }
+                    Err(error) => tracing::warn!(relay = %raw, "advertised relay not removed: {error}"),
+                }
+            }
+        }
+    }
+    tracing::debug!(
+        known,
+        inserted = reconciler.inserted().len(),
+        "advertised relays reconciled"
+    );
 }
 
 /// Bridge-thread helper: forward one command into the tokio channel.

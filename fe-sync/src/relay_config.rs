@@ -201,6 +201,113 @@ impl RelayConfig {
     }
 }
 
+/// Environment variable selecting the [`RelayAdvertisePolicy`] (local only, never replicated).
+pub const RELAY_ADVERTISE_POLICY_ENV_VAR: &str = "FE_SYNC_RELAY_ADVERTISE_POLICY";
+
+/// What this node does with relays other verse members advertise (OD-6; see `AGENTS.md` §relay-advertise).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RelayAdvertisePolicy {
+    /// List admitted adverts as known and dial-allowlisted; never add them to the relay map.
+    #[default]
+    DialOnly,
+    /// Like `DialOnly`, plus add the advertised relays named here to the relay map (operator-chosen).
+    Pinned(Vec<String>),
+    /// Ignore advertisements entirely.
+    Deny,
+}
+
+impl RelayAdvertisePolicy {
+    /// Parse `dialonly` | `deny` | `pinned:<url>,<url>`; anything else warns and yields `DialOnly`.
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        match lowered.as_str() {
+            "" | "dialonly" | "dial-only" | "dial_only" => return Self::DialOnly,
+            "deny" => return Self::Deny,
+            _ => {}
+        }
+        let Some(list) = lowered
+            .starts_with("pinned:")
+            .then(|| &trimmed["pinned:".len()..])
+        else {
+            tracing::warn!(
+                value = trimmed,
+                "Invalid {RELAY_ADVERTISE_POLICY_ENV_VAR}; falling back to dial-only"
+            );
+            return Self::DialOnly;
+        };
+        let mut pinned = Vec::new();
+        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+            match normalize_relay_url(part) {
+                Some(url) => {
+                    if !pinned.contains(&url) {
+                        pinned.push(url);
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        url = part,
+                        "Invalid pinned relay URL in {RELAY_ADVERTISE_POLICY_ENV_VAR}; falling back to dial-only"
+                    );
+                    return Self::DialOnly;
+                }
+            }
+        }
+        if pinned.is_empty() {
+            tracing::warn!("{RELAY_ADVERTISE_POLICY_ENV_VAR} pinned list is empty; falling back to dial-only");
+            return Self::DialOnly;
+        }
+        Self::Pinned(pinned)
+    }
+
+    /// The policy from [`RELAY_ADVERTISE_POLICY_ENV_VAR`]; unset → `DialOnly`.
+    pub fn from_env() -> Self {
+        std::env::var(RELAY_ADVERTISE_POLICY_ENV_VAR)
+            .map(|raw| Self::parse(&raw))
+            .unwrap_or_default()
+    }
+
+    /// The policy actually applied under `config`: relays turned off means nothing is ever inserted.
+    pub fn effective_for(self, config: &RelayConfig) -> Self {
+        match (self, config) {
+            (Self::Pinned(_), RelayConfig::Disabled) => {
+                tracing::warn!("Pinned relay advertisements ignored: relays are disabled; using dial-only");
+                Self::DialOnly
+            }
+            (policy, _) => policy,
+        }
+    }
+}
+
+/// Canonical string form of a relay URL (iroh's `RelayUrl` display), or `None` if it does not parse.
+pub fn normalize_relay_url(raw: &str) -> Option<String> {
+    iroh::RelayUrl::from_str(raw.trim())
+        .ok()
+        .map(|url| url.to_string())
+}
+
+/// The operator-configured relay URLs (`Custom` list or the n0 default fleet) in canonical form.
+pub fn configured_urls(config: &RelayConfig) -> std::collections::BTreeSet<String> {
+    config
+        .to_relay_mode()
+        .map(|mode| mode.relay_map().urls::<Vec<iroh::RelayUrl>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|url| url.to_string())
+        .collect()
+}
+
+/// The relay-map entry for an ADVERTISED relay: no QUIC address discovery and never an auth token (OD-10).
+pub fn advertised_relay_entry(url: iroh::RelayUrl) -> std::sync::Arc<iroh::RelayConfig> {
+    let entry = iroh::RelayConfig::new(url, None);
+    // Tripwire: the operator's RelayAccessToken belongs to configured relays only.
+    assert!(
+        entry.auth_token.is_none(),
+        "an advertised relay entry must never carry an auth token"
+    );
+    std::sync::Arc::new(entry)
+}
+
 /// `(service, account)` fe-identity's `EnvBackend` reads the relay access
 /// token from — `FE_SECRET_FRACTALENGINE_SYNC_RELAY_TOKEN` (A14).
 const RELAY_TOKEN_SECRET_SERVICE: &str = "fractalengine";
