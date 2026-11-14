@@ -1508,6 +1508,133 @@ pub fn push_revoke(did: &str) {
     }
 }
 
+/// A served verse's replica the sync thread opens and keeps open while the relay serves it (sync-relay-1; `AGENTS.md` §peer-relay-server "served replicas").
+#[derive(Clone, PartialEq, Eq)]
+pub struct ServedReplica {
+    pub verse_id: String,
+    pub namespace_id: String,
+    pub namespace_secret: Option<String>,
+}
+
+impl std::fmt::Debug for ServedReplica {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServedReplica")
+            .field("verse_id", &self.verse_id)
+            .field("namespace_id", &self.namespace_id)
+            .field("namespace_secret", &self.namespace_secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// (generation, pinned replicas): the generation lets the sync loop skip unchanged reads.
+static SERVED_REPLICAS: Mutex<(u64, Vec<ServedReplica>)> = Mutex::new((0, Vec::new()));
+
+fn lock_served_replicas() -> std::sync::MutexGuard<'static, (u64, Vec<ServedReplica>)> {
+    SERVED_REPLICAS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Pins the served verses' replicas open until the returned guard drops (the guard lives with the relay handle).
+#[must_use = "dropping the guard unpins the served replicas"]
+pub fn keep_served_replicas_open(replicas: Vec<ServedReplica>) -> ServedReplicaPins {
+    let mut pinned = lock_served_replicas();
+    pinned.0 = pinned.0.wrapping_add(1);
+    pinned.1 = replicas;
+    ServedReplicaPins { _private: () }
+}
+
+/// Unpins on drop; navigation may close those replicas again.
+pub struct ServedReplicaPins {
+    _private: (),
+}
+
+impl Drop for ServedReplicaPins {
+    fn drop(&mut self) {
+        let mut pinned = lock_served_replicas();
+        pinned.0 = pinned.0.wrapping_add(1);
+        pinned.1.clear();
+    }
+}
+
+/// How often the sync loop re-asks to open a pinned replica that is still closed (an open that failed, a lease close).
+pub(crate) const SERVED_REPLICA_RETRY: Duration = Duration::from_secs(30);
+
+/// Sync-loop view of the pins: opens closed served replicas and tells the close arm which to keep.
+#[derive(Default)]
+pub(crate) struct ServedReplicaOpener {
+    seen_generation: Option<u64>,
+    pins: Vec<ServedReplica>,
+    served: BTreeSet<String>,
+    last_requested: HashMap<String, Instant>,
+}
+
+impl ServedReplicaOpener {
+    /// Re-reads the pins when their generation moved.
+    fn refresh(&mut self) {
+        let pinned = lock_served_replicas();
+        if self.seen_generation == Some(pinned.0) {
+            return;
+        }
+        let (generation, pins) = (pinned.0, pinned.1.clone());
+        drop(pinned);
+        self.set_pins(generation, pins);
+    }
+
+    /// Adopts one generation of pins (the process-wide registry in production, a literal list in tests).
+    fn set_pins(&mut self, generation: u64, pins: Vec<ServedReplica>) {
+        self.seen_generation = Some(generation);
+        self.pins = pins;
+        self.served = self.pins.iter().map(|pin| pin.verse_id.clone()).collect();
+        self.last_requested.retain(|verse_id, _| self.served.contains(verse_id));
+        if !self.pins.is_empty() {
+            tracing::info!(verses = self.pins.len(), "embedded relay pinned its served verse replicas open");
+        }
+    }
+
+    /// Open commands for pinned verses whose replica is closed, at most one per verse per [`SERVED_REPLICA_RETRY`].
+    pub(crate) fn due_opens(
+        &mut self,
+        is_open: impl Fn(&str) -> bool,
+        now: Instant,
+    ) -> Vec<crate::messages::SyncCommand> {
+        self.refresh();
+        self.opens_due(is_open, now)
+    }
+
+    fn opens_due(&mut self, is_open: impl Fn(&str) -> bool, now: Instant) -> Vec<crate::messages::SyncCommand> {
+        let mut opens = Vec::new();
+        for pin in &self.pins {
+            if is_open(&pin.verse_id) {
+                continue;
+            }
+            let due = self
+                .last_requested
+                .get(&pin.verse_id)
+                .is_none_or(|at| now.saturating_duration_since(*at) >= SERVED_REPLICA_RETRY);
+            if !due {
+                continue;
+            }
+            self.last_requested.insert(pin.verse_id.clone(), now);
+            opens.push(crate::messages::SyncCommand::OpenVerseReplica {
+                verse_id: pin.verse_id.clone(),
+                namespace_id: pin.namespace_id.clone(),
+                namespace_secret: pin.namespace_secret.clone(),
+                bootstrap_peers: Vec::new(),
+            });
+        }
+        opens
+    }
+
+    /// True while the relay serves `verse_id`: a navigation close must not drop its live role view.
+    pub(crate) fn keeps_open(&self, verse_id: &str) -> bool {
+        self.served.contains(verse_id)
+    }
+
+    /// The pinned (served) verse ids as of the last refresh.
+    pub(crate) fn served(&self) -> &BTreeSet<String> {
+        &self.served
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -1753,6 +1880,38 @@ mod tests {
         assert!(all_hosted.serves(VERSE, Some(&hosted)), "a hosted verse is served");
         assert!(!all_hosted.serves(OTHER_VERSE, Some(&hosted)), "a joined, unhosted verse is not served");
         assert!(!all_hosted.serves(VERSE, None), "no hosted set serves nothing");
+
+        // sync-relay-1: a served verse the host never navigated into gets its replica (and so its role view) opened,
+        // and a navigation close cannot drop it while the relay serves it.
+        // Pins are fed directly: the process-wide registry would leak opens into sync threads of parallel tests.
+        const NEVER_NAVIGATED: &str = "verse-never-navigated";
+        let mut opener = ServedReplicaOpener::default();
+        opener.set_pins(
+            1,
+            vec![ServedReplica {
+                verse_id: NEVER_NAVIGATED.to_string(),
+                namespace_id: "ns-never-navigated".to_string(),
+                namespace_secret: None,
+            }],
+        );
+        let now = Instant::now();
+        let opens = opener.opens_due(|_| false, now);
+        assert!(
+            matches!(
+                opens.as_slice(),
+                [crate::messages::SyncCommand::OpenVerseReplica { verse_id, namespace_id, .. }]
+                    if verse_id == NEVER_NAVIGATED && namespace_id == "ns-never-navigated"
+            ),
+            "the closed served replica is opened: {opens:?}"
+        );
+        assert!(opener.keeps_open(NEVER_NAVIGATED) && opener.served().contains(NEVER_NAVIGATED));
+        assert!(opener.opens_due(|_| false, now).is_empty(), "one open per retry interval");
+        assert!(opener.opens_due(|_| true, now + SERVED_REPLICA_RETRY).is_empty(), "an open replica is left alone");
+        assert_eq!(opener.opens_due(|_| false, now + SERVED_REPLICA_RETRY).len(), 1, "a replica closed later is reopened");
+        // The pin guard's drop publishes an empty generation.
+        opener.set_pins(2, Vec::new());
+        assert!(opener.opens_due(|_| false, now + SERVED_REPLICA_RETRY * 2).is_empty());
+        assert!(!opener.keeps_open(NEVER_NAVIGATED), "a stopped relay releases its pins");
 
         for endpoint in [fresh_viewer, stranger, other_verse_member, member_second_session, third, fourth] {
             endpoint.close().await;

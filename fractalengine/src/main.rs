@@ -461,7 +461,13 @@ fn main() {
 
     // NET-30: desktop relay-capable mode; consent, feature, self-test and dial-back are checked off the main thread.
     if app_settings.serve_relay {
-        spawn_desktop_relay_gate(app_settings.clone(), sync_cmd_tx.clone(), shared_db.clone(), node_kp.to_did_key());
+        spawn_desktop_relay_gate(
+            app_settings.clone(),
+            sync_cmd_tx.clone(),
+            shared_db.clone(),
+            node_kp.to_did_key(),
+            secret_store.clone(),
+        );
     }
 
     // M2/F7 (A17): API→sync distributed-query bridge. The API thread's
@@ -1136,11 +1142,12 @@ struct SharedEntityStore(Arc<fe_entity_store::EntityStore>);
 /// Self-test polls before giving up on a verdict (one every [`SELF_TEST_POLL_INTERVAL`]).
 const SELF_TEST_POLL_ATTEMPTS: u32 = 24;
 const SELF_TEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-/// Dial-back requests before the provisional relay is stopped (peers may open verses late).
+/// Dial-back requests before the provisional relay is stopped (peers may come online late).
 #[cfg(feature = "relay-server")]
-const DIALBACK_ATTEMPTS: u32 = 3;
+const DIALBACK_ATTEMPTS: u32 = 4;
+/// First wait between dial-back requests: past the responder per-requester window plus 5 s; doubles each retry (65, 130, 260 s).
 #[cfg(feature = "relay-server")]
-const DIALBACK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+const DIALBACK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(fe_sync::dialback_prober::PER_REQUESTER_WINDOW_MS + 5_000);
 
 /// Spawns the thread that gates, starts and confirms the desktop relay; it holds the relay for the process lifetime.
 fn spawn_desktop_relay_gate(
@@ -1148,6 +1155,7 @@ fn spawn_desktop_relay_gate(
     sync_command_sender: fe_sync::SyncCommandSender,
     db: fe_database::repo::Db,
     local_did: String,
+    secret_store: Arc<dyn fe_identity::SecretStore>,
 ) {
     let spawned = std::thread::Builder::new().name("desktop-relay-gate".into()).spawn(move || {
         // Multi-thread: the relay's listener and reconciler tasks must keep running after `maybe_start` returns.
@@ -1165,11 +1173,12 @@ fn spawn_desktop_relay_gate(
         };
         let feature_built = cfg!(feature = "relay-server");
         let verdict = if feature_built { wait_for_self_test_verdict(&sync_command_sender) } else { None };
-        let hosted_verses = runtime.block_on(load_owned_verse_ids(&db, local_did));
+        let owned_verses = runtime.block_on(load_owned_verse_ids(&db, local_did));
+        let hosted_verses = owned_verses.keys().cloned().collect();
         // The dial-back probes the listening relay, so it can only run after a provisional start; a failed
         // confirmation stops the relay again (the pure gate still refuses everything before that point).
         let provisional = verdict.as_deref() == Some("public");
-        let Some(handle) = relay_serve_bridge::maybe_start(
+        let Some(mut handle) = relay_serve_bridge::maybe_start(
             runtime.handle(),
             &settings,
             verdict.as_deref(),
@@ -1178,6 +1187,8 @@ fn spawn_desktop_relay_gate(
         ) else {
             return;
         };
+        // sync-relay-1: served verses' replicas open now (before the dial-back, whose answer rides their topics).
+        handle.keep_served_replicas_open(&owned_verses, secret_store.as_ref());
         if !confirm_dialback(&runtime) {
             tracing::warn!("desktop relay stopped: no verse peer confirmed it is reachable (dial-back)");
             drop(handle);
@@ -1218,21 +1229,31 @@ fn wait_for_self_test_verdict(sync_command_sender: &fe_sync::SyncCommandSender) 
     None
 }
 
-/// Verses this node created (owner DID = `local_did`): the only set a desktop relay may serve; joined verses are excluded (empty on a read error).
-async fn load_owned_verse_ids(db: &fe_database::repo::Db, local_did: String) -> std::collections::BTreeSet<String> {
+/// Verses this node created (owner DID = `local_did`) with their namespace ids: the only set a desktop relay may serve; joined verses are excluded (empty on a read error).
+async fn load_owned_verse_ids(
+    db: &fe_database::repo::Db,
+    local_did: String,
+) -> std::collections::BTreeMap<String, Option<String>> {
     let read = async {
         let mut response = db
-            .query("SELECT VALUE verse_id FROM verse WHERE created_by = $did")
+            .query("SELECT verse_id, namespace_id FROM verse WHERE created_by = $did")
             .bind(("did", local_did))
             .await?
             .check()?;
-        anyhow::Ok(response.take::<Vec<String>>(0)?)
+        anyhow::Ok(response.take::<Vec<serde_json::Value>>(0)?)
     };
     match read.await {
-        Ok(verse_ids) => verse_ids.into_iter().collect(),
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|row| {
+                let verse_id = row.get("verse_id")?.as_str()?.to_string();
+                let namespace_id = row.get("namespace_id").and_then(|value| value.as_str()).map(str::to_string);
+                Some((verse_id, namespace_id))
+            })
+            .collect(),
         Err(error) => {
             tracing::warn!(%error, "desktop relay gate could not list hosted verses");
-            std::collections::BTreeSet::new()
+            std::collections::BTreeMap::new()
         }
     }
 }
@@ -1259,13 +1280,19 @@ fn confirm_dialback(runtime: &tokio::runtime::Runtime) -> bool {
         tracing::warn!("desktop relay has no public hostname to confirm; set FE_RELAY_SERVE_HOSTNAME");
         return false;
     };
+    let mut wait = DIALBACK_RETRY_INTERVAL;
     for attempt in 0..DIALBACK_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(DIALBACK_RETRY_INTERVAL);
+            std::thread::sleep(wait);
+            wait = wait.saturating_mul(2);
         }
+        // Only an `ok` record bound to this request ever settles it (fe-sync §reachability); anything else retries.
         if let Some(record) = runtime.block_on(fe_sync::dialback_responder::request_dialback(&url)) {
-            return record.ok;
+            if record.ok {
+                return true;
+            }
         }
+        tracing::info!(attempt = attempt + 1, of = DIALBACK_ATTEMPTS, "desktop relay dial-back not confirmed on this attempt");
     }
     false
 }

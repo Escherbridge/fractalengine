@@ -25,8 +25,8 @@ pub const MAX_PENDING_REQUESTS: usize = 16;
 pub const MAX_REQUEST_VERSES: usize = 4;
 /// Longest one dial-back answer may hold a probe permit: DNS budget plus HTTP budget.
 const ANSWER_BUDGET: Duration = Duration::from_secs(PROBE_TOTAL_TIMEOUT.as_secs() * 2);
-/// How long [`request_dialback`] waits for a signed answer.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(PROBE_TOTAL_TIMEOUT.as_secs() + 5);
+/// How long [`request_dialback`] waits for a signed answer: the responder's whole budget plus a gossip margin.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(ANSWER_BUDGET.as_secs() + 5);
 
 /// `AppSettings.act_as_prober` (default off), registered at startup like the relay toggles.
 static ACT_AS_PROBER: AtomicBool = AtomicBool::new(false);

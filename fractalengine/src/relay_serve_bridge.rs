@@ -1,6 +1,14 @@
 //! Desktop relay-capable mode glue (NET-30); see `fe-ui/src/AGENTS.md` §app-settings.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Hex namespace id derived from a hex namespace secret (same derivation as `fractalengine-relay/src/replicas.rs`).
+#[cfg(feature = "relay-server")]
+fn namespace_id_from_secret(secret_hex: &str) -> Option<String> {
+    let bytes = hex::decode(secret_hex.trim()).ok()?;
+    let secret: [u8; 32] = bytes.try_into().ok()?;
+    Some(hex::encode(fe_database::derive_namespace_id(&secret)))
+}
 
 /// What the startup gate decided about serving a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +51,53 @@ pub fn decide(
 pub struct RelayServeHandle {
     #[cfg(feature = "relay-server")]
     _relay: fe_sync::relay_server::EmbeddedRelay,
+    /// Served verses' replicas pinned open; released with the relay (sync-relay-1).
+    #[cfg(feature = "relay-server")]
+    _served_pins: Option<fe_sync::relay_server::ServedReplicaPins>,
 }
 
 impl RelayServeHandle {
+    /// Pins every served verse's replica open (live role view, so members are admitted without the host navigating there) while this handle lives; see `fe-sync/src/AGENTS.md` §peer-relay-server "served replicas".
+    pub fn keep_served_replicas_open(
+        &mut self,
+        namespace_ids: &BTreeMap<String, Option<String>>,
+        secret_store: &dyn fe_identity::SecretStore,
+    ) {
+        #[cfg(feature = "relay-server")]
+        {
+            let mut pins = Vec::new();
+            for verse_id in self.served_verse_ids() {
+                let secret = match fe_database::get_namespace_secret(secret_store, &verse_id) {
+                    Ok(secret) => secret,
+                    Err(error) => {
+                        tracing::warn!(verse_id, %error, "served verse namespace secret lookup failed");
+                        None
+                    }
+                };
+                let namespace_id = namespace_ids
+                    .get(&verse_id)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| secret.as_deref().and_then(namespace_id_from_secret));
+                let Some(namespace_id) = namespace_id else {
+                    tracing::warn!(
+                        verse_id,
+                        "served verse has no namespace id: its replica cannot open, so this relay refuses its members"
+                    );
+                    continue;
+                };
+                pins.push(fe_sync::relay_server::ServedReplica {
+                    verse_id,
+                    namespace_id,
+                    namespace_secret: secret,
+                });
+            }
+            self._served_pins = Some(fe_sync::relay_server::keep_served_replicas_open(pins));
+        }
+        #[cfg(not(feature = "relay-server"))]
+        let _ = (namespace_ids, secret_store);
+    }
+
     /// Verse ids the running relay admits members through.
     pub fn served_verse_ids(&self) -> BTreeSet<String> {
         #[cfg(feature = "relay-server")]
@@ -163,7 +215,7 @@ fn start(runtime: &tokio::runtime::Handle, hosted_verses: BTreeSet<String>) -> O
     }
     match runtime.block_on(EmbeddedRelay::spawn(config, gate)) {
         Ok(relay) => {
-            let handle = RelayServeHandle { _relay: relay };
+            let handle = RelayServeHandle { _relay: relay, _served_pins: None };
             let served = handle.served_verse_ids();
             tracing::info!(verses = served.len(), "desktop relay serving verses");
             tracing::debug!(ids = ?served, "desktop relay served verse ids");

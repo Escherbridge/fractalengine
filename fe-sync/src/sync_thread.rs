@@ -976,11 +976,17 @@ pub fn spawn_sync_thread_with_sources(
             let mut last_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnostics> = None;
             let (adoption_probe_tx, mut adoption_probe_rx) =
                 tokio::sync::mpsc::channel::<(String, bool)>(32);
+            // sync-relay-2: advertised-relay DNS runs in spawned tasks; verdicts come back here.
+            let (relay_lookup_tx, mut relay_lookup_rx) =
+                tokio::sync::mpsc::channel::<(String, RelayCheck, Result<(), String>)>(RELAY_LOOKUP_LIMIT);
             let mut relay_adoption_tick = tokio::time::interval(RELAY_ADOPTION_TICK);
             relay_adoption_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // NET-21: members-only relay admission, re-pushed on every role or `__peers` change.
             #[cfg(feature = "relay-server")]
             let mut relay_admission = RelayAdmissionPusher::default();
+            // sync-relay-1: served verses' replicas stay open while the embedded relay serves them.
+            #[cfg(feature = "relay-server")]
+            let mut served_replicas = crate::relay_server::ServedReplicaOpener::default();
 
             // M2/F7: the distributed-query transport handle shared by the
             // select loop (submit + inbound routing) and the collector /
@@ -1054,7 +1060,12 @@ pub fn spawn_sync_thread_with_sources(
                 let rows_left = !resend_unsent_rows(&mut fabrics, &db_cmd_tx, &mut scene_assets);
                 // NET-21: after the last select arm's inbound row and the re-read/re-judge drains above.
                 #[cfg(feature = "relay-server")]
-                relay_admission.refresh(&fabrics);
+                {
+                    for open in served_replicas.due_opens(|verse_id| replicas.contains_key(verse_id), std::time::Instant::now()) {
+                        send_lease_command(&lease_cmd_tx, open);
+                    }
+                    relay_admission.refresh(&fabrics, served_replicas.served());
+                }
                 // S7: after the inbound batch / re-judge above changed any admitted advert.
                 reconcile_advertised_relays(
                     &mut fabrics,
@@ -1065,6 +1076,15 @@ pub fn spawn_sync_thread_with_sources(
                     endpoint.as_ref(),
                 )
                 .await;
+                for (relay, check) in relay_adoption.take_lookups() {
+                    let relay_lookup_tx = relay_lookup_tx.clone();
+                    tokio::spawn(async move {
+                        let verdict = relay_lookup(&relay, check).await;
+                        if relay_lookup_tx.send((relay, check, verdict)).await.is_err() {
+                            tracing::warn!("advertised relay lookup dropped: the sync loop has stopped");
+                        }
+                    });
+                }
                 let prefetch_left = scene_assets.pump_prefetches();
                 let kept_work = reread_left || rejudge_left || rows_left || prefetch_left;
                 tokio::select! {
@@ -1083,6 +1103,12 @@ pub fn spawn_sync_thread_with_sources(
                         // Closed inline (not queued): a host open still in the command
                         // queue then re-opens it, and can never be closed by the lease.
                         for verse_id in publication_leases.expired(std::time::Instant::now()) {
+                            // The lease is released by `expired`; a verse the embedded relay serves stays open.
+                            #[cfg(feature = "relay-server")]
+                            if served_replicas.keeps_open(&verse_id) {
+                                tracing::debug!(verse_id, "lease ended; replica kept open: the embedded relay serves this verse");
+                                continue;
+                            }
                             tracing::info!(verse_id, "Publication lease ended; closing the replica this thread opened");
                             tileset_providers.forget_verse(&verse_id);
                             scene_assets.close(&verse_id);
@@ -1128,6 +1154,9 @@ pub fn spawn_sync_thread_with_sources(
                     }
                     Some((relay, healthy)) = adoption_probe_rx.recv() => {
                         relay_adoption.record_probe(&relay, healthy, std::time::Instant::now());
+                    }
+                    Some((relay, check, verdict)) = relay_lookup_rx.recv() => {
+                        relay_adoption.record_lookup(relay, check, verdict);
                     }
                     maybe_status = next_relay_status(&mut relay_watch), if relay_watch.is_some() => {
                         match maybe_status {
@@ -1480,6 +1509,12 @@ pub fn spawn_sync_thread_with_sources(
                                     SyncCommand::CloseVerseReplica {verse_id} => {joined_leases.forget(&verse_id);verse_id}
                                     _ => unreachable!(),
                                 };
+                                // sync-relay-1: leaving a served verse must not freeze its relay admission.
+                                #[cfg(feature = "relay-server")]
+                                if served_replicas.keeps_open(&verse_id) {
+                                    tracing::debug!(verse_id, "replica kept open: the embedded relay serves this verse");
+                                    continue;
+                                }
                                 // S8b verse binding: ads learned on a verse
                                 // stop counting once this node leaves it.
                                 tileset_providers.forget_verse(&verse_id);
@@ -1843,13 +1878,16 @@ struct RelayAdmissionPusher {
     seen_epochs: HashMap<String, u64>,
     /// The snapshot last pushed to the gate.
     last_pushed: Option<crate::sharding::RelayAdmissionSnapshot>,
+    /// Served (pinned) verse ids at the last recompute.
+    seen_served: BTreeSet<String>,
 }
 
 #[cfg(feature = "relay-server")]
 impl RelayAdmissionPusher {
     /// Pushes a fresh snapshot after any role or `__peers` change, then revokes every DID that lost membership.
-    fn refresh(&mut self, fabrics: &HashMap<String, VerseFabric>) {
-        let unchanged = self.seen_epochs.len() == fabrics.len()
+    fn refresh(&mut self, fabrics: &HashMap<String, VerseFabric>, served: &BTreeSet<String>) {
+        let unchanged = self.seen_served == *served
+            && self.seen_epochs.len() == fabrics.len()
             && fabrics.iter().all(|(verse_id, fabric)| {
                 self.seen_epochs.get(verse_id) == Some(&fabric.relay_admission_epoch())
             });
@@ -1860,11 +1898,23 @@ impl RelayAdmissionPusher {
             .iter()
             .map(|(verse_id, fabric)| (verse_id.clone(), fabric.relay_admission_epoch()))
             .collect();
-        // Hosted = every verse this thread holds fabric state for; the gate narrows to served verses.
-        let hosted: BTreeSet<String> = fabrics.keys().cloned().collect();
+        // Hosted = every verse with fabric state plus every served verse (a served one without a fabric is unconverged: deny, logged); the gate narrows to served verses.
+        let hosted: BTreeSet<String> = fabrics.keys().chain(served).cloned().collect();
+        self.seen_served = served.clone();
         let snapshot = crate::sharding::relay_admission_snapshot(fabrics, &hosted);
         if self.last_pushed.as_ref() == Some(&snapshot) {
             return;
+        }
+        let waiting: Vec<&String> = snapshot.unconverged_verses.intersection(served).collect();
+        let was_waiting = self
+            .last_pushed
+            .as_ref()
+            .is_some_and(|previous| previous.unconverged_verses.intersection(served).eq(waiting.iter().copied()));
+        if !waiting.is_empty() && !was_waiting {
+            tracing::warn!(
+                verses = ?waiting,
+                "served verses have no converged role view yet: their members are refused until the replica opens and roles arrive"
+            );
         }
         let lost: Vec<String> = match &self.last_pushed {
             Some(previous) => {
@@ -1961,6 +2011,32 @@ struct RelayAdoption {
     unadvertised_home_verses: BTreeSet<String>,
     /// DialOnly URL -> (resolves to public addresses, checked at).
     dial_only_verdicts: HashMap<String, (bool, std::time::Instant)>,
+    /// Off-loop host lookups (see `src/AGENTS.md` §relay-trust "off-loop lookups"): finished, awaiting the next pass.
+    lookup_results: HashMap<(String, RelayCheck), Result<(), String>>,
+    /// Lookups running in spawned tasks (at most `RELAY_LOOKUP_LIMIT`).
+    lookups_in_flight: HashSet<(String, RelayCheck)>,
+    /// Lookups this pass asked for; the loop spawns them after the pass.
+    lookups_wanted: Vec<(String, RelayCheck)>,
+    /// Advertised relays an insert lookup refused, at refusal time (re-looked-up after `INSERT_REFUSAL_COOLDOWN`).
+    insert_refusals: HashMap<String, std::time::Instant>,
+}
+
+/// The address rule a relay host lookup checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RelayCheck {
+    /// Pinned / HomeEligible: public https, every address public (`resolve_public_relay`).
+    Insertable,
+    /// DialOnly: every address passes the process policy (`dial_only_relay_allowed`).
+    DialOnly,
+}
+
+/// What a planned advertised insert may do this pass.
+#[derive(Debug, PartialEq, Eq)]
+enum InsertVerdict {
+    Ready,
+    Refused(String),
+    /// A lookup is in flight or cooling down: skip silently, a later plan retries.
+    Pending,
 }
 
 impl RelayAdoption {
@@ -1980,7 +2056,73 @@ impl RelayAdoption {
             replan: true,
             unadvertised_home_verses: BTreeSet::new(),
             dial_only_verdicts: HashMap::new(),
+            lookup_results: HashMap::new(),
+            lookups_in_flight: HashSet::new(),
+            lookups_wanted: Vec::new(),
+            insert_refusals: HashMap::new(),
         }
+    }
+
+    /// Ask for an off-loop lookup unless one is already running or asked for.
+    fn want_lookup(&mut self, url: &str, check: RelayCheck) {
+        let key = (url.to_string(), check);
+        if !self.lookups_in_flight.contains(&key) && !self.lookups_wanted.contains(&key) {
+            self.lookups_wanted.push(key);
+        }
+    }
+
+    /// Wanted lookups that fit under `RELAY_LOOKUP_LIMIT`, now in flight; the rest are dropped and re-asked by a later pass.
+    fn take_lookups(&mut self) -> Vec<(String, RelayCheck)> {
+        let room = RELAY_LOOKUP_LIMIT.saturating_sub(self.lookups_in_flight.len());
+        let mut wanted = std::mem::take(&mut self.lookups_wanted);
+        wanted.truncate(room);
+        self.lookups_in_flight.extend(wanted.iter().cloned());
+        wanted
+    }
+
+    /// Fold a finished lookup; the next pass re-plans and applies it only if the current plan still names the URL.
+    fn record_lookup(&mut self, url: String, check: RelayCheck, verdict: Result<(), String>) {
+        let key = (url, check);
+        self.lookups_in_flight.remove(&key);
+        self.lookup_results.insert(key, verdict);
+        self.replan = true;
+    }
+
+    /// Insert gate for an advertised relay, never awaiting DNS: IP literals and bad URLs decide now, a host name waits for its lookup.
+    fn insert_verdict(&mut self, raw: &str, now: std::time::Instant) -> InsertVerdict {
+        let verdict = match self.lookup_results.remove(&(raw.to_string(), RelayCheck::Insertable)) {
+            Some(verdict) => verdict,
+            None => match relay_check_now(raw, RelayCheck::Insertable) {
+                Some(verdict) => verdict,
+                None => {
+                    let cooling = self
+                        .insert_refusals
+                        .get(raw)
+                        .is_some_and(|at| now.saturating_duration_since(*at) < INSERT_REFUSAL_COOLDOWN);
+                    if !cooling {
+                        self.want_lookup(raw, RelayCheck::Insertable);
+                    }
+                    return InsertVerdict::Pending;
+                }
+            },
+        };
+        match verdict {
+            Ok(()) => {
+                self.insert_refusals.remove(raw);
+                InsertVerdict::Ready
+            }
+            Err(reason) => {
+                self.insert_refusals.insert(raw.to_string(), now);
+                InsertVerdict::Refused(reason)
+            }
+        }
+    }
+
+    /// End of a full pass: unconsumed results name URLs the plan no longer inserts; expired refusals go.
+    fn finish_pass(&mut self, now: std::time::Instant) {
+        self.lookup_results.clear();
+        self.insert_refusals
+            .retain(|_, at| now.saturating_duration_since(*at) < INSERT_REFUSAL_COOLDOWN);
     }
 
     /// Record a home-relay snapshot; a change triggers a re-plan.
@@ -2076,8 +2218,8 @@ impl RelayAdoption {
     }
 
     /// Relays a peer address may name: Configured, Default and inserted, plus DialOnly URLs whose resolved addresses pass the advertised-relay address policy.
-    async fn allowlist(&mut self) -> BTreeSet<String> {
-        let now = std::time::Instant::now();
+    /// Never awaits DNS: host names are looked up off-loop and enter on the pass after their verdict lands; a verdict past half its TTL is refreshed ahead so a healthy host never drops out.
+    fn allowlist(&mut self, now: std::time::Instant) -> BTreeSet<String> {
         let mut allowed: BTreeSet<String> = self
             .reconciler
             .configured()
@@ -2093,29 +2235,31 @@ impl RelayAdoption {
             .filter(|url| !allowed.contains(*url))
             .cloned()
             .collect();
-        let mut pending: Vec<String> = dial_only
-            .iter()
-            .filter(|url| !verdict_is_fresh(&self.dial_only_verdicts, url, now))
-            .cloned()
-            .collect();
-        pending.truncate(DIAL_ONLY_RESOLVE_LIMIT);
         let mut resolutions: HashMap<String, Result<(), String>> = HashMap::new();
-        let mut lookups = tokio::task::JoinSet::new();
-        for url in pending {
-            lookups.spawn(async move {
-                let verdict = dial_only_relay_allowed(&url).await;
-                (url, verdict)
-            });
-        }
-        while let Some(joined) = lookups.join_next().await {
-            match joined {
-                Ok((url, verdict)) => {
-                    resolutions.insert(url, verdict);
+        for url in &dial_only {
+            if let Some(verdict) = self.lookup_results.remove(&(url.clone(), RelayCheck::DialOnly)) {
+                resolutions.insert(url.clone(), verdict);
+                continue;
+            }
+            let refresh_due = self
+                .dial_only_verdicts
+                .get(url)
+                .is_none_or(|(_, checked)| now.saturating_duration_since(*checked) >= DIAL_ONLY_VERDICT_TTL / 2);
+            if !refresh_due {
+                continue;
+            }
+            match relay_check_now(url, RelayCheck::DialOnly) {
+                Some(verdict) => {
+                    resolutions.insert(url.clone(), verdict);
                 }
-                Err(error) => tracing::warn!("dial-only relay lookup task failed: {error}"),
+                None => self.want_lookup(url, RelayCheck::DialOnly),
             }
         }
-        // URLs past the per-pass limit are neither cached nor allowlisted this pass.
+        // A landed verdict replaces a still-fresh one (refresh-ahead).
+        for url in resolutions.keys() {
+            self.dial_only_verdicts.remove(url);
+        }
+        // URLs with neither a fresh verdict nor a landed lookup are not allowlisted this pass.
         let considered: Vec<&String> = dial_only
             .iter()
             .filter(|url| {
@@ -2137,8 +2281,11 @@ impl RelayAdoption {
     }
 }
 
-/// Most DialOnly URLs resolved per reconcile pass.
-const DIAL_ONLY_RESOLVE_LIMIT: usize = 8;
+/// Most advertised-relay host lookups in flight at once (each bounded by `ADVERTISED_RELAY_RESOLVE_TIMEOUT`).
+const RELAY_LOOKUP_LIMIT: usize = 8;
+
+/// How long an advertised relay whose insert lookup refused it waits before it is looked up again.
+const INSERT_REFUSAL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 
 /// How long a DialOnly resolution verdict is trusted before it is re-resolved.
 const DIAL_ONLY_VERDICT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -2278,7 +2425,7 @@ async fn reconcile_advertised_relays(
     }
 
     if let Some(endpoint) = endpoint {
-        let allowlist = adoption.allowlist().await;
+        let allowlist = adoption.allowlist(std::time::Instant::now());
         if allowlist != adoption.last_allowlist {
             endpoint.set_relay_allowlist(
                 allowlist
@@ -2307,6 +2454,7 @@ async fn reconcile_advertised_relays(
         );
     }
     adoption.unadvertised_home_verses = unadvertised;
+    adoption.finish_pass(std::time::Instant::now());
 
     tracing::debug!(
         known,
@@ -2340,10 +2488,17 @@ async fn insert_planned_relay(adoption: &mut RelayAdoption, raw: &str, endpoint:
         tracing::info!(relay = %raw, "restored default relay to the relay map");
         return;
     }
-    if let Err(reason) = advertised_relay_insertable(raw).await {
-        tracing::warn!(relay = %raw, "advertised relay not inserted: {reason}");
-        adoption.reconciler.forget_insert(raw);
-        return;
+    match adoption.insert_verdict(raw, std::time::Instant::now()) {
+        InsertVerdict::Ready => {}
+        InsertVerdict::Refused(reason) => {
+            tracing::warn!(relay = %raw, "advertised relay not inserted: {reason}");
+            adoption.reconciler.forget_insert(raw);
+            return;
+        }
+        InsertVerdict::Pending => {
+            adoption.reconciler.forget_insert(raw);
+            return;
+        }
     }
     let entry = advertised_relay_entry(url.clone());
     if let Some(replaced) = endpoint.inner().insert_relay(url.clone(), entry).await {
@@ -2390,30 +2545,14 @@ async fn remove_planned_relay(adoption: &mut RelayAdoption, raw: &str, endpoint:
 /// Budget for resolving a pinned advertised relay's host before it enters the relay map.
 const ADVERTISED_RELAY_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Resolve an advertised relay to its addresses, refusing anything but a public https relay whose every address is public.
-async fn resolve_public_relay(raw: &str) -> Result<Vec<std::net::SocketAddr>, String> {
-    use fe_runtime::relay_advertisement::{
-        check_resolved_relay_address, validate_advertised_relay_url, AdvertisedRelayPolicy,
-        RelayReach,
-    };
-    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
-    if !advertised.home_eligible() {
-        return Err("only a public https relay may enter the relay map".to_string());
-    }
-    let port = advertised.url().port_or_known_default().unwrap_or(443);
-    // IP-literal hosts were classified by the validator; a domain is checked at resolution.
-    let Some(domain) = advertised.url().domain() else {
-        let host = advertised
-            .url()
-            .host_str()
-            .unwrap_or_default()
-            .trim_start_matches('[')
-            .trim_end_matches(']');
-        let address: std::net::IpAddr = host
-            .parse()
-            .map_err(|error| format!("relay host is not an address: {error}"))?;
-        return Ok(vec![std::net::SocketAddr::new(address, port)]);
-    };
+/// An advertised relay's host: an IP literal (classified by the validator, no DNS) or a domain still to resolve.
+enum RelayHost {
+    Literal(std::net::SocketAddr),
+    Domain(String, u16),
+}
+
+/// Resolve a relay domain under `ADVERTISED_RELAY_RESOLVE_TIMEOUT`.
+async fn lookup_relay_host(domain: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
     let resolved = tokio::time::timeout(
         ADVERTISED_RELAY_RESOLVE_TIMEOUT,
         tokio::net::lookup_host((domain, port)),
@@ -2421,6 +2560,72 @@ async fn resolve_public_relay(raw: &str) -> Result<Vec<std::net::SocketAddr>, St
     .await
     .map_err(|_| "host resolution timed out".to_string())?
     .map_err(|error| format!("host resolution failed: {error}"))?;
+    Ok(resolved.collect())
+}
+
+/// The DNS-free part of the insert rule: a valid public https relay URL, and its host.
+fn public_relay_host(raw: &str) -> Result<RelayHost, String> {
+    use fe_runtime::relay_advertisement::validate_advertised_relay_url;
+    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
+    if !advertised.home_eligible() {
+        return Err("only a public https relay may enter the relay map".to_string());
+    }
+    let port = advertised.url().port_or_known_default().unwrap_or(443);
+    // IP-literal hosts were classified by the validator; a domain is checked at resolution.
+    if let Some(domain) = advertised.url().domain() {
+        return Ok(RelayHost::Domain(domain.to_string(), port));
+    }
+    let host = advertised
+        .url()
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let address: std::net::IpAddr = host
+        .parse()
+        .map_err(|error| format!("relay host is not an address: {error}"))?;
+    Ok(RelayHost::Literal(std::net::SocketAddr::new(address, port)))
+}
+
+/// The DNS-free part of the DialOnly rule: `None` when the host is an IP literal (already classified).
+fn dial_only_relay_host(raw: &str) -> Result<Option<(String, u16)>, String> {
+    use fe_runtime::relay_advertisement::validate_advertised_relay_url;
+    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
+    let port = advertised.url().port_or_known_default().unwrap_or(443);
+    Ok(advertised.url().domain().map(|domain| (domain.to_string(), port)))
+}
+
+/// A verdict decidable without DNS (bad URL or IP literal), else `None`: the host needs an off-loop lookup.
+fn relay_check_now(raw: &str, check: RelayCheck) -> Option<Result<(), String>> {
+    match check {
+        RelayCheck::Insertable => match public_relay_host(raw) {
+            Err(reason) => Some(Err(reason)),
+            Ok(RelayHost::Literal(_)) => Some(Ok(())),
+            Ok(RelayHost::Domain(..)) => None,
+        },
+        RelayCheck::DialOnly => match dial_only_relay_host(raw) {
+            Err(reason) => Some(Err(reason)),
+            Ok(None) => Some(Ok(())),
+            Ok(Some(_)) => None,
+        },
+    }
+}
+
+/// The full check, DNS included; run only in a spawned task, never on the sync loop.
+async fn relay_lookup(raw: &str, check: RelayCheck) -> Result<(), String> {
+    match check {
+        RelayCheck::Insertable => advertised_relay_insertable(raw).await,
+        RelayCheck::DialOnly => dial_only_relay_allowed(raw).await,
+    }
+}
+
+/// Resolve an advertised relay to its addresses, refusing anything but a public https relay whose every address is public.
+async fn resolve_public_relay(raw: &str) -> Result<Vec<std::net::SocketAddr>, String> {
+    use fe_runtime::relay_advertisement::{check_resolved_relay_address, AdvertisedRelayPolicy, RelayReach};
+    let resolved = match public_relay_host(raw)? {
+        RelayHost::Literal(address) => return Ok(vec![address]),
+        RelayHost::Domain(domain, port) => lookup_relay_host(&domain, port).await?,
+    };
     let mut addresses = Vec::new();
     for address in resolved {
         match check_resolved_relay_address(address.ip(), AdvertisedRelayPolicy::process()) {
@@ -2445,22 +2650,12 @@ async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
 
 /// A DialOnly advert may join the peer-address allowlist when every resolved address passes the process address policy (private reach only under the operator opt-in, loopback and link-local never).
 async fn dial_only_relay_allowed(raw: &str) -> Result<(), String> {
-    use fe_runtime::relay_advertisement::{
-        check_resolved_relay_address, validate_advertised_relay_url, AdvertisedRelayPolicy,
-    };
-    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
+    use fe_runtime::relay_advertisement::{check_resolved_relay_address, AdvertisedRelayPolicy};
     // IP-literal hosts were classified by the validator under the same policy.
-    let Some(domain) = advertised.url().domain() else {
+    let Some((domain, port)) = dial_only_relay_host(raw)? else {
         return Ok(());
     };
-    let port = advertised.url().port_or_known_default().unwrap_or(443);
-    let resolved = tokio::time::timeout(
-        ADVERTISED_RELAY_RESOLVE_TIMEOUT,
-        tokio::net::lookup_host((domain, port)),
-    )
-    .await
-    .map_err(|_| "host resolution timed out".to_string())?
-    .map_err(|error| format!("host resolution failed: {error}"))?;
+    let resolved = lookup_relay_host(&domain, port).await?;
     let policy = AdvertisedRelayPolicy::process();
     let mut any_address = false;
     for address in resolved {
@@ -5224,6 +5419,49 @@ mod tests {
         assert_eq!(ops, vec![insert_op], "after the cooldown the relay is adopted again");
         apply(&mut adoption, ops, &endpoint).await;
         assert!(relay_entry(&endpoint, PINNED_RELAY).await.is_some());
+
+        // sync-relay-2: a host-name relay never holds the pass on DNS. The lookup is only ever answered by hand here.
+        const NAMED_RELAY: &str = "https://relay-pending.example.org/";
+        let named_policy = RelayAdvertisePolicy::Pinned(vec![NAMED_RELAY.to_string()]);
+        let named = adverts(&[("verse-a", &[NAMED_RELAY])]);
+        let plan_named = |adoption: &mut RelayAdoption| {
+            adoption.reconciler.plan_tiers(&RelayReconcileInputs {
+                policy: &named_policy,
+                advertised: &named,
+                home_connected: None,
+                coverage: BTreeSet::new(),
+                auto_home: false,
+                home_health: RelayHealth::Unknown,
+            })
+        };
+        let named_insert = RelayOp::Insert(NAMED_RELAY.to_string());
+        let mut named_adoption = RelayAdoption::new(RelayReconciler::from_relay_config(&RelayConfig::Disabled));
+        let ops = plan_named(&mut named_adoption);
+        assert_eq!(ops, vec![named_insert.clone()]);
+        assert!(
+            futures_lite::future::poll_once(apply(&mut named_adoption, ops, &endpoint)).await.is_some(),
+            "an unanswered lookup never makes the pass (and so the next command) wait"
+        );
+        assert!(!named_adoption.reconciler.is_inserted(NAMED_RELAY), "pending until the verdict lands");
+        assert_eq!(named_adoption.take_lookups(), vec![(NAMED_RELAY.to_string(), RelayCheck::Insertable)]);
+        let ops = plan_named(&mut named_adoption);
+        apply(&mut named_adoption, ops, &endpoint).await;
+        assert!(named_adoption.take_lookups().is_empty(), "one lookup per URL in flight");
+        named_adoption.replan = false;
+        named_adoption.record_lookup(NAMED_RELAY.to_string(), RelayCheck::Insertable, Ok(()));
+        assert!(named_adoption.replan, "a landed verdict wakes a re-plan");
+        let ops = plan_named(&mut named_adoption);
+        assert_eq!(ops, vec![named_insert], "the verdict is applied only because the current plan still names the URL");
+        apply(&mut named_adoption, ops, &endpoint).await;
+        assert!(relay_entry(&endpoint, NAMED_RELAY).await.is_some(), "inserted on the pass after the verdict");
+        // A verdict for a URL the plan no longer names is discarded at the end of the pass.
+        named_adoption.record_lookup("https://withdrawn.example.org/".to_string(), RelayCheck::Insertable, Ok(()));
+        named_adoption.finish_pass(std::time::Instant::now());
+        assert!(named_adoption.lookup_results.is_empty());
+        endpoint
+            .inner()
+            .remove_relay(&NAMED_RELAY.parse::<iroh::RelayUrl>().expect("relay url"))
+            .await;
 
         // A configured relay keeps its token entry: the planner never plans it and a direct removal is refused.
         let configured_url: iroh::RelayUrl = CONFIGURED_RELAY.parse().expect("relay url");
