@@ -116,6 +116,8 @@ pub struct RightSidebarState {
     pub(crate) width: super::layout_policy::PanelWidthState,
     /// Session-only "Cut/fill colors" checkbox; mirrored to the fe-renderer toggle by `update_residency_readout`.
     pub heatmap_overlay: fe_renderer::terrain_overlay::HeatmapOverlayToggle,
+    /// Inverted so the derived default shows the checkbox; mirrored from `ProposalLayerVisible`.
+    pub proposal_layer_hidden: bool,
 }
 
 /// What is resident right now (D-74 pointer-set): ledger nodes + stamp groups,
@@ -149,8 +151,12 @@ pub fn update_residency_readout(
     mut state: bevy::prelude::ResMut<RightSidebarState>,
     toggle: Option<bevy::prelude::ResMut<fe_renderer::terrain_overlay::HeatmapOverlayToggle>>,
     mut last_synced: bevy::prelude::Local<fe_renderer::terrain_overlay::HeatmapOverlayToggle>,
+    layer_visible: Option<bevy::prelude::Res<fe_renderer::terrain_overlay::ProposalLayerVisible>>,
 ) {
     use bevy::ecs::change_detection::DetectChangesMut;
+    if let Some(layer_visible) = layer_visible {
+        mirror_proposal_layer_hidden(&mut state, layer_visible.visible);
+    }
     if let Some(mut toggle) = toggle {
         // Bypass deref so an unchanged frame does not flag change detection.
         let (state_ref, toggle_ref) = (state.bypass_change_detection(), toggle.bypass_change_detection());
@@ -173,6 +179,18 @@ pub fn update_residency_readout(
     if state.residency != next {
         state.residency = next;
     }
+}
+
+/// Copy the layer visibility into the sidebar state, writing only on change.
+fn mirror_proposal_layer_hidden(state: &mut RightSidebarState, layer_visible: bool) {
+    if state.proposal_layer_hidden == layer_visible {
+        state.proposal_layer_hidden = !layer_visible;
+    }
+}
+
+/// The heatmap checkbox shows only when proposals exist and the overlay layer is visible.
+pub(crate) fn show_heatmap_checkbox(has_proposals: bool, layer_visible: bool) -> bool {
+    has_proposals && layer_visible
 }
 
 /// Two-way mirror between the sidebar checkbox and the renderer toggle, writing only on change.
@@ -752,6 +770,7 @@ fn render_terrain_tools_section(
 ) {
     terrain_tools_panel::ensure_defaults(tool_panel_state);
     let mut heatmap_overlay = state.heatmap_overlay;
+    let layer_visible = !state.proposal_layer_hidden;
     section_chrome(ctx, state, RightSidebarSection::TerrainTools, |ui| {
         terrain_tools_panel::render_palette(ui, tool_panel_state);
         ui.add_space(6.0);
@@ -759,7 +778,7 @@ fn render_terrain_tools_section(
         ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
-        terrain_tools_panel::render_proposal_list(ui, proposal_state, ui_mgr, &mut heatmap_overlay);
+        terrain_tools_panel::render_proposal_list(ui, proposal_state, ui_mgr, &mut heatmap_overlay, layer_visible);
     });
     state.heatmap_overlay = heatmap_overlay;
 }
@@ -1955,6 +1974,24 @@ mod tests {
             requested: req,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn heatmap_checkbox_follows_layer_visibility_and_mirror() {
+        for (has_proposals, layer_visible, expected) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            assert_eq!(show_heatmap_checkbox(has_proposals, layer_visible), expected);
+        }
+        let mut state = RightSidebarState::default();
+        assert!(!state.proposal_layer_hidden, "default shows the checkbox");
+        mirror_proposal_layer_hidden(&mut state, false);
+        assert!(state.proposal_layer_hidden);
+        mirror_proposal_layer_hidden(&mut state, true);
+        assert!(!state.proposal_layer_hidden);
     }
 
     #[test]

@@ -16,6 +16,18 @@ impl Default for HeatmapOverlayToggle {
     }
 }
 
+/// Mirror of the ProposalOverlay layer's visibility; fe-terrain writes it, fe-ui reads it (fe-ui has no fe-terrain dependency).
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposalLayerVisible {
+    pub visible: bool,
+}
+
+impl Default for ProposalLayerVisible {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
 /// Marker for spawned proposal ghost geometry (analytics overlay, not true terrain).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ProposalGhost;

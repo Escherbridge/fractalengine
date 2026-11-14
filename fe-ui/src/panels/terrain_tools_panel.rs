@@ -255,6 +255,7 @@ pub(crate) fn render_proposal_list(
     proposal_state: &mut ProposalEditState,
     ui_mgr: &mut UiManager,
     heatmap_overlay: &mut fe_renderer::terrain_overlay::HeatmapOverlayToggle,
+    layer_visible: bool,
 ) {
     ui.label(
         egui::RichText::new("Proposals")
@@ -272,9 +273,17 @@ pub(crate) fn render_proposal_list(
         return;
     }
 
-    ui.checkbox(&mut heatmap_overlay.enabled, "Cut/fill colors")
-        .named(ui, "Cut/fill colors")
-        .on_hover_text("Shade the proposed change: red = cut, blue = fill");
+    if crate::ui_shell::right_sidebar::show_heatmap_checkbox(true, layer_visible) {
+        ui.checkbox(&mut heatmap_overlay.enabled, "Cut/fill colors")
+            .named(ui, "Cut/fill colors")
+            .on_hover_text("Shade the proposed change: red = cut, blue = fill");
+    } else {
+        ui.label(
+            egui::RichText::new("Proposal layer is hidden")
+                .small()
+                .color(theme::TEXT_MUTED),
+        );
+    }
     ui.add_space(2.0);
 
     // Collect an owned display list first (id, debug label) so the loop below

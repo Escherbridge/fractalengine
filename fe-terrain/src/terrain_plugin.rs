@@ -584,6 +584,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<ProposalRenderState>()
             .init_resource::<ProposalOverlayBudget>()
             .init_resource::<HeatmapOverlayToggle>()
+            .init_resource::<fe_renderer::terrain_overlay::ProposalLayerVisible>()
             .init_resource::<EarthworkBakeState>()
             .init_resource::<fe_renderer::terrain_overlay::EarthworkVolumeState>()
             .init_resource::<BakedHeatmapRenderState>()
@@ -619,6 +620,7 @@ impl Plugin for TerrainPlugin {
                     render_proposal_preview,
                     answer_volume_report_requests,
                     sync_layer_visibility,
+                    crate::proposal_layer_mirror::mirror_proposal_layer_visibility,
                 )
                     .chain(),
             )
