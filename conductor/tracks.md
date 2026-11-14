@@ -87,7 +87,7 @@ Order: signing and release first, then agent QA, then the operator seams.
   any external use. See the entry under P1 — Platform below.
 - [ ] **agent_input_surface** (P1) — **S-AGENT-GUI**: deny-by-default synthetic pointer/key input beside the
   screenshot surface, so agents can run hands-on GUI QA. **Merged into agent_vision_20261031** (runs there as I1-I5) —
-  [./tracks/agent_input_surface_20261031/](./tracks/agent_input_surface_20261031/)
+  [./tracks/agent_input_surface_20261031/](./tracks/agent_input_surface_20261031/) — UI-13 2026-11-13: I1-I5 built inside agent_vision; in-app input verify and sweep user-gated
 - [ ] **agent_vision** (P1) — **S-AGENT-GUI**: screenshots **on by default** (`FE_API_SCREENSHOT_ALLOW=0` disables), posed
   `POST /api/v1/debug/screenshot` (camera / orbit / geo / slippy tile / node focus; window or off-screen scene mode;
   resolved pose returned), `GET /api/v1/debug/camera`, multi-focus terrain streaming, and the folded-in input surface.
@@ -96,16 +96,20 @@ Order: signing and release first, then agent QA, then the operator seams.
 - [ ] **relay_operability** (P1) — **S-RELAY** + **S-RELAY-ADVERTISE**: opt-in `/metrics`, a `UsageEvent` sink,
   TLS/backup/self-hosted iroh-relay docs, and verse-advertised relays via `Endpoint::insert_relay` —
   [./tracks/relay_operability_20261031/](./tracks/relay_operability_20261031/)
+  Status 2026-11-13 (NET-38): code-complete-pending-sweep; plan 9 of 10 tasks ticked. Open: S9 review-and-fix with recorded verdicts, full sweep (user-gated).
 - [ ] **hexon_entitlements** (P1) — **S-REGISTRY** + **S-ENTITLEMENT**: registry protocol v1, a `PackageStore`
   trait, default-deny registry auth, and an `EntitlementVerifier` that gives effect to the inert
   `LicenseType::Paid` / `encrypted_key` / `free_entries` fields —
   [./tracks/hexon_entitlements_20261031/](./tracks/hexon_entitlements_20261031/)
+  Status 2026-11-13 (HEXON-18): S1 `b32eabcd` and S3 `89b2f2f5` landed, S5 `8558990d` landed, S6 close-out ticked in `b9951457`. S2 (PackageStore, default-deny) and S4 (Hexon Manager states) are partial at HEAD; S7 docs and the full sweep stay open.
 - [ ] **peer_networking_support** (P1) — secure relay-capable peers, built on S-RELAY-ADVERTISE. Scope:
   - an embedded iroh-relay server in fe-relay (opt-in, members-only `AccessControl`, live eviction on revoke);
   - desktop relay mode after a UDP self-test plus an HTTPS dial-back;
   - signed and bounded advertisements, adopted as **DialOnly** by default (the home relay is per endpoint, not per verse);
   - per-message gossip signing, closing residual S-1;
   - truthful direct-vs-relayed diagnostics.
+
+  Status 2026-11-13 (NET-38): 15 of 26 plan tasks ticked. F0 PASS-WITH-FIXES (2026-10-31); F1, F2 and F3 PASS-WITH-FIXES via R-NET-3..R-NET-6 (2026-11-13). F3 relay start waits on R6-05, R6-10, R6-11; evidence and sweep pending.
 
   **Fable review gates F0–F3 are embedded.** F0 is the design and threat-model review, before any code. Sequenced after
   relay_operability — [./tracks/peer_networking_support_20261031/](./tracks/peer_networking_support_20261031/)
@@ -114,6 +118,7 @@ Order: signing and release first, then agent QA, then the operator seams.
   use. Code landed 2026-11-08 (S0–S6, `c519111f`..`5ed08447`). Open: the workspace sweep and the user's in-app
   consent check; in-app install now runs through extension_platform's Extensions panel (Install from file, Browse)
   over the `plugin_bridge` ops drain — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
+- [ ] **[per_key_clock_20261113](./tracks/per_key_clock_20261113/)** (P1, pending): per-key (HLC, author) clock for verse/fractal/petal rows and node fields; a replicated row is judged by its author's role at write time (QA-0165, user 2026-11-13); roots QA-0156/0166/0126.
 
 ---
 
@@ -159,7 +164,7 @@ after the complete goal and local verification pass; implementation stays local 
 
 ### [ ] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
 
-_Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · pending · 0 / 6 waves · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_
+_Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · pending · 0 / 6 waves · UI-13 2026-11-13: wave code landed (see accountability log); W3/W6 in-app look user-gated · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_
 
 Six waves of disjoint leaf slices (27 total), each followed by a serial gate, an **advocate** review-and-fix
 (design patterns, reuse, ergonomics) and a **critic** review-and-fix (defects, anti-patterns, tests that
@@ -211,9 +216,15 @@ REST summary (e96fa75, 195f5cc, 118e666). Open: determinism test (un-ticked
 2026-10-10); retro/in-app. Gap: `SculptDeleteRegion` has a handler but **no UI
 producer**, so a region cannot be deleted from the app (SB-EARTHWORK-DELETE).
 
+### [ ] utility_node_contract_20261113 — deferred stub (P4 spin-out)
+
+_Link: [./tracks/utility_node_contract_20261113/](./tracks/utility_node_contract_20261113/) · deferred · parent terrain_proposal_delta_viz_20261025 · docs only, no code_
+
+Spin-out of terrain_proposal_delta_viz FR-11 (assets-in-volume takeoff). Spec and plan stub only (UI-12); revisit once a utility node contract is ratified.
+
 ### [~] terrain_proposal_delta_viz — visible cut/fill delta + selected-volume report
 
-_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · done-pending-sweep · 14 done / 0 open · created 2026-10-25 from in-app F5_
+_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · done-pending-sweep · 14 done / 0 open · created 2026-10-25 from in-app F5 · UI-13 2026-11-13: in-app F5 verify and sweep still user-gated_
 
 **COMPLETE:** W1–W4 (all slices S1–S7 + S8 docs). P1 lattice ghost + civil red/blue cut/fill
 heatmap (live before commit) + P2 selected-volume report (true cut/fill/net, per-item,
@@ -361,10 +372,9 @@ constraint now applies to the canonical path only (F1/F2 made the legacy row pat
 
 ### [ ] hexon_unification — one canonical .hexon + portable petal snapshot
 
-_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · pending · 0 / 37_
+_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · in_progress · HU-P1..P5 landed via HEXON slices · 37 tasks_
 
-Not started: fe-format is still only a dev-dependency of fe-hexon, `crate_id` and
-`.fecrate` remain, no `PetalSnapshot`, `install_crate` records no petal association.
+Landed (2026-11-13, HEXON-18): PetalSnapshot writer and reader `c6ea3da8`, blob attach and verify-then-write restore `51e216d3`, import `091efecf`, export `a8fd6377`, Manager+ routes `f5f16938` and `d87dce6f`, FR-9 round trip `d7510139`. Open: HU-P6 docs and Phase 6 verification (sweep, user-gated). `crate_id` and `.fecrate` removal not re-verified this round.
 Fully ratified (user directives 2026-07-16) and agent-doable in order HU-P1→P6.
 
 ### [~] p2p_asset_streaming — fine-grained hexon transfer + scene-driven residency
@@ -457,7 +467,7 @@ Their signing / HashSeq / log-first premises are now realized in-core by
   (TS-FR3); two webview v2 gaps await a v1/v2 call (TS-FR2) —
   [./tracks/thorns_shields_20260321/](./tracks/thorns_shields_20260321/)
 - [ ] **inspector_settings** — blocked_on_ratification: FR-1/FR-2 shipped; FR-3
-  (hierarchy inspection) and FR-4 (Access tab) have zero code and wait on D-32/D-33 —
+  (hierarchy inspection, `f2d27920`) and FR-4 (Access tab, `3e11e58e`, `6c4735a7`) landed in UI-06..08 (2026-11-13); the status stays blocked_on_ratification until D-32/D-33 are ratified —
   [./tracks/inspector_settings_20260419/](./tracks/inspector_settings_20260419/)
 - [ ] **sso_federation** — enterprise OIDC/SSO, spec_only P2, never scheduled —
   [./tracks/sso_federation_20260429/](./tracks/sso_federation_20260429/)
