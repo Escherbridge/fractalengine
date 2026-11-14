@@ -6,6 +6,7 @@
 pub(crate) mod egress_strings;
 mod layers;
 mod query;
+pub(crate) mod readings;
 
 pub(crate) use layers::{
     apply_app_overlay, apply_overlay_toggle, overlay_registry, set_layer_field,
@@ -37,6 +38,7 @@ pub enum GisPanelTab {
     Layers,
     Paths,
     Export,
+    Readings,
 }
 
 /// A single query result row: enough to display and to select+focus the node.
@@ -90,6 +92,8 @@ pub struct GisPanelState {
     pub last_error: Option<String>,
     /// Export-tab "Copy for BI" card state (analytics_egress_20260714).
     pub(crate) egress: egress_strings::EgressCardState,
+    /// Readings tab: polled live petal readings.
+    pub(crate) readings: readings::ReadingsState,
 }
 
 impl Default for GisPanelState {
@@ -111,6 +115,7 @@ impl Default for GisPanelState {
             query_request_id: None,
             last_error: None,
             egress: egress_strings::EgressCardState::default(),
+            readings: readings::ReadingsState::default(),
         }
     }
 }
@@ -125,6 +130,7 @@ impl GisPanelState {
             self.query_completed = false;
             self.query_request_id = None;
             self.last_error = None;
+            self.readings = readings::ReadingsState::default();
         }
     }
 

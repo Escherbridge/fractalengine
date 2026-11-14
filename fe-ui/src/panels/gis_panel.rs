@@ -94,6 +94,11 @@ pub(crate) fn render_gis_panel(
                         nav.active_verse_id.as_deref(),
                     );
                 }
+                GisPanelTab::Readings => {
+                    gis_state
+                        .readings
+                        .render(ui, verse_mgr, &petal_id, node_mgr, camera_focus);
+                }
                 GisPanelTab::Annotations => {
                     render_annotations_tab(
                         ui,
@@ -165,6 +170,7 @@ fn render_tab_bar(ui: &mut egui::Ui, gis_state: &mut GisPanelState) {
     ui.horizontal_wrapped(|ui| {
         for (tab, label) in [
             (GisPanelTab::Query, "Query"),
+            (GisPanelTab::Readings, "Readings"),
             (GisPanelTab::Annotations, "Annotations"),
             (GisPanelTab::Layers, "Layers"),
             (GisPanelTab::Paths, "Paths"),

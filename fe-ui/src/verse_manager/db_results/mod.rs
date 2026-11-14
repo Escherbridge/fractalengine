@@ -197,9 +197,20 @@ pub(super) fn apply_db_results(
         caches.spawned.iter().map(|m| m.node_id.clone()).collect();
     let mesh_budget_exceeded = caches.mesh_budget.exceeded;
     verse_mgr.synchronize_scene_navigation(&nav);
+    let now_secs = caches.time.elapsed_secs_f64();
+    if gis_panel.open
+        && gis_panel.active_tab == crate::gis::GisPanelTab::Readings
+        && gis_panel.readings.due(now_secs)
+    {
+        let gis = &mut *gis_panel;
+        gis.readings.poll(now_secs, crate::gis::readings::now_unix_ms(), gis.petal_id.as_deref(), &db_sender.0);
+    }
     // A replicated role row arrived: re-resolve the local role once for the whole batch.
     let mut role_rows_applied = false;
     for result in reader.read() {
+        if gis_panel.readings.claims(result) && gis_panel.readings.route(result) {
+            continue;
+        }
         verse_mgr.synchronize_scene_navigation(&nav);
         match result {
             DbResult::RoleAssigned { scope, .. } | DbResult::RoleRevoked { scope, .. }
