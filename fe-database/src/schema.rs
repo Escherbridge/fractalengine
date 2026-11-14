@@ -211,6 +211,26 @@ define_table! {
 }
 
 define_table! {
+    /// Op-log history restored by a petal snapshot import: display and re-export only, never a proof or marker source (handlers/AGENTS.md §petal-snapshot op_log allow-list).
+    table "op_log_imported" => OpLogImported (id: source_id) {
+        lamport_clock:   i64               => "TYPE int",
+        hlc_timestamp:   String            => "TYPE string DEFAULT ''",
+        node_id:         String            => "TYPE string",
+        op_type:         String            => "TYPE string",
+        payload:         serde_json::Value => "TYPE object FLEXIBLE",
+        sig:             String            => "TYPE string",
+        /// The row's `op_log:<key>` record id in the exporting store.
+        source_id:       String            => "TYPE string",
+        /// The petal the import restored; export reads quarantined rows by it.
+        import_petal_id: String            => "TYPE string",
+        /// One fresh ULID per import, also carried by its `ImportPetal` audit entry.
+        import_id:       String            => "TYPE string",
+        correlation_id:  Option<String>    => "TYPE option<string>",
+        imported_by:     Option<String>    => "TYPE option<string>"
+    }
+}
+
+define_table! {
     /// A verse -- the top-level container in the hierarchy.
     table "verse" => Verse (id: verse_id) {
         verse_id:       String         => "TYPE string",
@@ -803,6 +823,9 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
     Repo::<LocalMigrationMarker>::apply_schema(db).await?;
     Repo::<JoinDelegationRow>::apply_schema(db).await?;
     Repo::<OpLog>::apply_schema(db).await?;
+    Repo::<OpLogImported>::apply_schema(db).await?;
+    db.query("DEFINE INDEX IF NOT EXISTS idx_op_log_imported_petal ON TABLE op_log_imported FIELDS import_petal_id")
+        .await?.check().map_err(|e| anyhow::anyhow!("idx_op_log_imported_petal: {e}"))?;
     Repo::<Node>::apply_schema(db).await?;
     // Backfill nodes created before `edit_seq` existed: DEFAULT only fires
     // when a field is absent from a write, not when it's stored as NONE, so
@@ -1074,6 +1097,7 @@ pub const DEVELOPMENT_RESET_TABLE_NAMES: &[&str] = &[
     "local_migration_marker",
     "join_delegation",
     "op_log",
+    "op_log_imported",
     "verse",
     "verse_member",
     "fractal",

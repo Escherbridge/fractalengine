@@ -10,11 +10,12 @@ use fe_runtime::messages::DbResult;
 use fe_runtime::petal_snapshot::{PetalSnapshotRows, OPLOG_PREDICATE_VERSION};
 
 use crate::handlers::correlated_failure;
+use crate::handlers::object_creation::is_admissible_transform;
 use crate::op_log::{admit_scene_hlc, advance_hlc_past, commit_operation, most_specific_error};
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
 
-/// One read transaction: three id LETs, then the ten table SELECTs in [`PetalSnapshotRows`] field order.
+/// One read transaction: three id LETs, the ten table SELECTs in [`PetalSnapshotRows`] field order, then quarantined history.
 /// The op-log SELECT is the coarse SQL half of predicate v1; [`oplog_entry_matches_petal`] is the exact half.
 const EXPORT_SCRIPT: &str = "BEGIN TRANSACTION;
 LET $petal_node_ids = (SELECT VALUE node_id FROM node WHERE petal_id = $petal);
@@ -30,12 +31,13 @@ SELECT * FROM asset WHERE asset_id IN $node_asset_ids OR asset_id IN $model_asse
 SELECT * FROM role WHERE scope = $scope ORDER BY peer_did ASC;
 SELECT * FROM iot_reading WHERE petal_id = $petal ORDER BY recorded_at_ms ASC, reading_id ASC;
 SELECT * FROM op_log WHERE payload.petal_id = $petal OR payload.scope CONTAINS $petal_segment OR node_id IN $petal_node_ids OR payload.node_id IN $petal_node_ids ORDER BY lamport_clock ASC;
+SELECT * FROM op_log_imported WHERE import_petal_id = $petal ORDER BY lamport_clock ASC;
 COMMIT TRANSACTION;";
 
 /// Result slot of the first SELECT: `BEGIN` and the three `LET`s come first.
 const FIRST_SELECT_SLOT: usize = 4;
 /// SELECT statements in [`EXPORT_SCRIPT`].
-const SELECT_COUNT: usize = 10;
+const SELECT_COUNT: usize = 11;
 /// Every result slot of [`EXPORT_SCRIPT`], `COMMIT` included.
 const SCRIPT_SLOTS: usize = FIRST_SELECT_SLOT + SELECT_COUNT + 1;
 
@@ -107,16 +109,24 @@ async fn collect_petal_rows(db: &Db, petal_id: &str, scope: &str) -> anyhow::Res
     let roles = next();
     let iot_readings = next();
     let candidate_oplog = next();
+    let quarantined_oplog = next();
 
     let petal_node_ids: HashSet<&str> = nodes
         .iter()
         .filter_map(|node| node.get("node_id").and_then(Value::as_str))
         .collect();
-    let oplog: Vec<Value> = candidate_oplog
+    // Imported history re-exports in its original shape, so export → import → export is a fixed point.
+    let mut oplog: Vec<Value> = quarantined_oplog
         .into_iter()
-        .filter(|entry| oplog_entry_matches_petal(entry, petal_id, &petal_node_ids))
+        .filter_map(exported_quarantined_row)
+        .chain(
+            candidate_oplog
+                .into_iter()
+                .filter(|entry| oplog_entry_matches_petal(entry, petal_id, &petal_node_ids)),
+        )
         .filter(|entry| is_importable_op_type(entry["op_type"].as_str().unwrap_or_default()))
         .collect();
+    oplog.sort_by_key(|entry| entry["lamport_clock"].as_u64().unwrap_or_default());
 
     Ok(PetalSnapshotRows {
         petal,
@@ -161,6 +171,20 @@ fn scope_names_petal(scope: &str, petal_id: &str) -> bool {
     })
 }
 
+/// Columns `op_log_imported` adds to an op-log row; dropped again on export.
+const QUARANTINE_COLUMNS: [&str; 5] = ["source_id", "import_petal_id", "import_id", "correlation_id", "imported_by"];
+
+/// A quarantined row in its exported `op_log` shape: the original record id back, provenance dropped.
+fn exported_quarantined_row(mut row: Value) -> Option<Value> {
+    let object = row.as_object_mut()?;
+    let source_id = object.get("source_id").and_then(Value::as_str)?.to_string();
+    for column in QUARANTINE_COLUMNS {
+        object.remove(column);
+    }
+    object.insert("id".into(), json!(source_id));
+    Some(row)
+}
+
 /// DB-thread reply to `DbCommand::ExportPetalSnapshot`, echoing `correlation_id`.
 pub async fn export_petal_snapshot_reply(db: &Db, petal_id: String, correlation_id: Option<String>) -> DbResult {
     match export_petal_snapshot(db, &petal_id).await {
@@ -182,7 +206,7 @@ pub enum ImportError {
     /// The rows are malformed or not attributable to the snapshot's petal; nothing was written.
     #[error("invalid petal snapshot: {0}")]
     Invalid(String),
-    /// A node, reading or op-log marker in the snapshot already exists here under another owner; nothing was written.
+    /// A node or reading in the snapshot already exists here under another owner; nothing was written.
     #[error("snapshot rows collide with existing local rows")]
     Collision,
     /// The restore transaction failed and was cancelled, then cascade-cleaned; no partial petal remains.
@@ -217,14 +241,6 @@ fn is_well_formed_node_id(node_id: &str) -> bool {
         && node_id.len() <= MAX_NODE_ID_LEN
         && node_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'#' | b'.' | b':'))
 }
-/// Payload fields other writers look op-log rows up by (request and operation ids); imported ones must be fresh.
-const OPLOG_MARKER_FIELDS: [&str; 5] = [
-    "editor_batch_request_id",
-    "editor_request_id",
-    "stamp_request_id",
-    "operation_id",
-    "group_restore_of",
-];
 
 /// Defensive cleanup after a failed restore: every row keyed to the petal id, the petal row last.
 const CASCADE_SCRIPT: &str = "BEGIN TRANSACTION;
@@ -234,13 +250,23 @@ DELETE node WHERE petal_id = $petal;
 DELETE room WHERE petal_id = $petal;
 DELETE model WHERE petal_id = $petal;
 DELETE iot_reading WHERE petal_id = $petal;
+DELETE op_log_imported WHERE import_petal_id = $petal;
 DELETE field_def WHERE scope = $petal_scope OR string::starts_with(scope, $petal_scope_child);
 DELETE petal WHERE petal_id = $petal;
 COMMIT TRANSACTION;";
 
 /// Restore a snapshot verbatim in one transaction, advance the HLC past its clocks, then record `ImportPetal`.
-#[instrument(skip_all)]
 pub async fn import_petal_snapshot(db: &Db, rows: PetalSnapshotRows) -> Result<(), ImportError> {
+    import_petal_snapshot_correlated(db, rows, None).await
+}
+
+/// [`import_petal_snapshot`] with the caller's correlation id stamped on the quarantined history.
+#[instrument(skip_all)]
+async fn import_petal_snapshot_correlated(
+    db: &Db,
+    rows: PetalSnapshotRows,
+    correlation_id: Option<&str>,
+) -> Result<(), ImportError> {
     let petal_id = rows.petal_id();
     if petal_id.is_empty() {
         return Err(invalid("the petal row has no petal_id"));
@@ -259,7 +285,9 @@ pub async fn import_petal_snapshot(db: &Db, rows: PetalSnapshotRows) -> Result<(
         .ok_or_else(|| invalid("the snapshot's parent fractal does not exist here"))?;
     let petal_scope = format!("{fractal_scope}-PETAL#{petal_id}");
     let source_node_id = string_field(&rows.petal, "node_id").unwrap_or_default().to_string();
-    let plan = RestorePlan::build(&petal_id, &petal_scope, rows)?;
+    let import_id = ulid::Ulid::new().to_string();
+    let provenance = Provenance { import_id: &import_id, correlation_id };
+    let plan = RestorePlan::build(&petal_id, &petal_scope, &provenance, rows)?;
     let clock_maxima = plan.clock_maxima;
 
     if let Err(error) = run_restore(db, plan).await {
@@ -286,7 +314,7 @@ pub async fn import_petal_snapshot(db: &Db, rows: PetalSnapshotRows) -> Result<(
         hlc_timestamp: String::new(),
         node_id: NodeId(petal_id.clone()),
         op_type: OpType::ImportPetal,
-        payload: json!({ "petal_id": petal_id, "source_node_id": source_node_id }),
+        payload: json!({ "petal_id": petal_id, "source_node_id": source_node_id, "import_id": import_id }),
         sig: "00".repeat(64),
     };
     if let Err(error) = commit_operation(db, entry, |_lamport| async { Ok::<(), anyhow::Error>(()) }).await {
@@ -302,7 +330,8 @@ pub async fn import_petal_snapshot_reply(
     correlation_id: Option<String>,
 ) -> DbResult {
     let petal_id = rows.petal_id();
-    match import_petal_snapshot(db, rows).await {
+    let outcome = import_petal_snapshot_correlated(db, rows, correlation_id.as_deref()).await;
+    match outcome {
         Ok(()) => DbResult::PetalSnapshotImported {
             petal_id,
             correlation_id,
@@ -319,6 +348,12 @@ pub async fn import_petal_snapshot_reply(
     }
 }
 
+/// What one import stamps on every quarantined op-log row it writes.
+struct Provenance<'a> {
+    import_id: &'a str,
+    correlation_id: Option<&'a str>,
+}
+
 /// The validated restore transaction: script, its bindings and the highest restored clock per family.
 struct RestorePlan {
     /// Guards first (they must see only pre-existing rows), then the writes.
@@ -332,7 +367,12 @@ struct RestorePlan {
 
 impl RestorePlan {
     /// Validate every row against the snapshot petal and its scope, render one `BEGIN … COMMIT` script; writes nothing.
-    fn build(petal_id: &str, petal_scope: &str, rows: PetalSnapshotRows) -> Result<Self, ImportError> {
+    fn build(
+        petal_id: &str,
+        petal_scope: &str,
+        provenance: &Provenance<'_>,
+        rows: PetalSnapshotRows,
+    ) -> Result<Self, ImportError> {
         let PetalSnapshotRows {
             mut petal,
             nodes,
@@ -361,7 +401,7 @@ impl RestorePlan {
         let scope_binding = plan.bind(json!(petal_scope));
         let scope_child_binding = plan.bind(json!(scope_child));
         plan.guard(format!(
-            "IF {petal_tables} OR array::len((SELECT VALUE id FROM field_def WHERE scope = ${scope_binding} OR string::starts_with(scope, ${scope_child_binding}))) > 0 {{ THROW '{PETAL_EXISTS_MARKER}' }}"
+            "IF {petal_tables} OR array::len((SELECT VALUE id FROM op_log_imported WHERE import_petal_id = ${petal_binding})) > 0 OR array::len((SELECT VALUE id FROM field_def WHERE scope = ${scope_binding} OR string::starts_with(scope, ${scope_child_binding}))) > 0 {{ THROW '{PETAL_EXISTS_MARKER}' }}"
         ));
         let inside_petal_scope = |scope: &str| scope == petal_scope || scope.starts_with(&scope_child);
 
@@ -398,6 +438,19 @@ impl RestorePlan {
                 .as_ref()
                 .and_then(point_coordinates)
                 .ok_or_else(|| invalid(format!("node {node_id} has no finite GeoJSON point position")))?;
+            // Absent elevation is the schema default; any other value must be a number.
+            let elevation = match node.get("elevation") {
+                None | Some(Value::Null) => 0.0,
+                Some(value) => value
+                    .as_f64()
+                    .ok_or_else(|| invalid(format!("node {node_id} has a non-numeric elevation")))?,
+            };
+            let (Some(rotation), Some(scale)) = (number_array(&node, "rotation"), number_array(&node, "scale")) else {
+                return Err(invalid(format!("node {node_id} has no numeric rotation and scale")));
+            };
+            if !is_admissible_transform([position.0, elevation, position.1], &rotation, &scale) {
+                return Err(invalid(format!("node {node_id} has a transform outside the object-creation bounds")));
+            }
             let x = plan.bind(json!(position.0));
             let z = plan.bind(json!(position.1));
             let statement = plan.create_statement(&record, node, Some(format!("{{ position: <geometry<point>> [${x}, ${z}] }}")));
@@ -489,9 +542,8 @@ impl RestorePlan {
         }
 
         let node_id_refs: HashSet<&str> = node_ids.iter().map(String::as_str).collect();
-        let mut oplog_markers: HashSet<String> = HashSet::new();
-        let mut adopted_asset_ids: HashSet<String> = HashSet::new();
-        for entry in oplog {
+        let mut source_ids: HashSet<String> = HashSet::new();
+        for mut entry in oplog {
             let record = record_id(&entry, "op_log")?.to_string();
             if !oplog_entry_matches_petal(&entry, petal_id, &node_id_refs) {
                 return Err(invalid("an op_log entry is not attributable to the snapshot petal"));
@@ -517,16 +569,6 @@ impl RestorePlan {
                 }
                 _ => return Err(invalid("an op_log entry has a non-string payload node_id")),
             }
-            for field in OPLOG_MARKER_FIELDS {
-                if let Some(marker) = payload[field].as_str() {
-                    oplog_markers.insert(marker.to_string());
-                }
-            }
-            if op_type == "SceneAssetAdopted" {
-                if let Some(asset_id) = payload["asset_id"].as_str() {
-                    adopted_asset_ids.insert(asset_id.to_string());
-                }
-            }
             let lamport = entry
                 .get("lamport_clock")
                 .filter(|clock| clock.as_u64().is_some_and(|clock| clock > 0));
@@ -534,30 +576,32 @@ impl RestorePlan {
                 return Err(invalid("an op_log entry has no positive lamport_clock"));
             }
             observe_clock(&mut plan.clock_maxima[0], lamport, "op_log lamport_clock")?;
-            let statement = plan.create_statement(&record, entry, None);
-            plan.push(statement);
+            if !source_ids.insert(record.clone()) {
+                return Err(invalid(format!("op_log record {record} appears twice in the snapshot")));
+            }
+            // Quarantine: imported history lands in `op_log_imported`, which no proof or marker lookup reads.
+            let Some(object) = entry.as_object_mut() else {
+                return Err(invalid("an op_log entry is not an object"));
+            };
+            object.remove("id");
+            object.insert("source_id".into(), json!(record));
+            object.insert("import_petal_id".into(), json!(petal_id));
+            object.insert("import_id".into(), json!(provenance.import_id));
+            object.remove("imported_by");
+            match provenance.correlation_id {
+                Some(correlation_id) => object.insert("correlation_id".into(), json!(correlation_id)),
+                None => object.remove("correlation_id"),
+            };
+            let row_binding = plan.bind(crate::repo::strip_json_nulls(entry));
+            plan.push(format!("CREATE op_log_imported CONTENT ${row_binding}"));
         }
 
-        // Identity guards (security inbox 5, 6, 8): every imported identity other writers look up must be
-        // new here, so a snapshot can never take over or shadow another scope's rows.
+        // Identity guards (security inbox 5, 8): every imported node and reading identity must be new here, so a
+        // snapshot can never take over or shadow another scope's rows. Op-log markers need no guard: quarantined.
         let mut node_identities = node_ids;
         node_identities.extend(dangling_node_ids);
         plan.collision_guard(|set| format!("SELECT VALUE id FROM node WHERE node_id IN ${set}"), node_identities);
         plan.collision_guard(|set| format!("SELECT VALUE id FROM iot_reading WHERE reading_id IN ${set}"), reading_ids);
-        let marker_lookup = OPLOG_MARKER_FIELDS
-            .map(|field| format!("payload.{field} IN $"))
-            .to_vec();
-        plan.collision_guard(
-            |set| {
-                let clauses: Vec<String> = marker_lookup.iter().map(|clause| format!("{clause}{set}")).collect();
-                format!("SELECT VALUE id FROM op_log WHERE {}", clauses.join(" OR "))
-            },
-            oplog_markers,
-        );
-        plan.collision_guard(
-            |set| format!("SELECT VALUE id FROM op_log WHERE op_type = 'SceneAssetAdopted' AND payload.asset_id IN ${set}"),
-            adopted_asset_ids,
-        );
 
         let writes = std::mem::take(&mut plan.writes);
         plan.script.push_str(&writes);
@@ -683,6 +727,11 @@ fn require_petal(row: &Value, table: &str, petal_id: &str) -> Result<(), ImportE
 /// Remove `field` from an object row, returning it unless it was null.
 fn take_field(row: &mut Value, field: &str) -> Option<Value> {
     row.as_object_mut()?.remove(field).filter(|value| !value.is_null())
+}
+
+/// Every element of an array field as `f64`; `None` when absent or any element is not a number.
+fn number_array(row: &Value, field: &str) -> Option<Vec<f64>> {
+    row.get(field)?.as_array()?.iter().map(Value::as_f64).collect()
 }
 
 /// `(x, z)` of a finite GeoJSON Point.

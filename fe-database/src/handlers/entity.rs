@@ -376,6 +376,7 @@ pub(crate) async fn delete_entity_handler(
                 "IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id IN $entity_delete_petals)) != array::len(array::distinct($entity_delete_petals)) { THROW 'ambiguous cascade identity'; }",
                 "DELETE node WHERE petal_id IN $entity_delete_petals",
                 "DELETE petal WHERE petal_id IN $entity_delete_petals",
+                "DELETE op_log_imported WHERE import_petal_id IN $entity_delete_petals",
                 "DELETE fractal WHERE fractal_id IN $entity_delete_fractals",
                 "DELETE role WHERE scope IN $entity_deleted_scopes",
                 "DELETE verse_member WHERE verse_id = $entity_target",
@@ -386,11 +387,13 @@ pub(crate) async fn delete_entity_handler(
                 "IF array::len((SELECT VALUE petal_id FROM petal WHERE petal_id IN $entity_delete_petals)) != array::len(array::distinct($entity_delete_petals)) { THROW 'ambiguous cascade identity'; }",
                 "DELETE node WHERE petal_id IN $entity_delete_petals",
                 "DELETE petal WHERE petal_id IN $entity_delete_petals",
+                "DELETE op_log_imported WHERE import_petal_id IN $entity_delete_petals",
                 "DELETE fractal WHERE fractal_id = $entity_target",
             ],
             EntityType::Petal => vec![
                 "DELETE node WHERE petal_id = $entity_target",
                 "DELETE petal WHERE petal_id = $entity_target",
+                "DELETE op_log_imported WHERE import_petal_id = $entity_target",
             ],
         };
         // Retain the old verse-only role cleanup, comparing parsed identifiers exactly.

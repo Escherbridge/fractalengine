@@ -144,6 +144,15 @@ impl PreparedCreation {
     }
 }
 
+/// The numeric transform rule creation and snapshot import share; see AGENTS.md §petal-snapshot op_log allow-list.
+pub(crate) fn is_admissible_transform(position: [f64; 3], rotation: &[f64], scale: &[f64]) -> bool {
+    position.iter().all(|v| v.is_finite() && (*v as f32).is_finite())
+        && matches!(rotation.len(), 3 | 4)
+        && scale.len() == 3
+        && rotation.iter().all(|v| v.is_finite())
+        && scale.iter().all(|v| v.is_finite() && *v > 0.0 && (*v as f32).is_finite() && (*v as f32) > 0.0)
+}
+
 fn scene_extension(content_type: &str) -> anyhow::Result<&'static str> {
     match content_type {
         "model/gltf-binary" => Ok("glb"),
@@ -172,11 +181,7 @@ pub(crate) async fn prepare(
     anyhow::ensure!(
         !name.trim().is_empty()
             && name.len() <= 1024
-            && position.iter().all(|v| v.is_finite() && (*v as f32).is_finite())
-            && matches!(rotation.len(), 3 | 4)
-            && scale.len() == 3
-            && rotation.iter().all(|v| v.is_finite())
-            && scale.iter().all(|v| v.is_finite() && *v > 0.0 && (*v as f32).is_finite() && (*v as f32) > 0.0),
+            && is_admissible_transform(position.map(f64::from), &rotation, &scale),
         "object requires a non-empty bounded name and finite complete transform"
     );
     let (mut statements, mut bindings) = node_history::scope_fence(&scope, None)?;

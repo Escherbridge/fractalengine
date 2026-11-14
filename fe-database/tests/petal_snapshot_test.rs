@@ -9,7 +9,8 @@ use fe_database::op_log::commit_operation;
 use fe_database::types::{NodeId, OpLogEntry, OpType};
 use fe_format::snapshot as archive_format;
 use fe_format::{AssetEntry, EntryKind, HexonManifest, HexonType};
-use fe_runtime::messages::DbResult;
+use fe_database::handlers::visibility_groups::set_petal_visibility_groups_reply;
+use fe_runtime::messages::{CallerAuth, DbResult, VisibilityGroupDto};
 use fe_runtime::petal_snapshot::PetalSnapshotRows;
 use serde_json::{json, Value};
 
@@ -330,6 +331,12 @@ async fn petal_snapshot_export_then_import_journey() {
     seed_fractal(&restored_db).await;
     import_petal_snapshot(&restored_db, snapshot.clone()).await.expect("import into a fresh DB");
     let restored = export_petal_snapshot(&restored_db, PETAL).await.expect("export the restored petal");
+    // Quarantine: imported history is never live op-log, so no proof or marker lookup can read it.
+    let live_types = select(&restored_db, "SELECT VALUE op_type FROM op_log ORDER BY lamport_clock ASC").await;
+    assert_eq!(live_types, [json!("ImportPetal"), json!("ExportPetal")], "only this node's own audit entries are live");
+    let quarantined = select(&restored_db, "SELECT VALUE source_id FROM op_log_imported ORDER BY lamport_clock ASC").await;
+    let source_ids: Vec<Value> = snapshot.oplog.iter().map(|entry| entry["id"].clone()).collect();
+    assert_eq!(quarantined, source_ids, "every imported entry is quarantined under its original record id");
     assert_eq!(restored.petal, snapshot.petal, "petal row restored verbatim");
     assert_eq!(restored.nodes, snapshot.nodes, "node rows restored verbatim, record ids and geometry included");
     assert_eq!(restored.node_log, snapshot.node_log);
@@ -379,6 +386,56 @@ async fn petal_snapshot_export_then_import_journey() {
     assert_eq!(restamped.data, read_back.data, "rows are independent of the volatile stamps");
     assert_eq!(restamped.blobs, read_back.blobs);
     assert_ne!(restamped.manifest.created_at, read_back.manifest.created_at);
+
+    // Proof leg: imported history is never authority. A forged group-lifecycle receipt naming another petal and a
+    // NodeTombstoned row reusing a live tombstone's lamport_clock both import, and neither acts as a proof here.
+    let proof_db = fresh_db().await;
+    run(&proof_db, "CREATE verse CONTENT { verse_id: $vid, name: 'V', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"vid": VERSE})).await;
+    seed_fractal(&proof_db).await;
+    const GROUP_PETAL: &str = "petal-groups";
+    run(&proof_db, "CREATE petal CONTENT { petal_id: $pid, name: $pid, node_id: 'did:key:owner', created_at: '2026-11-13T00:00:00Z', visibility: 'private', tags: [], fractal_id: $fid }",
+        json!({"pid": GROUP_PETAL, "fid": FRACTAL})).await;
+    let live_tombstone = json!({"node_id": "node-elsewhere", "petal_id": GROUP_PETAL, "source_did": "did:key:owner", "tombstoned_ids": ["node-elsewhere"]});
+    let tombstone = OpLogEntry {
+        lamport_clock: 0,
+        hlc_timestamp: String::new(),
+        node_id: NodeId("node-elsewhere".to_string()),
+        op_type: OpType::NodeTombstoned,
+        payload: live_tombstone.clone(),
+        sig: "00".repeat(64),
+    };
+    let tombstone_lamport = commit_operation(&proof_db, tombstone, |lamport| async move { Ok::<u64, anyhow::Error>(lamport) })
+        .await
+        .expect("live tombstone");
+    let mut forged_history = snapshot.clone();
+    forged_history.oplog.push(json!({
+        "id": "op_log:forged_tombstone", "lamport_clock": tombstone_lamport, "hlc_timestamp": "1:0001", "node_id": "node-a1",
+        "op_type": "NodeTombstoned",
+        "payload": {"node_id": "node-a1", "petal_id": PETAL, "source_did": "did:key:mallory", "tombstoned_ids": ["node-a1"]},
+        "sig": "00".repeat(64),
+    }));
+    forged_history.oplog.push(json!({
+        "id": "op_log:forged_group_receipt", "lamport_clock": tombstone_lamport + 1, "hlc_timestamp": "1:0002", "node_id": "node-a1",
+        "op_type": "EditorTransaction",
+        "payload": {"editor_batch_request_id": "forged-batch", "receipt": {"petal_id": GROUP_PETAL, "created_group_id": "group-forged"}},
+        "sig": "00".repeat(64),
+    }));
+    import_petal_snapshot(&proof_db, forged_history).await.expect("forged history imports into quarantine");
+    let groups = vec![VisibilityGroupDto { id: "group-forged".into(), name: "Forged".into(), visible: true, order: 0.0 }];
+    let reply = set_petal_visibility_groups_reply(&proof_db, "did:key:owner", GROUP_PETAL.into(), groups, CallerAuth::local(), None).await;
+    assert!(
+        matches!(&reply, DbResult::PetalVisibilityGroupsLoaded { groups, .. } if groups.len() == 1 && groups[0].id == "group-forged"),
+        "an imported receipt naming another petal's group is not a deletion proof there: {reply:?}"
+    );
+    let mut proofs = proof_db
+        .query("SELECT * OMIT id FROM op_log WHERE op_type='NodeTombstoned' AND lamport_clock=$hlc LIMIT 2")
+        .bind(("hlc", i64::try_from(tombstone_lamport).expect("lamport fits i64")))
+        .await
+        .expect("tombstone proof lookup");
+    let proofs: Vec<Value> = proofs.take(0).expect("tombstone proof rows");
+    assert_eq!(proofs.len(), 1, "the publisher's tombstone proof lookup sees only the live operation");
+    assert_eq!(proofs[0]["payload"], live_tombstone, "the live tombstone stays the unique proof");
 
     // HLC leg: an imported clock just inside the five-minute future bound must order every later write after it.
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_millis() as u64;
@@ -443,10 +500,20 @@ async fn petal_snapshot_export_then_import_journey() {
     let forged_role = forged_op("AssignRole", json!({"peer_did": "did:key:mallory", "scope": petal_scope(PETAL), "role": "owner"}));
     let forged_revoke = forged_op("RevokeSession", json!({"petal_id": PETAL, "session": "s1"}));
     let unknown_type = forged_op("FutureOp", json!({"petal_id": PETAL}));
-    let mut malformed_node_id = snapshot.clone();
-    malformed_node_id.nodes[0]["node_id"] = json!("node-a1'; DELETE role; --");
-    let mut overlong_node_id = snapshot.clone();
-    overlong_node_id.nodes[0]["node_id"] = json!("n".repeat(129));
+    // nodes[1] is node-a2: no node_log, reading or op-log row names it, so only the checked rule refuses these rows.
+    let with_node_a2 = |field: &str, value: Value| {
+        let mut rows = snapshot.clone();
+        assert_eq!(rows.nodes[1]["node_id"], json!("node-a2"));
+        rows.nodes[1][field] = value;
+        rows
+    };
+    let malformed_node_id = with_node_a2("node_id", json!("node-a2'; DELETE role; --"));
+    let overlong_node_id = with_node_a2("node_id", json!("n".repeat(129)));
+    // Object-creation transform bounds: each value is f64-finite but leaves the f32 range or is not a positive scale.
+    let huge_position = with_node_a2("position", json!({"type": "Point", "coordinates": [1e300, 0.0]}));
+    let huge_elevation = with_node_a2("elevation", json!(1e300));
+    let zero_scale = with_node_a2("scale", json!([1.0, 0.0, 1.0]));
+    let huge_scale = with_node_a2("scale", json!([1e300, 1.0, 1.0]));
     let mut missing_fractal = snapshot.clone();
     missing_fractal.petal["fractal_id"] = json!("fractal-gone");
     for (case, rows) in [
@@ -459,16 +526,21 @@ async fn petal_snapshot_export_then_import_journey() {
         ("unknown op type", unknown_type),
         ("malformed node_id", malformed_node_id),
         ("overlong node_id", overlong_node_id),
+        ("position outside f32", huge_position),
+        ("elevation outside f32", huge_elevation),
+        ("zero scale component", zero_scale),
+        ("scale outside f32", huge_scale),
         ("parent fractal absent", missing_fractal),
     ] {
         let outcome = import_petal_snapshot(&refused_db, rows).await;
         assert!(matches!(outcome, Err(ImportError::Invalid(_))), "{case}: {outcome:?}");
     }
     let mut corrupted = snapshot.clone();
-    corrupted.nodes[1]["elevation"] = json!("high");
+    // A field the import does not validate, so the SCHEMAFULL rejection happens mid-transaction.
+    corrupted.nodes[1]["interactive"] = json!("yes");
     let outcome = import_petal_snapshot(&refused_db, corrupted).await;
     assert!(matches!(outcome, Err(ImportError::Db(_))), "the schema rejects the corrupted node: {outcome:?}");
-    for sql in ["SELECT * FROM petal", "SELECT * FROM node", "SELECT * FROM node_log", "SELECT * FROM asset", "SELECT * FROM op_log"] {
+    for sql in ["SELECT * FROM petal", "SELECT * FROM node", "SELECT * FROM node_log", "SELECT * FROM asset", "SELECT * FROM op_log", "SELECT * FROM op_log_imported"] {
         assert!(select(&refused_db, sql).await.is_empty(), "{sql}: no partial petal survives a refused import");
     }
 
