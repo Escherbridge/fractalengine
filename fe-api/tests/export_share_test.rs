@@ -195,6 +195,7 @@ fn params(query: Option<&str>, coords: Option<&str>) -> ExportParams {
     ExportParams {
         query: query.map(str::to_string),
         coords: coords.map(str::to_string),
+        as_of_ms: None,
     }
 }
 

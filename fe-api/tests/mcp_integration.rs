@@ -965,7 +965,7 @@ impl RecordingPluginHost {
     }
 
     fn wired(self: &Arc<Self>) -> ApiHosts {
-        ApiHosts { extension: Some(self.clone()), binding: Some(self.clone()) }
+        ApiHosts { extension: Some(self.clone()), binding: Some(self.clone()), network_diagnostics: None }
     }
 }
 
