@@ -25,8 +25,8 @@ isolated Wave-1 track (own crates).
 
 ## Phase 3: Write / mutate endpoint (FR-3) [P1]
 
-- [ ] Task: mutations routed through T1's sync-safe ops (move/scale/rotate/ *(AUDIT 2026-10-10: PARTIAL — delete/cascade (`DELETE /api/v1/nodes/{id}[?cascade=true]`) and promote route through T1 ops; move/scale/rotate/props use the same DbCommands the UI uses (UpdateNodeTransform, property cmds). OPEN: no 'same op-log entry as UI' parity test; no trigger-op (e.g. re-sculpt an earthwork region) endpoint)* **Op-log parity DONE 2026-10-11 (T5-PARITY, commit pending)** — two halves: `fe-api/tests/api_integration.rs::rest_delete_sends_the_ui_tombstone_op_with_an_identified_caller` (REST DELETE emits the UI's exact `TombstoneNode`/`CascadeTombstoneNode`, caller `Identified{token sub, role}` where the UI sends `Local`) + `fe-database/tests/node_lifecycle_test.rs::ui_and_api_tombstones_write_the_same_op_log_entry` (a `Local` and an `Identified` tombstone write op-log rows and row markers of identical shape; only node_id/lamport/hlc/source_did differ). Box stays open ONLY for the trigger op (ledger T5-TRIGGER).
-      edit-props/delete/trigger); same op-log entry as the UI path (test).
+- [x] Task: mutations routed through T1's sync-safe ops (move/scale/rotate/ *(AUDIT 2026-10-10: PARTIAL — delete/cascade (`DELETE /api/v1/nodes/{id}[?cascade=true]`) and promote route through T1 ops; move/scale/rotate/props use the same DbCommands the UI uses (UpdateNodeTransform, property cmds). OPEN: no 'same op-log entry as UI' parity test; no trigger-op (e.g. re-sculpt an earthwork region) endpoint)* **Op-log parity DONE 2026-10-11 (T5-PARITY, commit pending)** — two halves: `fe-api/tests/api_integration.rs::rest_delete_sends_the_ui_tombstone_op_with_an_identified_caller` (REST DELETE emits the UI's exact `TombstoneNode`/`CascadeTombstoneNode`, caller `Identified{token sub, role}` where the UI sends `Local`) + `fe-database/tests/node_lifecycle_test.rs::ui_and_api_tombstones_write_the_same_op_log_entry` (a `Local` and an `Identified` tombstone write op-log rows and row markers of identical shape; only node_id/lamport/hlc/source_did differ). Box stays open ONLY for the trigger op (ledger T5-TRIGGER).
+      edit-props/delete/trigger); same op-log entry as the UI path (test). Trigger-op out of scope (Q33 default (a)); everything else done, plus DATA-04 stamp override write-through (DATA5-01 `fe-database/tests/node_lifecycle_test.rs:803-981`).
 - [x] Task: fe-policy authorization on writes (reject test); position-locked *(AUDIT 2026-10-10: PARTIAL — authz: CallerAuth::Identified + fe-policy gate at the DB thread, `endpoint.rs::caller_auth_is_identified_never_local`, MCP `every_tool_rejects_a_sub_min_role_token`. OPEN: position lock — fe-database/src/handlers/transform.rs `update_node_transform_handler` has no node_kind=stamp check, so REST/MCP update_transform can free-translate a promoted stamp (FR-3 acceptance unmet))* **T5-LOCK DONE 2026-10-11 (commit pending):** DB-authoritative guard in `update_node_transform_handler` (`position-locked: stamp`, before the op-log commit) + fail-fast `rest.rs::stamp_translate_denied` on REST/MCP/WS before the optimistic broadcast, and in `move_waypoint_core` (adversarial review 2026-10-11: MCP `move_waypoint` takes addressable ids and wrote lat/lon/ele before the DB refused the move). Tests: `fe-database/tests/node_lifecycle_test.rs::stamp_translate_is_rejected_but_rotation_and_scale_persist`, `fe-api/tests/mcp_integration.rs::update_transform_rejects_moving_a_promoted_stamp`, `api_integration.rs::rest_transform_rejects_moving_a_promoted_stamp_but_rotates_it`, `ws_integration.rs::ws_transform_update_cannot_move_a_promoted_stamp`.
       objects reject illegal free-translate (test).
 
@@ -42,6 +42,7 @@ isolated Wave-1 track (own crates).
 
 - [x] Task: extend `gis/egress_strings.rs` — per-object string + report; expose *(AUDIT 2026-10-10: fe-ui/src/gis/egress_strings.rs:214 `api_string_for`, :223 `report_for` (tests `api_string_for_returns_node_scoped_sql`, `report_for_contains_endpoint_and_query_and_rejects_empty`); called by fe-ui/src/dialogs/context_menu.rs:673-674 and actions/node.rs. GAP: no paste→same-read round-trip test against a live API)*
       the seam T4 calls; round-trip test (paste → same read).
+      DATA-05 (2026-11-14): the copy-string round-trip gap is closed by the paste→same-read test at `fe-ui/src/gis/egress_strings.rs:420` (QA-0127).
 
 ## Phase 6: New-type queries + docs + sweep (FR-6) [P1]
 
@@ -65,10 +66,12 @@ CRUD and the egress seam shipped in Wave 1 (e5688ca) and the F13/F14 mission wor
 - **T5-PARITY** (batch mcp-api-surface): UI-vs-API op-log parity, the earthwork summary over real
   rows, and per-type `read_node` payloads (tests named in the tasks above).
 
-**Left.** T5-TRIGGER (a trigger-op endpoint, e.g. re-sculpt an earthwork region; the op
-vocabulary is unratified) and the user-gated in-app/endpoint verify. Also recorded in
-fe-api/AGENTS.md §endpoint-surface: API rotation/scale on a stamp writes the row's columns while
-the renderer reads `stamp.override.*`.
+**Left.** T5-TRIGGER is out of scope (Q33 default (a)): re-sculpting an earthwork region is
+Bevy-side (`fe-ui/src/actions/terrain_proposal.rs`) and has no DbCommand, so there is no trigger
+endpoint or MCP tool. Revisit only if the op vocabulary is ratified. API rotation/scale on a
+promoted stamp now also writes `stamp.override.scale` / `stamp.override.rotation` in the same
+commit (`fe-database/src/handlers/stamp_transform.rs`, `fe-database/src/handlers/transform.rs`;
+fe-api/AGENTS.md §endpoint-surface). The user-gated in-app/endpoint verify is the only remaining item.
 
 **Lessons.**
 - "Same op-log entry as the UI" splits cleanly at the channel. The API half asserts the exact

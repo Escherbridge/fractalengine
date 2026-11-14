@@ -56,7 +56,7 @@ builder with the analytics/BIM data underneath.
   read of each object type returns its full payload including the T2/T3 type-
   specific fields; unknown/unauthorized address → typed error, never a panic.
 
-- **FR-3 — Write / mutate endpoint per object.** Mutations — move (where legal),
+- **FR-3 — Write / mutate endpoint per object.** Trigger-op is OUT OF SCOPE for this track (Q33 default (a)): re-sculpting an earthwork region is Bevy-side (`fe-ui/src/actions/terrain_proposal.rs`) and has no DbCommand, so there is no trigger endpoint or MCP tool; revisit only if the op vocabulary is ratified. Mutations — move (where legal),
   scale, rotate, edit-props, delete, trigger-op (e.g. re-sculpt a region) — are
   applied through T1's **sync-safe ops** (N-4), authorized via `fe-policy`
   (N-5). The API is a *client* of the same ops the UI uses; it never bypasses
@@ -64,7 +64,7 @@ builder with the analytics/BIM data underneath.
   path; an unauthorized caller is rejected by fe-policy; a write survives P2P
   merge; position-locked objects (stamps) reject illegal free-translate writes.
 
-- **FR-4 — MCP per-endpoint CRUD.** Extend the existing MCP tool surface
+- **FR-4 — MCP per-endpoint CRUD.** Trigger is OUT OF SCOPE (see FR-3). Extend the existing MCP tool surface
   (`fe-api/src/mcp.rs`) so an agent/external tool can read + drive any endpoint
   (create/read/update/delete/trigger). *Acceptance:* an MCP client can address an
   object, read it, mutate it, and delete it; ops are authorized + sync-safe
