@@ -59,7 +59,7 @@ struct Target<'a> {
 
 /// Re-judge one node (QA-0165: write-time role only, never "Editor now"). A node with stored
 /// versions is recomputed from them and `candidates` are only used to restore it when absent;
-/// a legacy node without versions keeps the candidate path judged by `written_while_authorized`.
+/// a legacy node without versions keeps the candidate path judged by `held_at_write`.
 /// `restore_only` (a role ROSE) skips every node that is present locally.
 pub(crate) async fn rejudge(
     db: &Db,
@@ -148,8 +148,9 @@ async fn rejudge_legacy(
     changes: Option<&super::super::replicated_row::SceneChangeSender>,
 ) -> anyhow::Result<Rejudged> {
     let current = clock_of(&read_clock(db, id).await?)?;
+    // Write-time role only: `written_while_authorized` passes anyone without a current role.
     let authorized = |did: String, scope: String, hlc: u64| async move {
-        crate::role_grants::written_while_authorized(db, verse, &did, &scope, hlc).await
+        crate::role_grants::held_at_write(db, verse, &did, &scope, fe_policy::RoleLevel::Editor, hlc).await
     };
     if let Some(current) = &current {
         let Some(scope) = super::super::crud::resolve_node_scope_handler(db, id).await? else {
@@ -306,7 +307,7 @@ async fn apply_complete_merged(
     );
     // A v1 snapshot carries no per-key clocks: the whole row is judged at its marker clock (QA-0131).
     if own.is_none()
-        && !crate::role_grants::written_while_authorized(db, verse, author, &scope, clock.hlc).await?
+        && !crate::role_grants::held_at_write(db, verse, author, &scope, fe_policy::RoleLevel::Editor, clock.hlc).await?
     {
         tracing::warn!(node_id = id, author, hlc = clock.hlc, "scene row stamped before its author held Editor here; denied (QA-0131)");
         return denied();

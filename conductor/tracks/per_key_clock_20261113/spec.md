@@ -128,7 +128,15 @@ A LOCAL revoke or lower closes the revoked author's window at the **frontier**: 
 author's versions the revoker has stored in the verse (`field_clock::store::author_frontier`, also the
 max `node_scene_clock.hlc` where publisher = the author), capped at the revoke's own hlc. Versions the
 revoker had not received, and any version stamped above the frontier, are refused everywhere because
-the window the statement carries ends at the frontier. Remote statements carry their windows verbatim.
+the window the statement carries ends at the frontier. A revoker holding no version of that author closes
+the window empty (frontier 0): nothing it saw needs the window (R-CLOCK-1).
+
+**Inbound windows are untrusted (security inbox 4).** `fe_database::role_grants::place_statement` keeps a
+wire window only when the window this peer re-derives from its stored live version of the same key
+(`proven_windows`: `continuing_with_frontier(prior, None)` over the local prior) contains it at an equal
+or higher role; a payload can narrow a window, never widen or invent one. A redelivered version keeps the
+windows proven when it first arrived. The grantor's own authority at the window's time is then enforced by
+`materialize_at`, which admits the window's statement only when the grantor held Manager at `at`.
 
 ### 3.8 Deferred interaction and re-judge
 
@@ -200,7 +208,16 @@ judged locally per version), and cannot write identity columns (insert-once, mis
 4. *Window cap.* More than 8 grant breaks on one statement key drops the oldest window; writes from
    before the dropped window stop being admissible. Accepted: a member cycling through nine grants is an
    administrative event, and the loss is deterministic on every peer.
-5. *HLC skew.* An inflated hlc within the 5 minute future bound can win ties against slower honest
+5. *Proof is local, so fresh peers prove less.* A peer that never stored the key's earlier version (it
+   joined after the grant, or missed it) keeps none of the claimed windows, so it refuses versions an
+   older peer admits from inside them. Fail-closed by the steer of 2026-11-13 22:55; the two peers
+   disagree only on rows written inside closed windows. Revisit trigger: a QA report of an edit by a
+   since-revoked member missing on a newly joined peer.
+6. *Continuity fields are still wire-trusted.* `editor_since` / `manager_since` (QA-0131) are accepted
+   from the payload after the shape check, and a later break turns them into a proven window. Same bound
+   as risk 3: the grantor must have held Manager at every `at` the span covers. Re-deriving them locally
+   would refuse every pre-join edit of a live member on a fresh peer, so it is left to a user decision.
+7. *HLC skew.* An inflated hlc within the 5 minute future bound can win ties against slower honest
    writers for keys the author may write; it cannot widen what the author may write.
 
 ## 5. Compatibility

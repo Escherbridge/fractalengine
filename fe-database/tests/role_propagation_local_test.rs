@@ -301,18 +301,14 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
     let payload = events[0].1.as_ref().expect("role payload");
     assert!(payload.revoked && payload.peer_did == m && payload.grantor_did == OWNER);
 
-    // QA-0165: the revoke closes M's Manager span as a stored window; M never wrote, so
-    // the window ends at the revoke itself, and M's write-time role is judged by it.
+    // QA-0165, user decision 2: the revoke cuts M's Manager span at the last write of M this
+    // node holds; M wrote nothing here, so the window closes empty and M held nothing just before.
     let revocation = admitted
         .iter()
         .find(|s| s.peer_did == m && s.grantor_did == OWNER)
         .expect("owner's revocation of M is admitted");
-    assert_eq!(payload.windows, revocation.windows, "the window rides the wire");
-    let [window] = revocation.windows.as_slice() else {
-        panic!("one closed Manager window: {:?}", revocation.windows);
-    };
-    assert_eq!(window.role, GrantedRole::Manager);
-    assert_eq!(window.until, revocation.hlc, "no frontier: closed at the revoke");
+    assert_eq!(payload.windows, revocation.windows, "windows ride the wire as stored");
+    assert!(revocation.windows.is_empty(), "no write seen from M: {:?}", revocation.windows);
     let mut stored = fx
         .db
         .query("SELECT VALUE windows FROM role_grant WHERE peer_did = $m AND grantor_did = $o")
@@ -321,17 +317,17 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
         .await
         .expect("windows column");
     let stored: Vec<Option<String>> = stored.take(0).expect("windows rows");
-    assert!(
-        matches!(stored.as_slice(), [Some(json)] if json.contains("manager")),
-        "the role_grant row carries the window: {stored:?}"
-    );
+    assert!(matches!(stored.as_slice(), [None]), "no window column is stored: {stored:?}");
     let manager_scope = verse_scope();
     let (db, manager_scope) = (&fx.db, manager_scope.as_str());
     let held_at = move |hlc: u64| {
         role_grants::held_at_write(db, VERSE, m, manager_scope, RoleLevel::Manager, hlc)
     };
-    assert!(held_at(window.since).await.expect("inside"), "M was Manager inside the window");
-    assert!(!held_at(window.until).await.expect("after"), "and is not after the revoke");
+    let before_revoke = revocation.hlc - 1;
+    assert!(
+        !held_at(before_revoke).await.expect("before"),
+        "a write of M the revoker never saw, stamped before the revoke, is not admissible"
+    );
 
     // Regranting M re-admits every held statement down the subtree, with no re-delivery.
     fx.assign(OWNER, m, &verse_scope(), "manager")
@@ -344,12 +340,8 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
         .expect("held")
         .is_empty());
     assert!(
-        held_at(window.since).await.expect("inside, after regrant"),
-        "the regrant carries the closed window forward"
-    );
-    assert!(
-        !held_at(window.until).await.expect("gap, after regrant"),
-        "the gap between revoke and regrant stays unheld"
+        !held_at(before_revoke).await.expect("gap, after regrant"),
+        "the regrant does not reopen the span the revoke cut"
     );
 }
 

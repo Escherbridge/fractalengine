@@ -167,7 +167,7 @@ fn windows_are_well_formed(windows: &[GrantWindow], hlc: u64) -> bool {
 
 /// The windows of `stmt` this peer's own history of the key proves (security inbox 4):
 /// re-derived from the stored `prior` live version, each claimed window kept only when a
-/// re-derived window of the same role contains it, so a payload can narrow, never widen.
+/// re-derived window of an equal or higher role contains it, so a payload can narrow, never widen.
 pub fn proven_windows(prior: Option<&RoleStatement>, stmt: &RoleStatement) -> Vec<GrantWindow> {
     if stmt.windows.is_empty() {
         return Vec::new();
@@ -179,7 +179,7 @@ pub fn proven_windows(prior: Option<&RoleStatement>, stmt: &RoleStatement) -> Ve
         .iter()
         .filter(|claimed| {
             derived.iter().any(|local| {
-                local.role == claimed.role
+                claimed.role <= local.role
                     && local.since <= claimed.since
                     && claimed.until <= local.until
             })
@@ -609,9 +609,10 @@ pub(crate) async fn commit_local_statement(
     let pending:Vec<serde_json::Value>=response.take(1)?;
     anyhow::ensure!(granted.len() <= 1 && pending.len() <= 1,"Ambiguous role statement identity");
     let prior = live_version(db,&candidate).await?.map(|(_,statement)|statement);
-    // QA-0165 revoke frontier: a closed window ends at the peer's last write this node holds.
+    // QA-0165 revoke frontier: a closed window ends at the peer's last write this node holds;
+    // none held closes it empty (user decision 2: unseen writes race the revoke and drop).
     let frontier = match prior {
-        Some(_) => crate::field_clock::author_frontier(db, verse_id, peer).await?,
+        Some(_) => Some(crate::field_clock::author_frontier(db, verse_id, peer).await?.unwrap_or(0)),
         None => None,
     };
     let verse_id=verse_id.to_owned();
@@ -634,7 +635,7 @@ pub(crate) async fn commit_local_statement(
     crate::op_log::commit_operation_atomic_with(db,entry,|clock| {
         candidate.hlc=clock;
         // QA-0131: a change that stays at Editor+/Manager keeps the key's continuity;
-        // a break closes a window at the frontier (None: the peer never wrote, close at `clock`).
+        // a break closes a window at the frontier (0 when this node holds no write of the peer).
         candidate=candidate.clone().continuing_with_frontier(prior.as_ref(),frontier);
         let allowed=prior.as_ref().is_none_or(|prior| latest_per_grantor([prior,&candidate]).first()==Some(&candidate));
         bindings.push(("local_role_allowed".into(),serde_json::json!(allowed)));
@@ -1117,6 +1118,11 @@ mod tests {
             ..revoke.clone()
         };
         assert!(proven_windows(Some(&prior), &widened).is_empty(), "a window wider than the history is dropped");
+        let lowered = RoleStatement {
+            windows: vec![GrantWindow { role: GrantedRole::Editor, since: 12, until: 18 }],
+            ..revoke.clone()
+        };
+        assert_eq!(proven_windows(Some(&prior), &lowered), lowered.windows, "a lower role inside a proven window narrows");
         assert_eq!(payload.role, "editor");
         assert_eq!(
             statement_record_id(&stmt),
