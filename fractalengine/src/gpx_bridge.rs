@@ -1464,6 +1464,20 @@ pub fn advance_host_outcomes(
     }
 }
 
+/// Marks `track` as seeding and sends its seed read; a failed send undoes the mark (warn) and returns false so the caller queues nothing.
+fn request_seed_read(pending: &mut PendingPathEdits, db_tx: &DbCommandSender, track: &str) -> bool {
+    if !pending.seed_pending.insert(track.to_owned()) {
+        return true;
+    }
+    let sent = db_tx.0.send(DbCommand::GetNodeProperties { node_id: track.to_owned(), correlation_id: None });
+    if let Err(error) = sent {
+        pending.seed_pending.remove(track);
+        tracing::warn!(track, %error, "seed read not sent; append dropped, nothing left waiting");
+        return false;
+    }
+    true
+}
+
 impl PendingPathEdits {
     pub fn retire_for_terminal_reset(&mut self) {
         self.retire_access();
@@ -1759,14 +1773,13 @@ pub fn drain_path_ops(
                     // seed is in flight just queues, so both apply to the one
                     // authoritative buffer the seed produces (no double-read
                     // race that could lose the first append).
-                    if pending.seed_pending.insert(track_node_id.clone()) {
-                        db_tx
-                            .0
-                            .send(DbCommand::GetNodeProperties {
-                                node_id: track_node_id.clone(),
-                                correlation_id: None,
-                            })
-                            .ok();
+                    if !request_seed_read(&mut pending, &db_tx, &track_node_id) {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some("Point not added: the database is not responding".to_string()),
+                        };
+                        continue;
                     }
                     pending.reads.entry(track_node_id).or_default().push_back(
                         PendingPathRead::AppendPoint {
@@ -1918,14 +1931,13 @@ pub fn drain_path_ops(
                         error: None,
                     };
                 } else {
-                    if pending.seed_pending.insert(track_node_id.clone()) {
-                        db_tx
-                            .0
-                            .send(DbCommand::GetNodeProperties {
-                                node_id: track_node_id.clone(),
-                                correlation_id: None,
-                            })
-                            .ok();
+                    if !request_seed_read(&mut pending, &db_tx, &track_node_id) {
+                        *status = PathEditStatus {
+                            track_node_id: Some(track_node_id),
+                            message: None,
+                            error: Some("Point not added: the database is not responding".to_string()),
+                        };
+                        continue;
                     }
                     pending.reads.entry(track_node_id).or_default().push_back(
                         PendingPathRead::AppendSmoothPoint {
@@ -3988,6 +4000,9 @@ mod tests {
         drop(rx);
         let sender = DbCommandSender(tx);
         assert!(enqueue_track_delete(&sender, "track-2").is_err());
+        let mut pending = PendingPathEdits::default();
+        assert!(!request_seed_read(&mut pending, &sender, "track-2"), "dead channel: no seed request goes out");
+        assert!(pending.seed_pending.is_empty(), "failed seed send must not leave the track seeding");
     }
 
     #[test]

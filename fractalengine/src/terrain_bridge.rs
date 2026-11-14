@@ -516,10 +516,15 @@ fn installed_access(
     let licensee = fe_hexon::entitlement_client::Licensee { identity: &identity, device_secret: &device_secret };
     let verifier = fe_format::entitlement::KeyringVerifier::new(fe_format::entitlement::IssuerKeyring::new());
     match fe_terrain::tiles::entitlement::tileset_entitlement(store, hexon_id, None, &licensee, &verifier) {
-        Some((entitlement, _gate)) => (
+        Some((entitlement, _gate)) => {
+            if entitlement.label != "installed" {
+                tracing::info!(hexon_id, label = entitlement.label, "licensed tileset loads without an entitlement gate: free tiles only (see fractalengine/src/AGENTS.md §tileset-entitlement-seam)");
+            }
+            (
             TilesetAccess::from_label(entitlement.label),
             entitlement.payment_verification_url,
-        ),
+            )
+        }
         None => (TilesetAccess::Installed, None),
     }
 }

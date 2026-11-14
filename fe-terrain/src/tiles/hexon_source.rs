@@ -458,6 +458,19 @@ impl HexonTileSource {
             .is_none_or(|gate| matches!(gate.status_at(unix_now()), GateStatus::Preview(_)))
     }
 
+    /// True when a CACHED non-free tile must stop serving: the gate's token lapsed (see §tileset-entitlement).
+    /// Allocates only in that lapsed state; entitled and unlicensed reads stay allocation-free.
+    fn cached_tile_lapsed(&self, layer: TileLayer, key: TileKey) -> bool {
+        if !self.license_terms.is_licensed() {
+            return false;
+        }
+        let Some(gate) = &self.entitlement_gate else {
+            return false;
+        };
+        matches!(gate.status_at(unix_now()), GateStatus::Preview(_))
+            && !self.license_terms.is_free_entry(&layer.member_name(key))
+    }
+
     /// Licence check for one stored member: free/unlicensed pass, sealed ones open only through an entitled gate.
     fn admit_member<'stored>(&self, member: &str, stored: &'stored [u8]) -> Result<Cow<'stored, [u8]>> {
         match &self.entitlement_gate {
@@ -519,7 +532,10 @@ impl HexonTileSource {
         let key = (layer, key_of(coord));
         match &self.backing {
             Backing::Memory(tiles) => tiles.layers.get(&key).cloned(),
-            Backing::Indexed(_) | Backing::Container(_) => self.cache().get(&key),
+            Backing::Indexed(_) | Backing::Container(_) => {
+                let hit = self.cache().get(&key)?;
+                (!self.cached_tile_lapsed(layer, key.1)).then_some(hit)
+            }
         }
     }
 
@@ -593,7 +609,9 @@ impl HexonTileSource {
             Backing::Container(container) => {
                 let key = (layer, key_of(coord));
                 if let Some(hit) = self.cache().get(&key) {
-                    return Ok(Some(hit));
+                    if !self.cached_tile_lapsed(layer, key.1) {
+                        return Ok(Some(hit));
+                    }
                 }
                 if self.license_terms.is_licensed() {
                     let member = layer.member_name(key.1);
@@ -614,7 +632,9 @@ impl HexonTileSource {
         };
         let key = (layer, key_of(coord));
         if let Some(hit) = self.cache().get(&key) {
-            return Ok(Some(hit));
+            if !self.cached_tile_lapsed(layer, key.1) {
+                return Ok(Some(hit));
+            }
         }
         let member = layer.member_name(key.1);
         let mut archive = Self::archive(lock);
@@ -950,6 +970,49 @@ mod tests {
 
         let data = source.get_tile(TileCoord::new(512, 340, 10)).unwrap();
         assert_eq!(data.len(), 64);
+    }
+
+    /// A non-free tile cached while entitled stops serving once the gate lapses; free tiles keep serving.
+    #[test]
+    fn cached_non_free_tile_stops_serving_when_gate_is_not_entitled() {
+        use fe_format::entitlement::{IssuerKeyring, KeyringVerifier};
+        use fe_format::{License, LicenseType};
+        use fe_hexon::entitlement_client::Licensee;
+
+        let free = TileCoord::new(512, 340, 10);
+        let sealed = TileCoord::new(512, 341, 10);
+        let license = License {
+            license_type: LicenseType::Paid,
+            free_entries: vec![TileLayer::Elevation.member_name(key_of(free))],
+            ..License::default()
+        };
+        let elevation = vec![("10/512/340".to_string(), vec![1u8; 64]), ("10/512/341".to_string(), vec![2u8; 64])];
+        let bytes = HexonArchive::export_tileset(test_manifest(), &test_tileset_meta(), &elevation, &[], Some(license))
+            .expect("export failed");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("licensed.hexon");
+        std::fs::write(&path, bytes).expect("write archive");
+        let mut source = HexonTileSource::open(&path).expect("open licensed archive");
+
+        // No token: a Preview gate, i.e. what an expired token reads as. Seed the cache AFTER attaching it
+        // (attaching clears the cache), standing in for tiles cached while the token was still valid.
+        let identity = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let device_secret = [9u8; 32];
+        let licensee = Licensee { identity: &identity, device_secret: &device_secret };
+        let verifier = KeyringVerifier::new(IssuerKeyring::new());
+        let gate = EntitlementGate::open(source.license_terms().clone(), "test-tileset", "", &licensee, None, &verifier, unix_now());
+        source.set_entitlement_gate(Some(Arc::new(gate))).expect("matching terms");
+        for (coord, byte) in [(free, 1u8), (sealed, 2u8)] {
+            let tile = ResidentTile::Bytes(vec![byte; 64].into());
+            let cost = tile.byte_cost();
+            source.cache().insert((TileLayer::Elevation, key_of(coord)), tile, cost);
+        }
+
+        assert!(source.get_layer(TileLayer::Elevation, free).is_some(), "free tile keeps serving");
+        assert!(source.get_layer(TileLayer::Elevation, sealed).is_none(), "non-free cached tile must not serve");
+        assert!(source.load_layer_blocking(TileLayer::Elevation, free).expect("free read").is_some());
+        let refused = source.load_layer_blocking(TileLayer::Elevation, sealed).expect_err("non-free read refused");
+        assert!(refused.downcast_ref::<EntitlementRequired>().is_some(), "{refused:#}");
     }
 
     #[test]

@@ -702,6 +702,17 @@ final sweep.
 imported GPX. The `NodeCreated` echo of a designed path goes through `submit_authored_track_properties` (`gpx_bridge.rs:175`), which has its own test. Absence means `recorded` (legacy rows and the fe-api HTTP import). BI filter example:
 `WHERE properties.path_kind == 'designed'`. fe-api import parity is out of scope.
 
+## §tileset-entitlement-seam — licensed tilesets load without a gate (2026-11-14)
+
+No production code attaches an entitlement gate to an installed tileset: the tileset path has no licence-token
+store and no licensee identity or device secret (those live only on the extension host path), and tilesets are
+loaded by `TilesetRegistry` / `petal_binding` in fe-terrain, not here. This is a deliberate seam, so behaviour is
+unchanged: a licensed tileset serves its free tiles only (fail closed). `installed_access` in `terrain_bridge.rs`
+logs one `info` line per refresh when a tileset reads as `installed-preview` or `entitlement-required`.
+Attaching a gate needs a token source plus a call to `HexonTileSource::set_entitlement_gate` where the registry
+loads the source (see fe-terrain `AGENTS.md` §tileset-entitlement); `installed_access` then passes the stored token
+instead of `None` and a real keyring instead of the empty one.
+
 ## §tileset-p2p — host wiring for P2P tileset streaming (`p2p_asset_streaming_20260718` S4)
 
 fe-ui has no fe-terrain dependency, so this binary is the only place that can
@@ -1107,8 +1118,7 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
 `GetNetworkDiagnostics` until the verdict leaves `pending` (`None` when it never does; `relay-server` builds only);
 `load_owned_verse_ids` lists `verse` rows with `created_by` = the node DID (joined verses are never served); then
 `relay_serve_bridge::maybe_start` runs with `provisional = verdict == "public"` in its `dialback_passed` slot, so a
-public verdict starts the listener before the dial-back (the probe needs a listening relay to reach). `confirm_dialback` asks a verse peer to dial `FE_RELAY_SERVE_HOSTNAME` (3 attempts, 20 s
-apart); a `ok: false` or no answer drops the handle and the relay stops. A confirmed relay is held (`let _relay`)
+public verdict starts the listener before the dial-back (the probe needs a listening relay to reach). `confirm_dialback` asks a verse peer to dial `FE_RELAY_SERVE_HOSTNAME` (4 attempts with doubling waits: 65/130/260 s, the first beyond the responders' 60 s per-requester window; served verses' replicas are pinned open before the dial-back); a `ok: false` or no answer drops the handle and the relay stops. A confirmed relay is held (`let _relay`)
 and the thread parks until exit. The pure startup gate is `relay_serve_bridge::decide`: feature AND toggle AND
 `public` self-test AND passing dial-back; anything else refuses before a listener binds.
 Consent list: `publish_servable_verses` records the owned verses at startup, and `start` re-records the served set
