@@ -1,7 +1,7 @@
 //! Target-bound access state and confirmed controls; see dialogs/AGENTS.md.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -37,7 +37,22 @@ pub struct EntityAccessState {
     api_open: bool,
     reveal_secret: bool,
     pub(crate) invitation: crate::invitations::IssueState,
+    /// Peers still to revoke for the Managers-only preset; one request in flight at a time.
+    bulk_revokes: VecDeque<String>,
+    bulk_active: bool,
+    /// The scope's verse has no replica namespace (seeded local-only verse), so it cannot be shared.
+    verse_local_only: bool,
 }
+
+/// One of the three permission presets of the Access tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccessPreset {
+    Public,
+    MembersOnly,
+    ManagersOnly,
+}
+
+const LOCAL_ONLY_REASON: &str = "This verse is local only. Create a new verse to share with peers.";
 
 impl Default for EntityAccessState {
     fn default() -> Self {
@@ -53,18 +68,49 @@ impl Default for EntityAccessState {
             api_open: false,
             reveal_secret: false,
             invitation: crate::invitations::IssueState::default(),
+            bulk_revokes: VecDeque::new(),
+            bulk_active: false,
+            verse_local_only: false,
         }
     }
 }
 
 impl EntityAccessState {
     pub(crate) fn refresh(&mut self) {
+        self.bulk_revokes.clear();
+        self.bulk_active = false;
         self.invitation.reset();
         self.queued_read = true;
         self.error = None;
     }
     pub(crate) fn pending_work(&self) -> bool {
-        self.waiting() || self.queued_read || self.invitation.busy()
+        self.waiting() || self.queued_read || self.invitation.busy() || !self.bulk_revokes.is_empty()
+    }
+    /// Queues a revoke for every peer whose strongest live grant here is below Manager.
+    pub(crate) fn start_managers_only(&mut self) {
+        self.bulk_revokes = self.below_manager_peers().into();
+        self.bulk_active = !self.bulk_revokes.is_empty();
+    }
+    /// Distinct peers (sorted) whose strongest live grant at this scope is viewer or editor.
+    fn below_manager_peers(&self) -> Vec<String> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        let mut peers: Vec<String> = snapshot
+            .grants
+            .iter()
+            .filter(|grant| !grant.revoked)
+            .map(|grant| grant.peer_did.clone())
+            .filter(|did| {
+                matches!(
+                    strongest_live_grant(&snapshot.grants, did),
+                    Some("viewer" | "editor")
+                )
+            })
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
     }
     pub(crate) fn waiting(&self) -> bool {
         self.pending.is_some()
@@ -82,9 +128,11 @@ impl EntityAccessState {
     fn synchronize(&mut self, target: &EntityAccessTarget, is_api: bool) {
         if self.target.as_ref() != Some(target) {
             let queued = self.queued_read;
+            let local_only = self.verse_local_only;
             *self = Self::default();
             self.target = Some(target.clone());
             self.queued_read = queued;
+            self.verse_local_only = local_only;
         }
         if self.api_open && !is_api {
             self.leave_api();
@@ -98,9 +146,29 @@ impl EntityAccessState {
             self.pending = None;
             self.read_required = true;
             self.snapshot = None;
+            self.bulk_revokes.clear();
+            self.bulk_active = false;
             self.error=Some("Access request timed out; its outcome is unconfirmed. Refresh before making another change.");
         }
     }
+}
+
+/// Records whether the open dialog's verse is local only; `namespace` maps a verse id to `Some(true)` when it has no replica namespace.
+pub(crate) fn mark_verse_local_only(
+    dialog: &mut ActiveDialog,
+    namespace: impl FnOnce(&str) -> Option<bool>,
+) {
+    let ActiveDialog::EntitySettings {
+        access, details, ..
+    } = dialog
+    else {
+        return;
+    };
+    access.verse_local_only = details
+        .loaded
+        .as_ref()
+        .and_then(|stored| namespace(&stored.verse_id))
+        .unwrap_or(false);
 }
 
 fn current_target(dialog: &ActiveDialog) -> Option<EntityAccessTarget> {
@@ -166,6 +234,11 @@ pub(crate) fn service(
             EntityAccessAction::Load { peer_dids },
             sender,
         );
+    } else if !access.queued_read && !access.waiting() && !access.read_required {
+        // Managers-only preset: next revoke only after the previous one's confirmed reply.
+        if let Some(peer_did) = access.bulk_revokes.pop_front() {
+            queue(access, target, EntityAccessAction::Revoke { peer_did }, sender);
+        }
     }
 }
 
@@ -261,6 +334,8 @@ pub(crate) fn apply(
         Ok(snapshot) if snapshot.minted.is_some() && *active_tab != SettingsTab::ApiAccess => {
             access.leave_api();
             access.read_required = true;
+            access.bulk_revokes.clear();
+            access.bulk_active = false;
         }
         Ok(snapshot) if fe_database::RoleLevel::from(snapshot.local_role.as_str()).can_manage() => {
             access.snapshot = Some(snapshot.clone());
@@ -269,13 +344,83 @@ pub(crate) fn apply(
             access.role_drafts.clear();
             access.confirmed_request_id = id.to_owned();
             access.reveal_secret = false;
+            if access.bulk_active && access.bulk_revokes.is_empty() {
+                // Last preset revoke confirmed: finish with the normal read-back.
+                access.bulk_active = false;
+                access.queued_read = true;
+            }
         }
         _ => {
             access.snapshot = None;
             access.read_required = true;
-            access.error=Some("The access operation was not confirmed. Refresh stored access before making another change.");
+            access.error = Some(if access.bulk_active {
+                "Managers only stopped: a revoke was not confirmed. Refresh stored access to see what changed."
+            } else {
+                "The access operation was not confirmed. Refresh stored access before making another change."
+            });
+            access.bulk_revokes.clear();
+            access.bulk_active = false;
         }
     }
+}
+
+/// Segmented Public / Members only / Managers only control; the caller sends the commands.
+pub(crate) fn preset_controls(
+    ui: &mut egui::Ui,
+    state: &mut EntityAccessState,
+    current_default: Option<&str>,
+    verse_scope: bool,
+    can_set_default: bool,
+) -> Option<AccessPreset> {
+    let manages = state
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| fe_database::RoleLevel::from(snapshot.local_role.as_str()).can_manage());
+    if !manages {
+        return None;
+    }
+    let enabled = !state.waiting() && !state.read_required && !state.invitation.busy();
+    let revoke_count = state.below_manager_peers().len();
+    let mut chosen = None;
+    ui.label("Permission preset");
+    ui.horizontal_wrapped(|ui| {
+        ui.add_enabled_ui(enabled && verse_scope && can_set_default, |ui| {
+            for (preset, label, stored) in [
+                (AccessPreset::Public, "Public", "viewer"),
+                (AccessPreset::MembersOnly, "Members only", "none"),
+            ] {
+                if ui
+                    .selectable_label(current_default == Some(stored), label)
+                    .named(ui, format_args!("Preset {label}"))
+                    .clicked()
+                {
+                    chosen = Some(preset);
+                }
+            }
+        });
+        ui.add_enabled_ui(enabled && (verse_scope || revoke_count > 0), |ui| {
+            let confirm_label = format!(
+                "Confirm: revoke {revoke_count} grant{}",
+                if revoke_count == 1 { "" } else { "s" }
+            );
+            if crate::panels::widgets::confirm_button(
+                ui,
+                ("preset_managers_only", &state.confirmed_request_id, revoke_count),
+                "Managers only...",
+                &confirm_label,
+                "Managers only preset",
+            ) {
+                chosen = Some(AccessPreset::ManagersOnly);
+            }
+        });
+    });
+    if !verse_scope {
+        ui.colored_label(
+            theme::TEXT_DIM,
+            "Public and Members only are set on the verse. Managers only revokes viewer and editor grants here.",
+        );
+    }
+    chosen
 }
 
 pub(crate) fn role_controls(
@@ -601,12 +746,17 @@ pub(crate) fn invite_controls(
             .named(ui, "Scoped invite expiry hours");
     });
     state.invitation.synchronize(target, role, *expiry);
+    let local_only = state.verse_local_only;
+    if local_only {
+        ui.colored_label(theme::TEXT_DIM, LOCAL_ONLY_REASON);
+    }
     if ui
         .add_enabled(
-            editing && state.invitation.can_request(),
+            editing && !local_only && state.invitation.can_request(),
             egui::Button::new("Generate invite"),
         )
         .named(ui, "Generate invite for this entry")
+        .on_disabled_hover_text(if local_only { LOCAL_ONLY_REASON } else { "Enter a recipient and wait for stored access to load." })
         .clicked()
     {
         state.invitation.request();
@@ -983,4 +1133,131 @@ pub(crate) fn role_confirmation_refresh_journey(
         labels.iter().any(|(text, _)| text == "Grant record (2)"),
         "The grant record lists every current statement at this scope"
     );
+
+    // Managers-only preset: two viewer grants + one manager -> two sequential Revokes, manager untouched.
+    let preset_ctx = egui::Context::default();
+    let mut preset_time = 0.0;
+    let mut preset_frame = |manager: &mut UiManager, events: Vec<egui::Event>| {
+        preset_time += 0.05;
+        let mut chosen = None;
+        let output = preset_ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(preset_time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+                        chosen = chosen.or(preset_controls(ui, access, None, false, false));
+                    }
+                });
+            },
+        );
+        let mut texts = Vec::new();
+        let mut shapes: Vec<_> = output.shapes.iter().map(|shape| &shape.shape).collect();
+        while let Some(shape) = shapes.pop() {
+            match shape {
+                egui::Shape::Text(text) => texts.push((
+                    text.galley.job.text.clone(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()).center(),
+                )),
+                egui::Shape::Vec(children) => shapes.extend(children.iter()),
+                _ => {}
+            }
+        }
+        (texts, chosen)
+    };
+    let grant = |peer: &str, role: &str, hlc: u64, local_did: &str| EntityGrantRecord {
+        peer_did: peer.into(),
+        grantor_did: local_did.into(),
+        role: role.into(),
+        revoked: false,
+        hlc,
+    };
+    let mut bulk = snapshot.clone();
+    bulk.roles = vec![
+        (bulk.local_did.clone(), "owner".into()),
+        ("did:key:viewer-a".into(), "viewer".into()),
+        ("did:key:viewer-b".into(), "viewer".into()),
+        ("did:key:manager-m".into(), "manager".into()),
+    ];
+    bulk.grants = vec![
+        grant("did:key:viewer-a", "viewer", 3, &bulk.local_did),
+        grant("did:key:viewer-b", "viewer", 4, &bulk.local_did),
+        grant("did:key:manager-m", "manager", 5, &bulk.local_did),
+    ];
+    for refused in [false, true] {
+        if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+            access.refresh();
+        }
+        service(manager, sender, None);
+        let DbCommand::EntityAccess { request_id, action: EntityAccessAction::Load { .. }, .. } =
+            receiver.try_recv().expect("Refresh queues a read")
+        else {
+            panic!("Refresh cannot mutate")
+        };
+        apply(manager, target, &request_id, &Ok(bulk.clone()));
+        preset_frame(manager, vec![]);
+        let (labels, _) = preset_frame(manager, vec![]);
+        let point = labels.iter().find(|(text, _)| text == "Managers only...").expect("Managers only preset is painted").1;
+        let mut chosen = None;
+        for pressed in [true, false] {
+            let (_, fired) = preset_frame(manager, vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+            chosen = chosen.or(fired);
+        }
+        assert!(chosen.is_none(), "The first click only arms the Managers only preset");
+        let (labels, _) = preset_frame(manager, vec![]);
+        let confirm = labels.iter().find(|(text, _)| text == "Confirm: revoke 2 grants").expect("Confirmation counts the two below-manager grants").1;
+        for pressed in [true, false] {
+            let (_, fired) = preset_frame(manager, vec![
+                egui::Event::PointerMoved(confirm),
+                egui::Event::PointerButton { pos: confirm, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]);
+            chosen = chosen.or(fired);
+        }
+        assert_eq!(chosen, Some(AccessPreset::ManagersOnly), "The confirmed click selects the preset");
+        if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+            access.start_managers_only();
+        }
+        service(manager, sender, None);
+        let DbCommand::EntityAccess { request_id: first_id, action: EntityAccessAction::Revoke { peer_did }, .. } =
+            receiver.try_recv().expect("The first revoke is sent")
+        else {
+            panic!("Managers only emits revokes only")
+        };
+        assert_eq!(peer_did, "did:key:viewer-a");
+        service(manager, sender, None);
+        assert!(receiver.try_recv().is_err(), "The second revoke waits for the first confirmed reply");
+        if refused {
+            apply(manager, target, &first_id, &Err("refused".into()));
+            service(manager, sender, None);
+            assert!(receiver.try_recv().is_err(), "A refused revoke halts the queue");
+            continue;
+        }
+        let mut after_first = bulk.clone();
+        after_first.grants.remove(0);
+        after_first.roles[1].1 = "none".into();
+        apply(manager, target, &first_id, &Ok(after_first.clone()));
+        service(manager, sender, None);
+        let DbCommand::EntityAccess { request_id: second_id, action: EntityAccessAction::Revoke { peer_did }, .. } =
+            receiver.try_recv().expect("The second revoke follows the first confirmed reply")
+        else {
+            panic!("Managers only emits revokes only")
+        };
+        assert_eq!(peer_did, "did:key:viewer-b");
+        let mut after_second = after_first;
+        after_second.grants.remove(0);
+        apply(manager, target, &second_id, &Ok(after_second));
+        service(manager, sender, None);
+        let Ok(DbCommand::EntityAccess { request_id: readback_id, action: EntityAccessAction::Load { .. }, .. }) = receiver.try_recv() else {
+            panic!("The queue finishes with the normal read-back and never revokes the manager")
+        };
+        assert!(receiver.try_recv().is_err());
+        apply(manager, target, &readback_id, &Ok(bulk.clone()));
+    }
 }

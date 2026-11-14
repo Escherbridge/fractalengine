@@ -376,6 +376,26 @@ pub fn render_entity_settings_dialog(
                 }
                 SettingsTab::Access => {
                     ui.label(egui::RichText::new("Peer Access").strong());
+                    let verse_scope = *entity_type == EntitySettingsType::Verse;
+                    if let Some(preset) = super::entity_access::preset_controls(ui, access, default_access_buf.as_deref(), verse_scope, can_write) {
+                        use super::entity_access::AccessPreset;
+                        let stored_default = match preset {
+                            AccessPreset::Public => Some("viewer"),
+                            AccessPreset::MembersOnly => Some("none"),
+                            AccessPreset::ManagersOnly => verse_scope.then_some("none"),
+                        };
+                        if let Some(value) = stored_default.filter(|_| verse_scope) {
+                            if db_tx.send(DbCommand::SetVerseDefaultAccess { verse_id: entity_id.clone(), default_access: value.to_string() }).is_err() {
+                                bevy::log::warn!("SetVerseDefaultAccess channel closed");
+                                send_failure = Some("Default access could not be sent. The database is unavailable.");
+                            } else if let Some(buffer) = default_access_buf.as_mut() {
+                                *buffer = value.to_string();
+                            }
+                        }
+                        if preset == AccessPreset::ManagersOnly {
+                            access.start_managers_only();
+                        }
+                    }
                     access_action=super::entity_access::role_controls(ui,access,known_peers);
                     let copied=super::entity_access::invite_controls(ui,access,invite_role_buf,invite_expiry_buf,known_peers);
                     copied_access |= copied;
