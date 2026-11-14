@@ -1959,6 +1959,8 @@ struct RelayAdoption {
     replan: bool,
     /// Hazard B (AC-9): open verses whose adverts omit this node's advertised home relay (NET-28 diagnostics).
     unadvertised_home_verses: BTreeSet<String>,
+    /// DialOnly URL -> (resolves to public addresses, checked at).
+    dial_only_verdicts: HashMap<String, (bool, std::time::Instant)>,
 }
 
 impl RelayAdoption {
@@ -1977,6 +1979,7 @@ impl RelayAdoption {
             removed_defaults: HashMap::new(),
             replan: true,
             unadvertised_home_verses: BTreeSet::new(),
+            dial_only_verdicts: HashMap::new(),
         }
     }
 
@@ -2072,17 +2075,103 @@ impl RelayAdoption {
         self.replan = true;
     }
 
-    /// Relays a peer address may name: Configured and Default (demoted or not) plus every advertised relay listed.
-    fn allowlist(&self) -> BTreeSet<String> {
-        self.reconciler
+    /// Relays a peer address may name: Configured, Default and inserted, plus DialOnly URLs that pass the public-address check.
+    async fn allowlist(&mut self) -> BTreeSet<String> {
+        let now = std::time::Instant::now();
+        let mut allowed: BTreeSet<String> = self
+            .reconciler
             .configured()
             .iter()
             .chain(self.reconciler.defaults())
             .chain(self.reconciler.inserted().keys())
-            .chain(self.reconciler.known())
             .cloned()
-            .collect()
+            .collect();
+        let dial_only: Vec<String> = self
+            .reconciler
+            .known()
+            .iter()
+            .filter(|url| !allowed.contains(*url))
+            .cloned()
+            .collect();
+        let mut pending: Vec<String> = dial_only
+            .iter()
+            .filter(|url| !verdict_is_fresh(&self.dial_only_verdicts, url, now))
+            .cloned()
+            .collect();
+        pending.truncate(DIAL_ONLY_RESOLVE_LIMIT);
+        let mut resolutions: HashMap<String, Result<(), String>> = HashMap::new();
+        let mut lookups = tokio::task::JoinSet::new();
+        for url in pending {
+            lookups.spawn(async move {
+                let verdict = advertised_relay_insertable(&url).await;
+                (url, verdict)
+            });
+        }
+        while let Some(joined) = lookups.join_next().await {
+            match joined {
+                Ok((url, verdict)) => {
+                    resolutions.insert(url, verdict);
+                }
+                Err(error) => tracing::warn!("dial-only relay lookup task failed: {error}"),
+            }
+        }
+        // URLs past the per-pass limit are neither cached nor allowlisted this pass.
+        let considered: Vec<&String> = dial_only
+            .iter()
+            .filter(|url| {
+                resolutions.contains_key(*url) || verdict_is_fresh(&self.dial_only_verdicts, url, now)
+            })
+            .collect();
+        allowed.extend(filter_resolvable(
+            considered,
+            &mut self.dial_only_verdicts,
+            now,
+            |url| resolutions.get(url).cloned().unwrap_or(Ok(())),
+        ));
+        allowed
     }
+}
+
+/// Most DialOnly URLs resolved per reconcile pass.
+const DIAL_ONLY_RESOLVE_LIMIT: usize = 8;
+
+/// How long a DialOnly resolution verdict is trusted before it is re-resolved.
+const DIAL_ONLY_VERDICT_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A cached verdict younger than the TTL.
+fn verdict_is_fresh(
+    cache: &HashMap<String, (bool, std::time::Instant)>,
+    url: &str,
+    now: std::time::Instant,
+) -> bool {
+    cache
+        .get(url)
+        .is_some_and(|(_, checked)| now.saturating_duration_since(*checked) < DIAL_ONLY_VERDICT_TTL)
+}
+
+/// Keep the URLs whose verdict is Ok: fresh cache entries are reused, stale or missing ones go through `resolver`; entries for other URLs are dropped.
+fn filter_resolvable<'a>(
+    urls: impl IntoIterator<Item = &'a String>,
+    cache: &mut HashMap<String, (bool, std::time::Instant)>,
+    now: std::time::Instant,
+    mut resolver: impl FnMut(&str) -> Result<(), String>,
+) -> BTreeSet<String> {
+    let urls: Vec<&String> = urls.into_iter().collect();
+    cache.retain(|url, _| urls.iter().any(|kept| *kept == url));
+    let mut kept = BTreeSet::new();
+    for url in urls {
+        if !verdict_is_fresh(cache, url, now) {
+            let verdict = resolver(url);
+            if let Err(reason) = &verdict {
+                tracing::warn!(relay = %url, "dial-only relay not allowlisted: {reason}");
+            }
+            cache.insert(url.clone(), (verdict.is_ok(), now));
+        }
+        if cache.get(url).is_some_and(|(resolvable, _)| *resolvable) {
+            kept.insert(url.clone());
+        }
+    }
+    kept
 }
 
 /// Builds the diagnostics snapshot from live endpoint paths and the relay adoption state (see `AGENTS.md` §net-diagnostics).
@@ -2179,7 +2268,7 @@ async fn reconcile_advertised_relays(
     }
 
     if let Some(endpoint) = endpoint {
-        let allowlist = adoption.allowlist();
+        let allowlist = adoption.allowlist().await;
         if allowlist != adoption.last_allowlist {
             endpoint.set_relay_allowlist(
                 allowlist
@@ -4957,6 +5046,40 @@ mod tests {
             app.update();
             assert_eq!(app.world().resource::<SyncStatus>().health, expected);
         }
+
+        // DialOnly allowlist filter: a failing host is excluded, a cached verdict is not re-resolved inside the TTL.
+        let good = "https://relay-a.example/".to_string();
+        let bad = "https://relay-b.example/".to_string();
+        let urls = [good.clone(), bad.clone()];
+        let mut cache = HashMap::new();
+        let start = std::time::Instant::now();
+        let calls = std::cell::Cell::new(0usize);
+        let mut resolver = |url: &str| {
+            calls.set(calls.get() + 1);
+            if url.contains("relay-b") {
+                Err("resolves to loopback".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let kept = filter_resolvable(&urls, &mut cache, start, &mut resolver);
+        assert_eq!(kept, BTreeSet::from([good.clone()]));
+        let kept = filter_resolvable(
+            &urls,
+            &mut cache,
+            start + std::time::Duration::from_secs(60),
+            &mut resolver,
+        );
+        assert_eq!(kept, BTreeSet::from([good.clone()]));
+        assert_eq!(calls.get(), 2, "verdicts inside the TTL are served from the cache");
+        let kept = filter_resolvable(
+            &urls,
+            &mut cache,
+            start + DIAL_ONLY_VERDICT_TTL + std::time::Duration::from_secs(1),
+            &mut resolver,
+        );
+        assert_eq!(kept, BTreeSet::from([good.clone()]));
+        assert_eq!(calls.get(), 4, "both URLs are re-resolved after the TTL");
     }
 
     #[test]
