@@ -62,10 +62,18 @@ pub const ABUSE_LOG_WINDOW: Duration = Duration::from_secs(60);
 const ABUSE_LOG_CAPACITY: usize = 4096;
 /// Bound on the per-source non-member denial table.
 const NON_MEMBER_SOURCE_CAPACITY: usize = 4096;
-/// Denials per minute that make a minute "hot" for the breaker.
+/// Distinct denied endpoints per minute that make a minute "hot" for the breaker.
 pub const BREAKER_DENIALS_PER_MINUTE: u32 = 600;
 /// Consecutive hot minutes that trip the breaker.
 pub const BREAKER_HOT_MINUTES: u32 = 3;
+/// Member per-endpoint cap denials in one window that throttle that endpoint.
+const THROTTLE_DENIALS_PER_WINDOW: u32 = 10;
+/// First throttle backoff; doubles per repeat trip up to the max.
+const THROTTLE_BASE_BACKOFF: Duration = Duration::from_secs(30);
+/// Longest throttle backoff, also the quiet period after which strikes reset.
+const THROTTLE_MAX_BACKOFF: Duration = Duration::from_secs(600);
+/// Bound on the per-member throttle table.
+const MEMBER_THROTTLE_CAPACITY: usize = 4096;
 /// Desktop listener cool-down after a trip.
 pub const DESKTOP_BREAKER_COOLDOWN: Duration = Duration::from_secs(600);
 const BREAKER_MINUTE: Duration = Duration::from_secs(60);
@@ -140,7 +148,7 @@ pub enum CertMode {
 pub enum ServedVerses {
     /// An explicit verse-id list; every id must be hosted locally.
     Listed(BTreeSet<String>),
-    /// Every verse this node hosts, now and later.
+    /// Every verse this node hosts at start; the set is frozen then, so a later-hosted verse needs a restart.
     AllHosted,
 }
 
@@ -472,7 +480,7 @@ impl RelayServeConfig {
                 }
                 tracing::warn!(
                     hosted = hosted.len(),
-                    "{RELAY_SERVE_VERSES_ENV}=hosted also serves every verse this node hosts later"
+                    "{RELAY_SERVE_VERSES_ENV}=hosted serves only the verses hosted now (the set is frozen at start; restart to serve later ones)"
                 );
             }
         }
@@ -543,7 +551,7 @@ enum BreakerTransition {
     Cleared,
 }
 
-/// Per-source non-member denial counts: bounded, evicts the oldest-window source when full.
+/// Per-source denial counts (non-member and global-cap denials): bounded, evicts the oldest-window source when full.
 #[derive(Debug)]
 struct NonMemberTracker {
     capacity: usize,
@@ -583,7 +591,83 @@ impl NonMemberTracker {
     }
 }
 
-/// Denial circuit breaker (fed by member cap denials only): trips after `BREAKER_HOT_MINUTES` consecutive minutes above the rate.
+#[derive(Debug, Clone, Copy)]
+struct ThrottleEntry {
+    window_start: Instant,
+    denials: u32,
+    strikes: u32,
+    last_trip: Instant,
+    blocked_until: Option<Instant>,
+}
+
+impl ThrottleEntry {
+    fn is_blocked(&self, now: Instant) -> bool {
+        self.blocked_until.is_some_and(|until| now < until)
+    }
+}
+
+/// Per-member throttle: an admitted endpoint that floods its per-endpoint cap is blocked itself, with doubling backoff; bounded.
+#[derive(Debug)]
+struct MemberThrottle {
+    capacity: usize,
+    entries: HashMap<EndpointId, ThrottleEntry>,
+}
+
+impl MemberThrottle {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn is_blocked(&self, endpoint: &EndpointId, now: Instant) -> bool {
+        self.entries.get(endpoint).is_some_and(|entry| entry.is_blocked(now))
+    }
+
+    /// Counts one cap denial; true when this denial starts a backoff.
+    fn record_cap_denial(&mut self, endpoint: EndpointId, now: Instant) -> bool {
+        if !self.entries.contains_key(&endpoint) && self.entries.len() >= self.capacity {
+            // Blocked entries are evicted last so id churn cannot launder a throttled endpoint.
+            let victim = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| (entry.is_blocked(now), entry.window_start))
+                .map(|(id, _)| *id);
+            if let Some(victim) = victim {
+                self.entries.remove(&victim);
+            }
+        }
+        let entry = self.entries.entry(endpoint).or_insert(ThrottleEntry {
+            window_start: now,
+            denials: 0,
+            strikes: 0,
+            last_trip: now,
+            blocked_until: None,
+        });
+        if now.saturating_duration_since(entry.window_start) >= ABUSE_LOG_WINDOW {
+            entry.window_start = now;
+            entry.denials = 0;
+        }
+        if entry.strikes > 0 && now.saturating_duration_since(entry.last_trip) >= THROTTLE_MAX_BACKOFF {
+            entry.strikes = 0;
+        }
+        entry.denials = entry.denials.saturating_add(1);
+        if entry.denials <= THROTTLE_DENIALS_PER_WINDOW {
+            return false;
+        }
+        entry.strikes = entry.strikes.saturating_add(1);
+        let backoff = THROTTLE_BASE_BACKOFF
+            .saturating_mul(1u32 << (entry.strikes - 1).min(5))
+            .min(THROTTLE_MAX_BACKOFF);
+        entry.blocked_until = Some(now + backoff);
+        entry.last_trip = now;
+        entry.denials = 0;
+        true
+    }
+}
+
+/// Denial circuit breaker: counts distinct denied endpoints per minute, so one endpoint feeds it at most once per minute; trips after `BREAKER_HOT_MINUTES` consecutive hot minutes.
 #[derive(Debug)]
 struct DenialBreaker {
     minute_start: Instant,
@@ -673,6 +757,8 @@ struct GateState {
     pending_eviction: HashMap<EndpointId, PendingEviction>,
     abuse_log_last: HashMap<(AbuseEvent, EndpointId), Instant>,
     non_members: NonMemberTracker,
+    global_cap_sources: NonMemberTracker,
+    member_throttle: MemberThrottle,
     breaker: DenialBreaker,
 }
 
@@ -752,6 +838,8 @@ impl RelayMembershipGate {
                 pending_eviction: HashMap::new(),
                 abuse_log_last: HashMap::new(),
                 non_members: NonMemberTracker::new(NON_MEMBER_SOURCE_CAPACITY),
+                global_cap_sources: NonMemberTracker::new(NON_MEMBER_SOURCE_CAPACITY),
+                member_throttle: MemberThrottle::new(MEMBER_THROTTLE_CAPACITY),
                 breaker: DenialBreaker::new(Instant::now()),
             }),
             eviction_wake: tokio::sync::Notify::new(),
@@ -811,7 +899,13 @@ impl RelayMembershipGate {
         self.lock().non_members.total_denials
     }
 
-    /// Denials the breaker counted this minute (member cap hits only).
+    /// Whether an admitted endpoint is currently throttled for flooding its per-endpoint cap.
+    #[cfg(test)]
+    fn is_throttled(&self, endpoint: &EndpointId) -> bool {
+        self.lock().member_throttle.is_blocked(endpoint, Instant::now())
+    }
+
+    /// Denials the breaker counted this minute (distinct global-cap endpoints only).
     #[cfg(test)]
     fn breaker_denials_this_minute(&self) -> u32 {
         self.lock().breaker.denials_this_minute
@@ -887,8 +981,12 @@ impl RelayMembershipGate {
         let limits = self.settings.limits;
         let (decision, log_event) = {
             let mut state = self.lock();
-            let decision = if !state.is_admitted(&did) {
+            let admitted = state.is_admitted(&did);
+            let throttled = admitted && state.member_throttle.is_blocked(&endpoint, now);
+            let decision = if !admitted {
                 Err(DenyReason::NotMember)
+            } else if throttled {
+                Err(DenyReason::PerEndpointCap)
             } else if state
                 .connections
                 .get(&endpoint)
@@ -921,9 +1019,16 @@ impl RelayMembershipGate {
                     let first_in_window = state.non_members.record(endpoint, now);
                     (decision, first_in_window.then_some(AbuseEvent::Denied))
                 }
-                Err(DenyReason::PerEndpointCap | DenyReason::GlobalCap) => {
-                    // Cap denials need an admitted endpoint, so only members can feed the breaker.
-                    state.breaker.record_denial(now);
+                Err(reason @ (DenyReason::PerEndpointCap | DenyReason::GlobalCap)) => {
+                    // One member produces per-endpoint denials alone: throttle it, never the listener.
+                    // Global-cap denials reach the breaker once per distinct endpoint per window.
+                    if reason == DenyReason::PerEndpointCap {
+                        if !throttled {
+                            state.member_throttle.record_cap_denial(endpoint, now);
+                        }
+                    } else if state.global_cap_sources.record(endpoint, now) {
+                        state.breaker.record_denial(now);
+                    }
                     let log = state
                         .should_log(AbuseEvent::CapHit, endpoint, now)
                         .then_some(AbuseEvent::CapHit);
@@ -1061,7 +1166,7 @@ fn log_abuse(event: AbuseEvent, endpoint: &EndpointId, reason: Option<DenyReason
 pub enum BreakerPolicy {
     /// fe-relay: warn and keep serving honest members.
     WarnOnly,
-    /// Desktop: close the listener for a cool-down (iroh-relay has no pause API).
+    /// Desktop: close the listener for a cool-down (iroh-relay has no pause API); trips only on distinct-endpoint global-cap pressure.
     CloseListener { cooldown: Duration },
 }
 
@@ -1515,18 +1620,88 @@ mod tests {
         assert!(is_denied_with(&fourth, "global_cap").await, "global cap denies by name");
         assert_eq!(gate.total_connections(), 3, "denied connections are never counted");
 
-        // Entry 7: non-member denials never reach the breaker; the two member cap denials do.
+        // Entry 7: non-member and per-endpoint denials never reach the breaker; a global-cap denial counts once per endpoint.
         assert!(gate.non_member_denials() >= 2, "non-member denials are counted per source");
-        assert_eq!(gate.breaker_denials_this_minute(), 2, "only cap denials feed the breaker");
+        assert_eq!(gate.breaker_denials_this_minute(), 1, "only the distinct global-cap endpoint feeds the breaker");
         let mut flood = Vec::new();
         for seed in 40..46u8 {
             let client = relay_client(seed, &url).await;
             assert!(is_denied_with(&client, "not_member").await, "flooding non-member is denied");
             flood.push(client);
         }
-        assert_eq!(gate.breaker_denials_this_minute(), 2, "a non-member flood leaves the breaker untouched");
+        assert_eq!(gate.breaker_denials_this_minute(), 1, "a non-member flood leaves the breaker untouched");
         assert!(!gate.breaker_tripped());
         assert!(relay.is_listening(), "the listener stays open for members");
+
+        // Residual of entry 7: an admitted member flooding its own cap is throttled itself, not the listener.
+        let member_id = member.id();
+        let fresh_viewer_id = fresh_viewer.id();
+        let mut cap_flood = Vec::new();
+        for _ in 0..(THROTTLE_DENIALS_PER_WINDOW + 2) {
+            let client = relay_client(1, &url).await;
+            assert!(is_denied_with(&client, "per_endpoint_cap").await, "the flooding member is denied by name");
+            cap_flood.push(client);
+        }
+        assert!(gate.is_throttled(&member_id), "the flooding member is throttled");
+        assert!(!gate.is_throttled(&fresh_viewer_id), "another member is not throttled");
+        assert_eq!(gate.breaker_denials_this_minute(), 1, "per-endpoint denials never feed the breaker");
+        assert!(!gate.breaker_tripped());
+        assert!(relay.is_listening(), "the listener stays open while one member floods");
+        assert_eq!(gate.tracked_connections(&fresh_viewer_id), 1, "another member stays admitted");
+        assert_eq!(gate.total_connections(), 3, "the flood admitted nothing");
+        // Freeing the slot does not lift the throttle: only the backoff would.
+        member.close().await;
+        assert!(tracked_drops_to_zero(&gate, &member_id).await, "the member's own connection is gone");
+        let throttled_retry = relay_client(1, &url).await;
+        assert!(
+            is_denied_with(&throttled_retry, "per_endpoint_cap").await,
+            "a throttled member is denied even with a free slot"
+        );
+        cap_flood.push(throttled_retry);
+        for client in cap_flood {
+            client.close().await;
+        }
+
+        // The throttle table stays within its cap across thousands of endpoint ids and keeps blocked entries.
+        let mut throttle = MemberThrottle::new(MEMBER_THROTTLE_CAPACITY);
+        let throttle_start = Instant::now();
+        let flooder = SecretKey::from_bytes(&[70; 32]).public();
+        for _ in 0..THROTTLE_DENIALS_PER_WINDOW {
+            assert!(!throttle.record_cap_denial(flooder, throttle_start), "under the threshold no backoff starts");
+        }
+        assert!(throttle.record_cap_denial(flooder, throttle_start), "the denial past the threshold starts a backoff");
+        assert!(throttle.is_blocked(&flooder, throttle_start + Duration::from_secs(1)));
+        assert!(
+            !throttle.is_blocked(&flooder, throttle_start + THROTTLE_BASE_BACKOFF + Duration::from_secs(1)),
+            "the first backoff ends"
+        );
+        let second_round = throttle_start + Duration::from_secs(41);
+        for _ in 0..=THROTTLE_DENIALS_PER_WINDOW {
+            throttle.record_cap_denial(flooder, second_round);
+        }
+        assert!(
+            throttle.is_blocked(&flooder, second_round + THROTTLE_BASE_BACKOFF + Duration::from_secs(1)),
+            "a repeat trip doubles the backoff"
+        );
+        for index in 0..(MEMBER_THROTTLE_CAPACITY as u32 * 2) {
+            let mut seed = [0u8; 32];
+            seed[..4].copy_from_slice(&index.to_le_bytes());
+            seed[31] = 1;
+            let source = SecretKey::from_bytes(&seed).public();
+            throttle.record_cap_denial(source, second_round + Duration::from_millis(u64::from(index)));
+            assert!(throttle.entries.len() <= MEMBER_THROTTLE_CAPACITY, "the table never exceeds its cap");
+        }
+        assert!(
+            throttle.is_blocked(&flooder, second_round + Duration::from_secs(1)),
+            "id churn does not evict a blocked endpoint"
+        );
+
+        // Global-cap sources are bounded the same way.
+        let mut global_sources = NonMemberTracker::new(8);
+        for index in 1..=64u8 {
+            global_sources.record(SecretKey::from_bytes(&[index; 32]).public(), throttle_start);
+            assert!(global_sources.sources.len() <= 8, "the global-cap source table never exceeds its cap");
+        }
 
         // The tracker is bounded: a full table evicts the oldest source instead of growing.
         let mut tracker = NonMemberTracker::new(3);
@@ -1551,7 +1726,7 @@ mod tests {
         assert!(!all_hosted.serves(OTHER_VERSE, Some(&hosted)), "a joined, unhosted verse is not served");
         assert!(!all_hosted.serves(VERSE, None), "no hosted set serves nothing");
 
-        for endpoint in [member, fresh_viewer, stranger, other_verse_member, member_second_session, third, fourth] {
+        for endpoint in [fresh_viewer, stranger, other_verse_member, member_second_session, third, fourth] {
             endpoint.close().await;
         }
         relay.shutdown().await;
