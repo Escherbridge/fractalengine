@@ -62,12 +62,25 @@ pub(crate) fn manager_covers(claims: &ApiClaims, scope: Option<String>) -> Optio
     Some(scope)
 }
 
+/// A round trip with no usable reply: the error response, and whether the DB thread never got the command.
+struct RoundTripFailure {
+    response: Response,
+    /// True only when the send failed; after a timeout or a dropped reply the command may still commit.
+    unsent: bool,
+}
+
+impl RoundTripFailure {
+    fn sent(response: Response) -> Self {
+        Self { response, unsent: false }
+    }
+}
+
 /// Send one DB command with a fresh correlation id and wait for its echoed reply.
 async fn db_round_trip(
     state: &ApiState,
     build: impl FnOnce(Option<String>) -> DbCommand,
     timeout: Duration,
-) -> Result<DbResult, Response> {
+) -> Result<DbResult, RoundTripFailure> {
     let correlation_id = ulid::Ulid::new().to_string();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let cmd = ApiCommand::DbRequest {
@@ -76,18 +89,24 @@ async fn db_round_trip(
     };
     if state.api_cmd_tx.send(cmd).is_err() {
         tracing::warn!("petal snapshot: API command channel closed");
-        return Err(envelope_error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"));
+        return Err(RoundTripFailure {
+            response: envelope_error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+            unsent: true,
+        });
     }
     match tokio::time::timeout(timeout, reply_rx).await {
         Ok(Ok(result)) => {
             if reply_correlation(&result).is_some_and(|echoed| echoed != correlation_id) {
                 tracing::warn!("petal snapshot: reply carried a foreign correlation id");
-                return Err(envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "mismatched database reply"));
+                return Err(RoundTripFailure::sent(envelope_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "mismatched database reply",
+                )));
             }
             Ok(result)
         }
-        Ok(Err(_)) => Err(envelope_error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable")),
-        Err(_) => Err(envelope_error(StatusCode::GATEWAY_TIMEOUT, "database timed out")),
+        Ok(Err(_)) => Err(RoundTripFailure::sent(envelope_error(StatusCode::SERVICE_UNAVAILABLE, "database unavailable"))),
+        Err(_) => Err(RoundTripFailure::sent(envelope_error(StatusCode::GATEWAY_TIMEOUT, "database timed out"))),
     }
 }
 
@@ -133,7 +152,7 @@ pub async fn export_petal_snapshot(
             return envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot export failed");
         }
         Ok(_) => return envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "unexpected database reply"),
-        Err(response) => return response,
+        Err(failure) => return failure.response,
     };
 
     let source_node_id = state.share_signer.to_did_key();
@@ -333,7 +352,8 @@ pub async fn import_petal_snapshot(
         Ok(DbResult::PetalSnapshotImported { petal_id, .. }) => {
             Json(ApiResponse::success(serde_json::json!({ "petal_id": petal_id }))).into_response()
         }
-        // Every other outcome leaves the blobs this call wrote with no row pointing at them: roll them back.
+        // A refusal, a failed restore or an unsent command wrote no rows: roll back the blobs this call wrote.
+        // A timeout, dropped or unexpected reply may still commit, so those keep the blobs (an orphan, never a dangling row).
         Ok(DbResult::PetalSnapshotImportRefused { petal_id, reason, .. }) => {
             // A malformed or out-of-petal snapshot is the caller's error (400); an existing petal or a colliding
             // identity is a conflict with local state (409). No rows were written either way.
@@ -357,12 +377,16 @@ pub async fn import_petal_snapshot(
             envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot import failed")
         }
         Ok(_) => {
-            discard_new_blobs_off_thread(newly_stored).await;
+            tracing::warn!(petal_id = %snapshot_petal_id, "petal snapshot import: unexpected reply; its new blobs are kept");
             envelope_error(StatusCode::INTERNAL_SERVER_ERROR, "unexpected database reply")
         }
-        Err(response) => {
-            discard_new_blobs_off_thread(newly_stored).await;
-            response
+        Err(failure) => {
+            if failure.unsent {
+                discard_new_blobs_off_thread(newly_stored).await;
+            } else {
+                tracing::warn!(petal_id = %snapshot_petal_id, "petal snapshot import outcome unknown; its new blobs are kept");
+            }
+            failure.response
         }
     }
 }

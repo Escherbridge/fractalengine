@@ -208,7 +208,7 @@ impl SpaceManager {
             let mut result = db
                 .query(
                     "UPDATE room SET description = $desc, bounds = $bounds, spawn_point = $spawn \
-                 WHERE id = $id AND petal_id = $petal_id",
+                 WHERE id = type::record($id) AND petal_id = $petal_id",
                 )
                 .bind(("desc", meta.description))
                 .bind(("bounds", bounds_val))
@@ -280,7 +280,7 @@ impl SpaceManager {
                  config_url = $config_url, \
                  tags = $tags, \
                  metadata = $metadata \
-                 WHERE id = $id AND petal_id = $petal_id",
+                 WHERE id = type::record($id) AND petal_id = $petal_id",
                 )
                 .bind(("display_name", update.display_name))
                 .bind(("description", update.description))
@@ -326,7 +326,7 @@ impl SpaceManager {
         crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
         let key = key.to_string();
         let q = format!(
-            "UPDATE model SET metadata.{key} = $value WHERE id = $id AND petal_id = $petal_id"
+            "UPDATE model SET metadata.{key} = $value WHERE id = type::record($id) AND petal_id = $petal_id"
         );
         let mut metadata = serde_json::Map::new();
         metadata.insert(key, value.clone());
