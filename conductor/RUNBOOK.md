@@ -111,7 +111,18 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-14 03:25 MST — ROUND 5 SWARM RUNNING (100 slices); CI on round 4 still running.** Round-5 plan
+- **2026-11-14 04:15 MST — ROUND 5 FIRST RUN: 71 done / 4 partial / 1 blocked / 24 SKIPPED; RESUMED.** One
+  blocked root slice (CITY5-05: the journey its task told it to extend does not exist) cascaded through
+  CITY5-04 -> R5-CITY -> I5-RUNTIME / I5-DB -> R5-INT-1 -> every doc, bookkeeping and checklist slice, so the
+  central-file integrations never ran and **the tree probably does not compile right now** (feature slices
+  committed code that needs them; 60 local commits since `ab007037`, 15.3M tokens, 39 min). Fix: a dated steer
+  in `.omc/state/turn5-steer.md` (CITY5-05 extracts and tests the property-submission arm; integration slices
+  collect the workers' NEEDS lines, including security-inbox entry 16 and the missing MCP schema fn) and a
+  `RETRY` suffix in `round5-swarm.js` so the blocked slice's prompt key changes; resumed as task `wsiach6kq`
+  (same run id `wf_07396894-5b3`; finished slices replay from cache). **Lesson for the next DAG:** a test-only
+  slice must never sit upstream of an integration chain; make such edges soft or route them through the gate.
+  Then as planned: holds, refine pass, CI fixes, security re-audit, push.
+- **2026-11-14 03:25 MST — ROUND 5 SWARM (first run finished 04:05, see above); CI on round 4 still running.** Round-5 plan
   (`wf_8e026152-8ba`, 13 agents, 2.5M tokens): eleven sonnet scopers checked every item round 4 left open
   against code at HEAD (most were already done: e.g. HEXON 46 done / 12 left), opus merge, sonnet critic PASS;
   orchestrator re-check: 0 unordered ownership overlaps, no cycles. **100 slices = 54 feature, 15 gates, 18
