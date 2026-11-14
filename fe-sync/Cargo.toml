@@ -7,6 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "iroh-based P2P synchronization and replication for FractalEngine"
 
+[features]
+relay-server = ["dep:iroh-relay", "iroh-relay/server"]
+
 [dependencies]
 bevy = { workspace = true }
 fe-runtime = { path = "../fe-runtime" }
@@ -14,6 +17,7 @@ fe-database = { path = "../fe-database" }
 fe-network = { path = "../fe-network" }
 fe-policy = { path = "../fe-policy" }
 fe-identity = { path = "../fe-identity" }
+fe-canonical-log = { path = "../fe-canonical-log" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -22,7 +26,8 @@ tracing = { workspace = true }
 dirs = "5"
 blake3 = { workspace = true }
 hex = "0.4"
-iroh = { workspace = true }
+iroh = { workspace = true, features = ["unstable-net-report"] }
+iroh-relay = { workspace = true, optional = true }
 iroh-blobs = { workspace = true }
 iroh-docs = { workspace = true }
 iroh-gossip = { workspace = true }
@@ -37,5 +42,6 @@ socket2 = { workspace = true }
 crossbeam = { workspace = true }
 
 [dev-dependencies]
+iroh = { workspace = true, features = ["test-utils"] }
 ulid = { workspace = true }
 tempfile = "3"

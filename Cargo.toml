@@ -81,6 +81,8 @@ libp2p = { version = "0.56", features = ["kad", "quic", "tokio", "macros"] }
 # RelayStatus::auth_denied_reason). 0.35 <-> 1.x peers cannot interoperate —
 # flag-day upgrade; see fe-sync/src/AGENTS.md §iroh-1.x.
 iroh = "1.3"
+# Embedded relay server (fe-sync feature `relay-server`); same minor as iroh.
+iroh-relay = { version = "1.3", default-features = false }
 # 0.103.0 was yanked — pin the patch release.
 iroh-blobs = "0.103.1"
 iroh-gossip = "0.101"
@@ -111,7 +113,7 @@ keyring = "3"
 blake3 = "1"
 bytes = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1", features = ["derive"] }
 # float_roundtrip: bit-exact f64 parsing (replication; see fe-sim/src/AGENTS.md §one-ulp).
 serde_json = { version = "1", features = ["float_roundtrip"] }
