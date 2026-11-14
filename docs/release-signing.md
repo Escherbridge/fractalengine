@@ -1,4 +1,7 @@
-# Release signing (Windows)
+# Release signing
+
+Windows binaries carry Authenticode signatures; every archive is covered by a minisign signature
+over `SHA256SUMS` (see "Linux and checksum signing").
 
 ## What is wired
 
@@ -38,14 +41,72 @@ Replace only the "Sign Windows binaries" step in each of the three jobs; keep it
 ## What users see while unsigned
 
 Windows SmartScreen warns on first run: choose **More info**, then **Run anyway**. Signing
-removes the "unknown publisher" warning; reputation with SmartScreen builds over time.
+removes the "unknown publisher" warning; reputation with SmartScreen builds over time, per
+publisher, so early signed releases may still warn. That is expected and is not tampering; the
+release notes (`.github/release-notes-template.md`) say the same.
 
 ## Verifying a download
 
+- Checksum signature (first): fetch `docs/release-signing.pub` from the repository at the release
+  tag (not from the release page, which anyone able to replace assets could also replace), save it
+  as `release-signing.pub` next to `SHA256SUMS` and `SHA256SUMS.minisig`, then run
+  `minisign -V -p release-signing.pub -m SHA256SUMS`. A valid signature makes every line of
+  `SHA256SUMS` trustworthy.
 - Checksum: `sha256sum -c SHA256SUMS --ignore-missing` (or `Get-FileHash -Algorithm SHA256 <file>`
   and compare with the `SHA256SUMS` line).
 - Signature (after extracting the zip): `Get-AuthenticodeSignature .\fractalengine.exe`
   must report `Status : Valid` and the expected publisher.
+
+## Linux and checksum signing
+
+`release.yml` (`publish` job) signs `SHA256SUMS` with minisign right after generating it and
+uploads `SHA256SUMS.minisig` with the release. The Linux `.tar.gz` files are not signed one by one:
+each archive's hash is a line of `SHA256SUMS`, so the one signature covers every archive on every
+platform (plan Task 3.2 allows signing "over `SHA256SUMS`"). The trusted comment names the tag
+(`fractalengine <tag> SHA256SUMS`) and is printed by `minisign -V`, so a signature replayed onto
+another release shows the wrong tag.
+
+How the job handles the key:
+
+- `MINISIGN_CONFIGURED` is derived from the `MINISIGN_SECRET_KEY` secret on the job (secrets cannot
+  be read in `if:`). Unset: the job emits `::notice::SHA256SUMS is unsigned` and publishes anyway, so
+  unsigned releases and forks stay green; the release notes then say "Checksums signed: no".
+- The key is written to `$RUNNER_TEMP/minisign.key` with mode 600, outside `release-assets/` (every
+  file there is uploaded), and never printed; an `if: always()` step deletes it.
+- When `docs/release-signing.pub` is committed, a verify step checks the new signature against it
+  before publishing, which catches a secret that does not match the published public key.
+- minisign was chosen over cosign/sigstore for a one-command check on the user's side. Both can
+  coexist: adding a cosign signature later does not require removing minisign.
+
+### Generating the key pair (manual, once)
+
+The public key is not in the repository until a maintainer generates the pair:
+
+```sh
+minisign -G -W -p docs/release-signing.pub -s minisign.key
+```
+
+`-W` creates a passwordless key, so CI needs no password secret. An encrypted key also works when
+its password is stored as the `MINISIGN_PASSWORD` secret (fed to minisign on stdin).
+
+1. Commit `docs/release-signing.pub`.
+2. Store the full contents of `minisign.key` (both lines) as the repository secret
+   `MINISIGN_SECRET_KEY`.
+3. Delete `minisign.key` from disk, or move it to offline storage.
+
+### Rotating the key
+
+Generate a new pair with the same command and replace `docs/release-signing.pub` and the
+`MINISIGN_SECRET_KEY` secret together; say in the next release notes that the key changed. Older
+releases keep verifying against the public key committed at their own tag.
+
+## Release notes
+
+The `publish` job renders `.github/release-notes-template.md` with `sed` into
+`$RUNNER_TEMP/release-notes.md` and publishes it via `body_path`. Placeholders: `{{TAG}}`,
+`{{OWNER}}`, `{{REPOSITORY}}`, `{{WINDOWS_SIGNED}}`, `{{CHECKSUMS_SIGNED}}`. Values reach the script
+through step `env` (never interpolated into shell text) and are escaped for `sed`; a placeholder left
+unrendered fails the job. Edit the template, not the workflow, to change the notes.
 
 ## Hardening notes
 

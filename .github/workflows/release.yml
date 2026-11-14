@@ -5,7 +5,8 @@ name: Release
 # user-facing archive (.zip on Windows, .tar.gz elsewhere: binary + runtime
 # assets + QUICKSTART.txt + licences -- scripts/package_release.py, the same
 # packaging as the rolling build in build-artifacts.yml), publishes a GitHub
-# Release with a SHA256SUMS manifest, and pushes the relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
+# Release with a SHA256SUMS manifest (minisign-signed when MINISIGN_SECRET_KEY is set,
+# notes rendered from .github/release-notes-template.md), and pushes the relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
 # pre-releases. `workflow_dispatch` runs the builds without publishing.
 
 on:
@@ -312,6 +313,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   # Task 2.2: collect every artifact, emit SHA256SUMS, publish the release.
+  # Tasks 3.2-3.4: minisign SHA256SUMS (covers every archive) and render the notes
+  # from .github/release-notes-template.md (docs/release-signing.md).
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -323,7 +326,15 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
+    env:
+      # Optional checksum signing (docs/release-signing.md); secrets cannot be read in `if:`.
+      MINISIGN_CONFIGURED: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
     steps:
+      # Needed for the notes template and the committed public key.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -342,29 +353,66 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
+      # Task 3.2/3.3: one detached signature over SHA256SUMS covers every archive.
+      # The key lives only under $RUNNER_TEMP, never in release-assets/ (uploaded wholesale).
+      - name: Sign SHA256SUMS (minisign)
+        if: env.MINISIGN_CONFIGURED == 'true'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+          key_file="$RUNNER_TEMP/minisign.key"
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file" )
+          chmod 600 "$key_file"
+          # Passwordless keys (minisign -G -W) never prompt; an optional password is fed on stdin.
+          printf '%s\n' "${MINISIGN_PASSWORD:-}" | minisign -S -s "$key_file" \
+            -m release-assets/SHA256SUMS -x release-assets/SHA256SUMS.minisig \
+            -t "fractalengine $TAG SHA256SUMS"
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+
+      - name: Note unsigned checksums
+        if: env.MINISIGN_CONFIGURED != 'true'
+        run: echo "::notice::SHA256SUMS is unsigned (MINISIGN_SECRET_KEY not set)"
+
+      # Catches a secret key that does not match the committed public key before publishing.
+      - name: Verify SHA256SUMS signature
+        if: env.MINISIGN_CONFIGURED == 'true' && hashFiles('docs/release-signing.pub') != ''
+        run: minisign -V -p docs/release-signing.pub -m release-assets/SHA256SUMS -x release-assets/SHA256SUMS.minisig
+
+      # Task 3.4: values arrive through env (never interpolated into the script) and are
+      # escaped for the sed replacement.
+      - name: Render release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          WINDOWS_SIGNED: "${{ needs.windows-x86_64.outputs.signed == 'true' && needs.windows-arm64.outputs.signed == 'true' && 'yes (Authenticode)' || 'no (SmartScreen will warn: More info, then Run anyway)' }}"
+          CHECKSUMS_SIGNED: ${{ env.MINISIGN_CONFIGURED == 'true' && 'yes (minisign, SHA256SUMS.minisig)' || 'no' }}
+        run: |
+          set -euo pipefail
+          escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+          notes="$RUNNER_TEMP/release-notes.md"
+          sed -e "s|{{TAG}}|$(escape "$TAG")|g" \
+              -e "s|{{OWNER}}|$(escape "$OWNER")|g" \
+              -e "s|{{REPOSITORY}}|$(escape "$REPOSITORY")|g" \
+              -e "s|{{WINDOWS_SIGNED}}|$(escape "$WINDOWS_SIGNED")|g" \
+              -e "s|{{CHECKSUMS_SIGNED}}|$(escape "$CHECKSUMS_SIGNED")|g" \
+              .github/release-notes-template.md > "$notes"
+          if grep -n '{{[A-Z_]*}}' "$notes"; then
+            echo "::error::unrendered placeholder in release notes"; exit 1
+          fi
+          cat "$notes"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           prerelease: ${{ contains(github.ref_name, '-') }}
-          body: |
-            ## Downloads
-
-            | Download | Platform | What |
-            |----------|----------|------|
-            | `fractalengine-windows-x86_64.zip` | Windows x86_64 | Desktop app |
-            | `fractalengine-windows-aarch64.zip` | Windows ARM64 | Desktop app |
-            | `fractalengine-linux-x86_64.tar.gz` | Linux x86_64 (glibc 2.39+) | Desktop app |
-            | `fe-relay-windows-x86_64.zip` | Windows x86_64 | Headless relay |
-            | `fe-relay-linux-x86_64.tar.gz` | Linux x86_64 (glibc 2.39+) | Headless relay |
-            | `fe-relay-linux-musl-x86_64.tar.gz` | Linux x86_64 (static musl) | Headless relay |
-            | `fe-relay-linux-musl-aarch64.tar.gz` | Linux ARM64 (static musl) | Headless relay |
-            | `SHA256SUMS` | — | Checksums |
-
-            Extract the whole archive and read `QUICKSTART.txt` inside it. Keep the
-            `assets` folder next to the desktop app: the app keeps its `data` folder there.
-            Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
-
-            Windows binaries signed: ${{ needs.windows-x86_64.outputs.signed == 'true' && needs.windows-arm64.outputs.signed == 'true' && 'yes (Authenticode)' || 'no (SmartScreen will warn: More info, then Run anyway)' }}
-
-            Docker: `docker pull ghcr.io/${{ github.repository_owner }}/fractalengine-relay:${{ github.ref_name }}`
+          body_path: ${{ runner.temp }}/release-notes.md
