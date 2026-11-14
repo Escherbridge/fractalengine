@@ -286,6 +286,10 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
             get(crate::petal_snapshot::export_petal_snapshot),
         )
         .route(
+            "/api/v1/petals/{petal_id}/imported-history",
+            get(crate::imported_history::imported_history),
+        )
+        .route(
             "/api/v1/petals/import-snapshot",
             post(crate::petal_snapshot::import_petal_snapshot)
                 .layer(DefaultBodyLimit::max(crate::petal_snapshot::SNAPSHOT_ROUTE_BODY_LIMIT)),

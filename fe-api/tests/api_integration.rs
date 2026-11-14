@@ -817,38 +817,6 @@ async fn read_node_returns_each_type_specific_payload() {
 // (z) /crates on unified hexon types: publish, install, list, entries, asset, entitlement
 // ---------------------------------------------------------------------------
 
-/// Router over the harness identity and DB with a real `HexonRegistry` wired in (the harness has none).
-fn router_with_hexon_registry(h: &ApiHarness, registry_dir: std::path::PathBuf) -> axum::Router {
-    use std::sync::{Arc, Mutex};
-    let state = fe_api::server::ApiState {
-        api_cmd_tx: h.state.api_cmd_tx.clone(),
-        transform_broadcast_tx: h.state.transform_broadcast_tx.clone(),
-        entity_change_tx: h.state.entity_change_tx.clone(),
-        verifying_key: h.state.verifying_key,
-        revoked_jtis: h.state.revoked_jtis.clone(),
-        blob_store: h.state.blob_store.clone(),
-        cors_origins: h.state.cors_origins.clone(),
-        db_reader: h.state.db_reader.clone(),
-        terrain_capture: Default::default(),
-        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-        entity_store: None,
-        tileset_registry: None,
-        hexon_registry: Some(Arc::new(Mutex::new(
-            fe_hexon::registry::HexonRegistry::new(registry_dir),
-        ))),
-        announcement_store: None,
-        replication_tx: None,
-        distributed_tx: None,
-        sim_control_tx: None,
-        share_signer: h.state.share_signer.clone(),
-        elevated_query_allowed: false,
-        upload_quota_bytes: h.state.upload_quota_bytes,
-        screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
-        input: fe_api::input::InputSurface::disabled(),
-    };
-    fe_api::server::build_router(Arc::new(state))
-}
-
 /// Send one request through `router`, returning (status, lenient JSON or null, raw bytes).
 async fn send_on(
     router: &axum::Router,
@@ -879,10 +847,12 @@ async fn hexon_crates_publish_install_search_entries_asset_journey() {
     use fe_hexon::manifest::{EntryKind, LicenseType};
     use fe_hexon::publisher::HexonBuilder;
 
-    let h = ApiHarness::spawn().await.expect("spawn harness");
-    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
     let registry_dir = tempfile::tempdir().expect("registry dir");
-    let router = router_with_hexon_registry(&h, registry_dir.path().to_path_buf());
+    let h = ApiHarness::spawn_with_hexon_registry(registry_dir.path().to_path_buf())
+        .await
+        .expect("spawn harness");
+    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
+    let router = h.router.clone();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
 
     const MODEL_BYTES: &[u8] = b"journey model bytes";

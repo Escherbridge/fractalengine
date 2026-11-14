@@ -34,6 +34,7 @@ pub mod network;
 pub mod network_ops;
 pub mod node_history;
 pub mod operator_gate;
+pub mod imported_history;
 pub mod petal_snapshot;
 pub mod portal_bundles;
 pub mod property_schema;
@@ -199,6 +200,8 @@ fn spawn_api_service_inner(mut config: ApiConfig, command_writes: bool) -> fe_ru
     if command_writes {
         config.api_db_reader = config.api_db_reader.as_ref().map(|db| Arc::new(db.with_command_writes()));
     }
+    // Logs the network detail opt-in once per process (internally guarded by std::sync::Once).
+    crate::network::announce_detail_opt_in();
     let stop = StopSignal::default();
     let worker_stop = stop.clone();
     let thread = std::thread::spawn(move || {
