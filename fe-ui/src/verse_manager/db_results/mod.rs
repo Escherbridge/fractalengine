@@ -1001,6 +1001,13 @@ pub(super) fn apply_db_results(
                 error,
                 correlation_id,
             } => {
+                if path_state.fail_pending_pen_create(correlation_id) {
+                    bevy::log::warn!("path create failed: {error}");
+                    ui_mgr.show_error(
+                        format!("Could not start the path: {error}"),
+                        caches.time.elapsed_secs_f64(),
+                    );
+                }
                 crate::visibility::groups::apply_registry_failure(
                     &mut caches.visibility,
                     correlation_id,
@@ -2076,7 +2083,10 @@ mod tests {
         let nav = NavigationManager { active_petal_id: Some("p1".into()), ..Default::default() };
         let mut ui = UiManager::default();
         let mut path_state = PathEditorState::default();
-        path_state.pending_pen_create = Some(pen_stash("pen-track:t3", &nav, &mgr));
+        path_state.pending_pen_create = Some(PendingPenCreate {
+            trailing_points: vec![[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+            ..pen_stash("pen-track:t3", &nav, &mgr)
+        });
         nodes::handle_node_created(
             "n2",
             "p1",
@@ -2095,7 +2105,7 @@ mod tests {
         assert_eq!(path_state.editing_track_id.as_deref(), Some("n2"));
         assert!(!path_state.has_pending_pen_create());
         let actions = ui.drain_actions();
-        assert_eq!(actions.len(), 1, "plain click stays a single legacy append");
+        assert_eq!(actions.len(), 2, "first anchor then the trailing shape, in order");
         match &actions[0] {
             UiAction::PathAppendPoint {
                 track_node_id,
@@ -2105,6 +2115,12 @@ mod tests {
                 assert_eq!(*position, [1.0, 2.0, 3.0]);
             }
             other => panic!("expected legacy PathAppendPoint, got {other:?}"),
+        }
+        match &actions[1] {
+            UiAction::PathAppendShape { points } => {
+                assert_eq!(*points, vec![[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]);
+            }
+            other => panic!("expected trailing PathAppendShape, got {other:?}"),
         }
         nodes::handle_node_created(
             "n2", "p1", "Track", false, Some("pen-track:t3"), [0.0; 3],
@@ -2568,6 +2584,68 @@ mod tests {
             1,
             "the error must land in the status-bar history ring"
         );
+    }
+
+    #[test]
+    fn request_failed_clears_the_matching_road_create() {
+        let mut app = App::new();
+        let (db_sender, _db_commands) = sender();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .add_message::<DbResult>()
+            .init_resource::<VerseManager>()
+            .init_resource::<NavigationManager>()
+            .insert_resource(db_sender)
+            .init_resource::<UiManager>()
+            .init_resource::<crate::plugin::LocalUserRole>()
+            .init_resource::<InspectorFormState>()
+            .init_resource::<NodeManager>()
+            .init_resource::<PathEditorState>()
+            .init_resource::<crate::terrain_map::PetalMapState>()
+            .init_resource::<crate::gis::GisPanelState>()
+            .init_resource::<fe_runtime::app::PendingApiRequests>()
+            .init_resource::<super::super::PrimitiveDescriptorCache>()
+            .init_resource::<super::super::PathAssetCache>()
+            .init_resource::<super::super::PathAssetApplied>()
+            .init_resource::<crate::actions::asset::StampInteractionState>()
+            .init_resource::<crate::actions::terrain_proposal::EarthworkNodeMap>()
+            .init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>()
+            .init_resource::<crate::terrain_proposal_state::ProposalEditState>()
+            .init_resource::<crate::timeseries_settings::TimeseriesSettingsState>()
+            .init_resource::<crate::plugin::MeshInstanceBudget>()
+            .init_resource::<super::super::ResidencyLedger>()
+            .init_resource::<crate::visibility::VisibilityState>()
+            .init_resource::<crate::notice::NoticeClock>()
+            .add_systems(Update, apply_db_results);
+        app.world_mut().resource_mut::<PathEditorState>().pending_pen_create =
+            Some(PendingPenCreate {
+                correlation_id: "road-track:9".into(),
+                first_point: [1.0, 0.0, 0.0],
+                ..Default::default()
+            });
+        app.world_mut().write_message(DbResult::RequestFailed {
+            correlation_id: "pen-track:1".into(),
+            error: "foreign failure".into(),
+        });
+        app.update();
+        assert!(
+            app.world().resource::<PathEditorState>().has_pending_pen_create(),
+            "a foreign correlation id leaves the pending create alone"
+        );
+        assert!(app.world().resource::<UiManager>().error_history().next().is_none());
+        app.world_mut().write_message(DbResult::RequestFailed {
+            correlation_id: "road-track:9".into(),
+            error: "create refused".into(),
+        });
+        app.update();
+        assert!(
+            !app.world().resource::<PathEditorState>().has_pending_pen_create(),
+            "the matching failure releases the tool"
+        );
+        assert!(app
+            .world()
+            .resource::<UiManager>()
+            .error_history()
+            .any(|notice| notice.text.contains("Could not start the path")));
     }
 
     // --- property handlers (continue semantics) ---
