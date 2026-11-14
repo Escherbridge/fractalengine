@@ -544,7 +544,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         payload_id: None,
     });
     readings.push(fe_runtime::messages::IotReadingInput {
-        node_id: other_node,
+        node_id: other_node.clone(),
         metric: "distance".into(),
         units: "m".into(),
         value: 999.0,
@@ -612,6 +612,34 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
                 .all(|pair| pair[0].recorded_at_ms <= pair[1].recorded_at_ms),
             "arrival order cannot become chart order"
         );
+    }
+    // Petal readings summary: one row per (node, metric), newest value, window count.
+    for (petal, grant, ok) in [
+        (petal_id.clone(), fe_runtime::node_history::NodeAccessGrant::Local, true),
+        (petal_id.clone(), fe_runtime::node_history::NodeAccessGrant::Scoped("VERSE#foreign".into()), false),
+    ] {
+        db.cmd_tx
+            .send(DbCommand::ReadPetalReadings {
+                petal_id: petal,
+                since_ms: Some(0),
+                grant,
+                correlation_id: "gis-readings-test".into(),
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::PetalReadingsLoaded { summary, .. } if ok => {
+                assert_eq!(summary.rows.len(), 2, "one row per (node, metric)");
+                let mine = summary.rows.iter().find(|row| row.node_id == historical).unwrap();
+                assert_eq!((mine.value, mine.count_window), (12.0, 4));
+                let other = summary.rows.iter().find(|row| row.node_id == other_node).unwrap();
+                assert_eq!((other.value, other.count_window), (999.0, 1));
+                assert!(!summary.truncated);
+            }
+            DbResult::RequestFailed { correlation_id, .. } if !ok => {
+                assert_eq!(correlation_id, "gis-readings-test")
+            }
+            other => panic!("petal readings: {other:?}"),
+        }
     }
     let foreign_petal = seed_hierarchy(&db);
     for (id, petal, grant) in [
