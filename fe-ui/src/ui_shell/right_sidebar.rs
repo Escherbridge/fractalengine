@@ -950,6 +950,7 @@ fn render_settings_section(
         ui.add_space(8.0);
         settings_heading(ui, "Network");
         render_relay_setting(ui, app_settings);
+        render_network_setting(ui, app_settings);
         render_registry_setting(ui, app_settings);
 
         // --- Timeseries fabric (M2/F6 — per active verse) ---
@@ -1200,6 +1201,57 @@ fn render_relay_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
         }
     }
     ui.data_mut(|data| data.insert_temp(buffer_id, buffer));
+}
+
+/// Network block: home-relay and reachability-check toggles plus the consent-gated relay serve toggle; all apply after restart.
+fn render_network_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
+    let pending_id = ui.id().with("serve_relay_consent_pending");
+    ui.checkbox(&mut app_settings.auto_home_relay, "Use verse relays as home")
+        .observed(ui)
+        .on_hover_text("Prefer a relay that every verse you open advertises");
+    ui.checkbox(&mut app_settings.act_as_prober, "Answer reachability checks for peers")
+        .observed(ui)
+        .on_hover_text("Lets verse members ask this device to test whether their relay is reachable");
+
+    let verdict = crate::settings::last_self_test_verdict();
+    let blocker = crate::settings::relay_serve_blocker(crate::settings::relay_serve_built(), verdict.as_deref());
+    let mut pending = ui.data_mut(|data| data.get_temp::<bool>(pending_id)).unwrap_or(false);
+    let mut serve = app_settings.serve_relay;
+    let enabled = blocker.is_none() || serve;
+    let toggled = ui
+        .add_enabled(enabled, egui::Checkbox::new(&mut serve, "Serve as a relay for my verses"))
+        .observed(ui)
+        .changed();
+    if let Some(reason) = blocker {
+        ui.label(egui::RichText::new(reason).small().color(theme::TEXT_MUTED));
+    }
+    if toggled {
+        if serve {
+            pending = true;
+        } else {
+            app_settings.serve_relay = false;
+            pending = false;
+        }
+    }
+    if pending {
+        ui.label("This device's public address becomes visible and it carries traffic for verse members.");
+        ui.horizontal(|ui| {
+            if ui.button("Confirm").observed(ui).clicked() {
+                app_settings.serve_relay = true;
+                pending = false;
+            }
+            if ui.button("Cancel").observed(ui).clicked() {
+                pending = false;
+            }
+        });
+    }
+    ui.data_mut(|data| data.insert_temp(pending_id, pending));
+    ui.label(
+        egui::RichText::new("Applies after restart")
+            .small()
+            .color(theme::TEXT_MUTED)
+            .italics(),
+    );
 }
 
 /// Hosted hexon registry URL (PAS-P5 S7b, A6): a blank field means "not

@@ -106,6 +106,12 @@ pub struct AppSettings {
     /// (ui_ux.md §6). `FE_HEXON_REGISTRY_URL` overrides it; see
     /// `resolve_hexon_registry_url`.
     pub hexon_registry_url: Option<String>,
+    /// OD-13: a covered advertised relay may become home automatically (local only); read at startup.
+    pub auto_home_relay: bool,
+    /// Answer dial-back reachability checks for verse peers (local only); read at startup.
+    pub act_as_prober: bool,
+    /// Serve a members-only relay for my verses; needs the `relay-server` build and a passing self-test; read at startup.
+    pub serve_relay: bool,
 }
 
 impl Default for AppSettings {
@@ -124,7 +130,54 @@ impl Default for AppSettings {
             show_scale_bar: true,
             relay: DEFAULT_RELAY_SPEC.to_string(),
             hexon_registry_url: None,
+            auto_home_relay: true,
+            act_as_prober: false,
+            serve_relay: false,
         }
+    }
+}
+
+/// Whether this binary was built with the relay server; registered once at startup by the host binary.
+static RELAY_SERVE_BUILT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Latest reachability self-test verdict label (`public`, `behind_nat`, ...); `None` while pending.
+static LAST_SELF_TEST_VERDICT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Host binary registers whether relay serving is compiled in.
+pub fn set_relay_serve_built(built: bool) {
+    RELAY_SERVE_BUILT.store(built, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// True when this binary can serve a relay.
+pub fn relay_serve_built() -> bool {
+    RELAY_SERVE_BUILT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Host binary records the newest self-test verdict label for the Settings reason line.
+pub fn record_self_test_verdict(label: Option<String>) {
+    match LAST_SELF_TEST_VERDICT.lock() {
+        Ok(mut guard) => *guard = label,
+        Err(poisoned) => *poisoned.into_inner() = label,
+    }
+}
+
+/// Latest recorded self-test verdict label.
+pub fn last_self_test_verdict() -> Option<String> {
+    match LAST_SELF_TEST_VERDICT.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Why the relay toggle cannot be switched on, or `None` when it may be (the consent step still applies).
+pub fn relay_serve_blocker(built: bool, verdict: Option<&str>) -> Option<&'static str> {
+    if !built {
+        return Some("This build cannot serve a relay.");
+    }
+    match verdict {
+        Some("public") => None,
+        Some(_) => Some("Reachability check says this device is not publicly reachable."),
+        None => Some("Waiting for the reachability check."),
     }
 }
 
@@ -598,6 +651,9 @@ mod tests {
             show_world_grid: true,
             relay: "disabled".into(),
             hexon_registry_url: Some("https://hexons.example.com".into()),
+            auto_home_relay: false,
+            act_as_prober: true,
+            serve_relay: true,
             ..Default::default()
         };
         save_settings_to(&path, &edited).unwrap();
@@ -684,6 +740,13 @@ mod tests {
         assert_eq!(loaded.entity_cap, DEFAULT_ENTITY_CAP);
         assert_eq!(loaded.relay, "default");
         assert!(loaded.show_scale_bar);
+        assert!(loaded.auto_home_relay);
+        assert!(!loaded.act_as_prober);
+        assert!(!loaded.serve_relay);
+        assert!(relay_serve_blocker(false, Some("public")).is_some());
+        assert!(relay_serve_blocker(true, Some("behind_nat")).is_some());
+        assert!(relay_serve_blocker(true, None).is_some());
+        assert!(relay_serve_blocker(true, Some("public")).is_none());
     }
 
     #[test]
