@@ -243,11 +243,16 @@ pub(crate) fn render(
         .vscroll(false)
         .default_width(460.0)
         .show_with_targets(ctx, |ui| {
-            ui.spacing_mut().interact_size.y = crate::ui_shell::layout_policy::target_size(ctx);
             let target = crate::ui_shell::layout_policy::target_size(ctx);
             ui.spacing_mut().interact_size.y = target;
-            // Action row stays outside the scroll area so it is always inside the window.
-            let footer_height = target.max(28.0) + ui.spacing().item_spacing.y * 3.0 + 6.0;
+            // Action row (and the missing-entry reason beside it) stays outside the scroll area.
+            let missing_line = if exists {
+                0.0
+            } else {
+                ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y
+            };
+            let footer_height =
+                target.max(28.0) + ui.spacing().item_spacing.y * 3.0 + 6.0 + missing_line;
             let body_height = (ui.available_height() - footer_height).max(target);
             egui::ScrollArea::vertical()
                 .id_salt("tree_appearance_body")
@@ -340,6 +345,7 @@ pub(crate) fn render(
                         });
                 });
             });
+            });
             ui.separator();
             if !exists {
                 ui.colored_label(
@@ -347,8 +353,6 @@ pub(crate) fn render(
                     "This entry no longer exists. Close this editor.",
                 );
             }
-            });
-            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 save = ui
                     .add_enabled(

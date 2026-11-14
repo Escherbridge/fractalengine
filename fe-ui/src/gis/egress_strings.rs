@@ -70,9 +70,9 @@ impl Default for EgressCardState {
     }
 }
 
-/// Escapes a SurrealQL single-quoted string literal (doubles `'`).
+/// Escapes a SurrealQL single-quoted string literal (backslash escapes, as `query_tab::sql_literal`).
 fn escape_sql_str(s: &str) -> String {
-    s.replace('\'', "''")
+    s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 /// Default petal-scope node SELECT; `tombstone = NONE` hides soft-deleted rows like REST.
@@ -256,7 +256,7 @@ mod tests {
     fn petal_scope_sql_escapes_single_quote() {
         assert_eq!(
             petal_scope_sql("pe'tal"),
-            "SELECT * FROM node WHERE petal_id = 'pe''tal' AND tombstone = NONE"
+            "SELECT * FROM node WHERE petal_id = 'pe\\'tal' AND tombstone = NONE"
         );
     }
 
@@ -457,7 +457,7 @@ mod tests {
     fn api_string_for_escapes_and_rejects_empty() {
         assert_eq!(
             api_string_for("n'x").as_deref(),
-            Some("SELECT * FROM node WHERE node_id = 'n''x' AND tombstone = NONE"),
+            Some("SELECT * FROM node WHERE node_id = 'n\\'x' AND tombstone = NONE"),
         );
         assert_eq!(api_string_for("").as_deref(), None);
         assert_eq!(

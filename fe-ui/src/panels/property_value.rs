@@ -89,6 +89,14 @@ fn is_point(value: &Value) -> bool {
         && value.get("coordinates").is_some_and(is_position)
 }
 
+/// Numeric equality of two positions, so `[0,0]` closes a ring opened with `[0.0,0.0]`.
+fn same_position(first: Option<&Value>, last: Option<&Value>) -> bool {
+    let numbers = |position: Option<&Value>| -> Option<Vec<f64>> {
+        position?.as_array()?.iter().map(Value::as_f64).collect()
+    };
+    matches!((numbers(first), numbers(last)), (Some(a), Some(b)) if a == b)
+}
+
 fn is_polygon(value: &Value) -> bool {
     if value.get("type").and_then(Value::as_str) != Some("Polygon") {
         return false;
@@ -101,7 +109,7 @@ fn is_polygon(value: &Value) -> bool {
             ring.as_array().is_some_and(|positions| {
                 positions.len() >= 4
                     && positions.iter().all(is_position)
-                    && positions.first() == positions.last()
+                    && same_position(positions.first(), positions.last())
             })
         })
 }
