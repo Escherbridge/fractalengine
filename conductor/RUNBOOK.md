@@ -111,6 +111,22 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 03:40 MST (clock corrected; the two entries below are stamped about 40 min ahead) — FIRST CI TEST
+  SWEEP ON ROUND-4 CODE: 7 failures in about 1,640 tests.** Run `43576085892` on `43f03526`: Windows build
+  and Lint green; Linux sweep: fe-terrain 343/0, **fe-ui 1088 passed / 6 failed, fractalengine 142 passed / 1
+  failed**, integration and security harness green. Log (fetch with `gh api
+  repos/Escherbridge/fractalengine/actions/jobs/132390542759/logs`; `gh run view --log-failed` could not reach
+  the log host): `.omc/research/ci-43576085892-failed-20261114.log`. Failing tests:
+  `geometry::tests::meters_to_world_preserves_nonzero_at_tiny_positive_scale`,
+  `gis::egress_strings::tests::export_url_parquet_encodes_query_param`,
+  `node_manager::road_interaction::tests::placed_point_height_follows_the_terrain_field`,
+  `panels::inspector::tests::inspector_transform_and_typed_property_editing_journey`,
+  `ui_shell::right_sidebar::tests::user_copy_has_no_dev_jargon`,
+  `ui_shell::topbar::tests::tool_button_press_routes_through_the_single_activation_writer` (all fe-ui) and
+  `terrain_bridge::tests::a_local_hexon_install_runs_off_the_main_thread_and_reports_its_outcome`
+  (fractalengine; a different assertion than the racy one removed in `30d16662`). **Fix them after the round-5
+  resume and its refine pass** (one writer in the tree): sonnet agents grouped by file, product-vs-test decided
+  per case from the panic text, at HEAD (round 5 may already have touched these tests).
 - **2026-11-14 04:15 MST — ROUND 5 FIRST RUN: 71 done / 4 partial / 1 blocked / 24 SKIPPED; RESUMED.** One
   blocked root slice (CITY5-05: the journey its task told it to extend does not exist) cascaded through
   CITY5-04 -> R5-CITY -> I5-RUNTIME / I5-DB -> R5-INT-1 -> every doc, bookkeeping and checklist slice, so the
