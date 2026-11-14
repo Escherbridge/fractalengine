@@ -11,11 +11,25 @@ use crate::actions::{UiAction, UiManager};
 use crate::atlas::DashboardState;
 use crate::dialogs::{ActiveDialog, CreateKind};
 use crate::navigation_manager::NavigationManager;
+use super::hierarchy_info::{request_inspect, HierarchyLevel};
 use crate::plugin::{CameraFocusTarget, SidebarState};
 use crate::theme;
 use crate::verse_manager::{FractalEntry, NodeEntry, PetalEntry, VerseManager};
 use crate::visibility::{self, NodeAncestry, OverrideState, VisibilityState};
 use fe_runtime::messages::{DbCommand, ScopeLevel};
+
+/// Re-click of the already-active level: show its info card in the Inspector.
+fn inspect_active_level(
+    ctx: &egui::Context,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    ui_mgr: &mut UiManager,
+    level: HierarchyLevel,
+) {
+    node_mgr.deselect();
+    node_mgr.pending_sidebar_select = None;
+    request_inspect(ctx, level);
+    ui_mgr.push_action(UiAction::RevealSection { slug: "inspector".into() });
+}
 
 pub(crate) fn left_sidebar(
     ctx: &egui::Context,
@@ -260,6 +274,8 @@ fn render_verse_tree(
             node_mgr.deselect();
             node_mgr.pending_sidebar_select = None;
             nav.navigate_to_verse(verse_id.clone(), verse_name.clone());
+        } else if name_clicked {
+            inspect_active_level(ui.ctx(), node_mgr, ui_mgr, HierarchyLevel::Verse);
         }
         if eye_clicked {
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Verse, &verse_id);
@@ -391,6 +407,8 @@ fn render_fractals(
             node_mgr.deselect();
             node_mgr.pending_sidebar_select = None;
             nav.navigate_to_fractal_in_verse(verse_id, verse_name, &fractal_id, &fractal_name);
+        } else if name_clicked {
+            inspect_active_level(ui.ctx(), node_mgr, ui_mgr, HierarchyLevel::Fractal);
         }
         if eye_clicked {
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Fractal, &fractal_id);
@@ -551,6 +569,8 @@ fn render_petals(
                 fractal_name,
                 &petal_id,
             );
+        } else if name_clicked && is_active {
+            inspect_active_level(ui.ctx(), node_mgr, ui_mgr, HierarchyLevel::Petal);
         }
         if eye_clicked {
             push_scope_eye(ui_mgr, vis_state, ScopeLevel::Petal, &petal_id);
