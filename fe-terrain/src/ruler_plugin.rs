@@ -219,7 +219,7 @@ fn paint_scale_bar(ectx: &egui::Context, placement: RulerHudPlacement, spec: Sca
     let bar_points = (spec.pixels / f64::from(pixels_per_point)) as f32;
     if !bar_points.is_finite() || bar_points <= 0.0 { return None; }
     let painter = ectx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Background, // below Order::Middle windows (QA-0176); a distinct id draws above the central panel fill
         egui::Id::new("ruler_scale_bar"),
     )).with_clip_rect(scene);
     let label = painter.layout_no_wrap(format_distance_m(spec.meters),
@@ -249,7 +249,7 @@ fn draw_unscaled_chip(ectx: &egui::Context, placement: RulerHudPlacement) -> Opt
     let scene = placement.scene;
     if !scene.is_finite() || !scene.is_positive() { return None; }
     let painter = ectx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
+        egui::Order::Background, // below Order::Middle windows (QA-0176); a distinct id draws above the central panel fill
         egui::Id::new("ruler_scale_bar"),
     )).with_clip_rect(scene);
     let dim = egui::Color32::from_white_alpha(110);
