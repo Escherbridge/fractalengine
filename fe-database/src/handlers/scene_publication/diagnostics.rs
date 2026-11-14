@@ -66,6 +66,10 @@ impl Transaction {
                 "scene version changed" => "scene_clock_changed",
                 "field clock changed" => "field_clock_changed",
                 "own field versions changed" => "own_versions_changed",
+                "scene clock was not written" => "scene_clock_not_written",
+                "field version was not written" | "field clock was not written" => {
+                    "field_clock_not_written"
+                }
                 "replica current asset metadata changed" | "scene asset changed" => {
                     "asset_metadata_changed"
                 }
