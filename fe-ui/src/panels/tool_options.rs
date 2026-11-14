@@ -682,9 +682,10 @@ pub(crate) fn apply_road_setting(state: &mut RoadBuilderState, edit: RoadSetting
     reduce(state, RoadEvent::SetSettings(settings));
 }
 
-/// Undo segment is meaningful once a segment is committed.
+/// Undo segment is meaningful once the road's track exists and has a removable segment;
+/// the viewport system issues the queued removals.
 pub(crate) fn road_can_undo(state: &RoadBuilderState) -> bool {
-    !state.log.is_empty()
+    state.can_undo_segment()
 }
 
 /// End road is meaningful while a segment is in flight or a chain is open.
@@ -873,6 +874,12 @@ mod tests {
         assert_eq!(road.settings.angle_increment_deg, 45.0);
         reduce(&mut road, RoadEvent::Click([0.0, 0.0, 0.0]));
         assert!(road_can_end(&road));
+        reduce(&mut road, RoadEvent::Click([10.0, 0.0, 0.0]));
+        assert!(!road_can_undo(&road), "Undo waits for the created track");
+        road.session_track = Some("track-1".into());
+        assert!(road_can_undo(&road));
+        reduce(&mut road, RoadEvent::Backspace);
+        assert_eq!(road.pending_removals, vec![1], "the panel undo queues the removal for the viewport system");
     }
 
     #[test]

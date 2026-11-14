@@ -171,12 +171,24 @@ pub struct RoadBuilderState {
     pub(crate) session_track: Option<String>,
     /// Per-session road counter behind the default "Road N" name.
     pub(crate) track_counter: u32,
+    /// Undone point indices still to remove, ascending; issued highest first, one at a time.
+    pub(crate) pending_removals: Vec<usize>,
 }
 
 impl RoadBuilderState {
     /// A segment is in flight or a chain is open (gesture claim / Escape owner).
     pub(crate) fn is_active(&self) -> bool {
         !self.pending.is_empty() || !self.freeform_samples.is_empty() || self.anchor.is_some()
+    }
+
+    /// Backspace would remove a committed segment (the first segment keeps its origin point).
+    pub(crate) fn can_undo_segment(&self) -> bool {
+        self.session_track.is_some()
+            && match self.log.segments.as_slice() {
+                [] => false,
+                [only] => only.count > 1,
+                _ => true,
+            }
     }
 
     /// Default name of the session's auto-created track.
@@ -203,6 +215,7 @@ impl RoadBuilderState {
         self.anchor = None;
         self.log = ChainLog::default();
         self.session_track = None;
+        self.pending_removals.clear();
     }
 }
 
@@ -226,8 +239,6 @@ pub(crate) enum RoadCommit {
     CreateTrack { points: Vec<[f32; 3]> },
     /// Append points to the session track (`PathAppendShape` / `PathAppendPoint`).
     Append(Vec<[f32; 3]>),
-    /// Remove one point (`PathRemovePoint`); emitted high index to low.
-    Remove { index: usize },
 }
 
 fn is_finite_point(point: [f32; 3]) -> bool {
@@ -296,30 +307,41 @@ fn on_drag_end(state: &mut RoadBuilderState) -> Vec<RoadCommit> {
     commit_points(state, decimated)
 }
 
-fn on_backspace(state: &mut RoadBuilderState) -> Vec<RoadCommit> {
+fn on_backspace(state: &mut RoadBuilderState) {
     if state.pending.pop().is_some() || state.freeform_samples.pop().is_some() {
-        return Vec::new();
+        return;
+    }
+    if state.log.is_empty() {
+        // Nothing committed: a lone first click is simply withdrawn.
+        state.anchor = None;
+        return;
+    }
+    // The track does not exist until the create echo names it; undo waits for it.
+    if state.session_track.is_none() {
+        return;
     }
     let plan = undo_plan(&state.log);
     if plan.remove_indices.is_empty() {
-        // Nothing committed: a lone first click is simply withdrawn.
-        if state.log.is_empty() {
-            state.anchor = None;
-        }
-        return Vec::new();
+        return;
     }
     state.log.apply_undo();
     state.anchor = plan.restored_anchor;
-    plan.remove_indices
-        .into_iter()
-        .map(|index| RoadCommit::Remove { index })
-        .collect()
+    state.pending_removals.extend(plan.remove_indices);
+    state.pending_removals.sort_unstable();
+    state.pending_removals.dedup();
 }
 
 /// The one reducer: apply `event` to `state`, return the commits to perform.
 pub(crate) fn reduce(state: &mut RoadBuilderState, event: RoadEvent) -> Vec<RoadCommit> {
     match event {
         RoadEvent::Click(point) | RoadEvent::DragSample(point) if !is_finite_point(point) => {
+            Vec::new()
+        }
+        // Placement waits until an undone segment has left the track (indices would clash).
+        RoadEvent::Click(_) | RoadEvent::DragSample(_) | RoadEvent::DragEnd
+            if !state.pending_removals.is_empty() =>
+        {
+            state.freeform_samples.clear();
             Vec::new()
         }
         RoadEvent::Click(point) => on_click(state, point),
@@ -346,7 +368,10 @@ pub(crate) fn reduce(state: &mut RoadBuilderState, event: RoadEvent) -> Vec<Road
             }
             Vec::new()
         }
-        RoadEvent::Backspace => on_backspace(state),
+        RoadEvent::Backspace => {
+            on_backspace(state);
+            Vec::new()
+        }
         RoadEvent::SetMode(mode) => {
             if state.settings.mode != mode {
                 state.settings.mode = mode;
@@ -370,35 +395,38 @@ pub(crate) fn reduce(state: &mut RoadBuilderState, event: RoadEvent) -> Vec<Road
 
 /// Keep first and last samples; between them keep a sample once it is `min_spacing` from the last kept.
 pub(crate) fn decimate(samples: &[[f32; 3]], min_spacing: f32) -> Vec<[f32; 3]> {
-    let clean: Vec<[f32; 3]> = samples
-        .iter()
-        .copied()
-        .filter(|point| is_finite_point(*point))
-        .collect();
-    let Some((&first, rest)) = clean.split_first() else {
-        return Vec::new();
+    let mut kept = Vec::new();
+    decimate_into(samples, min_spacing, &mut kept);
+    kept
+}
+
+/// [`decimate`] appended to `out` (no allocation once `out` has capacity).
+pub(crate) fn decimate_into(samples: &[[f32; 3]], min_spacing: f32, out: &mut Vec<[f32; 3]>) {
+    let start = out.len();
+    let mut finite = samples.iter().copied().filter(|point| is_finite_point(*point));
+    let Some(first) = finite.next() else {
+        return;
     };
     let spacing = if min_spacing.is_finite() && min_spacing > 0.0 {
         min_spacing
     } else {
         0.0
     };
-    let mut kept = vec![first];
-    for &point in rest {
-        let last = kept[kept.len() - 1];
-        if planar_distance(last, point) >= spacing {
-            kept.push(point);
+    out.push(first);
+    let mut final_sample = first;
+    for point in finite {
+        final_sample = point;
+        if planar_distance(out[out.len() - 1], point) >= spacing {
+            out.push(point);
         }
     }
     // The final sample is always kept: it replaces a too-close tail instead of sitting beside it.
-    let final_sample = clean[clean.len() - 1];
-    if kept[kept.len() - 1] != final_sample {
-        if kept.len() > 1 {
-            kept.pop();
+    if out[out.len() - 1] != final_sample {
+        if out.len() - start > 1 {
+            out.pop();
         }
-        kept.push(final_sample);
+        out.push(final_sample);
     }
-    kept
 }
 
 /// Expand a segment's control points into path points (start included).
@@ -490,6 +518,12 @@ mod tests {
         );
         assert_eq!(state.track_name(), "Road 1");
 
+        // Backspace before the create echo names the track is held back (no orphan removals).
+        assert!(!state.can_undo_segment());
+        reduce(&mut state, RoadEvent::Backspace);
+        assert!(state.pending_removals.is_empty() && state.log.segments.len() == 1);
+        state.session_track = Some("track-1".into());
+
         // AC-2.1: chained straight appends exactly the new end.
         let out = reduce(&mut state, RoadEvent::Click(at(10.0, 10.0)));
         assert_eq!(out, vec![RoadCommit::Append(vec![at(10.0, 10.0)])]);
@@ -510,13 +544,16 @@ mod tests {
         assert_eq!(appended.last().copied(), Some(at(20.0, 20.0)));
         assert_ne!(appended.first().copied(), Some(at(10.0, 10.0)));
 
-        // AC-2.2: Backspace removes exactly the curved segment, high to low.
-        let out = reduce(&mut state, RoadEvent::Backspace);
-        assert_eq!(out.len(), 8);
-        assert_eq!(out[0], RoadCommit::Remove { index: 10 });
-        assert_eq!(out[7], RoadCommit::Remove { index: 3 });
+        // AC-2.2: Backspace queues exactly the curved segment's indices, issued highest first.
+        assert!(state.can_undo_segment());
+        assert!(reduce(&mut state, RoadEvent::Backspace).is_empty());
+        assert_eq!(state.pending_removals, (3..=10).collect::<Vec<usize>>());
         assert_eq!(state.anchor, Some(at(10.0, 10.0)));
-        assert!(out.iter().all(|commit| matches!(commit, RoadCommit::Remove { .. })));
+
+        // Placement waits until the queued removals have drained.
+        assert!(reduce(&mut state, RoadEvent::Click(at(30.0, 30.0))).is_empty());
+        assert!(state.pending.is_empty());
+        state.pending_removals.clear();
 
         // AC-2.3: Escape clears pending first, then ends the chain.
         reduce(&mut state, RoadEvent::Click(at(15.0, 10.0)));

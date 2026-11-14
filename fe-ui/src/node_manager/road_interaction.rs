@@ -21,17 +21,18 @@ use crate::navigation_manager::NavigationManager;
 use crate::panels::toolbar::Tool;
 use crate::plugin::{SpawnedNodeMarker, ToolState};
 use crate::terrain_map::PetalMapState;
+use crate::undo::UndoState;
 use crate::verse_manager::VerseManager;
 
 /// Snap candidate and guide-source cap per frame (NFR-2).
 const MAX_SNAP_ENTRIES: usize = 2048;
 
-/// Keys the road tool reads (Escape belongs to `GestureParams.cancel_all`).
-const ROAD_KEYS: [(KeyCode, RoadKey); 5] = [
+/// Keys the road tool reads (Escape belongs to `GestureParams.cancel_all`; A is the
+/// camera's fly-left key, so angle snap toggles from the Options panel only).
+const ROAD_KEYS: [(KeyCode, RoadKey); 4] = [
     (KeyCode::Digit1, RoadKey::Digit1),
     (KeyCode::Digit2, RoadKey::Digit2),
     (KeyCode::Digit3, RoadKey::Digit3),
-    (KeyCode::KeyA, RoadKey::A),
     (KeyCode::Backspace, RoadKey::Backspace),
 ];
 
@@ -50,6 +51,7 @@ pub(super) struct RoadLocals {
     /// Editing track at the moment the first commit asked for a new track.
     track_before_create: Option<String>,
     guide_sources: Vec<GuideSource>,
+    candidates: Vec<SnapCandidate>,
 }
 
 /// Unit-free previous-segment direction on the XZ plane, for angle snap.
@@ -210,22 +212,50 @@ fn apply_commits(
                     _ => ui_mgr.push_action(UiAction::PathAppendShape { points }),
                 }
             }
-            RoadCommit::Remove { index } => {
-                let (Some(track_node_id), Some(origin)) = (
-                    path_state.editing_track_id.clone(),
-                    crate::undo::PointEditOrigin::capture(path_state, nav),
-                ) else {
-                    info!("Road: no open track to remove a point from");
-                    continue;
-                };
-                ui_mgr.push_action(UiAction::PathRemovePoint {
-                    track_node_id,
-                    index,
-                    origin,
-                });
-            }
         }
     }
+}
+
+/// Issue the next undone point removal once the previous one has landed: a checked
+/// remove holds the undo slot, so a batch would lose every removal after the first.
+fn issue_next_removal(
+    state: &mut RoadBuilderState,
+    path_state: &PathEditorState,
+    nav: &NavigationManager,
+    undo_busy: bool,
+    ui_mgr: &mut UiManager,
+) {
+    let Some(&index) = state.pending_removals.last() else {
+        return;
+    };
+    let (Some(session), Some(editing)) = (
+        state.session_track.as_deref(),
+        path_state.editing_track_id.as_deref(),
+    ) else {
+        return;
+    };
+    if session != editing || path_state.points_pending {
+        return;
+    }
+    let length = path_state.points.len();
+    if index >= length {
+        // Already gone from the track.
+        state.pending_removals.pop();
+        return;
+    }
+    // Only the current tail is removed, so a not-yet-confirmed removal is never repeated.
+    if undo_busy || index + 1 != length {
+        return;
+    }
+    let Some(origin) = crate::undo::PointEditOrigin::capture(path_state, nav) else {
+        return;
+    };
+    state.pending_removals.pop();
+    ui_mgr.push_action(UiAction::PathRemovePoint {
+        track_node_id: editing.to_owned(),
+        index,
+        origin,
+    });
 }
 
 /// Road tool: claims `ClickPriority::Road` presses, previews the snapped
@@ -246,6 +276,7 @@ pub(super) fn handle_road_interaction(
     shapes: Query<(&SpawnedNodeMarker, &TrackPickShape)>,
     verse_mgr: Option<Res<VerseManager>>,
     egui_input: Option<Res<EguiWantsInput>>,
+    undo: Option<Res<UndoState>>,
     mut locals: Local<RoadLocals>,
 ) {
     let RoadLocals {
@@ -253,6 +284,7 @@ pub(super) fn handle_road_interaction(
         freeform_drag,
         track_before_create,
         guide_sources,
+        candidates,
     } = &mut *locals;
 
     let petal_changed = *last_petal != nav.active_petal_id;
@@ -283,7 +315,7 @@ pub(super) fn handle_road_interaction(
         .map(|ground| ground.to_array());
     let resolved = raw_ground.map(|cursor| {
         let active_petal = nav.active_petal_id.as_deref();
-        let mut candidates = sources.candidates(path_state.editing_track_id.as_deref(), active_petal);
+        sources.candidates_into(path_state.editing_track_id.as_deref(), active_petal, candidates);
         candidates.truncate(MAX_SNAP_ENTRIES);
         guide_sources.clear();
         if state.settings.guidelines && state.settings.mode != RoadMode::Freeform {
@@ -298,7 +330,7 @@ pub(super) fn handle_road_interaction(
         }
         let world_scale = measure_world_scale(&petal_map, active_petal);
         let suspended = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-        resolve_cursor(cursor, &state, world_scale, suspended, &candidates, guide_sources)
+        resolve_cursor(cursor, &state, world_scale, suspended, candidates, guide_sources)
     });
     let point = resolved.as_ref().map(|outcome| outcome.point);
     hover.point = point;
@@ -347,12 +379,16 @@ pub(super) fn handle_road_interaction(
                     {
                         path_state.last_error =
                             Some("Scene context is unavailable; no road track was requested".into());
-                    } else if state.settings.mode == RoadMode::Freeform && state.anchor.is_some() {
-                        *freeform_drag = true;
-                        if let Some(anchor) = state.anchor {
-                            commits.extend(reduce(&mut state, RoadEvent::DragSample(anchor)));
+                    } else if state.settings.mode == RoadMode::Freeform {
+                        // The first stroke opens the chain at the press point, so it is not lost.
+                        if state.anchor.is_none() {
+                            commits.extend(reduce(&mut state, RoadEvent::Click(point)));
                         }
-                        commits.extend(reduce(&mut state, RoadEvent::DragSample(point)));
+                        if let Some(anchor) = state.anchor {
+                            *freeform_drag = true;
+                            reduce(&mut state, RoadEvent::DragSample(anchor));
+                            reduce(&mut state, RoadEvent::DragSample(point));
+                        }
                     } else {
                         commits.extend(reduce(&mut state, RoadEvent::Click(point)));
                     }
@@ -395,6 +431,14 @@ pub(super) fn handle_road_interaction(
             track_before_create,
         );
     }
+    // After input, so a Backspace issues its first removal in the same frame.
+    issue_next_removal(
+        &mut state,
+        &path_state,
+        &nav,
+        undo.as_deref().is_some_and(UndoState::is_pending),
+        &mut ui_mgr,
+    );
 }
 
 #[cfg(test)]
@@ -493,6 +537,14 @@ mod tests {
             "AC-2.1: the chain continues with one new point, no duplicate anchor"
         );
 
+        // The action processor is not in this app: mirror the local buffer the flush and append build.
+        app.world_mut().resource_mut::<PathEditorState>().points = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0]]
+            .map(|position| crate::gis::PathPointRow {
+                position,
+                ..Default::default()
+            })
+            .to_vec();
+
         app.insert_resource(ClickArbiter::default());
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -507,6 +559,11 @@ mod tests {
             "AC-2.2: Backspace removes exactly the last segment's point"
         );
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+        app.update();
+        assert!(
+            drained(&mut app).is_empty(),
+            "a removal is issued once, never repeated while it is unconfirmed"
+        );
 
         app.world_mut()
             .resource_mut::<NavigationManager>()
@@ -577,10 +634,22 @@ mod tests {
     }
 
     #[test]
-    fn other_tools_neither_place_nor_claim() {
+    fn other_tools_never_claim_and_freeform_first_press_opens_the_stroke() {
         let mut app = road_app(Tool::Select);
         press(&mut app, 1.0, 1.0);
         assert!(!app.world().resource::<ClickArbiter>().is_claimed());
         assert!(!app.world().resource::<RoadBuilderState>().is_active());
+
+        // Freeform: the very first press opens the chain and starts the stroke (no lost drag).
+        let mut freeform = road_app(Tool::Road);
+        freeform
+            .world_mut()
+            .resource_mut::<RoadBuilderState>()
+            .settings
+            .mode = RoadMode::Freeform;
+        press(&mut freeform, 4.0, 2.0);
+        let state = freeform.world().resource::<RoadBuilderState>();
+        assert_eq!(state.anchor, Some([4.0, 0.0, 2.0]));
+        assert!(!state.freeform_samples.is_empty(), "the first press already samples the stroke");
     }
 }

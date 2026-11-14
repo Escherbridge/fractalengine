@@ -273,10 +273,23 @@ pub(crate) fn collect_foreign_anchors<'a>(
     active_petal: Option<&str>,
     is_visible: impl Fn(&str) -> bool,
 ) -> Vec<SnapCandidate> {
-    let Some(petal) = active_petal else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
+    collect_foreign_anchors_into(shapes, editing_track_id, active_petal, is_visible, &mut out);
+    out
+}
+
+/// [`collect_foreign_anchors`] into a reused buffer (cleared first; no per-frame allocation).
+pub(crate) fn collect_foreign_anchors_into<'a>(
+    shapes: impl Iterator<Item = (&'a str, &'a str, &'a TrackPickShape)>,
+    editing_track_id: Option<&str>,
+    active_petal: Option<&str>,
+    is_visible: impl Fn(&str) -> bool,
+    out: &mut Vec<SnapCandidate>,
+) {
+    out.clear();
+    let Some(petal) = active_petal else {
+        return;
+    };
     for (node_id, petal_id, shape) in shapes {
         if petal_id != petal || Some(node_id) == editing_track_id || !is_visible(node_id) {
             continue;
@@ -294,7 +307,6 @@ pub(crate) fn collect_foreign_anchors<'a>(
                 }),
         );
     }
-    out
 }
 
 /// The rendered tracks a Pen/marker release may snap onto (FR-5), bundled so
@@ -330,6 +342,26 @@ impl ForeignSnapSources<'_, '_> {
     /// Ground point under the cursor ray, on the terrain surface when resident (D-38).
     pub(super) fn ground(&self, ray: &Ray3d) -> Option<Vec3> {
         pen_ground_hit(ray, self.height_field.as_deref())
+    }
+
+    /// [`collect_foreign_anchors_into`] over every spawned track ribbon, into a reused buffer.
+    pub(super) fn candidates_into(
+        &self,
+        editing_track_id: Option<&str>,
+        active_petal: Option<&str>,
+        out: &mut Vec<SnapCandidate>,
+    ) {
+        collect_foreign_anchors_into(
+            self.shapes
+                .iter()
+                // A ribbon its map layer/style hides offers no snap targets.
+                .filter(|(_, _, drawn)| crate::visibility::rendered(*drawn))
+                .map(|(m, s, _)| (m.node_id.as_str(), m.petal_id.as_str(), s)),
+            editing_track_id,
+            active_petal,
+            |id| crate::visibility::pickable(id, &self.nav, &self.visibility),
+            out,
+        );
     }
 
     /// [`collect_foreign_anchors`] over every spawned track ribbon.

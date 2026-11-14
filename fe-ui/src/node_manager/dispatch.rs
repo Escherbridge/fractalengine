@@ -494,35 +494,20 @@ mod tests {
 
     #[test]
     fn measure_never_selects_and_never_deselects() {
-        // A click that slips past the Measure claim (no ground hit) must not
-        // drop the user's selection or grab a node mid-measurement.
-        for hit in [
-            HitTarget::Empty,
-            HitTarget::TerrainCell,
-            HitTarget::Node(entity(9)),
-        ] {
-            assert_eq!(
-                resolve_operation(Tool::Measure, &SelectionKind::Node(entity(1)), hit.clone()),
-                Operation::None,
-                "{hit:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn road_never_selects_and_never_deselects() {
-        // Road claims its own gesture upstream; a click that slips past must
-        // neither drop the selection nor grab a node mid-road.
-        for hit in [
-            HitTarget::Empty,
-            HitTarget::TerrainCell,
-            HitTarget::Node(entity(9)),
-        ] {
-            assert_eq!(
-                resolve_operation(Tool::Road, &SelectionKind::Node(entity(1)), hit.clone()),
-                Operation::None,
-                "{hit:?}"
-            );
+        // A click that slips past the Measure or Road claim (no ground hit) must
+        // not drop the user's selection or grab a node mid-measurement or mid-road.
+        for tool in [Tool::Measure, Tool::Road] {
+            for hit in [
+                HitTarget::Empty,
+                HitTarget::TerrainCell,
+                HitTarget::Node(entity(9)),
+            ] {
+                assert_eq!(
+                    resolve_operation(tool, &SelectionKind::Node(entity(1)), hit.clone()),
+                    Operation::None,
+                    "{tool:?} {hit:?}"
+                );
+            }
         }
     }
 

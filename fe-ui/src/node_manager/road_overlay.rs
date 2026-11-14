@@ -6,12 +6,10 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use super::measure::measure_world_scale;
-use super::road_chain::{
-    decimate, expand_segment, pending_length, RoadBuilderState, RoadMode,
-};
+use super::road_chain::{decimate_into, expand_segment, pending_length, RoadBuilderState, RoadMode};
 use super::road_interaction::RoadHoverState;
 use super::road_snap::{Guide, SnapKind};
-use crate::geometry::{format_distance_m, world_to_meters};
+use crate::geometry::{format_distance_m, meters_to_world, world_to_meters};
 use crate::gimbal::GimbalGizmoGroup;
 use crate::gis::PathEditorState;
 use crate::navigation_manager::NavigationManager;
@@ -81,6 +79,7 @@ pub(crate) fn classify_validity(
 }
 
 /// Fill `out` with the in-flight segment preview; empty until a chain anchor exists.
+/// Straight and freeform reuse `out` (no per-frame allocation); curved samples via `bezier`.
 pub(crate) fn ghost_polyline_into(
     state: &RoadBuilderState,
     hover: &RoadHoverState,
@@ -92,20 +91,21 @@ pub(crate) fn ghost_polyline_into(
     };
     let settings = &state.settings;
     match settings.mode {
-        RoadMode::Straight => out.extend(expand_segment(RoadMode::Straight, &[anchor, cursor], 1)),
+        // Same two points `expand_segment(Straight, ..)` commits.
+        RoadMode::Straight => out.extend_from_slice(&[anchor, cursor]),
         RoadMode::Curved => match state.pending.first() {
             Some(&control) => out.extend(expand_segment(
                 RoadMode::Curved,
                 &[anchor, control, cursor],
                 settings.curve_samples,
             )),
-            None => out.extend(expand_segment(RoadMode::Straight, &[anchor, cursor], 1)),
+            None => out.extend_from_slice(&[anchor, cursor]),
         },
         RoadMode::Freeform => {
             if state.freeform_samples.is_empty() {
                 out.push(anchor);
             } else {
-                out.extend(decimate(&state.freeform_samples, settings.freeform_spacing_m));
+                decimate_into(&state.freeform_samples, settings.freeform_spacing_m, out);
             }
             out.push(cursor);
         }
@@ -185,6 +185,7 @@ pub(super) fn draw_road_overlay(
     state: Res<RoadBuilderState>,
     hover: Res<RoadHoverState>,
     nav: Res<NavigationManager>,
+    petal_map: Res<PetalMapState>,
     mut gizmos: Gizmos<GimbalGizmoGroup>,
     mut ghost: Local<Vec<[f32; 3]>>,
 ) {
@@ -213,7 +214,10 @@ pub(super) fn draw_road_overlay(
         draw_guide(&mut gizmos, guide, cursor_vec, guide_color);
     }
     let flat = Quat::from_rotation_arc(Vec3::Z, Vec3::Y);
-    let ring_radius = (state.settings.snap_radius_m * TARGET_RING_FRACTION).max(0.05);
+    // Snap radius is metres; gizmos draw in world units (map scale, or 1:1 without a map).
+    let world_scale = measure_world_scale(&petal_map, nav.active_petal_id.as_deref());
+    let ring_radius =
+        meters_to_world(state.settings.snap_radius_m * TARGET_RING_FRACTION, world_scale).max(1e-3);
     if let (SnapKind::Vertex, Some(target)) = (outcome.kind, outcome.target_vertex) {
         gizmos.circle(
             Isometry3d::new(Vec3::from(target.position), flat),
