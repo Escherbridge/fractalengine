@@ -153,3 +153,24 @@ Round-5 closure of the round-4 NEW items. Each box is ticked only when its gate 
 - [x] NEW5-05 plain correlated scene writes queue behind a backing-off head; FIFO kept, uncorrelated writes still bypass, `Busy` only for a full channel with an empty queue (`fe-ui/src/actions/node.rs:374`). Code done; run pending (user-gated). Gate: R5-NEW.
 - [x] NEW5-06 undo reconcile never blocks the frame; it uses try_send and keeps the Disconnected error (`fe-ui/src/undo.rs:913`). Code done; run pending (user-gated). Gate: R5-NEW.
 - [x] NEW5-07 registry download progress: real-registry assertions and an oversized Content-Length refused before any byte or callback (`fe-hexon/src/remote.rs:373`, `fe-hexon/tests/remote_registry_test.rs:331`). Code done; run pending (user-gated). Gate: R5-NEW.
+
+## Round 5 additions (INT)
+
+Round-5 integration items (the `INT5-*` scope in `.omc/plans/turn5-plan.md`). A box is ticked only when a gate verdict in `review-turn5/` or a HEAD re-check gives `COMPLETE file:line`. Test runs stay user-gated and pending.
+
+- [x] INT5-01 petal snapshot commands and replies routed through the API correlation map (`fe-runtime/src/app.rs:408`; readings stay uncorrelated, `fe-ui/src/gis/readings.rs:63`). Code done; run pending (user-gated). Gate: R5-INT-1.
+- [x] INT5-02 `get_network_diagnostics` exposed in the MCP tool table (`fe-api/src/mcp/mod.rs:148`, `:312`; `fe-api/tests/mcp_integration.rs:1248`). Code done; run pending (user-gated). Gate: R5-INT-2.
+- [x] INT5-03 diagnostics bridge sends non-blocking (`fe-api/src/network.rs:151`). Code done; run pending (user-gated). Gate: R5-NET-2.
+- [x] INT5-04 newest relay admission snapshot buffered until the gate is installed; pending revoke fails closed (`fe-sync/src/relay_server.rs:1499`). Code done; run pending (user-gated). Gate: R5-NET-1.
+- [x] INT5-05 net-report feature declared default-on (`fe-sync/Cargo.toml:12`), diagnostics resource optional in `fe-sync/src/status.rs:92`, `fe-format` entitlement feature in `fe-terrain/Cargo.toml:31`. Code done; run pending (user-gated). Gate: R5-NET-1, R5-INT-1.
+- [x] INT5-06 self-test verdict mirror registered in the UI plugin (`fe-ui/src/plugin.rs:891-899`; pending-never-overwrites leg `fe-ui/src/settings.rs:855`). Code done; run pending (user-gated). Gate: R5-NET-2, R5-INT-2.
+- [x] INT5-07 pending road/pen create cleared when its `CreateNode` fails (CITY5-01 `RequestFailed` arm, `fe-ui/src/verse_manager/db_results/mod.rs:1006`); the `NodeCreated` scale field it depends on is now at HEAD (`fe-runtime/src/messages.rs:1645`), which R5-CITY predates. Code done; run pending (user-gated). Gate: R5-CITY (stale STILL OPEN line superseded).
+- [x] INT5-08 hierarchy card role line and Settings button gated on the card's own scope (`fe-ui/src/panels/hierarchy_info.rs:192`, `:207`). Code done; run pending (user-gated). Gate: R5-UI.
+- [ ] INT5-09 Genesis verse marked local-only in the entity Access tab (wiring `fe-ui/src/panels/mod.rs:403` calls `fe-ui/src/dialogs/entity_access.rs:187`). Code done; the panel-path test leg is still open (handed off by R5-INT-2 to the I5-UI successor). Run pending (user-gated).
+- [x] INT5-10 directory docs for the UI hub changes (`fe-ui/src/AGENTS.md:741`, `fe-ui/src/panels/AGENTS.md:1067`, `fe-ui/src/dialogs/AGENTS.md`). Code done; run pending (user-gated). Gate: R5-DOC.
+- [x] INT5-11 undo and stamp-promotion test legs through the GUI door seam (`fe-ui/src/node_manager/mod.rs:1048`, `fe-ui/src/node_manager/viewport_pick.rs:853`). Code done; run pending (user-gated). Gate: R5-NEW.
+- [x] INT5-12 held-elsewhere uninstall scoped by `petal_id: Option<String>` on `DbCommand::UninstallCrate` (`fe-runtime/src/messages.rs:1359`, `fe-database/src/lib.rs:2376`). Code done; run pending (user-gated). Gate: R5-INT-1.
+- [x] INT5-13 GUI refreshed after a petal snapshot import, with a dispatch-level test leg (`fe-database/src/lib.rs:2392`; `fe-database/tests/node_lifecycle_test.rs:657`). Code done; run pending (user-gated). Gate: R5-INT-1.
+- [x] INT5-14 hexon-registry seam in the test harness; the journey's local router helper removed (`fe-test-harness/src/api.rs:306`, `fe-api/src/lib.rs:67`). Code done; run pending (user-gated). Gate: R5-INT-2.
+- [x] INT5-15 unreached lib tests registered in the batch registry (`conductor/test-batches.md:87`, `:328`, `:370`). Code done; run pending (user-gated). Gate: R5-DOC.
+- [x] INT5-16 directory docs for the sync, binary and relay changes (`fe-sync/src/AGENTS.md:2497`, `fractalengine/src/AGENTS.md:1103`, `fractalengine-relay/AGENTS.md:5`, `fe-database/src/AGENTS.md:507`). Code done; run pending (user-gated). Gate: R5-DOC.

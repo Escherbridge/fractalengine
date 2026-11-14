@@ -181,5 +181,17 @@
       "NEW-05 trust anchor: terrain_bridge.rs accepts any valid seal from the operator-chosen registry (steer 2026-11-13); default kept",
       "N7 policy: plain correlated writes queue behind a backing-off write (NEW5-05); uncorrelated commands still bypass; default yes"
     ]
+  },
+  "round5_int": {
+    "plan_section": "./plan.md#round-5-additions-int",
+    "ticked": ["INT5-01", "INT5-02", "INT5-03", "INT5-04", "INT5-05", "INT5-06", "INT5-07", "INT5-08", "INT5-10", "INT5-11", "INT5-12", "INT5-13", "INT5-14", "INT5-15", "INT5-16"],
+    "open": {"INT5-09": "code done; panel-path test leg handed off by R5-INT-2"},
+    "gates": {"R5-INT-1": "PASS-WITH-FIXES", "R5-INT-2": "PASS-WITH-FIXES", "R5-UI": "PASS-WITH-FIXES", "R5-NET-1": "PASS-WITH-FIXES", "R5-NET-2": "PASS-WITH-FIXES", "R5-DOC": "PASS-WITH-FIXES", "R5-NEW": "PASS-WITH-FIXES", "R5-CITY": "PASS-WITH-FIXES"},
+    "run_status": "code done; every test run pending (user-gated)",
+    "decisions_default_taken_awaiting_ratification": [
+      "Petal snapshot import stays local-only plus GUI refresh (INT5-13); no replicated publish; fe-api petal-snapshot import trust not closed",
+      "UI-13 ledger edit: six-track status-cell list kept as assumed by I-CONDUCTOR; no code impact",
+      "Foundry licence defaults (usgs public-domain, aws-terrarium attribution, esri-world-imagery not redistributable) kept as flagged; counsel confirmation pending"
+    ]
   }
 }
