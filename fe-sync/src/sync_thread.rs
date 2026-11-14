@@ -27,9 +27,11 @@ use iroh_gossip::{Gossip, TopicId};
 
 use crate::blob_transport::IrohBlobTransport;
 use crate::distributed_query::{
-    handle_gossip_incoming, submit_distributed_query, DistributedTransport, GossipIncoming,
+    handle_gossip_incoming, handle_signed_gossip_incoming, submit_distributed_query,
+    unix_now_ms, AdmittedGossip, DistributedTransport, GossipIncoming, SignedGossipIngress,
     TopicSender,
 };
+use crate::gossip_auth::GossipFrameKind;
 
 use crate::docs_engine::{p2p_data_dir, BlobAccessGate, DocsStack};
 use crate::endpoint::SyncEndpoint;
@@ -47,7 +49,8 @@ use crate::replicator::{
     ReplicatorFuture, RowChange, VerseReplicator,
 };
 use crate::sharding::{
-    PeerDeclaration, ShardId, VerseFabric, HOLDERS_TABLE, PEER_DECL_TABLE, SHARD_TABLE,
+    PeerDeclaration, ShardId, VerseFabric, GOSSIP_SIG_VERSION, HOLDERS_TABLE, PEER_DECL_TABLE,
+    SHARD_TABLE,
 };
 use crate::tileset_transfer::{
     is_safe_tileset_id, CatalogEntry, MetaResolved, TilesetTransfer, TransferEvent,
@@ -683,6 +686,8 @@ pub fn spawn_sync_thread_with_sources(
             // this peer's gossip deliveries with (F9/A21), so the F23
             // forged-attribution gate authenticates sim envelopes verbatim.
             let local_node: iroh::EndpointId = secret_key.public();
+            // NET-26: the same key signs every gossip frame this node broadcasts (§gossip-signing).
+            let gossip_signing_key = secret_key.clone();
             // Resolved before the bind: the endpoint re-binds the ports recorded here (QA-0145).
             let p2p_dir = p2p_dir.unwrap_or_else(p2p_data_dir);
 
@@ -973,11 +978,6 @@ pub fn spawn_sync_thread_with_sources(
             #[cfg(feature = "relay-server")]
             let mut relay_admission = RelayAdmissionPusher::default();
 
-            // M2/F6: the local peer's shard-hosting declaration, applied to
-            // every open verse's fabric (published as `__peers/{local_did}`).
-            // Defaults to unlimited capacity, non-seeder — a plain node.
-            let mut local_declaration = PeerDeclaration::default();
-
             // M2/F7: the distributed-query transport handle shared by the
             // select loop (submit + inbound routing) and the collector /
             // responder tasks. Bounded concurrency + pending-request caps
@@ -986,7 +986,17 @@ pub fn spawn_sync_thread_with_sources(
                 local_did.clone(),
                 db_cmd_tx.clone(),
                 evt_tx.sender(),
-            );
+            )
+            .with_signing_key(gossip_signing_key);
+            // M2/F6: the local `__peers/{local_did}` declaration (unlimited, non-seeder);
+            // NET-26: it declares the gossip latch (`gossip_sig`) only when this node actually signs.
+            let local_gossip_sig = transport.signing_key().map(|_| GOSSIP_SIG_VERSION);
+            let mut local_declaration = PeerDeclaration {
+                gossip_sig: local_gossip_sig,
+                ..PeerDeclaration::default()
+            };
+            // NET-26: verify-then-unwrap state for inbound gossip (mode + replay guard).
+            let mut gossip_ingress = SignedGossipIngress::from_env();
 
             // crossbeam's receiver has no async readiness API — bridge the
             // command channel into a tokio channel so the select! below can
@@ -1070,6 +1080,7 @@ pub fn spawn_sync_thread_with_sources(
                             scene_assets.close(&verse_id);
                             handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
                             unsubscribe_from_verse_gossip_topic(&mut gossip_senders, &mut gossip_pumps, &verse_id);
+                            gossip_ingress.guard.forget_verse(&verse_id);
                             if let Some(stack) = &docs_stack {
                                 stack.blob_access_gate().forget_verse(&verse_id);
                             }
@@ -1151,6 +1162,7 @@ pub fn spawn_sync_thread_with_sources(
                                     &gossip_senders,
                                     &tileset_transfer,
                                     my_provider_addr.as_deref(),
+                                    transport.signing_key(),
                                     &incoming.verse_id,
                                 )
                                 .await;
@@ -1158,6 +1170,43 @@ pub fn spawn_sync_thread_with_sources(
                             continue;
                         }
                         if let Some(incoming) = maybe_gossip {
+                            // NET-26: verify-then-unwrap before any handler; a refused frame is
+                            // final (never re-parsed as legacy). See AGENTS.md §gossip-signing.
+                            let verse_id = incoming.verse_id.clone();
+                            let AdmittedGossip { incoming, signed } =
+                                match gossip_ingress.admit(&fabrics, incoming, unix_now_ms()) {
+                                    Ok(admitted) => admitted,
+                                    Err(reason) => {
+                                        tracing::debug!(verse_id, reason, "gossip frame refused at the signed-frame ingress");
+                                        continue;
+                                    }
+                                };
+                            match signed {
+                                Some((GossipFrameKind::Compute, author_did)) => {
+                                    handle_signed_gossip_incoming(
+                                        &transport,
+                                        &fabrics,
+                                        &gossip_senders,
+                                        incoming,
+                                        &author_did,
+                                    );
+                                    continue;
+                                }
+                                Some((GossipFrameKind::TilesetAd, author_did)) => {
+                                    handle_signed_tileset_ads(
+                                        &mut tileset_providers,
+                                        &evt_tx,
+                                        &incoming,
+                                        &author_did,
+                                    );
+                                    continue;
+                                }
+                                Some((kind, _)) => {
+                                    tracing::debug!(verse_id, kind = kind.as_wire(), "signed gossip frame has no handler in this build");
+                                    continue;
+                                }
+                                None => {}
+                            }
                             // PAS-P3 S3: tileset ads ride the same verse
                             // topic as compute envelopes, tagged `kind`
                             // (never `type`) so the two decoders can never
@@ -1376,6 +1425,7 @@ pub fn spawn_sync_thread_with_sources(
                                     &mut gossip_pumps,
                                     &verse_id,
                                 );
+                                gossip_ingress.guard.forget_verse(&verse_id);
                                 // RP-5 step 6 / OF-6b: the blob-ALPN filter
                                 // drops this verse's access snapshot — a
                                 // closed verse's role view is no longer
@@ -1480,6 +1530,7 @@ pub fn spawn_sync_thread_with_sources(
                                     &gossip_senders,
                                     &tileset_transfer,
                                     my_provider_addr.as_deref(),
+                                    transport.signing_key(),
                                     &verse_id,
                                 )
                                 .await;
@@ -1490,6 +1541,7 @@ pub fn spawn_sync_thread_with_sources(
                                     evt_tx.clone(),
                                     gossip_senders.clone(),
                                     my_provider_addr.clone(),
+                                    transport.signing_key().cloned(),
                                     tileset_id,
                                     index_path,
                                     bundle_paths,
@@ -1546,6 +1598,7 @@ pub fn spawn_sync_thread_with_sources(
                                 local_declaration = PeerDeclaration {
                                     capacity_bytes,
                                     seeder,
+                                    gossip_sig: local_gossip_sig,
                                 };
                                 handle_set_shard_declaration(
                                     &replicas,
@@ -3410,6 +3463,11 @@ pub(crate) fn derive_gossip_topic(verse_id: &str) -> String {
     format!("verse:{}", verse_id)
 }
 
+/// Inverse of [`derive_gossip_topic`].
+fn verse_of_gossip_topic(topic_key: &str) -> Option<&str> {
+    topic_key.strip_prefix("verse:")
+}
+
 /// Subscribe to a verse gossip topic (M2/F7 rework: split the handle).
 ///
 /// The `GossipTopic` handle is split on arrival: the sender half is kept in
@@ -3965,6 +4023,38 @@ fn handle_inbound_tileset_ad(
     incoming: &GossipIncoming,
     ad: TilesetAd,
 ) -> Option<Hash32> {
+    record_tileset_ad(providers, evt_tx, incoming, ad, None)
+}
+
+/// Most tileset ads one signed frame carries (keeps a batch under the frame-size cap).
+const TILESET_ADS_PER_FRAME: usize = 256;
+
+/// Handle the verified payload of a signed `tileset_ad` frame: a JSON batch, each ad attributed to `author_did`.
+fn handle_signed_tileset_ads(
+    providers: &mut TilesetProviderMap,
+    evt_tx: &dyn EventSink,
+    incoming: &GossipIncoming,
+    author_did: &str,
+) {
+    let Ok(ads) = serde_json::from_slice::<Vec<TilesetAd>>(&incoming.content) else {
+        tracing::debug!(verse_id = %incoming.verse_id, "Signed tileset-ad frame with a malformed batch — ignored");
+        return;
+    };
+    for ad in ads.into_iter().take(TILESET_ADS_PER_FRAME) {
+        if ad.kind == TILESET_AD_KIND {
+            record_tileset_ad(providers, evt_tx, incoming, ad, Some(author_did));
+        }
+    }
+}
+
+/// Shared ad admission; a signed ad is authenticated when its provider is the frame's signer.
+fn record_tileset_ad(
+    providers: &mut TilesetProviderMap,
+    evt_tx: &dyn EventSink,
+    incoming: &GossipIncoming,
+    ad: TilesetAd,
+    signed_author: Option<&str>,
+) -> Option<Hash32> {
     let Ok(root) = hash_from_hex(&ad.root_hash) else {
         tracing::debug!(tileset_id = %ad.tileset_id, "Malformed tileset ad root hash — ignored");
         return None;
@@ -3979,8 +4069,12 @@ fn handle_inbound_tileset_ad(
         tracing::debug!(tileset_id = %ad.tileset_id, "Tileset ad with an undialable provider — ignored");
         return None;
     }
-    let authenticated =
-        tileset_ad_is_authenticated(incoming.direct, &ad.provider_addr, incoming.from);
+    let authenticated = match signed_author {
+        Some(author_did) => IrohBlobTransport::parse_provider(&ProviderRef::new(ad.provider_addr.clone()))
+            .map(|address| crate::replicator::peer_did_key(&address.id) == author_did)
+            .unwrap_or(false),
+        None => tileset_ad_is_authenticated(incoming.direct, &ad.provider_addr, incoming.from),
+    };
     if !providers.record(
         &incoming.verse_id,
         ad.tileset_id.clone(),
@@ -4016,7 +4110,9 @@ fn handle_inbound_tileset_ad(
     send_sync_event(
         evt_tx,
         SyncEvent::PeerTilesetAdvertisement {
-            peer_id: crate::replicator::peer_did_key(&incoming.from),
+            peer_id: signed_author
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::replicator::peer_did_key(&incoming.from)),
             advertisements_json,
         },
     );
@@ -4036,8 +4132,29 @@ fn tileset_ad_from_catalog_entry(entry: &CatalogEntry, provider_addr: &str) -> T
     }
 }
 
-/// Serialize and broadcast every ad on one verse topic.
-async fn broadcast_ads_on(sender: &TopicSender, ads: &[TilesetAd]) {
+/// Broadcast every ad on one verse topic: signed batches of [`TILESET_ADS_PER_FRAME`] when `signer` is set.
+async fn broadcast_ads_on(
+    sender: &TopicSender,
+    verse_id: &str,
+    signer: Option<&iroh::SecretKey>,
+    ads: &[TilesetAd],
+) {
+    if let Some(secret) = signer {
+        for batch in ads.chunks(TILESET_ADS_PER_FRAME) {
+            let frame = serde_json::to_vec(batch).map_err(|e| e.to_string()).and_then(|payload| {
+                crate::gossip_auth::seal(secret, GossipFrameKind::TilesetAd, verse_id, unix_now_ms(), payload)
+                    .map_err(str::to_owned)
+            });
+            match frame {
+                Ok(frame) => match sender.broadcast(frame.into()).await {
+                    Ok(()) => tracing::debug!(verse_id, ads = batch.len(), "Broadcasted signed tileset advertisements"),
+                    Err(e) => tracing::warn!(verse_id, "Failed to broadcast signed tileset advertisements: {e}"),
+                },
+                Err(e) => tracing::warn!(verse_id, "Failed to seal tileset advertisements: {e}"),
+            }
+        }
+        return;
+    }
     for ad in ads {
         match serde_json::to_vec(ad) {
             Ok(payload) => {
@@ -4059,10 +4176,15 @@ async fn broadcast_ads_on(sender: &TopicSender, ads: &[TilesetAd]) {
 /// relevant to every verse this node currently participates in).
 async fn broadcast_ads_to_all_verses(
     gossip_senders: &HashMap<String, TopicSender>,
+    signer: Option<&iroh::SecretKey>,
     ads: &[TilesetAd],
 ) {
-    for sender in gossip_senders.values() {
-        broadcast_ads_on(sender, ads).await;
+    for (topic_key, sender) in gossip_senders {
+        let Some(verse_id) = verse_of_gossip_topic(topic_key) else {
+            tracing::warn!(topic_key, "Gossip topic key names no verse — tileset ads not broadcast on it");
+            continue;
+        };
+        broadcast_ads_on(sender, verse_id, signer, ads).await;
     }
 }
 
@@ -4076,6 +4198,7 @@ async fn handle_advertise_tilesets(
     gossip_senders: &HashMap<String, TopicSender>,
     transfer: &Option<Arc<TilesetTransfer>>,
     provider_addr: Option<&str>,
+    signer: Option<&iroh::SecretKey>,
     verse_id: &str,
 ) {
     if gossip_host.is_none() {
@@ -4107,7 +4230,7 @@ async fn handle_advertise_tilesets(
         .iter()
         .map(|entry| tileset_ad_from_catalog_entry(entry, provider_addr))
         .collect();
-    broadcast_ads_on(sender, &ads).await;
+    broadcast_ads_on(sender, verse_id, signer, &ads).await;
 }
 
 /// Forward each [`TransferEvent`] from a tileset transfer operation as a
@@ -4525,6 +4648,7 @@ fn spawn_publish_tileset(
     evt_tx: EventOutbox,
     gossip_senders: HashMap<String, TopicSender>,
     provider_addr: Option<String>,
+    signer: Option<iroh::SecretKey>,
     tileset_id: String,
     index_path: PathBuf,
     bundle_paths: Vec<PathBuf>,
@@ -4551,6 +4675,7 @@ fn spawn_publish_tileset(
                     Some(addr) => {
                         broadcast_ads_to_all_verses(
                             &gossip_senders,
+                            signer.as_ref(),
                             &[tileset_ad_from_catalog_entry(&entry, &addr)],
                         )
                         .await;
@@ -5456,6 +5581,7 @@ mod tests {
             &gossip_host,
             &gossip_senders,
             &transfer,
+            None,
             None,
             "verse-1",
         ));

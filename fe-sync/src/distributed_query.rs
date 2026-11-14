@@ -32,6 +32,7 @@ use fe_runtime::distributed_query::{
 use fe_runtime::messages::DbCommand;
 use iroh_gossip::api::GossipSender;
 
+use crate::gossip_auth::{self, GossipFrameKind, ReplayGuard, SigningMode};
 use crate::messages::SyncEvent;
 use crate::sharding::{AnswererVerdict, AnswererView, VerseFabric};
 
@@ -820,6 +821,8 @@ pub struct DistributedTransport {
     pub pending: Arc<PendingQueries>,
     pub concurrency: Arc<tokio::sync::Semaphore>,
     pub evt_tx: crate::messages::SyncEventSender,
+    /// The sync identity key that signs outbound gossip frames; `None` sends legacy frames.
+    signing_key: Option<iroh::SecretKey>,
 }
 
 impl DistributedTransport {
@@ -834,6 +837,40 @@ impl DistributedTransport {
             pending: Arc::new(PendingQueries::default()),
             concurrency: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_QUERIES)),
             evt_tx,
+            signing_key: None,
+        }
+    }
+
+    /// Signs outbound gossip with `secret`, only when its did:key is `local_did` (F20 alignment).
+    pub fn with_signing_key(mut self, secret: iroh::SecretKey) -> Self {
+        if crate::replicator::peer_did_key(&secret.public()) == self.local_did {
+            self.signing_key = Some(secret);
+        } else {
+            tracing::warn!(
+                local_did = %self.local_did,
+                "sync identity key does not render to the local DID — gossip frames stay unsigned"
+            );
+        }
+        self
+    }
+
+    /// The key that signs outbound gossip frames, when signing is on.
+    pub fn signing_key(&self) -> Option<&iroh::SecretKey> {
+        self.signing_key.as_ref()
+    }
+
+    /// Wraps an encoded compute envelope for the wire: a signed v1 frame when a key is set.
+    fn frame_for_wire(&self, verse_id: &str, envelope: bytes::Bytes) -> Result<bytes::Bytes, &'static str> {
+        match &self.signing_key {
+            Some(secret) => gossip_auth::seal(
+                secret,
+                GossipFrameKind::Compute,
+                verse_id,
+                unix_now_ms(),
+                envelope.to_vec(),
+            )
+            .map(bytes::Bytes::from),
+            None => Ok(envelope),
         }
     }
 
@@ -1056,7 +1093,9 @@ async fn collect_distributed_query(transport: DistributedTransport, task: Collec
             timeout_ms: request.timeout_ms,
             row_cap,
         };
-        match encode_envelope(&mut env) {
+        match encode_envelope(&mut env)
+            .and_then(|bytes| transport.frame_for_wire(&request.verse_id, bytes).map_err(str::to_owned))
+        {
             Ok(bytes) => {
                 if let Err(e) = sender.broadcast(bytes).await {
                     tracing::warn!(
@@ -1187,6 +1226,8 @@ pub mod drop_reason {
     /// On a direct delivery the claimed `from_did` is not the authenticated
     /// sender's did:key — forged attribution.
     pub const FORGED_SENDER: &str = "claimed from_did does not match the authenticated sender";
+    /// A signed frame's envelope `from_did` is not the frame's signing author.
+    pub const AUTHOR_MISMATCH: &str = "envelope from_did does not match the signed frame author";
     /// The requesting peer is not declared in this verse's fabric
     /// (`__peers/{did}`) — deny-by-default for strangers on a topic id that
     /// is derivable from the public verse ULID (no capability).
@@ -1276,6 +1317,42 @@ pub fn handle_gossip_incoming(
     gossip_senders: &HashMap<String, TopicSender>,
     incoming: GossipIncoming,
 ) -> GossipDisposition {
+    admit_compute_envelope(transport, fabrics, gossip_senders, incoming, None)
+}
+
+/// [`handle_gossip_incoming`] for the payload of a verified signed frame: `from_did` must be `author_did`.
+pub fn handle_signed_gossip_incoming(
+    transport: &DistributedTransport,
+    fabrics: &HashMap<String, VerseFabric>,
+    gossip_senders: &HashMap<String, TopicSender>,
+    incoming: GossipIncoming,
+    author_did: &str,
+) -> GossipDisposition {
+    admit_compute_envelope(transport, fabrics, gossip_senders, incoming, Some(author_did))
+}
+
+/// Envelope identity: a signed frame binds `from_did` to its author; the F23 direct-delivery check applies to both.
+fn sender_identity_refusal(
+    incoming: &GossipIncoming,
+    from_did: &str,
+    signed_author: Option<&str>,
+) -> Option<&'static str> {
+    if signed_author.is_some_and(|author| author != from_did) {
+        return Some(drop_reason::AUTHOR_MISMATCH);
+    }
+    if incoming.direct && from_did != crate::replicator::peer_did_key(&incoming.from) {
+        return Some(drop_reason::FORGED_SENDER);
+    }
+    None
+}
+
+fn admit_compute_envelope(
+    transport: &DistributedTransport,
+    fabrics: &HashMap<String, VerseFabric>,
+    gossip_senders: &HashMap<String, TopicSender>,
+    incoming: GossipIncoming,
+    signed_author: Option<&str>,
+) -> GossipDisposition {
     let Some(envelope) = decode_envelope(&incoming.content) else {
         // Foreign traffic on the verse topic (tileset announcements) — not
         // consumed by anyone today; ignore at debug, never fatal.
@@ -1288,14 +1365,14 @@ pub fn handle_gossip_incoming(
             from_did,
             partial,
         } => {
-            if incoming.direct && from_did != crate::replicator::peer_did_key(&incoming.from) {
+            if let Some(reason) = sender_identity_refusal(&incoming, &from_did, signed_author) {
                 tracing::warn!(
                     request_id = %request_id,
                     claimed = %from_did,
-                    "forged-attribution compute response dropped — claimed from_did does not \
-                     match the authenticated direct sender"
+                    reason,
+                    "forged-attribution compute response dropped"
                 );
-                return GossipDisposition::Dropped(drop_reason::FORGED_SENDER);
+                return GossipDisposition::Dropped(reason);
             }
             transport.pending.route(
                 &request_id,
@@ -1335,14 +1412,14 @@ pub fn handle_gossip_incoming(
                 );
                 return GossipDisposition::Dropped(drop_reason::VERSE_MISMATCH);
             }
-            if incoming.direct && from_did != crate::replicator::peer_did_key(&incoming.from) {
+            if let Some(reason) = sender_identity_refusal(&incoming, &from_did, signed_author) {
                 tracing::warn!(
                     request_id = %request_id,
                     claimed = %from_did,
-                    "forged-attribution compute request dropped — claimed from_did does not \
-                     match the authenticated direct sender"
+                    reason,
+                    "forged-attribution compute request dropped"
                 );
-                return GossipDisposition::Dropped(drop_reason::FORGED_SENDER);
+                return GossipDisposition::Dropped(reason);
             }
             let Some(fabric) = fabrics.get(&incoming.verse_id) else {
                 return GossipDisposition::Dropped(drop_reason::UNDECLARED_REQUESTER);
@@ -1474,6 +1551,132 @@ pub fn handle_gossip_incoming(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Signed gossip ingress (NET-26; see `src/AGENTS.md` §gossip-signing)
+// ---------------------------------------------------------------------------
+
+/// Wall-clock milliseconds since the Unix epoch (the signed frame's `hlc_ms`).
+pub(crate) fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// Signed-gossip ingress state owned by the sync loop: the env signing mode and the replay guard.
+#[derive(Debug, Default)]
+pub struct SignedGossipIngress {
+    /// `FE_SYNC_GOSSIP_SIGNING`; a verse manifest's `gossip_signing: required` can only tighten it.
+    pub env_mode: SigningMode,
+    /// Per-(verse, author) replay windows; a window is also the author's session latch.
+    pub guard: ReplayGuard,
+}
+
+/// One gossip message that passed the signed-gossip ingress.
+#[derive(Debug)]
+pub struct AdmittedGossip {
+    /// Handler bytes: a signed frame's verified payload, or the legacy message verbatim.
+    pub incoming: GossipIncoming,
+    /// Kind and authenticated author of a signed frame; `None` for an admitted legacy frame.
+    pub signed: Option<(GossipFrameKind, String)>,
+}
+
+impl SignedGossipIngress {
+    /// Ingress state with the mode read from [`gossip_auth::GOSSIP_SIGNING_ENV_VAR`].
+    pub fn from_env() -> Self {
+        Self {
+            env_mode: SigningMode::from_env(),
+            guard: ReplayGuard::new(),
+        }
+    }
+
+    /// Effective mode for one verse: Require when the env or the verse manifest requires signing.
+    pub fn mode_for(&self, fabric: Option<&VerseFabric>) -> SigningMode {
+        if self.env_mode == SigningMode::Require
+            || fabric.is_some_and(VerseFabric::gossip_signing_required)
+        {
+            SigningMode::Require
+        } else {
+            SigningMode::Compat
+        }
+    }
+
+    /// True when `did` only ever signs in this verse: its own `__peers` row says so, or a signed frame was admitted.
+    pub fn is_latched(&self, fabric: Option<&VerseFabric>, verse_id: &str, did: &str) -> bool {
+        fabric.is_some_and(|fabric| fabric.peer_signs_gossip(did))
+            || self.guard.has_verified_author(verse_id, did)
+    }
+
+    /// Verify-then-unwrap: a magic-prefixed frame is verified (topic verse, signature, replay window) and its
+    /// payload handed on, never re-parsed as legacy; a legacy frame passes only in Compat from an unlatched author.
+    pub fn admit(
+        &mut self,
+        fabrics: &HashMap<String, VerseFabric>,
+        incoming: GossipIncoming,
+        now_ms: u64,
+    ) -> Result<AdmittedGossip, &'static str> {
+        let fabric = fabrics.get(&incoming.verse_id);
+        let mode = self.mode_for(fabric);
+        match gossip_auth::open_ingress(&incoming.content, &incoming.verse_id, now_ms, mode, &self.guard)? {
+            gossip_auth::GossipIngress::Signed(frame) => {
+                // Only a declared fabric peer gets a replay window, so strangers cannot evict members' windows.
+                if fabric.is_some_and(|fabric| fabric.peers.contains_key(&frame.author_did)) {
+                    self.guard.record(&frame);
+                }
+                let gossip_auth::SignedGossipFrame {
+                    kind,
+                    author_did,
+                    payload,
+                    ..
+                } = frame;
+                Ok(AdmittedGossip {
+                    incoming: GossipIncoming {
+                        content: bytes::Bytes::from(payload),
+                        ..incoming
+                    },
+                    signed: Some((kind, author_did)),
+                })
+            }
+            gossip_auth::GossipIngress::Legacy => {
+                let forged = legacy_claimed_authors(&incoming)
+                    .iter()
+                    .any(|did| self.is_latched(fabric, &incoming.verse_id, did));
+                if forged {
+                    return Err(gossip_auth::refusal::FORGED_SENDER_LEGACY);
+                }
+                Ok(AdmittedGossip {
+                    incoming,
+                    signed: None,
+                })
+            }
+        }
+    }
+}
+
+/// Every identity an unsigned message speaks for: the direct sender, a compute `from_did`, a tileset ad's provider.
+fn legacy_claimed_authors(incoming: &GossipIncoming) -> Vec<String> {
+    let mut claimed = Vec::with_capacity(3);
+    if incoming.direct {
+        claimed.push(crate::replicator::peer_did_key(&incoming.from));
+    }
+    let Ok(serde_json::Value::Object(fields)) =
+        serde_json::from_slice::<serde_json::Value>(&incoming.content)
+    else {
+        return claimed;
+    };
+    if let Some(from_did) = fields.get("from_did").and_then(|value| value.as_str()) {
+        claimed.push(from_did.to_owned());
+    }
+    // `publisher_did` is deliberately not a claim: a re-seeding peer advertises another publisher's tileset.
+    if let Some(provider_addr) = fields.get("provider_addr").and_then(|value| value.as_str()) {
+        let provider = fe_runtime::blob_transport::ProviderRef::new(provider_addr.to_owned());
+        if let Ok(address) = crate::blob_transport::IrohBlobTransport::parse_provider(&provider) {
+            claimed.push(crate::replicator::peer_did_key(&address.id));
+        }
+    }
+    claimed
+}
+
 /// Bundles the responder task's inputs (clippy::too_many_arguments).
 struct ComputeResponseArgs {
     transport: DistributedTransport,
@@ -1505,6 +1708,7 @@ async fn respond_to_compute_request(args: ComputeResponseArgs) {
     };
     let (tx, rx) = crossbeam::channel::bounded::<TsPartialRows>(1);
     let wait = Duration::from_millis(timeout_ms.min(RESPONDER_EXEC_CAP_MS));
+    let frame_verse_id = verse_id.clone();
     let cmd = DbCommand::ExecuteTsPartial {
         verse_id,
         spec,
@@ -1533,7 +1737,9 @@ async fn respond_to_compute_request(args: ComputeResponseArgs) {
         from_did: transport.local_did.clone(),
         partial,
     };
-    match encode_envelope(&mut envelope) {
+    match encode_envelope(&mut envelope)
+        .and_then(|bytes| transport.frame_for_wire(&frame_verse_id, bytes).map_err(str::to_owned))
+    {
         Ok(bytes) => {
             if let Err(e) = sender.broadcast(bytes).await {
                 tracing::warn!(request_id, "compute response broadcast failed: {e}");
@@ -2935,7 +3141,7 @@ mod tests {
         // author (iroh-gossip GossipEvent docs) — the identity gate is
         // skipped and the claim walks the membership + petal gates. This
         // is the documented residual: relays cannot be wire-verified.
-        let (transport, fabrics, senders, requester_did) = admission_setup();
+        let (transport, mut fabrics, senders, requester_did) = admission_setup();
         let relayed_via = test_node_id(21); // NOT the author
         let env = request_envelope(
             "req-1",
@@ -2953,6 +3159,104 @@ mod tests {
             ),
             GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED),
             "a relayed honest-claim request from a declared peer passes the gates"
+        );
+
+        // NET-26: the signed-frame ingress closes that residual for authors that sign.
+        const NOW_MS: u64 = 1_800_000_000_000;
+        let requester_secret = iroh::SecretKey::from_bytes(&[7u8; 32]); // `requester_node()`
+        let victim_did = crate::replicator::peer_did_key(&test_node_id(22));
+        let latched_did = crate::replicator::peer_did_key(&test_node_id(23));
+        let fabric = fabrics.get_mut("v-1").expect("fixture verse");
+        fabric.note_peer_declaration(&victim_did, PeerDeclaration::default());
+        fabric.note_peer_declaration(
+            &latched_did,
+            PeerDeclaration {
+                gossip_sig: Some(crate::sharding::GOSSIP_SIG_VERSION),
+                ..PeerDeclaration::default()
+            },
+        );
+        let signed = |request_id: &str, claimed_from: &str| -> GossipIncoming {
+            let env = request_envelope(request_id, "v-1", claimed_from, agg_spec(0, 60_000), agg_shards());
+            let payload = serde_json::to_vec(&env).expect("envelope json");
+            let frame = gossip_auth::seal(&requester_secret, GossipFrameKind::Compute, "v-1", NOW_MS, payload)
+                .expect("seal");
+            GossipIncoming {
+                verse_id: "v-1".into(),
+                from: relayed_via,
+                direct: false,
+                content: bytes::Bytes::from(frame),
+            }
+        };
+        let legacy = |claimed_from: &str| {
+            let env = request_envelope("req-legacy", "v-1", claimed_from, agg_spec(0, 60_000), agg_shards());
+            gossip_incoming("v-1", relayed_via, false, &env)
+        };
+        let deliver = |admitted: AdmittedGossip| match admitted.signed {
+            Some((GossipFrameKind::Compute, author)) => {
+                handle_signed_gossip_incoming(&transport, &fabrics, &senders, admitted.incoming, &author)
+            }
+            Some(other) => panic!("a compute frame changed kind: {other:?}"),
+            None => handle_gossip_incoming(&transport, &fabrics, &senders, admitted.incoming),
+        };
+
+        // Row relayed_signed_compute_request_is_attributed_to_its_author.
+        let mut compat = SignedGossipIngress::default();
+        let honest = signed("req-signed", &requester_did);
+        let admitted = compat.admit(&fabrics, honest.clone(), NOW_MS).expect("signed frame admitted");
+        assert_eq!(admitted.signed.as_ref().map(|(_, author)| author.as_str()), Some(requester_did.as_str()));
+        assert_eq!(deliver(admitted), GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED));
+        assert_eq!(
+            compat.admit(&fabrics, honest, NOW_MS).map(|_| ()),
+            Err(gossip_auth::refusal::REPLAYED)
+        );
+        let impersonating = compat
+            .admit(&fabrics, signed("req-forged", &victim_did), NOW_MS)
+            .expect("the frame itself verifies");
+        assert_eq!(
+            deliver(impersonating),
+            GossipDisposition::Dropped(drop_reason::AUTHOR_MISMATCH),
+            "a relayed signed frame speaks only for its signer, never a claimed from_did"
+        );
+
+        // Row legacy_frame_for_latched_author_is_dropped.
+        let cases: [(&str, &str, Result<(), &str>); 3] = [
+            ("session-latched signer", requester_did.as_str(), Err(gossip_auth::refusal::FORGED_SENDER_LEGACY)),
+            ("declaration-latched peer", latched_did.as_str(), Err(gossip_auth::refusal::FORGED_SENDER_LEGACY)),
+            ("un-upgraded peer", victim_did.as_str(), Ok(())),
+        ];
+        for (case, claimed, expected) in cases {
+            let outcome = compat.admit(&fabrics, legacy(claimed), NOW_MS).map(|admitted| {
+                assert_eq!(deliver(admitted), GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED), "{case}");
+            });
+            assert_eq!(outcome, expected, "{case}");
+        }
+
+        // Row require_mode_drops_all_legacy_frames: by env, or by the verse manifest.
+        let mut require = SignedGossipIngress {
+            env_mode: SigningMode::Require,
+            ..SignedGossipIngress::default()
+        };
+        assert_eq!(
+            require.admit(&fabrics, legacy(&victim_did), NOW_MS).map(|_| ()),
+            Err(gossip_auth::refusal::LEGACY_REFUSED)
+        );
+        let signed_in_require = require
+            .admit(&fabrics, signed("req-require", &requester_did), NOW_MS)
+            .expect("signed frames still pass in require");
+        assert_eq!(deliver(signed_in_require), GossipDisposition::Dropped(drop_reason::TOPIC_CLOSED));
+        fabrics.get_mut("v-1").expect("fixture verse").note_verse_row(
+            "v-1",
+            &serde_json::json!({
+                "created_by": "did:key:owner", "ts_mode": "sharded", "default_access": "viewer",
+                "gossip_signing": "required"
+            }),
+            "did:key:owner",
+        );
+        let mut fresh_compat = SignedGossipIngress::default();
+        assert_eq!(
+            fresh_compat.admit(&fabrics, legacy(&victim_did), NOW_MS).map(|_| ()),
+            Err(gossip_auth::refusal::LEGACY_REFUSED),
+            "a verse manifest's gossip_signing: required overrides an env compat"
         );
     }
 

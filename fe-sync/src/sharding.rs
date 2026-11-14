@@ -312,7 +312,13 @@ pub struct PeerDeclaration {
     /// Fallback / relay seeder: hosts shards the regular peers cannot fit
     /// (D2 #3/#4 — overflow target, never a coordinator).
     pub seeder: bool,
+    /// Signed-gossip frame version this peer always sends; `None` is an older peer (the per-author latch, §gossip-signing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gossip_sig: Option<u8>,
 }
+
+/// The signed-gossip frame version this build declares in its own `__peers` row.
+pub const GOSSIP_SIG_VERSION: u8 = 1;
 
 impl PeerDeclaration {
     /// Parse a `__peers` doc row payload.
@@ -323,8 +329,26 @@ impl PeerDeclaration {
                 .and_then(|v| v.as_u64())
                 .filter(|v| *v > 0),
             seeder: row.get("seeder").and_then(|v| v.as_bool()).unwrap_or(false),
+            gossip_sig: row
+                .get("gossip_sig")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| *v > 0),
         }
     }
+
+    /// True when the peer declared it signs every gossip frame (its unsigned frames are then forgeries).
+    pub fn signs_gossip(&self) -> bool {
+        self.gossip_sig.is_some()
+    }
+}
+
+/// Parse a verse manifest's `gossip_signing`: only `"required"`/`"require"` switch the verse to Require.
+fn parse_gossip_signing_required(row: &serde_json::Value) -> bool {
+    matches!(
+        row.get("gossip_signing").and_then(|v| v.as_str()),
+        Some("required" | "require")
+    )
 }
 
 /// One shard ledger row — the `__shards/{key}` doc payload. The host set is
@@ -511,6 +535,8 @@ pub struct VerseFabric {
     /// The verse manifest's `default_access` (§2.2's ⊥ fallback); `None`
     /// until a manifest has been admitted.
     default_access: RoleLevel,
+    /// The verse manifest's `gossip_signing: required` (every unsigned gossip frame refused).
+    gossip_signing_required: bool,
     /// Admitted role statements, one per `(scope, peer_did, grantor_did)` —
     /// the sync-plane analogue of the DB plane's `role_grant` table. A
     /// statement that fails `admissible` is never stored here (§2.5): the
@@ -576,6 +602,7 @@ impl Default for VerseFabric {
             shards: BTreeMap::new(),
             owner_did: None,
             default_access: RoleLevel::None,
+            gossip_signing_required: false,
             role_statements: HashMap::new(),
             effective: fe_policy::EffectiveRoles::default(),
             petal_fractals: HashMap::new(),
@@ -735,17 +762,22 @@ impl VerseFabric {
         }
         let parsed = VerseTimeseriesSettings::from_verse_row(row);
         let default_access = parse_default_access(row);
-        let changed = parsed != self.settings || default_access != self.default_access;
+        let gossip_signing_required = parse_gossip_signing_required(row);
+        let changed = parsed != self.settings
+            || default_access != self.default_access
+            || gossip_signing_required != self.gossip_signing_required;
         if changed {
             tracing::info!(
                 mode = parsed.mode.as_str(),
                 replication_factor = parsed.replication_factor,
                 bucket_width_ms = parsed.bucket_width_ms,
                 default_access = %default_access,
+                gossip_signing_required,
                 "Verse fabric: timeseries settings updated from the verse manifest"
             );
             self.settings = parsed;
             self.default_access = default_access;
+            self.gossip_signing_required = gossip_signing_required;
         }
         changed
     }
@@ -1204,6 +1236,16 @@ impl VerseFabric {
     /// petal map hasn't converged).
     pub fn default_access(&self) -> RoleLevel {
         self.default_access
+    }
+
+    /// Whether the admitted verse manifest sets `gossip_signing: required`.
+    pub fn gossip_signing_required(&self) -> bool {
+        self.gossip_signing_required
+    }
+
+    /// Whether `peer_did`'s own `__peers` row declares it signs every gossip frame.
+    pub fn peer_signs_gossip(&self, peer_did: &str) -> bool {
+        self.peers.get(peer_did).is_some_and(PeerDeclaration::signs_gossip)
     }
 
     /// `role_at` with the §2.2 ⊥ fallback already folded in — the one
@@ -2188,12 +2230,17 @@ mod tests {
         let decl = PeerDeclaration {
             capacity_bytes: Some(5000),
             seeder: true,
+            gossip_sig: Some(GOSSIP_SIG_VERSION),
         };
         let row = serde_json::to_value(decl).expect("serialize");
         assert_eq!(PeerDeclaration::from_row(&row), decl);
-        // Zero/absent capacity reads back as unlimited.
+        assert!(PeerDeclaration::from_row(&row).signs_gossip(), "the gossip latch round-trips");
+        // Zero/absent capacity reads back as unlimited; an older peer's row (no gossip_sig) is unlatched.
         let none = serde_json::json!({"capacity_bytes": 0, "seeder": false});
         assert_eq!(PeerDeclaration::from_row(&none), PeerDeclaration::default());
+        assert!(!PeerDeclaration::from_row(&none).signs_gossip());
+        let unlatched = serde_json::to_value(PeerDeclaration::default()).expect("serialize");
+        assert!(unlatched.get("gossip_sig").is_none(), "an unlatched row stays byte-identical to the old shape");
     }
 
     #[test]
@@ -2211,6 +2258,7 @@ mod tests {
         assert!(changed);
         assert_eq!(fabric.settings.mode, TimeseriesMode::Balanced);
         assert_eq!(fabric.settings.replication_factor, 2);
+        assert!(!fabric.gossip_signing_required(), "no gossip_signing key is compat");
         // Same row again: no change reported.
         assert!(!fabric.note_verse_row(
             "v1",
@@ -2220,6 +2268,16 @@ mod tests {
             }),
             OWNER,
         ));
+        // The owner flips the verse to signed-only gossip.
+        assert!(fabric.note_verse_row(
+            "v1",
+            &serde_json::json!({
+                "created_by": OWNER, "ts_mode": "balanced", "ts_replication_factor": 2,
+                "ts_bucket_width_ms": 3_600_000, "gossip_signing": "required"
+            }),
+            OWNER,
+        ));
+        assert!(fabric.gossip_signing_required());
     }
 
     #[test]
@@ -2274,6 +2332,7 @@ mod tests {
             PeerDeclaration {
                 capacity_bytes: Some(1),
                 seeder: true,
+                ..PeerDeclaration::default()
             },
         );
         assert_eq!(fabric.peers["peer-b"].capacity_bytes, Some(1));
