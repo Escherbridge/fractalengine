@@ -237,7 +237,7 @@ async fn search_download_verify_roundtrip() {
         assert!(matches!(source.fetch(&entry), Err(RegistryError::PackageInvalid(_))));
         // AC-6: the Extensions source (anonymous, plugin packages only) lists exactly the sealed plugin, not the content fixtures.
         let publisher_did = fe_format::verifying_key_to_did(&plugin_publisher_key().verifying_key());
-        let plugin_trust = SourceTrust::new(Arc::new(move |did| did == publisher_did));
+        let plugin_trust = SourceTrust::new(Arc::new(move |did: &str| did == publisher_did));
         let extensions = remote_extension_source("extensions", base.clone(), plugin_trust.clone()).unwrap();
         let plugin_listing = extensions.list(None).unwrap();
         assert_eq!(plugin_listing.entries.len(), 1);
@@ -258,7 +258,7 @@ async fn search_download_verify_roundtrip() {
         assert!(matches!(renamed_bytes, Err(RegistryError::PackageInvalid(reason)) if reason.contains("id-mismatch")));
         // The same bytes under a kill predicate that matches the hash are refused.
         let killed_hash = plugin_entry.content_hash.clone();
-        let killing = plugin_trust.with_kill_list(Arc::new(move |_, hash| hash == killed_hash));
+        let killing = plugin_trust.with_kill_list(Arc::new(move |_: &str, hash: &str| hash == killed_hash));
         let killed = remote_extension_source("extensions", base, killing).unwrap();
         assert!(matches!(killed.fetch(&plugin_entry), Err(RegistryError::Revoked { .. })));
         let wrong = RegistryEntry { content_hash: "0".repeat(64), ..entry.clone() };

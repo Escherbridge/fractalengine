@@ -64,8 +64,10 @@ impl RegistryOffers {
         let mut fetches_left = HEADER_FETCHES_PER_REFRESH;
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
         let mut builds: Vec<RegistryBuild> = Vec::new();
+        // A source whose listing failed is skipped for the rest of this refresh: one timeout per dead source, not per package.
+        let mut unreachable = vec![false; registries.len()];
         for package_id in wanted.iter().take(WANTED_PACKAGES_MAX) {
-            for candidate in newest_listed(registries, package_id) {
+            for candidate in newest_listed(registries, &mut unreachable, package_id) {
                 let hash = candidate.entry.content_hash.to_ascii_lowercase();
                 let key = (package_id.clone(), hash.clone());
                 seen.insert(key.clone());
@@ -116,14 +118,19 @@ impl RegistryOffers {
 }
 
 /// The newest [`VERSIONS_PER_PACKAGE`] distinct builds of exactly `package_id` across the sources, newest first.
-/// A source whose listing fails offers nothing this refresh (fail closed); an unparsable version is never offered.
-fn newest_listed(registries: &[Arc<dyn RegistrySource>], package_id: &str) -> Vec<Candidate> {
+/// A source whose listing fails is marked `unreachable` and offers nothing this refresh (fail closed); an unparsable
+/// version is never offered.
+fn newest_listed(registries: &[Arc<dyn RegistrySource>], unreachable: &mut [bool], package_id: &str) -> Vec<Candidate> {
     let mut candidates: Vec<Candidate> = Vec::new();
-    for registry in registries {
+    for (registry, unreachable) in registries.iter().zip(unreachable.iter_mut()) {
+        if *unreachable {
+            continue;
+        }
         let listing = match registry.list(Some(package_id)) {
             Ok(listing) => listing,
             Err(error) => {
-                tracing::debug!(source = %registry.label(), %package_id, %error, "registry listing failed; no offer from it");
+                tracing::debug!(source = %registry.label(), %package_id, %error, "registry listing failed; no offer from it this refresh");
+                *unreachable = true;
                 continue;
             }
         };
@@ -218,6 +225,27 @@ mod tests {
         }
     }
 
+    /// A configured source that cannot be reached; every listing attempt is counted.
+    struct DeadSource {
+        list_calls: AtomicUsize,
+    }
+
+    impl RegistrySource for DeadSource {
+        fn label(&self) -> String {
+            "dead".into()
+        }
+        fn list(&self, _query: Option<&str>) -> Result<Listing, RegistryError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Err(RegistryError::Transport("connect timed out".into()))
+        }
+        fn header(&self, _entry: &RegistryEntry) -> Result<Vec<u8>, RegistryError> {
+            Err(RegistryError::HeaderUnavailable)
+        }
+        fn fetch(&self, entry: &RegistryEntry) -> Result<FetchedPackage, RegistryError> {
+            Err(RegistryError::NotFound(entry.package_id.clone()))
+        }
+    }
+
     fn offered(offers: &RegistryOffers, package_id: &str) -> Vec<(String, bool, Vec<String>)> {
         offers
             .snapshot()
@@ -282,6 +310,12 @@ mod tests {
         // Cache hit: the same listing reads only the headers that failed, and nothing changes.
         assert!(!offers.refresh_from(&registries, &wanted, &is_killed), "an unchanged listing changes nothing");
         assert_eq!(source.header_reads.load(Ordering::SeqCst), 7);
+
+        // A dead source ahead of the live one costs one listing attempt per refresh, not one per wanted package.
+        let dead = Arc::new(DeadSource { list_calls: AtomicUsize::new(0) });
+        let with_dead: Vec<Arc<dyn RegistrySource>> = vec![dead.clone() as Arc<dyn RegistrySource>, source.clone() as Arc<dyn RegistrySource>];
+        assert!(!offers.refresh_from(&with_dead, &wanted, &is_killed), "the live source still offers the same builds");
+        assert_eq!(dead.list_calls.load(Ordering::SeqCst), 1);
 
         // The kill list growing turns the offer into a revoked build without a header read.
         let all_killed: KillPredicate = Arc::new(|_: &str, hash: &str| hash == "hkill" || hash == "h200");

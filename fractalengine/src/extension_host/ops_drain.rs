@@ -752,7 +752,8 @@ impl OpsWorker {
             Ok(listing) => {
                 self.note_offers(&source_id, &listing.entries);
                 if !self.offer_packages.is_empty() {
-                    self.refresh_registry_offers(&scope.verse_id);
+                    // The listing answers first; the offer refresh runs once the worker is idle.
+                    self.offers_next_refresh = Instant::now();
                 }
                 vec![ExtensionEvent::Browse(BrowseEvent::Listing { source_id, listing }), self.rows_event(scope)]
             }
