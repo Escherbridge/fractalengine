@@ -1,6 +1,6 @@
 # Extensions UI
 
-Design text for the Extensions panel (spec R28), Browse and the registry sources behind it (R29, R32), and the update flow. It applies `C:/Users/atooz/.gemini/UI-UX-guidance.md`: one purpose per view, one obvious primary action, layout before copy, stable accessible names, and real empty, loading, error and disabled states.
+Design text for the Extensions panel (spec R28), Browse and the registry sources behind it (R29, R32), and the update flow. It applies the project UI/UX guidance: one purpose per view, one obvious primary action, layout before copy, stable accessible names, and real empty, loading, error and disabled states.
 
 Code: `fe-ui/src/extensions/{panel,details,permissions,browse}.rs` (UI), `fe-hexon/src/registry_source.rs` (sources). Consent itself is `consent.rs` (E11); this panel only opens it and routes its answer.
 
