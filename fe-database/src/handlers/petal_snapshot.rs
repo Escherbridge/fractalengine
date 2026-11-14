@@ -116,17 +116,19 @@ async fn collect_petal_rows(db: &Db, petal_id: &str, scope: &str) -> anyhow::Res
         .filter_map(|node| node.get("node_id").and_then(Value::as_str))
         .collect();
     // Imported history re-exports in its original shape, so export → import → export is a fixed point.
-    let mut oplog: Vec<Value> = quarantined_oplog
+    // Live rows come first so a row present in both op_log and op_log_imported keeps its live copy (dedup by record id).
+    let mut seen_record_ids: HashSet<String> = HashSet::new();
+    let mut oplog: Vec<Value> = candidate_oplog
         .into_iter()
-        .filter_map(exported_quarantined_row)
-        .chain(
-            candidate_oplog
-                .into_iter()
-                .filter(|entry| oplog_entry_matches_petal(entry, petal_id, &petal_node_ids)),
-        )
+        .filter(|entry| oplog_entry_matches_petal(entry, petal_id, &petal_node_ids))
+        .chain(quarantined_oplog.into_iter().filter_map(exported_quarantined_row))
         .filter(|entry| is_importable_op_type(entry["op_type"].as_str().unwrap_or_default()))
+        .filter(|entry| entry["id"].as_str().is_none_or(|id| seen_record_ids.insert(id.to_string())))
         .collect();
-    oplog.sort_by_key(|entry| entry["lamport_clock"].as_u64().unwrap_or_default());
+    oplog.sort_by(|left, right| {
+        let key = |entry: &Value| (entry["lamport_clock"].as_u64().unwrap_or_default(), entry["id"].as_str().unwrap_or_default().to_string());
+        key(left).cmp(&key(right))
+    });
 
     Ok(PetalSnapshotRows {
         petal,
@@ -484,10 +486,17 @@ impl RestorePlan {
             plan.push(statement);
         }
 
+        let mut field_def_ids: HashSet<String> = HashSet::new();
         for field_def in field_defs {
             let record = record_id(&field_def, "field_def")?.to_string();
             if !string_field(&field_def, "scope").is_some_and(inside_petal_scope) {
                 return Err(invalid("a field_def row is scoped outside the snapshot petal"));
+            }
+            let field_def_id = string_field(&field_def, "field_def_id")
+                .filter(|field_def_id| !field_def_id.is_empty())
+                .ok_or_else(|| invalid("a field_def row has no field_def_id"))?;
+            if !field_def_ids.insert(field_def_id.to_string()) {
+                return Err(invalid(format!("field_def_id {field_def_id} appears twice in the snapshot")));
             }
             let statement = plan.create_statement(&record, field_def, None);
             plan.push(statement);
@@ -512,7 +521,20 @@ impl RestorePlan {
             plan.push(format!("IF !record::exists(type::record(${record_binding})) {{ {statement} }}"));
         }
 
-        for asset in assets {
+        for mut asset in assets {
+            // Archive-supplied owner, size and provenance are never trusted (src/handlers/AGENTS.md "Snapshot import trust").
+            if let Some(object) = asset.as_object_mut() {
+                object.remove("owner_did");
+                object.remove("publication_provenance");
+                object.remove(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER);
+                // An anchor naming another petal is pinned to the imported petal, never trusted.
+                if object.get("petal_id").is_some_and(|anchor| !anchor.is_null()) {
+                    object.insert("petal_id".into(), json!(petal_id));
+                }
+                if object.get("size_bytes").and_then(Value::as_i64).is_none_or(|size| size < 0) {
+                    object.insert("size_bytes".into(), json!(0));
+                }
+            }
             let record = record_id(&asset, "asset")?.to_string();
             let asset_id = string_field(&asset, "asset_id").ok_or_else(|| invalid("an asset row has no asset_id"))?.to_string();
             if !referenced_assets.contains(&asset_id) {
@@ -624,6 +646,7 @@ impl RestorePlan {
         plan.collision_guard(|set| format!("SELECT VALUE id FROM node_log WHERE node_id IN ${set}"), node_identities.clone());
         plan.collision_guard(|set| format!("SELECT VALUE id FROM node WHERE node_id IN ${set}"), node_identities);
         plan.collision_guard(|set| format!("SELECT VALUE id FROM iot_reading WHERE reading_id IN ${set}"), reading_ids);
+        plan.collision_guard(|set| format!("SELECT VALUE id FROM field_def WHERE field_def_id IN ${set}"), field_def_ids);
 
         let writes = std::mem::take(&mut plan.writes);
         plan.script.push_str(&writes);

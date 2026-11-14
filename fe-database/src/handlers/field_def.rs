@@ -7,7 +7,7 @@
 
 use tracing::instrument;
 
-use fe_query::{DeleteBuilder, Filter, InsertBuilder, QueryBuilder, SortDir};
+use fe_query::{Filter, InsertBuilder, QueryBuilder, SortDir};
 
 use crate::query_helpers::exec_query;
 use crate::repo::Db;
@@ -102,6 +102,19 @@ pub(crate) async fn get_field_def_handler(
     Ok(rows.into_iter().next())
 }
 
+/// The one row for `field_def_id`; an id held by several rows is refused (see `src/handlers/AGENTS.md` "Snapshot import trust").
+async fn unique_field_def_row(db: &Db, field_def_id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+    let mut response = db
+        .query("SELECT * FROM field_def WHERE field_def_id = $id LIMIT 2")
+        .bind(("id", field_def_id.to_string()))
+        .await
+        .map_err(|e| anyhow::anyhow!("field_def lookup failed: {e}"))?
+        .check()?;
+    let mut rows: Vec<serde_json::Value> = response.take(0)?;
+    anyhow::ensure!(rows.len() <= 1, "field definition id is ambiguous");
+    Ok(rows.pop())
+}
+
 /// Update the `value_type` and `default_val` of an existing field definition.
 #[instrument(skip(db))]
 pub(crate) async fn update_field_def_handler(
@@ -113,9 +126,13 @@ pub(crate) async fn update_field_def_handler(
     if let Some(value) = default_val {
         validate_json_numbers(value)?;
     }
-    let row = get_field_def_handler(db, field_def_id)
+    let row = unique_field_def_row(db, field_def_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("field definition not found"))?;
+    let row_scope = row["scope"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("definition scope missing"))?
+        .to_string();
     if let Some(descriptor) = row.get("enforced_schema").filter(|value| !value.is_null()) {
         let descriptor = parse_descriptor(descriptor)?;
         if row["value_type"].as_str() != Some(value_type) {
@@ -126,11 +143,12 @@ pub(crate) async fn update_field_def_handler(
         }
     }
     db.query(
-        "UPDATE field_def SET value_type = $vt, default_val = $default WHERE field_def_id = $id",
+        "UPDATE field_def SET value_type = $vt, default_val = $default WHERE field_def_id = $id AND scope = $scope",
     )
     .bind(("vt", value_type.to_string()))
     .bind(("default", default_val.cloned()))
     .bind(("id", field_def_id.to_string()))
+    .bind(("scope", row_scope))
     .await
     .map_err(|e| anyhow::anyhow!("UpdateFieldDef DB query failed: {e}"))?
     .check()?;
@@ -141,22 +159,22 @@ pub(crate) async fn update_field_def_handler(
 /// Delete a field definition by its ID.
 #[instrument(skip(db))]
 pub(crate) async fn delete_field_def_handler(db: &Db, field_def_id: &str) -> anyhow::Result<()> {
-    if get_field_def_handler(db, field_def_id)
-        .await?
-        .is_some_and(|row| {
-            row.get("enforced_schema")
-                .is_some_and(|value| !value.is_null())
-        })
-    {
+    let Some(row) = unique_field_def_row(db, field_def_id).await? else {
+        return Ok(());
+    };
+    if row.get("enforced_schema").is_some_and(|value| !value.is_null()) {
         anyhow::bail!("enforced definitions cannot be deleted; publish a compatible revision");
     }
-    let q = DeleteBuilder::delete_from("field_def")
-        .where_clause(Filter::eq("field_def_id", field_def_id))
-        .build();
-
-    exec_query(db, &q)
+    let row_scope = row["scope"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("definition scope missing"))?
+        .to_string();
+    db.query("DELETE field_def WHERE field_def_id = $id AND scope = $scope")
+        .bind(("id", field_def_id.to_string()))
+        .bind(("scope", row_scope))
         .await
-        .map_err(|e| anyhow::anyhow!("DeleteFieldDef DB query failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("DeleteFieldDef DB query failed: {e}"))?
+        .check()?;
 
     Ok(())
 }
@@ -244,7 +262,7 @@ pub(crate) async fn set_field_schema_handler(
 ) -> anyhow::Result<serde_json::Value> {
     validate_json_numbers(value)?;
     let descriptor = parse_descriptor(value)?;
-    let row = get_field_def_handler(db, field_def_id)
+    let row = unique_field_def_row(db, field_def_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("field definition not found"))?;
     let definition_scope = row["scope"]
@@ -306,8 +324,8 @@ pub(crate) async fn set_field_schema_handler(
                 .map_err(|e| anyhow::anyhow!("existing node {}: {e}", node["node_id"]))?;
         }
     }
-    let mut response = db.query("UPDATE field_def SET enforced_schema = $descriptor, schema_revisions = array::append(schema_revisions ?? [], $descriptor) WHERE field_def_id = $id RETURN AFTER")
-        .bind(("descriptor", value.clone())).bind(("id", field_def_id.to_string()))
+    let mut response = db.query("UPDATE field_def SET enforced_schema = $descriptor, schema_revisions = array::append(schema_revisions ?? [], $descriptor) WHERE field_def_id = $id AND scope = $scope RETURN AFTER")
+        .bind(("descriptor", value.clone())).bind(("id", field_def_id.to_string())).bind(("scope", scope.to_string()))
         .await?.check()?;
     let rows: Vec<serde_json::Value> = response.take(0)?;
     rows.into_iter()

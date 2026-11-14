@@ -602,4 +602,40 @@ async fn petal_snapshot_export_then_import_journey() {
         assert!(select(&history_db, sql).await.is_empty(), "{sql}: nothing written");
     }
     assert_eq!(select(&history_db, "SELECT * FROM node_log").await.len(), 1, "only the stray history row exists");
+
+    // Field-def leg: an id already held by another verse's definition refuses, so no twin can be planted.
+    let field_def_db = fresh_db().await;
+    seed_fractal(&field_def_db).await;
+    run(&field_def_db, "CREATE field_def CONTENT { field_def_id: 'fd-petal', scope: 'VERSE#other', entity_type: 'node', key: 'k', value_type: 'string', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }", json!({})).await;
+    let reply = import_petal_snapshot_reply(&field_def_db, snapshot.clone(), Some("field-def-1".into()), None).await;
+    assert!(
+        matches!(&reply, DbResult::PetalSnapshotImportRefused { correlation_id: Some(id), .. } if id == "field-def-1"),
+        "a colliding field_def_id is refused: {reply:?}"
+    );
+    assert!(select(&field_def_db, "SELECT * FROM petal").await.is_empty(), "nothing restored");
+    assert_eq!(select(&field_def_db, "SELECT * FROM field_def").await.len(), 1, "the victim definition is untouched");
+
+    // Asset leg: hostile archive owner, size and provenance never reach the stored row.
+    let asset_db = fresh_db().await;
+    seed_fractal(&asset_db).await;
+    let mut hostile = snapshot.clone();
+    for asset in &mut hostile.assets {
+        asset["owner_did"] = json!("did:key:victim");
+        asset["size_bytes"] = json!(-1_000_000_000_000_i64);
+        asset["publication_provenance"] = json!({"forged": true});
+        asset["petal_id"] = json!(SIBLING);
+    }
+    assert!(!hostile.assets.is_empty(), "the exported petal carries assets");
+    import_petal_snapshot(&asset_db, hostile).await.expect("hostile asset metadata imports sanitized");
+    let stored = select(&asset_db, "SELECT owner_did, size_bytes, publication_provenance FROM asset").await;
+    assert!(!stored.is_empty(), "assets restored");
+    for row in &stored {
+        assert!(row.get("owner_did").is_none_or(Value::is_null), "owner is not attributed to the archive's DID: {row}");
+        assert!(row.get("publication_provenance").is_none_or(Value::is_null), "provenance is not trusted: {row}");
+        assert_eq!(row["size_bytes"], json!(0), "a negative size is not stored: {row}");
+    }
+    let anchors = select(&asset_db, "SELECT VALUE petal_id FROM asset").await;
+    assert!(anchors.iter().all(|anchor| anchor == &json!(PETAL)), "a forged anchor is pinned to the imported petal: {anchors:?}");
+    let credited = select(&asset_db, "SELECT VALUE math::sum(size_bytes) FROM asset WHERE owner_did = 'did:key:victim' GROUP ALL").await;
+    assert!(credited.is_empty() || credited[0] == json!(0), "the victim's quota sum is untouched: {credited:?}");
 }
