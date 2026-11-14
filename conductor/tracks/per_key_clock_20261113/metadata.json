@@ -4,7 +4,25 @@
   "security_critical": true,
   "title": "Per-key (HLC, author) clock and write-time role admission",
   "description": "Every replicated verse/fractal/petal row and node row carries a _fe_clock of the entry author's own per-key versions; winners are the maximum (hlc, author, canonical value) among versions whose author held the required role at the write's hlc (fe-policy closed grant windows, revoke frontier), replacing arrival-ordered merges and current-role re-judging. Closes QA-0156, QA-0165, QA-0166 and QA-0126. Flag-day wire bump; peers upgrade together.",
-  "status": "pending",
+  "status": "code-complete-run-pending",
+  "round4_defaults": [
+    "q1/q6: flag day, peers upgrade together (user decision 2026-11-13 20:55); no dual-format writing, no version negotiation",
+    "q2: revoke frontier = highest write clock the revoker has received from the author (user decision); a revoker with no received writes closes the window at 0",
+    "q3: residual forged-old-clock risk accepted and documented in spec.md and field_clock/AGENTS.md; no further mitigation",
+    "q4: grant history capped at MAX_GRANT_WINDOWS = 8 closed windows per statement key (fe-policy/src/role_grants.rs:89)",
+    "q5: every member's latest version per key kept; deleted versions kept with no GC; GC deferred to a later track",
+    "q7: node transform folded into the per-key clock as keys; max (HLC, author DID) is the winner; edit_seq register retired for clocked rows (not re-verified at HEAD)",
+    "steer 22:55: grant windows honoured only when re-derived from locally admitted history (R-CLOCK-1, SEC-INBOX 4 CONFIRMED-FIXED)"
+  ],
+  "open_user_decisions": [
+    "R-CLOCK-1 R6: editor_since/manager_since accepted from the wire (fe-policy/src/role_grants.rs:367); needs user decision",
+    "R-CLOCK-1 R7: peers without a stored earlier key version refuse rows admitted from inside closed windows (fe-database/src/role_grants.rs:171); revisit on QA report"
+  ],
+  "handed_off": [
+    "R-CLOCK-2 F5 (I-DB-2): take_removed_nodes has no caller; NodeDeleted not sent after re-judge removals",
+    "R-CLOCK-2 F6 (I-DB-2): three visibility_groups::publish_registry call sites in fe-database/src/lib.rs need &local_did; cargo check -p fe-database fails until applied"
+  ],
+  "qa_status_pending": "QA-0165 and QA-0126 still open in qa/findings.jsonl; QA-0156 and QA-0166 fixed_source_live_pending (I-CONDUCTOR to update)",
   "created_at": "2026-11-13T00:00:00Z",
   "priority": "P1",
   "depends_on": [
@@ -20,8 +38,9 @@
   "plan": "./plan.md",
   "spec": "./spec.md",
   "progress": {
-    "done": 0,
-    "open": 12
+    "done": 12,
+    "open": 0,
+    "run_pending": "all user-gated test runs and the p2p-core simulator run"
   },
   "partitions": {
     "computed_at": "2026-11-13",
