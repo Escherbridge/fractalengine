@@ -853,3 +853,48 @@ Added by the round-5 scribe from the T5 slice reports and the scoper entries. No
 - [ ] REL-03 · app · Open `docs/diagrams/01-system-overview.md`, `06-network-topology.md` and `09-sync-and-caching.md` in the GitHub preview -> all three mermaid diagrams render (subgraphs T1-T7, iroh inside T4, no mDNS or cache-tier nodes).
 - [ ] REL5-04 · batch · `git grep -c '"00".repeat(64)' -- 'fe-*' 'fractalengine*' tools extensions`, sum the counts -> equals the totals in `conductor/tracks/oss_release_20260717/spec.md` FR-2 and `SECURITY.md` (51 at the time of writing).
 - [ ] REL-02 · api · Read the README 'Test / Lint / Format' block as a new contributor and run only what it lists -> no command requires clippy; the CI scoped-sweep sentence is present.
+
+## Review fixes (2026-11-14, rounds 4-5 scoped review)
+
+Checks for the fixes made after the scoped review of `2b289db1..HEAD`. Findings and verdicts: `.omc/state/round45-review-findings.json`.
+
+### Clock and replication (fe-database)
+- [ ] RF-DB2-1 · sim · With a petal created before the clock upgrade, edit its description, then invite a new peer -> the new peer shows the petal with its name, bounds, terrain and all nodes.
+- [ ] RF-DB2-2 · sim · An Editor (not Manager) edits a pre-upgrade petal that has a hexon manifest; a new peer joins -> the petal appears, the manifest is absent there until a Manager publishes the petal, nothing is denied.
+- [ ] RF-DB2-3 · batch · R1 -> `created_fractal_publishes_its_own_clocked_name` passes (floor-seeded petal replicates whole).
+
+### Snapshot import (fe-database, fe-api)
+- [ ] RF-DB3-1 · api · Import a snapshot whose `field_def_id` already exists in another verse -> refused with a collision reason; the other verse's definition is unchanged.
+- [ ] RF-DB3-2 · api · PATCH `/api/v1/field-defs/<id>` on an id that two rows share -> fails as ambiguous and changes neither row.
+- [ ] RF-DB4-1 · batch · Import a snapshot with a forged asset `owner_did` and negative `size_bytes`, then run the upload quota query for the forged owner -> sum unchanged; the asset row has size 0 and no owner.
+- [ ] RF-EH4-1 · batch · Export a petal, delete it, import it on the same node, edit it, export again -> the second export succeeds with strictly ascending lamports.
+- [ ] RF-API1-1 · api · POST `/api/v1/petals/import-snapshot` into a fractal that has a `scene.create` extension binding (then the same with the binding on the verse) -> 409 `hook-unjudgeable`, no petal created.
+
+### Relay and sync (fe-sync, desktop relay)
+- [ ] RF-SR1-1 · app · Owner with relay serving on does not navigate anywhere; a member connects through the relay -> admitted once the pinned replica opens and roles arrive (log: "pinned its served verse replicas open").
+- [ ] RF-SR1-2 · app · Navigate into a served verse, then away -> log "replica kept open: the embedded relay serves this verse"; a role revoke afterwards still evicts that member.
+- [ ] RF-SR2-1 · sim · A Manager advertises a relay whose nameserver never answers -> commands and rows keep flowing; one lookup times out at 5 s off the sync loop.
+- [ ] RF-BT1-1 · app · Start the relay with no peer online for about 2 minutes, then bring one online -> the relay is confirmed on a later dial-back attempt instead of staying off for the session.
+- [ ] RF-API3-1 · api · POST `/api/v1/verses/{v}/relays` five times with a valid https URL -> 201 four times, then 409; DELETE one and POST again -> 204 then 201.
+
+### Hexon registry (fe-hexon)
+- [ ] RF-EH1-1 · batch · `cargo test -p fe-hexon registry::tests::` -> the corruption legs and the sub-asset success leg pass; `test_install_and_list` unchanged.
+
+### Editor unsaved edits (fe-ui)
+- [ ] RF-UI5-1 · app · Stall the database thread, edit until a write lands under Unsaved edits, click Retry while still stalled -> a message says the database is busy and the row stays.
+- [ ] RF-UI3-1 · app · Close the database connection and click Retry -> "Database connection closed", the row stays; Retry on a petal where a hook refuses -> the row stays with the refusal text as its reason.
+- [ ] RF-UI2-1 · app · Let 33 edits land under Unsaved edits -> the list shows 32 rows and the line "1 older edits could not be kept".
+
+### Terrain and paths (fe-terrain, host binary)
+- [ ] RF-BT2-1 · app · Open Hexon Manager with an installed licensed tileset -> one info log "loads without an entitlement gate"; the row still reads preview or entitlement required (licensed tiles cannot unlock yet: no in-app token source).
+- [ ] RF-BT3-1 · batch · R4 -> `cached_non_free_tile_stops_serving_when_gate_is_not_entitled` passes.
+- [ ] RF-BT4-1 · app · Add a point to an existing track with the database thread dead -> status shows "Point not added: the database is not responding"; the track does not stay stuck loading. With the database healthy -> the point is added as before.
+
+### Open after the review (not fixed)
+- [ ] RF-OPEN-1 · Licensed tilesets cannot unlock in the app: needs a decision on where tileset licence tokens are stored and how the licensee is identified.
+- [ ] RF-OPEN-2 · Imports into a fractal or verse with a scene hook are refused outright; the hook cannot yet judge an absent petal (needs a scope-keyed lookup in the host plugin bridge and the runtime scene-write check).
+- [ ] RF-OPEN-3 · Advertising a relay through the API needs a dial-back record that no route returns.
+- [ ] RF-OPEN-4 · Verses created after the relay starts are not served until restart.
+- [ ] RF-OPEN-5 · The hexon registry is not wired into the shipped app (`hexon_registry: None`) and has no rehydration.
+- [ ] RF-OPEN-6 · Retrying a dead-lettered undoable edit records no Undo entry (default taken; awaiting a decision).
+- [ ] RF-OPEN-7 · Review coverage gaps: files the reviewers listed as not read (16 in fe-ui, 15 in the host binary incl. `extension_host/`, 12 each in fe-database and fe-api, 7 each in fe-sync and the extension crates).
