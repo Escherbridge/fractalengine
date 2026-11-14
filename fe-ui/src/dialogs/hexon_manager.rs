@@ -18,7 +18,7 @@ use crate::actions::{UiAction, UiManager};
 use crate::panels::widgets::{clipped_value, confirm_button, role_denial_reason, role_gated};
 use crate::plugin::LocalUserRole;
 use crate::terrain_map::dto::{
-    AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto,
+    AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto, TilesetAccess,
 };
 use crate::terrain_map::PetalMapState;
 use crate::theme;
@@ -293,6 +293,22 @@ fn render_installed_tab(
 /// One installed-map card: a clipped/copyable region name + seeding toggle
 /// on the header line, a plain stats line, then the Map and Remove actions —
 /// see `render_installed_tab`'s doc comment (M-01).
+/// Chip text and hover for a non-default access state; `None` when nothing needs saying.
+fn access_chip(access: TilesetAccess) -> Option<(&'static str, &'static str)> {
+    match access {
+        TilesetAccess::Installed => None,
+        TilesetAccess::InstalledPreview => Some(("Preview", "Free tiles only")),
+        TilesetAccess::EntitlementRequired => Some(("Locked", "A licence is needed to load this map")),
+        TilesetAccess::Entitled => Some(("Licensed", "Full content")),
+    }
+}
+
+/// Only plain web links are offered; the publisher's string is otherwise untrusted.
+fn is_web_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
+
 fn render_installed_map_card(
     ui: &mut egui::Ui,
     ts: &mut InstalledTilesetDto,
@@ -308,6 +324,15 @@ fn render_installed_map_card(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 clipped_value(ui, &ts.region_name, theme::TEXT_BRIGHT);
+                if let Some((chip, hover)) = access_chip(ts.access) {
+                    ui.label(egui::RichText::new(chip).small().color(theme::TEXT_MUTED))
+                        .on_hover_text(hover);
+                }
+                if ts.access != TilesetAccess::Entitled {
+                    if let Some(url) = ts.verification_url.as_deref().filter(|url| is_web_url(url)) {
+                        ui.hyperlink_to("Licence details", url);
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut seeding = ts.seeding_enabled;
                     if ui
@@ -725,8 +750,16 @@ fn render_downloads_tab(
                         )));
                     }
 
-                    // Byte progress
-                    if dl.total_bytes_estimate > 0 {
+                    // Byte progress: a chunkless (registry) install shows it as the bar
+                    if dl.total_chunks == 0 && dl.total_bytes_estimate > 0 {
+                        let pct = (dl.bytes_received as f32 / dl.total_bytes_estimate as f32).min(1.0);
+                        ui.add(egui::ProgressBar::new(pct).text(format!(
+                            "{} / {} ({:.0}%)",
+                            format_size(dl.bytes_received),
+                            format_size(dl.total_bytes_estimate),
+                            pct * 100.0,
+                        )));
+                    } else if dl.total_bytes_estimate > 0 {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} / {}",

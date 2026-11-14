@@ -505,6 +505,25 @@ pub struct HexonAssembleResults(pub crossbeam::channel::Receiver<HexonAssembleOu
 #[derive(Resource, Clone)]
 pub struct HexonAssembleResultSender(pub crossbeam::channel::Sender<HexonAssembleOutcome>);
 
+/// Access status and publisher link of an installed tileset; no token is held here, so the verifier is never consulted.
+fn installed_access(
+    store: &fe_terrain::tiles::HexonStore,
+    hexon_id: &str,
+) -> (fe_ui::terrain_map::dto::TilesetAccess, Option<String>) {
+    use fe_ui::terrain_map::dto::TilesetAccess;
+    let identity = ed25519_dalek::SigningKey::from_bytes(&[0u8; 32]);
+    let device_secret = [0u8; 32];
+    let licensee = fe_hexon::entitlement_client::Licensee { identity: &identity, device_secret: &device_secret };
+    let verifier = fe_format::entitlement::KeyringVerifier::new(fe_format::entitlement::IssuerKeyring::new());
+    match fe_terrain::tiles::entitlement::tileset_entitlement(store, hexon_id, None, &licensee, &verifier) {
+        Some((entitlement, _gate)) => (
+            TilesetAccess::from_label(entitlement.label),
+            entitlement.payment_verification_url,
+        ),
+        None => (TilesetAccess::Installed, None),
+    }
+}
+
 /// Refreshes the Hexon Manager dialog's installed list + storage summary
 /// from the registry's store. Shared by the synchronous ops (Install/Remove/
 /// SetSeeding/RefreshList) and the background assemble-result drain.
@@ -520,7 +539,11 @@ fn refresh_installed_dialog(reg: &TilesetRegistry, ui_mgr: &mut UiManager) {
         *installed_tilesets = store
             .list_installed()
             .into_iter()
-            .map(|t| InstalledTilesetDto {
+            .map(|t| {
+                let (access, verification_url) = installed_access(store, &t.hexon_id);
+                InstalledTilesetDto {
+                access,
+                verification_url,
                 // RP-4b: the sealed publisher "Set petal map" authors as the pin
                 // (a header-only read, on the same dialog-op path as list_installed).
                 publisher_did: store.installed_publisher(&t.hexon_id),
@@ -532,6 +555,7 @@ fn refresh_installed_dialog(reg: &TilesetRegistry, ui_mgr: &mut UiManager) {
                 size_bytes: t.size_bytes,
                 seeding_enabled: t.seeding_enabled,
                 installed_at: t.installed_at.to_rfc3339(),
+                }
             })
             .collect();
         *storage_info = StorageInfoDto {
@@ -2999,6 +3023,32 @@ mod tests {
 
         let (_store_tmp, tileset_registry) = fresh_tileset_registry();
         tileset_registry.install(&sealed).expect("install fixture");
+
+        // Entitlement badge feed: free reads Installed; paid reads InstalledPreview with its link.
+        {
+            use fe_ui::terrain_map::dto::TilesetAccess;
+            let paid_id = "w3b-paid-badge-test";
+            let paid = fe_format::HexonArchive::export_tileset(
+                synthetic_tileset_manifest(paid_id),
+                synthetic_tileset(paid_id).tileset_meta.as_ref().unwrap(),
+                &[("10/0/0".to_string(), vec![1u8; 8]), ("10/0/1".to_string(), vec![2u8; 8])],
+                &[],
+                Some(fe_format::License {
+                    license_type: fe_format::license::LicenseType::Paid,
+                    payment_verification_url: Some("https://publisher.example/licence".into()),
+                    free_entries: vec!["terrain/tiles/10/0/0.png".into()],
+                    ..fe_format::License::default()
+                }),
+            )
+            .expect("export paid archive");
+            tileset_registry.store().install_tileset(&paid).expect("install paid fixture");
+            assert_eq!(installed_access(tileset_registry.store(), hexon_id), (TilesetAccess::Installed, None));
+            assert_eq!(
+                installed_access(tileset_registry.store(), paid_id),
+                (TilesetAccess::InstalledPreview, Some("https://publisher.example/licence".to_string()))
+            );
+            tileset_registry.store().remove_tileset(paid_id).expect("remove paid fixture");
+        }
         let tileset_registry = std::sync::Arc::new(tileset_registry);
         let (tx, rx) = crossbeam::channel::unbounded();
         let mut app = app_for_install_from_registry(tileset_registry.clone(), String::new(), tx);
