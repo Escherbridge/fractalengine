@@ -303,7 +303,7 @@ impl ApiHarness {
             tileset_registry,
             hexon_registry: hexon_registry_dir.map(|registry_dir| {
                 Arc::new(std::sync::Mutex::new(
-                    fe_hexon::registry::HexonRegistry::new(registry_dir),
+                    fe_api::fe_hexon::registry::HexonRegistry::new(registry_dir),
                 ))
             }),
             announcement_store: None,

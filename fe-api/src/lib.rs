@@ -63,6 +63,8 @@ pub mod ws;
 use std::sync::Arc;
 
 pub use server::ApiState;
+/// `ApiState.hexon_registry` holds an fe-hexon type, so embedders build it through this re-export.
+pub use fe_hexon;
 
 /// Configuration for the API server thread.
 pub struct ApiConfig {
