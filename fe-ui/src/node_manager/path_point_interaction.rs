@@ -315,11 +315,25 @@ pub(super) struct ForeignSnapSources<'w, 's> {
     >,
     nav: Res<'w, NavigationManager>,
     visibility: Res<'w, crate::visibility::VisibilityState>,
+    height_field: Option<Res<'w, fe_renderer::terrain_height::TerrainHeightField>>,
+}
+
+/// Terrain-aware ground hit for a cursor ray (D-38); Y=0 plane without terrain.
+fn pen_ground_hit(
+    ray: &Ray3d,
+    height_field: Option<&fe_renderer::terrain_height::TerrainHeightField>,
+) -> Option<Vec3> {
+    super::ground_snap::ground_point(ray, height_field).map(Vec3::from_array)
 }
 
 impl ForeignSnapSources<'_, '_> {
+    /// Ground point under the cursor ray, on the terrain surface when resident (D-38).
+    pub(super) fn ground(&self, ray: &Ray3d) -> Option<Vec3> {
+        pen_ground_hit(ray, self.height_field.as_deref())
+    }
+
     /// [`collect_foreign_anchors`] over every spawned track ribbon.
-    fn candidates(
+    pub(super) fn candidates(
         &self,
         editing_track_id: Option<&str>,
         active_petal: Option<&str>,
@@ -838,7 +852,7 @@ pub(super) fn handle_path_point_interaction(
             let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else {
                 return;
             };
-            if let Some(hit) = ray_plane_y(&ray, 0.0) {
+            if let Some(hit) = snap_sources.ground(&ray) {
                 pen.drag_vec = [
                     hit.x - pen.anchor[0],
                     hit.y - pen.anchor[1],
@@ -940,7 +954,7 @@ pub(super) fn handle_path_point_interaction(
     if !arbiter.claim(ClickPriority::PathPlace) {
         return;
     }
-    let Some(hit) = ray_plane_y(&ray, 0.0) else {
+    let Some(hit) = snap_sources.ground(&ray) else {
         return;
     };
     // The no-track gates stay press-time (mirroring the old append-time
@@ -1094,6 +1108,27 @@ mod tests {
         assert!((snapped[0] - 0.1).abs() < 1e-6);
         assert_eq!(snapped[1], 3.0);
         assert!((snapped[2] + 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pen_ground_hit_follows_terrain_height_and_defaults_to_zero() {
+        use fe_renderer::terrain_height::{HeightTile, TerrainHeightField};
+        let mut field = TerrainHeightField::default();
+        field.insert(
+            (0, 0, 0),
+            HeightTile {
+                anchor: Vec3::ZERO,
+                tile_size: 100.0,
+                grid: vec![3.0; 4],
+                width: 2,
+                height: 2,
+            },
+        );
+        let ray = Ray3d::new(Vec3::new(30.0, 50.0, 40.0), Dir3::NEG_Y);
+        let on_terrain = pen_ground_hit(&ray, Some(&field)).expect("terrain hit");
+        assert!((on_terrain.y - 3.0).abs() < 1e-3, "got {}", on_terrain.y);
+        let flat = pen_ground_hit(&ray, None).expect("plane hit");
+        assert_eq!(flat.to_array(), [30.0, 0.0, 40.0]);
     }
 
     #[test]
