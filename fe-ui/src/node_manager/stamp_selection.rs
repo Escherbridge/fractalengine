@@ -590,8 +590,10 @@ fn dispatch_selections(
         }
         let request = format!("ui-stamp-promotion-{}", ulid::Ulid::new());
         // Scene write door: Waiting is owned by the door queue; a late refusal answers `request` as RequestFailed.
-        match crate::actions::node::try_submit_scene_write_on(
+        match crate::actions::node::submit_scene_write_retrying(
+            &fe_runtime::scene_write::SceneWriteDoor::installed(),
             &db.0,
+            None,
             DbCommand::PromoteCheckedStamp {
                 capture,
                 correlation_id: request.clone(),

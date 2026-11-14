@@ -557,10 +557,10 @@ impl UndoState {
             (&entry.before, &entry.after)
         };
         // Scene write door: a refusal leaves the stack and pending state untouched.
-        match crate::actions::node::try_submit_scene_write_through(
+        match crate::actions::node::submit_scene_write_retrying(
             door,
             db,
-            &entry.petal_id,
+            Some(&entry.petal_id),
             DbCommand::CommitCheckedNodeMutation {
                 node_id: entry.node_id.clone(),
                 mutation: target.mutation(),
@@ -872,8 +872,10 @@ impl UndoState {
             after_version: None,
         };
         // Refused here keeps the path reservation; the caller cancels it via `cancel_path`.
-        match crate::actions::node::try_submit_scene_write_on(
+        match crate::actions::node::submit_scene_write_retrying(
+            &fe_runtime::scene_write::SceneWriteDoor::installed(),
             db,
+            Some(&entry.petal_id),
             DbCommand::CommitCheckedNodeMutation {
                 node_id: entry.node_id.clone(),
                 mutation: entry.after.mutation(),
@@ -938,7 +940,10 @@ impl UndoState {
             if self
                 .pending
                 .as_ref()
-                .is_some_and(|p| p.started.elapsed() > SAVE_TIMEOUT)
+                .is_some_and(|p| {
+                    p.started.elapsed() > SAVE_TIMEOUT
+                        && !crate::actions::node::scene_write_in_door(&p.request_id)
+                })
             {
                 self.reconcile(db)?;
             }
@@ -1303,7 +1308,10 @@ pub(crate) fn observe_results(
         ui.show_error("Path read timed out; no point edit was sent", now);
     }
     if undo.pending.as_ref().is_some_and(|p| {
-        p.started.elapsed() > SAVE_TIMEOUT && p.resolve_id.is_none() && p.entry.is_some()
+        p.started.elapsed() > SAVE_TIMEOUT
+            && p.resolve_id.is_none()
+            && p.entry.is_some()
+            && !crate::actions::node::scene_write_in_door(&p.request_id)
     }) {
         ui.show_advisory(
             "Save confirmation is delayed; checking its exact stored outcome",
