@@ -33,6 +33,20 @@ a `warn!` and the install succeeded), a blob that does not hash to its
 `asset_hash` is `RegistryError::Package`. Pre-checking keeps a refused install
 from leaving half its blobs in the store.
 
+## §sub-asset-blobs (extension-host-1)
+
+`install` verifies and stores every blob an entry declares (primary `asset_hash` plus each `sub_assets`
+value) via `entry_blob_hashes`, the same iterator `install_published` checks, so the two cannot disagree.
+All blobs are checked present and hash-correct before any is stored; a miss refuses the install with
+nothing stored or recorded. The size cap is the open-time limit (§package-open limits), which already
+bounds every blob in `package.assets`.
+
+## §blob-store-staging (extension-host-3)
+
+`FsBlobStore::store` stages into `{hash}.{pid}.{counter}.tmp` opened with `create_new`, then renames; a
+concurrent writer of the same blob never truncates another's staging file, and an existing final file
+counts as success.
+
 ## §package-open limits (REG-DECOMP, 2026-10-11)
 
 `HexonPackage::open` reads every entry through

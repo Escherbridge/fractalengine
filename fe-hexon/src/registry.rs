@@ -79,6 +79,12 @@ struct InstallRecord {
     content_hash: Option<String>,
 }
 
+/// Every blob hash an entry declares: the primary `asset_hash` then each sub-asset hash.
+fn entry_blob_hashes(entry: &AssetEntry) -> impl Iterator<Item = &String> {
+    let sub_asset_hashes = entry.sub_assets.iter().flat_map(|sub_assets| sub_assets.values());
+    std::iter::once(&entry.asset_hash).chain(sub_asset_hashes)
+}
+
 /// Content-addressed blob store for asset files, sharing the runtime store's
 /// canonical `{root}/{hex[0..2]}/{hex}` layout so either side reads the other's
 /// blobs (fe-hexon/src/AGENTS.md §blob-store).
@@ -107,10 +113,17 @@ impl FsBlobStore {
         let shard_dir = path.parent().expect("canonical blob path has a parent");
         std::fs::create_dir_all(shard_dir)?;
         // Atomic write (tmp + same-directory rename), as fe-sync's FsBlobStore.
-        let tmp_path = shard_dir.join(format!("{}.tmp", hash.to_ascii_lowercase()));
+        // Unique staging name per writer (see src/AGENTS.md §blob-store-staging).
+        static STAGING_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp_path = shard_dir.join(format!(
+            "{}.{}.{}.tmp",
+            hash.to_ascii_lowercase(),
+            std::process::id(),
+            STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         {
             use std::io::Write;
-            let mut file = std::fs::File::create(&tmp_path)?;
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp_path)?;
             file.write_all(data)?;
             file.sync_all()?;
         }
@@ -260,33 +273,30 @@ impl HexonRegistry {
         crate::handlers::check_content_installable(&package.manifest.hexon_type)
             .map_err(RegistryError::Package)?;
 
-        // Every catalogued blob must be present and hash to its asset_hash before ANY is stored
-        // (D-76 (3); see src/AGENTS.md §blob-store).
+        // Every catalogued blob (primary + sub-assets) must be present and hash to its declared hash
+        // before ANY is stored (D-76 (3); see src/AGENTS.md §blob-store, §sub-asset-blobs).
         for entry in &package.entries {
-            let Some(data) = package.assets.get(&entry.asset_hash) else {
-                return Err(RegistryError::MissingAssetBlob(entry.asset_hash.clone()));
-            };
-            if signature::asset_hash(data) != entry.asset_hash.to_ascii_lowercase() {
-                return Err(RegistryError::Package(anyhow::anyhow!(
-                    "blob hash mismatch: entry {} does not hash to {}",
-                    entry.entry_id,
-                    entry.asset_hash
-                )));
+            for hash in entry_blob_hashes(entry) {
+                let Some(data) = package.assets.get(hash) else {
+                    return Err(RegistryError::MissingAssetBlob(hash.clone()));
+                };
+                if signature::asset_hash(data) != hash.to_ascii_lowercase() {
+                    return Err(RegistryError::Package(anyhow::anyhow!(
+                        "blob hash mismatch: entry {} does not hash to {}",
+                        entry.entry_id,
+                        hash
+                    )));
+                }
             }
         }
 
         for entry in &package.entries {
-            let data = &package.assets[&entry.asset_hash];
-            if self.blob_store.store(&entry.asset_hash, data)? {
-                info!(
-                    "Stored new asset blob {} for entry {} in hexon {}",
-                    entry.asset_hash, entry.entry_id, uri
-                );
-            } else {
-                info!(
-                    "Asset blob {} already exists (shared), skipping for entry {}",
-                    entry.asset_hash, entry.entry_id
-                );
+            for hash in entry_blob_hashes(entry) {
+                if self.blob_store.store(hash, &package.assets[hash])? {
+                    info!("Stored new asset blob {} for entry {} in hexon {}", hash, entry.entry_id, uri);
+                } else {
+                    info!("Asset blob {} already exists (shared), skipping for entry {}", hash, entry.entry_id);
+                }
             }
         }
 
@@ -365,8 +375,7 @@ impl HexonRegistry {
         }
         // The publish install stored every blob; refuse if one has since gone missing.
         for entry in &published.hexon.entries {
-            let sub_asset_hashes = entry.sub_assets.iter().flat_map(|sub_assets| sub_assets.values());
-            for hash in std::iter::once(&entry.asset_hash).chain(sub_asset_hashes) {
+            for hash in entry_blob_hashes(entry) {
                 if !self.blob_store.has(hash) {
                     return Err(RegistryError::MissingAssetBlob(hash.clone()));
                 }
@@ -989,8 +998,21 @@ mod tests {
             Missing,
             Mismatched,
             NotContent,
+            SubAssetMissing,
+            SubAssetMismatched,
         }
-        for corruption in [Corruption::Missing, Corruption::Mismatched, Corruption::NotContent] {
+        let sub_bytes = b"lod1 mesh".to_vec();
+        let sub_hash = crate::signature::asset_hash(&sub_bytes);
+        let with_sub_asset = |package: &mut HexonPackageData| {
+            package.entries[0].sub_assets = Some(HashMap::from([("lod1".to_string(), sub_hash.clone())]));
+        };
+        for corruption in [
+            Corruption::Missing,
+            Corruption::Mismatched,
+            Corruption::NotContent,
+            Corruption::SubAssetMissing,
+            Corruption::SubAssetMismatched,
+        ] {
             let keypair = test_signing_key();
             let mut package = test_package(&keypair);
             let hash = package.entries[0].asset_hash.clone();
@@ -1008,6 +1030,11 @@ mod tests {
                 Corruption::NotContent => {
                     package.manifest.hexon_type = HexonType::PetalSnapshot;
                 }
+                Corruption::SubAssetMissing => with_sub_asset(&mut package),
+                Corruption::SubAssetMismatched => {
+                    with_sub_asset(&mut package);
+                    package.assets.insert(sub_hash.clone(), b"not the lod1 mesh".to_vec());
+                }
             }
             let temp_dir = std::env::temp_dir().join(format!("hexon_test_{}", ulid::Ulid::new()));
             let mut registry = HexonRegistry::new(temp_dir.clone());
@@ -1019,15 +1046,33 @@ mod tests {
                     matches!(&result, Err(RegistryError::MissingAssetBlob(h)) if *h == hash),
                     "missing blob: {result:?}"
                 ),
-                Corruption::Mismatched | Corruption::NotContent => assert!(
+                Corruption::SubAssetMissing => assert!(
+                    matches!(&result, Err(RegistryError::MissingAssetBlob(h)) if *h == sub_hash),
+                    "missing sub-asset blob: {result:?}"
+                ),
+                Corruption::Mismatched | Corruption::NotContent | Corruption::SubAssetMismatched => assert!(
                     matches!(&result, Err(RegistryError::Package(_))),
                     "refused package: {result:?}"
                 ),
             }
             assert!(registry.list_installed(None).is_empty());
             assert!(!FsBlobStore::new(temp_dir.clone()).has(&hash));
+            assert!(!FsBlobStore::new(temp_dir.clone()).has(&sub_hash));
             let _ = std::fs::remove_dir_all(&temp_dir);
         }
+
+        // A build whose sub-asset blob is present stores it, so the published record installs into a petal.
+        let keypair = test_signing_key();
+        let mut package = test_package(&keypair);
+        with_sub_asset(&mut package);
+        package.assets.insert(sub_hash.clone(), sub_bytes);
+        let uri = hexon_uri(&package.manifest);
+        let temp_dir = std::env::temp_dir().join(format!("hexon_test_{}", ulid::Ulid::new()));
+        let mut registry = HexonRegistry::new(temp_dir.clone());
+        registry.install(package, PUBLISHED_BINDING).expect("publish-scope install");
+        assert!(FsBlobStore::new(temp_dir.clone()).has(&sub_hash));
+        registry.install_published(&uri, "petal-sub").expect("sub-asset build installs into a petal");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
