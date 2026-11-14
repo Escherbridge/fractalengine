@@ -105,7 +105,9 @@ async fn harness_health_ready_and_authed_roundtrip() {
     let usage_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let usage_lines: Vec<serde_json::Value> = loop {
         let text = std::fs::read_to_string(&usage_log).unwrap_or_default();
-        let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        // The writer thread may be mid-line: parse only newline-terminated lines.
+        let complete = &text[..text.rfind('\n').map_or(0, |end| end + 1)];
+        let lines: Vec<serde_json::Value> = complete.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         if lines.len() >= 2 { break lines; }
         assert!(std::time::Instant::now() < usage_deadline, "usage events were not written");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

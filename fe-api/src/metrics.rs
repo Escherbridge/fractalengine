@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -41,8 +42,8 @@ struct DurationHistogram {
 
 #[derive(Default)]
 struct RegistryState {
-    /// (route_class, method, status_class) -> request count.
-    requests: BTreeMap<(String, String, String), u64>,
+    /// (route_class, method, status_class) -> request count; method and class are bounded static labels.
+    requests: BTreeMap<(String, &'static str, &'static str), u64>,
     /// route_class -> duration histogram.
     durations: BTreeMap<String, DurationHistogram>,
 }
@@ -67,11 +68,8 @@ impl MetricsRegistry {
         for ((route_class, method, status_class), count) in &state.requests {
             let _ = writeln!(
                 out,
-                "fe_api_requests_total{{route_class=\"{}\",method=\"{}\",status_class=\"{}\"}} {}",
+                "fe_api_requests_total{{route_class=\"{}\",method=\"{method}\",status_class=\"{status_class}\"}} {count}",
                 escape_label(route_class),
-                escape_label(method),
-                escape_label(status_class),
-                count
             );
         }
         out.push_str("# TYPE fe_api_request_duration_seconds histogram\n");
@@ -85,7 +83,7 @@ impl MetricsRegistry {
                 let _ = writeln!(
                     out,
                     "fe_api_request_duration_seconds_bucket{{route_class=\"{route}\",le=\"{}\"}} {cumulative}",
-                    seconds_text(*bound_ms)
+                    bucket_bound_text(*bound_ms)
                 );
             }
             let _ = writeln!(
@@ -109,15 +107,15 @@ impl MetricsRegistry {
     }
 }
 
-#[async_trait::async_trait]
-impl UsageSink for MetricsRegistry {
-    async fn record(&self, event: UsageEvent) {
-        let method = if KNOWN_METHODS.contains(&event.method.as_str()) {
-            event.method
-        } else {
-            "OTHER".to_string()
-        };
-        let status_class = format!("{}xx", (event.status / 100).clamp(1, 9));
+impl MetricsRegistry {
+    /// Counts one request synchronously; the only allocation is the route key on first sight.
+    fn observe(&self, event: UsageEvent) {
+        let method = KNOWN_METHODS
+            .iter()
+            .copied()
+            .find(|known| *known == event.method)
+            .unwrap_or("OTHER");
+        let status_class = STATUS_CLASSES[usize::from((event.status / 100).clamp(1, 9)) - 1];
         let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         *state
             .requests
@@ -130,6 +128,34 @@ impl UsageSink for MetricsRegistry {
         if let Some(index) = DURATION_BUCKETS_MS.iter().position(|bound| event.duration_ms <= *bound) {
             histogram.bucket_counts[index] += 1;
         }
+    }
+}
+
+/// Desugared `async_trait` impl (fe-api has `async-trait` only as a dev-dependency); counting never awaits.
+impl UsageSink for MetricsRegistry {
+    fn record<'life0, 'async_trait>(
+        &'life0 self,
+        event: UsageEvent,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.observe(event);
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// Status-class label values indexed by `status / 100 - 1`.
+const STATUS_CLASSES: [&str; 9] = ["1xx", "2xx", "3xx", "4xx", "5xx", "6xx", "7xx", "8xx", "9xx"];
+
+/// A histogram `le` bound in OpenMetrics canonical form (`1` -> `1.0`, `250` ms -> `0.25`).
+fn bucket_bound_text(milliseconds: u64) -> String {
+    let text = seconds_text(milliseconds);
+    if text.contains('.') {
+        text
+    } else {
+        format!("{text}.0")
     }
 }
 

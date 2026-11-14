@@ -2,9 +2,13 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+/// Lines queued for the writer thread; a full queue drops the event (counted) instead of blocking a request.
+pub const USAGE_QUEUE_CAPACITY: usize = 4096;
 
 /// One measured API request; carries route templates and counters only, never ids from the path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,22 +42,72 @@ impl UsageSink for NoopUsageSink {
     async fn record(&self, _event: UsageEvent) {}
 }
 
-/// Sink appending one JSON object per line to a file (append mode, never truncates).
+/// Sink appending one JSON object per line to a file (append mode, never truncates) from one writer thread.
 #[derive(Debug, Clone)]
 pub struct JsonLinesUsageSink {
-    file: Arc<Mutex<std::fs::File>>,
+    writer: Arc<JsonLinesWriter>,
+}
+
+/// Bounded queue into the single writer thread; dropping the last handle drains the queue and joins it.
+#[derive(Debug)]
+struct JsonLinesWriter {
+    queue: Option<crossbeam::channel::Sender<Vec<u8>>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    dropped: AtomicU64,
 }
 
 impl JsonLinesUsageSink {
-    /// Opens (creating if missing) `path` for appending.
+    /// Opens (creating if missing) `path` for appending and starts its writer thread.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)?;
+        let (queue, lines) = crossbeam::channel::bounded::<Vec<u8>>(USAGE_QUEUE_CAPACITY);
+        let thread = std::thread::Builder::new()
+            .name("fe-usage-log".to_string())
+            .spawn(move || {
+                let mut failing = false;
+                // One write_all per line from one thread keeps lines whole and in queue order.
+                for line in lines {
+                    match file.write_all(&line) {
+                        Ok(()) if failing => {
+                            failing = false;
+                            tracing::info!("usage event writes recovered");
+                        }
+                        Ok(()) => {}
+                        Err(error) if !failing => {
+                            failing = true;
+                            tracing::warn!(%error, "usage event write failed");
+                        }
+                        Err(_) => {}
+                    }
+                }
+            })?;
         Ok(Self {
-            file: Arc::new(Mutex::new(file)),
+            writer: Arc::new(JsonLinesWriter {
+                queue: Some(queue),
+                thread: Some(thread),
+                dropped: AtomicU64::new(0),
+            }),
         })
+    }
+
+    /// Events dropped because the writer queue was full or the writer had stopped.
+    pub fn dropped_events(&self) -> u64 {
+        self.writer.dropped.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for JsonLinesWriter {
+    fn drop(&mut self) {
+        // Closing the queue ends the writer loop after it drains what is queued.
+        self.queue.take();
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                tracing::warn!("usage log writer thread panicked");
+            }
+        }
     }
 }
 
@@ -68,17 +122,15 @@ impl UsageSink for JsonLinesUsageSink {
             }
         };
         line.push(b'\n');
-        let file = Arc::clone(&self.file);
-        // One write_all of the whole line under the lock keeps lines unbroken.
-        let outcome = tokio::task::spawn_blocking(move || {
-            let mut guard = file.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.write_all(&line)
-        })
-        .await;
-        match outcome {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "usage event write failed"),
-            Err(error) => tracing::warn!(%error, "usage event write task failed"),
+        let Some(queue) = self.writer.queue.as_ref() else {
+            return;
+        };
+        if queue.try_send(line).is_err() {
+            let dropped = self.writer.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            // Warn at powers of two so a flood never becomes a log flood.
+            if dropped.is_power_of_two() {
+                tracing::warn!(dropped_total = dropped, "usage log queue full or closed; events dropped");
+            }
         }
     }
 }
@@ -164,6 +216,9 @@ mod tests {
         for handle in handles {
             handle.await.expect("task");
         }
+        assert_eq!(sink.dropped_events(), 0, "the queue holds every event of this burst");
+        // Dropping the last handle joins the writer, so the file is complete when read.
+        drop(sink);
 
         let events = read_events(&path);
         let _ = std::fs::remove_file(&path);

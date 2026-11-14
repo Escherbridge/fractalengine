@@ -9,9 +9,10 @@ use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::blob_store::BlobHash;
 use fe_runtime::relay_advertisement::{
-    validate_advertised_relay_url, RelayAdvertisementRow, RELAY_ADVERT_ROW_VERSION,
-    RELAY_ADVERT_TABLE,
+    validate_advertised_relay_url, AdvertisedRelayUrl, RelayAdvertisementRow,
+    RELAY_ADVERT_ROW_VERSION, RELAY_ADVERT_TABLE,
 };
+use fe_runtime::safe_id::is_safe_path_id;
 use serde::Deserialize;
 
 use crate::auth::require_role_and_scope;
@@ -35,7 +36,11 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 }
 
 /// Serialized v1 row for a validated url, authored by the node DID.
-fn row_bytes(url: &url::Url, advertised_by: String, note: Option<String>) -> Result<Vec<u8>, serde_json::Error> {
+fn row_bytes(
+    url: &AdvertisedRelayUrl,
+    advertised_by: String,
+    note: Option<String>,
+) -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(&RelayAdvertisementRow {
         v: RELAY_ADVERT_ROW_VERSION,
         url: url.to_string(),
@@ -71,11 +76,18 @@ fn store_and_replicate(
         content_hash,
         petal_id: None,
     };
-    if let Err(error) = replication_tx.send(event) {
-        tracing::warn!(%error, verse_id, "relay advertisement replication send failed");
-        return Err(error_response(StatusCode::SERVICE_UNAVAILABLE, "replication channel closed"));
+    // Never block an async worker on the bounded bridge: a full bridge is a retryable 503.
+    match replication_tx.try_send(event) {
+        Ok(()) => Ok(()),
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            tracing::warn!(verse_id, "relay advertisement replication bridge full");
+            Err(error_response(StatusCode::SERVICE_UNAVAILABLE, "replication busy, retry"))
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            tracing::warn!(verse_id, "relay advertisement replication channel closed");
+            Err(error_response(StatusCode::SERVICE_UNAVAILABLE, "replication channel closed"))
+        }
     }
-    Ok(())
 }
 
 /// `POST /api/v1/verses/{verse_id}/relays`: advertise a relay to the verse (manager+).
@@ -88,6 +100,9 @@ pub async fn post_relay(
 ) -> Response {
     if let Err(status) = require_role_and_scope(&claims, "manager", &format!("VERSE#{verse_id}")) {
         return status.into_response();
+    }
+    if !is_safe_path_id(&verse_id) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid verse id");
     }
     let url = match validate_advertised_relay_url(&body.url) {
         Ok(url) => url,
@@ -126,6 +141,9 @@ pub async fn delete_relay(
 ) -> Response {
     if let Err(status) = require_role_and_scope(&claims, "manager", &format!("VERSE#{verse_id}")) {
         return status.into_response();
+    }
+    if !is_safe_path_id(&verse_id) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid verse id");
     }
     let well_formed = !relay_id.is_empty()
         && relay_id.len() <= MAX_RELAY_ID_BYTES

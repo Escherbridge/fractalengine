@@ -50,8 +50,17 @@ impl NetworkOps {
                 }
             }
         }
-        ops.metrics_bind = metrics_bind.filter(|value| !value.trim().is_empty());
-        if ops.metrics_bind.is_some() {
+        ops.metrics_bind = metrics_bind
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if let Some(bind) = &ops.metrics_bind {
+            // `/metrics` is unauthenticated (OD-7): say so when it is reachable beyond loopback.
+            if bind
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|address| !address.ip().is_loopback())
+            {
+                tracing::warn!(bind = %bind, "FE_API_METRICS_BIND is not loopback; /metrics is unauthenticated");
+            }
             ops.metrics = Some(Arc::new(MetricsRegistry::new()));
         }
         ops
@@ -116,6 +125,8 @@ mod tests {
             if let Some(registry) = &ops.metrics {
                 assert!(registry.render_openmetrics().contains("status_class=\"2xx\"} 1"));
             }
+            // Dropping the last sink handle joins the log writer, so the file is complete when read.
+            drop(ops);
             let lines = std::fs::read_to_string(&log_file).map(|text| text.lines().count()).unwrap_or(0);
             assert_eq!(lines, usize::from(expect_line), "log lines for {usage_log:?}");
         }

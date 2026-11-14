@@ -3,6 +3,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use axum::body::HttpBody as _;
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::{header::CONTENT_LENGTH, HeaderMap};
 use axum::middleware::Next;
@@ -55,7 +56,11 @@ pub async fn record_usage(
         method,
         status: response.status().as_u16(),
         bytes_in,
-        bytes_out: content_length(response.headers()),
+        // Handlers rarely set Content-Length (hyper derives it later): fall back to the body's exact size.
+        bytes_out: match content_length(response.headers()) {
+            0 => response.body().size_hint().exact().unwrap_or(0),
+            declared => declared,
+        },
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         at_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
