@@ -273,6 +273,12 @@
     ],
     "DownloadStampProperties": [
       "F138"
+    ],
+    "CheckSelectionSave": [
+      "F010"
+    ],
+    "SelectionBatch": [
+      "F010"
     ]
   },
   "files": {
@@ -405,6 +411,9 @@
     "fractalengine/src/terminal_reset/presentation.rs": [
       "F086",
       "F089"
+    ],
+    "fe-ui/src/editor_batch/ui.rs": [
+      "F010"
     ]
   },
   "action_notes": {
@@ -416,6 +425,7 @@
     "SetStampScale": "Legacy per-field adapter has no current render constructor; actual selected-stamp scale uses atomic ApplyStampOverrides (F138).",
     "SetStampRotation": "Legacy per-field adapter has no current render constructor; actual yaw/quaternion-preserving editor uses atomic ApplyStampOverrides (F138).",
     "SlideStampAlongPath": "Legacy per-field adapter has no current render constructor; current metric slide uses atomic ApplyStampOverrides (F138).",
-    "PromoteStamp": "Actual context Promote carries the selected private scene/source origin into the same checked promotion controller. Public legacy PromoteInstance API remains a separate caller-current-index contract."
+    "PromoteStamp": "Actual context Promote carries the selected private scene/source origin into the same checked promotion controller. Public legacy PromoteInstance API remains a separate caller-current-index contract.",
+    "SelectionBatch": "Shared selection/group controls in the Groups panel (editor_batch/ui.rs); F010 owns the rendered Groups surface and CheckSelectionSave/SelectionBatch route through the checked editor-batch controller."
   }
 }
