@@ -168,6 +168,10 @@ construction, not by charset-filtering the input.
 JSON endpoints use the fe-api `ApiResponse` envelope (`{ok, data, error}`);
 binary endpoints return raw bytes.
 
+- PetalSnapshot hexons go through the same routes with no snapshot-specific code. The type filter is
+  `?type=petal_snapshot` (`routes.rs:324`); proof is `tests/registry_test.rs:268-322`.
+- URI splitting delegates to `fe_format::manifest::split_hexon_uri` (`index.rs:186`).
+
 ## §client
 
 `fe-hexon/src/remote.rs` (cargo feature `remote`) is the consuming client:

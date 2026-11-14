@@ -920,6 +920,8 @@ and doesn't have relief-following coverage.
   `render_proposal_preview` (new) is the FR-3 live pre-commit path, same
   builder, debounced (OD-3).
 
+- `HeatmapOverlayToggle` lives in the fe-renderer seam; fe-ui binds it; the checkbox is hidden while the ProposalOverlay layer is hidden (`ProposalLayerVisible`, mirrored by `proposal_layer_mirror.rs`).
+
 ## §volume-report — selected-volume report request/reply (terrain_proposal_delta_viz_20261025 S4+S5, FR-6/7/8)
 
 Two halves, split the same way as §delta-viz's math/render split.
@@ -946,14 +948,12 @@ Two halves, split the same way as §delta-viz's math/render split.
 - **Wiring (`terrain_plugin.rs::answer_volume_report_requests`, S5).** Reads
   `VolumeReportRequest` (fe-renderer seam: correlation id, petal scope,
   footprint), answers with `VolumeReportResult`. Three rules, each load-bearing:
-  1. **Petal-scope drop, not queue.** A request whose `petal_id` is not the
-     ACTIVE petal is dropped silently (`continue`, no reply). This doubles as
-     the staleness guard (`request_for_inactive_petal_is_dropped`): a petal
+  1. **Petal-scope check answers, never drops.** A request whose `petal_id` is
+     not the ACTIVE petal gets a `WrongPetal` reply. The staleness guard
+     `request_for_inactive_petal_is_dropped` (`terrain_plugin.rs:4326`) asserts
+     a WrongPetal reply (never silence, never a per-frame repeat). A petal
      switch moves `ActivePetalTerrain` out from under any request still in
-     flight for the old one, so "wrong petal" and "stale" are the same check.
-     fe-ui must not block forever on a reply that can legitimately never
-     arrive (e.g. the user switched petals mid-request) — this is a conscious
-     scope cut, not an oversight; a future retry/timeout is fe-ui's job.
+     flight for the old one, so fe-ui never waits on a reply that cannot arrive.
   2. **Never double-count a region-shaped proposal.** `config.proposals` is
      split into `proposals` (`!is_earthwork_region()`) and
      `config_earthwork_regions(config)` — the SAME split `bake_earthwork_regions`
@@ -970,6 +970,31 @@ Two halves, split the same way as §delta-viz's math/render split.
     `Region` item's `kind` is the literal `"earthwork_region"` (its op is a
     bake detail, not its reported identity — a region's material isn't
     carried across this seam at all). S6 must match strings, not op enums.
+
+A request is always answered: unavailable (NoMap, WrongPetal) is a result, not silence. The panel bypasses the scene_revision match for unavailable results.
+
+## profile
+
+Section profile (`profile.rs`, `section_responder.rs`); the seam types are in fe-renderer §section-profile.
+
+- **Integration.** Trapezoid integration of |dh| over each segment, split at a sign change so cut and fill never cancel (`profile.rs:90-95`). The function is closure-generic, so it stays Bevy-free.
+- **Sampling.** A 0.5 world-unit target step, capped at 512 samples (`PROFILE_MAX_SAMPLES`, `profile.rs:4`).
+- **Metres (NFR-4 honesty).** Lengths are divided by `/scale` and areas by `/scale^2` only when `world_scale` is inside the global range (`profile.rs:45-48`, `is_world_scale_in_range`). Otherwise the result stays in world units and `scaled` is false.
+- **Shared height.** The proposed surface uses `volume_report::combined_height` (`volume_report.rs:86`), so the profile and the volume report agree (UI5-04).
+
+### request/reply
+
+`answer_section_profile_requests` (`section_responder.rs:22`) answers every `SectionProfileRequest`. It replies `WrongPetal` for another petal and `NoMap` for no map or fewer than two covered stations (`section_responder.rs:62-65`, `:104`). It keeps the latest active-petal request and re-answers it under the same id on a revision or height-field change (`section_responder.rs:29-31`). It returns early when nothing changed. No `DbCommand` is involved.
+
+## §tileset-entitlement
+
+Gate granularity is the archive member path (`EntitlementRequired.member`, `tiles/entitlement.rs`). A tileset reads its licence from `license.json` through the capped header reader (`read_license`, `tiles/entitlement.rs:79`). It recomputes the content hash from `manifest.json` and opens an `EntitlementGate`. A non-free member of a licensed archive is refused unless an entitled gate opens it. With no gate attached it is refused BEFORE any disk read or chunk decode (`hexon_source.rs` `refused_before_read`, `:441`, checked at `:590` and `:610`).
+
+- **Fail closed.** No gate means preview only: `free_entries` load.
+- **Not cached.** Refusals are not cached. Opened tiles are not re-checked after token expiry, and no in-app token source exists yet (callers pass `None`).
+- **State, not fault.** `EntitlementRequired` is a state. `composite.rs` treats it as a silent miss through `is_entitlement_refusal` (`composite.rs:131`, `:166`), with no warn. Every other read error still warns.
+- **Eager and streamed sources.** Eager sources drop non-free members. Streamed bundles carry no `license.json` and read as unlicensed (deferred: bundles need the parent tileset terms).
+- **Publisher link.** The only outward artefact is the publisher link the Hexon Manager shows (fe-ui dialogs/AGENTS.md hexon-manager section).
 
 ## §bundles — deterministic spatial bundler (`tiles/bundle.rs`, p2p_asset_streaming S1)
 

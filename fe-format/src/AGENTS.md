@@ -153,6 +153,11 @@ and a non-canonical `manifest.json`, which would break SPEC-10 §3.1's
 byte-determinism requirement). The manifest carries no `signature`/`integrity`
 — the canonical-log kind-5 operation's own signature binds the sealed hexon.
 
+One type system: `HexonType` gained `Script` and `PetalSnapshot`. Legacy fe-hexon kind
+spellings (and the `EntryKind` `GpxFile` aliases, `entries.rs:16`) are accepted on INPUT only
+(`HexonType::from_str`, `EntryKind::from_str`); output is always the snake_case name.
+`split_hexon_uri` (`manifest.rs:121`) is the one URI parser; fe-hexon-registry delegates to it.
+
 ### §bundles — `TilesetBundleIndex` / `ChunkIndex.blake3`
 
 `TilesetBundleIndex { schema, tileset_id, tileset_meta (chunk_index = None),
@@ -202,6 +207,8 @@ Ed25519 manifest signing/verification as defined in the Hexon v1.0.0 spec.
 - **Verify:** the mirror image; the public key is extracted from the
   manifest's `publisher_did` rather than passed separately, binding the
   signature to the claimed publisher.
+- **Strict verify.** `verify_manifest` uses `verify_strict`, so small-order
+  public keys are refused (`signature.rs:101`).
 - **did:key encoding.** `did:key:z6Mk...` is multibase base58btc (`z` prefix)
   over a 2-byte multicodec prefix `[0xed, 0x01]` (Ed25519 public key)
   followed by the 32 raw key bytes. `verifying_key_to_did` is the exact
@@ -405,3 +412,36 @@ the global range. `world_scale_from_terrain_json` ignores the terrain `enabled` 
 the inspector use `world_scale` either way. The Measure tool's NaN-when-no-map rule is a display choice made
 in `node_manager/measure.rs` (line 180), not part of this accessor. A petal with no terrain document
 resolves to 1.0.
+
+The global range `[MIN_WORLD_SCALE 1e-6, MAX_WORLD_SCALE 1e4]` (`scale.rs:6-9`) is deliberately wider
+than the terrain stamp range (0.01..1e4): a 1:10000 slider and the zoom-0 native scale need values
+below 0.01, and the cap exists only so a hostile or corrupt value cannot overflow the f32 cast (a
+`world_scale` of 1e300 times a metre would become inf). `scale_bounds` can only narrow it. Write paths
+(SetPetalTerrain, the terrain API) refuse out-of-range values with `is_world_scale_in_range`
+(`scale.rs:21`); read paths sanitize to 1.0.
+
+## §petal-snapshot (`snapshot.rs`)
+
+A petal snapshot is a `PetalSnapshot` hexon. Members: `manifest.json` (`hexon_type = petal_snapshot`),
+`entries.json` (canonical JSON), `snapshot/meta.json`, `snapshot/state/<table>.json` for every table
+(`petal` is a single object, the rest are arrays), `snapshot/oplog.jsonl`, and `assets/<blake3>` blobs.
+
+- **Plain-JSON rows.** `PetalSnapshotData` holds `serde_json::Value` rows, so fe-format has no
+  fe-database dependency. The row shapes are owned by the exporter in fe-database.
+- **Order.** The op-log must be strictly ascending in `lamport_clock` (`check_oplog_order`,
+  `snapshot.rs:95`).
+- **Meta cross-checks.** `op_log_range` must match the row count and the first/last lamports.
+  `table_row_counts` keys are member stems; only the keys present are checked
+  (`check_table_row_counts`, `snapshot.rs:142`).
+- **Blob re-hash.** Import recomputes each blob's blake3 and refuses a mismatch (`snapshot.rs:374`).
+- **Sealed first.** `import_petal_snapshot` runs `VerifyIfSealed` before reading any member
+  (`snapshot.rs:262-264`), so a sealed archive that fails verification is refused.
+- **Memory (NFR-5).** The whole archive is held in memory. This is documented, not engineered; the
+  byte cap is `MAX_SNAPSHOT_ARCHIVE_BYTES` in `fe-api/src/petal_snapshot.rs:33`.
+- **Public surface.** `lib.rs` re-exports six items: `export_petal_snapshot`, `import_petal_snapshot`,
+  `ImportedPetalSnapshot`, `OpLogRange`, `PetalSnapshotData`, `SnapshotMeta`. Version constants are
+  `SNAPSHOT_FORMAT_VERSION` and `OPLOG_PREDICATE_VERSION`, both 1.
+- **Predicate text.** The op-log predicate v1 text lives in `fe-database/src/handlers/AGENTS.md`
+  §petal-snapshot.
+- **Transforms.** Snapshot import applies the same admission rule as creation,
+  `is_admissible_transform` (`fe-database/src/handlers/object_creation.rs`), see §scale-accessor.

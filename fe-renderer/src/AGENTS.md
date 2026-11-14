@@ -326,3 +326,15 @@ Its parsed fingerprint stays separate from the reconciled operational config: a
 loaded tileset may supply decoding, scale bounds and origin grounding. The UI
 compares all three identities without decoding fe-terrain types. Missing source
 identity and invalid original scale cannot become a persistable measurement.
+
+## §volume-unavailable (`terrain_overlay.rs`)
+
+`VolumeUnavailable { NoMap, WrongPetal }` explains a volume report that could not be measured. `VolumeReportResult.unavailable` carries it. An unavailable result is never `is_complete()` (`terrain_overlay.rs:379`), and it is always sent, so a requester never waits on silence. Figures on an unavailable result are not valid.
+
+## §section-profile (`section_profile.rs`)
+
+`SectionProfileRequest` and `SectionProfileResult` are plain data messages. fe-ui consumes them without an fe-terrain dependency. The result carries `world_length` (the requested line length in world units). The display factor is `length / world_length`. Unavailable replies set `world_length` and `length` to 0.0. Each request and reply uses correlation id `section-profile:<n>`. Replies always arrive, and `unavailable` explains an empty one.
+
+## §proposal-layer-visible (`terrain_overlay.rs`)
+
+`ProposalLayerVisible` mirrors the ProposalOverlay layer's visibility. fe-terrain writes it through `proposal_layer_mirror.rs`; fe-ui reads it. It defaults to visible. The heatmap checkbox is hidden while it is false.
