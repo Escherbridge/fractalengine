@@ -963,6 +963,9 @@ pub fn spawn_sync_thread_with_sources(
                 RelayAdvertisePolicy::from_env().effective_for(&relay_config);
             let mut relay_reconciler = RelayReconciler::new(configured_urls(&relay_config));
             let mut relay_reconcile_open_verses: BTreeSet<String> = BTreeSet::new();
+            // NET-21: members-only relay admission, re-pushed on every role or `__peers` change.
+            #[cfg(feature = "relay-server")]
+            let mut relay_admission = RelayAdmissionPusher::default();
 
             // M2/F6: the local peer's shard-hosting declaration, applied to
             // every open verse's fabric (published as `__peers/{local_did}`).
@@ -1025,6 +1028,9 @@ pub fn spawn_sync_thread_with_sources(
                     .await;
                 let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
                 let rows_left = !resend_unsent_rows(&mut fabrics, &db_cmd_tx, &mut scene_assets);
+                // NET-21: after the last select arm's inbound row and the re-read/re-judge drains above.
+                #[cfg(feature = "relay-server")]
+                relay_admission.refresh(&fabrics);
                 // S7: after the inbound batch / re-judge above changed any admitted advert.
                 reconcile_advertised_relays(
                     &mut fabrics,
@@ -1676,6 +1682,60 @@ fn fold_relay_health(
         send_sync_event(evt_tx, SyncEvent::RelayHealthChanged { health: next });
     }
     next
+}
+
+/// Feeds the embedded relay's membership gate (NET-21); see `src/AGENTS.md` §peer-relay-server.
+#[cfg(feature = "relay-server")]
+#[derive(Debug, Default)]
+struct RelayAdmissionPusher {
+    /// Last seen `relay_admission_epoch` per fabric; unchanged epochs skip the recompute.
+    seen_epochs: HashMap<String, u64>,
+    /// The snapshot last pushed to the gate.
+    last_pushed: Option<crate::sharding::RelayAdmissionSnapshot>,
+}
+
+#[cfg(feature = "relay-server")]
+impl RelayAdmissionPusher {
+    /// Pushes a fresh snapshot after any role or `__peers` change, then revokes every DID that lost membership.
+    fn refresh(&mut self, fabrics: &HashMap<String, VerseFabric>) {
+        let unchanged = self.seen_epochs.len() == fabrics.len()
+            && fabrics.iter().all(|(verse_id, fabric)| {
+                self.seen_epochs.get(verse_id) == Some(&fabric.relay_admission_epoch())
+            });
+        if unchanged {
+            return;
+        }
+        self.seen_epochs = fabrics
+            .iter()
+            .map(|(verse_id, fabric)| (verse_id.clone(), fabric.relay_admission_epoch()))
+            .collect();
+        // Hosted = every verse this thread holds fabric state for; the gate narrows to served verses.
+        let hosted: BTreeSet<String> = fabrics.keys().cloned().collect();
+        let snapshot = crate::sharding::relay_admission_snapshot(fabrics, &hosted);
+        if self.last_pushed.as_ref() == Some(&snapshot) {
+            return;
+        }
+        let lost: Vec<String> = match &self.last_pushed {
+            Some(previous) => {
+                let admitted = snapshot.admitted_dids();
+                previous
+                    .admitted_dids()
+                    .into_iter()
+                    .filter(|did| !admitted.contains(did))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        crate::relay_server::push_snapshot(snapshot.clone());
+        // After the snapshot: a revoke stays in force until a later snapshot re-admits the DID.
+        for did in &lost {
+            crate::relay_server::push_revoke(did);
+        }
+        if !lost.is_empty() {
+            tracing::info!(revoked = lost.len(), "relay admission lost members; revoked at the gate");
+        }
+        self.last_pushed = Some(snapshot);
+    }
 }
 
 /// S7 reconciliation loop: re-plan the advertised relays when adverts or the open-verse set changed, then apply.

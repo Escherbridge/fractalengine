@@ -46,6 +46,44 @@ pub const PEER_DECL_TABLE: &str = "__peers";
 /// creator copy, so a requester expects (and briefly waits for) its answer.
 pub const HOLDERS_TABLE: &str = "__holders";
 
+/// Members-only relay admission per hosted verse (owner + explicit Viewer+ at the verse scope); see `src/AGENTS.md` §peer-relay-server.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelayAdmissionSnapshot {
+    /// Admitted DIDs by hosted verse id; a verse whose role view has not converged is absent (deny).
+    pub members_by_verse: BTreeMap<String, BTreeSet<String>>,
+    /// Hosted verses with no pinned owner (or no fabric) yet: nobody is admitted through them.
+    pub unconverged_verses: BTreeSet<String>,
+}
+
+impl RelayAdmissionSnapshot {
+    /// Every DID admitted through any verse in this snapshot.
+    pub fn admitted_dids(&self) -> BTreeSet<String> {
+        self.members_by_verse.values().flatten().cloned().collect()
+    }
+}
+
+/// Relay admission over every hosted verse's fabric (OD-4: never `default_access`/`open_to_all`).
+pub fn relay_admission_snapshot(
+    fabrics: &HashMap<String, VerseFabric>,
+    hosted_verses: &BTreeSet<String>,
+) -> RelayAdmissionSnapshot {
+    let mut snapshot = RelayAdmissionSnapshot::default();
+    for verse_id in hosted_verses {
+        match fabrics
+            .get(verse_id)
+            .and_then(|fabric| fabric.relay_admission_members(verse_id))
+        {
+            Some(members) => {
+                snapshot.members_by_verse.insert(verse_id.clone(), members);
+            }
+            None => {
+                snapshot.unconverged_verses.insert(verse_id.clone());
+            }
+        }
+    }
+    snapshot
+}
+
 /// Resolve a peer's role at `scope` with the §2.2 ⊥ fallback folded in —
 /// the one function behind [`VerseFabric::role_at`] and
 /// [`AnswererView::verdict`], so the gate and the merge filter can never
@@ -526,6 +564,8 @@ pub struct VerseFabric {
     relay_adverts: crate::relay_advertise::RelayAdvertisementBook,
     /// Advertisement admissions/withdrawals not yet drained by the relay reconciler.
     pending_relay_changes: Vec<crate::relay_advertise::AdvertChange>,
+    /// Bumped on every role-view rematerialization or `__peers` change (relay admission re-push trigger).
+    relay_admission_epoch: u64,
 }
 
 impl Default for VerseFabric {
@@ -552,6 +592,7 @@ impl Default for VerseFabric {
             local_holdings: BTreeSet::new(),
             relay_adverts: crate::relay_advertise::RelayAdvertisementBook::new(),
             pending_relay_changes: Vec::new(),
+            relay_admission_epoch: 0,
         }
     }
 }
@@ -570,6 +611,7 @@ impl VerseFabric {
             Some(old) if *old == decl => false,
             _ => {
                 self.peers.insert(peer_did.to_string(), decl);
+                self.relay_admission_epoch = self.relay_admission_epoch.wrapping_add(1);
                 true
             }
         }
@@ -1442,6 +1484,7 @@ impl VerseFabric {
     /// new view either way (a petal-map-only wait isn't affected by a role
     /// change, but re-checking is cheap and always safe).
     fn rematerialize(&mut self, verse_id: &str) {
+        self.relay_admission_epoch = self.relay_admission_epoch.wrapping_add(1);
         let Some(owner) = self.owner_did.clone() else {
             self.effective = fe_policy::EffectiveRoles::default();
             self.reverdict_petal_mappings(verse_id, None);
@@ -1679,6 +1722,32 @@ impl VerseFabric {
             open_to_all: self.default_access.is_at_least(RoleLevel::Viewer),
             viewer_dids,
         }
+    }
+
+    /// Relay-admitted DIDs for this verse: the owner plus every explicit Viewer+ at the verse scope; `None` until an owner is pinned.
+    pub fn relay_admission_members(&self, verse_id: &str) -> Option<BTreeSet<String>> {
+        // Tripwire (OD-4, `src/AGENTS.md` §peer-relay-server): explicit `effective.role_at` only —
+        // never `self.role_at`/`resolve_role`, `default_access` or `open_to_all`.
+        let owner = self.owner_did.as_ref()?;
+        let verse_scope = fe_policy::build_scope(verse_id, None, None);
+        let mut members = BTreeSet::new();
+        members.insert(owner.clone());
+        for (_, peer_did, _) in self.role_statements.keys() {
+            if !members.contains(peer_did)
+                && self
+                    .effective
+                    .role_at(peer_did, &verse_scope)
+                    .is_at_least(RoleLevel::Viewer)
+            {
+                members.insert(peer_did.clone());
+            }
+        }
+        Some(members)
+    }
+
+    /// Changes whenever the role view or a `__peers` declaration changed (cheap relay re-push check).
+    pub fn relay_admission_epoch(&self) -> u64 {
+        self.relay_admission_epoch
     }
 
     /// Record an inbound `__shards` ledger row — ungated bookkeeping only
@@ -2847,6 +2916,39 @@ mod tests {
         let snapshot = fabric.access_snapshot("v1");
         assert!(!snapshot.viewer_dids.contains("did:key:petal-viewer"));
         assert!(snapshot.viewer_dids.contains("did:key:verse-viewer"));
+
+        // Relay admission (NET-21, AC-4): an open verse admits nobody by default_access alone.
+        fabric.note_entry(
+            "v1",
+            &verse_change("v1", OWNER, OWNER, serde_json::json!({ "default_access": "viewer" })),
+        );
+        assert_eq!(fabric.default_access(), RoleLevel::Viewer);
+        assert!(fabric
+            .role_at("did:key:stranger", &verse_scope)
+            .is_at_least(RoleLevel::Viewer));
+        let epoch_before_grant = fabric.relay_admission_epoch();
+        let mut fabrics = HashMap::new();
+        fabrics.insert("v1".to_string(), fabric);
+        let hosted: BTreeSet<String> = ["v1".to_string(), "v-unopened".to_string()].into();
+        let relay = relay_admission_snapshot(&fabrics, &hosted);
+        let members = &relay.members_by_verse["v1"];
+        assert!(members.contains(OWNER));
+        assert!(members.contains("did:key:verse-viewer"));
+        assert!(!members.contains("did:key:petal-viewer"));
+        assert!(!members.contains("did:key:stranger"));
+        assert!(relay.unconverged_verses.contains("v-unopened"));
+        assert!(!relay.members_by_verse.contains_key("v-unopened"));
+
+        // A freshly granted Viewer with no `__peers` row is admitted (no bootstrap deadlock).
+        let fabric = fabrics.get_mut("v1").expect("hosted fabric");
+        fabric.note_entry(
+            "v1",
+            &role_change(&verse_scope, "did:key:newcomer", OWNER, "viewer", false, 3),
+        );
+        assert!(!fabric.peers.contains_key("did:key:newcomer"));
+        assert_ne!(fabric.relay_admission_epoch(), epoch_before_grant);
+        let relay = relay_admission_snapshot(&fabrics, &hosted);
+        assert!(relay.admitted_dids().contains("did:key:newcomer"));
     }
 
     fn petal_change_by(
