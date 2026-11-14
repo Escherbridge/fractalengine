@@ -7,7 +7,8 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::Path;
-use std::sync::{Arc, Once};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Once, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -68,6 +69,8 @@ pub struct SyncEndpoint {
     /// surface only, A14 — the token value itself never lives on this
     /// struct; `to_relay_mode_with_token` consumes it before `bind()`).
     relay_token_configured: bool,
+    /// Relay URLs a peer address may name; see `src/AGENTS.md` §relay-trust.
+    relay_allowlist: Arc<RwLock<BTreeSet<iroh::RelayUrl>>>,
 }
 
 /// How long [`SyncEndpoint::node_addr`] waits for a home relay — iroh's own
@@ -220,9 +223,14 @@ impl SyncEndpoint {
             relay_token_configured = token.is_some(),
             "iroh endpoint bound"
         );
+        let relay_allowlist: BTreeSet<iroh::RelayUrl> = crate::relay_config::configured_urls(relay_config)
+            .iter()
+            .filter_map(|raw| raw.parse().ok())
+            .collect();
         Ok(Self {
             endpoint,
             address_book,
+            relay_allowlist: Arc::new(RwLock::new(relay_allowlist)),
             relay_enabled: !matches!(relay_config, RelayConfig::Disabled),
             relay_token_configured: token.is_some(),
         })
@@ -258,8 +266,25 @@ impl SyncEndpoint {
     /// Register a peer's address in the endpoint's address book so a later
     /// dial by bare [`iroh::EndpointId`] (gossip join, docs sync) resolves.
     /// Addresses merge with any already known for that peer.
+    /// Relay URLs outside the allowlist are stripped first (input filter, not an egress allowlist).
     pub fn add_peer_addr(&self, addr: iroh::EndpointAddr) {
-        self.address_book.add_endpoint_info(addr);
+        let filtered = {
+            let allowlist = self.relay_allowlist.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let before = addr.addrs.len();
+            let filtered = crate::relay_trust::filter_peer_addr(addr, &allowlist);
+            let stripped = before - filtered.addrs.len();
+            if stripped > 0 {
+                tracing::debug!(peer = %filtered.id, stripped, "peer address relay URLs outside the allowlist were dropped");
+            }
+            filtered
+        };
+        self.address_book.add_endpoint_info(filtered);
+    }
+
+    /// Replace the set of relay URLs a peer address may name.
+    pub fn set_relay_allowlist(&self, urls: impl IntoIterator<Item = iroh::RelayUrl>) {
+        let mut allowlist = self.relay_allowlist.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *allowlist = urls.into_iter().collect();
     }
 
     /// Watcher over the connection status of the endpoint's home relays
@@ -311,6 +336,18 @@ mod tests {
                 let addr = ep.node_addr().await;
                 assert_eq!(addr.id, expected_id);
                 assert!(!ep.relay_enabled());
+
+                // AC-10: a peer address naming a non-allowlisted relay is stored without it.
+                let stray_relay: iroh::RelayUrl = "https://stray-relay.example.test".parse().expect("relay url");
+                let direct: SocketAddr = "192.0.2.7:4433".parse().expect("socket addr");
+                let peer = iroh::SecretKey::from_bytes(&[44u8; 32]).public();
+                ep.add_peer_addr(iroh::EndpointAddr::new(peer).with_relay_url(stray_relay.clone()).with_ip_addr(direct));
+                let stored = ep.address_book.get_endpoint_info(peer).expect("peer stored");
+                let stored = stored.to_endpoint_addr();
+                assert!(stored.addrs.iter().all(|transport| !matches!(transport, iroh::TransportAddr::Relay(_))), "stray relay stripped");
+                assert!(stored.ip_addrs().any(|ip| *ip == direct), "direct address kept");
+                ep.set_relay_allowlist([stray_relay.clone()]);
+                assert!(ep.relay_allowlist.read().unwrap().contains(&stray_relay));
                 ep.shutdown().await;
 
                 // QA-0145: a restarted node re-binds the ports it recorded, so the
