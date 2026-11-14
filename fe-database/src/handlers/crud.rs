@@ -1821,6 +1821,84 @@ mod delete_node_tests {
             .await
             .expect("unchanged re-publish");
         assert_eq!(own_of(1), first, "unchanged data must not restamp");
+        // database-2 (field_clock/AGENTS.md §floor-fill): helpers for the floor-fill legs below.
+        async fn exec(db: &Db, sql: &str) {
+            db.query(sql.to_owned()).await.expect(sql).check().expect(sql);
+        }
+        async fn petal_row(db: &Db) -> serde_json::Value {
+            let mut response = db
+                .query("SELECT * OMIT id FROM petal WHERE petal_id = 'petal-1'")
+                .await
+                .expect("read petal");
+            let rows: Vec<serde_json::Value> = response.take(0).expect("petal rows");
+            rows.into_iter().next().unwrap_or(serde_json::Value::Null)
+        }
+        /// Floor a petal whose pre-upgrade description is `description`, rename it, publish it.
+        async fn publish_floored(db: &Db, description: &str, name: &str) -> Vec<u8> {
+            let store = std::sync::Arc::new(CapturingStore::default());
+            let blobs: BlobStoreHandle = store.clone();
+            let (sender, _receiver) = crossbeam::channel::bounded(16);
+            exec(db, &format!("UPDATE petal SET description = '{description}' WHERE petal_id = 'petal-1'")).await;
+            crate::field_clock::seed_legacy_floor(db).await.expect("seed legacy floor");
+            exec(db, &format!("UPDATE petal SET name = '{name}' WHERE petal_id = 'petal-1'")).await;
+            crate::field_clock::publish_clocked_row(db, &blobs, Some(&sender), "did:key:z6MkA", "verse-1", "petal", "petal-1", true)
+                .await
+                .expect("publish petal");
+            let bytes = store.0.lock().unwrap().last().cloned().expect("published petal bytes");
+            bytes
+        }
+        async fn fresh_peer() -> Db {
+            let peer = setup_mem_db().await;
+            exec(&peer, "DELETE petal WHERE petal_id = 'petal-1'").await;
+            peer
+        }
+        async fn apply(peer: &Db, wire: &[u8]) -> fe_runtime::messages::ReplicatedRowOutcome {
+            crate::handlers::clocked_row::apply_clocked_static_row(peer, "verse-1", "petal", "petal-1", wire, "did:key:z6MkA")
+                .await
+                .expect("apply petal")
+        }
+        let applied = fe_runtime::messages::ReplicatedRowOutcome::Applied;
+
+        // A floor-seeded petal renamed once replicates whole to a store that lacks it.
+        let wire_a = publish_floored(&db, "alpha", "renamed-a").await;
+        let published: serde_json::Value = serde_json::from_slice(&wire_a).expect("petal json");
+        let own = published["_fe_clock"]["own"].as_object().cloned().expect("own map");
+        assert_eq!(own.keys().collect::<Vec<_>>(), vec!["name"], "only the edited key is clocked");
+        let peer = fresh_peer().await;
+        assert_eq!(apply(&peer, &wire_a).await, applied);
+        assert_eq!(petal_row(&peer).await, petal_row(&db).await, "every column equals the publisher's");
+
+        // Two publishers' floors, delivered in opposite orders, converge on one value.
+        let other = setup_mem_db().await;
+        let wire_b = publish_floored(&other, "beta", "renamed-b").await;
+        assert_eq!(apply(&peer, &wire_b).await, applied);
+        let mirror = fresh_peer().await;
+        assert_eq!(apply(&mirror, &wire_b).await, applied);
+        let _ = apply(&mirror, &wire_a).await;
+        let converged = petal_row(&peer).await;
+        assert_eq!(converged["description"], "beta", "greatest canonical floor value wins");
+        assert_eq!(petal_row(&mirror).await, converged, "arrival order does not matter");
+
+        // A filled floor is re-judged at its claim; the publisher's own migration floor stays admitted.
+        let stranger = crate::field_clock::judge::VerseView { owner: "did:key:stranger".into(), admitted: Vec::new() };
+        crate::handlers::clocked_row::rematerialize(&peer, "verse-1", "petal", "petal-1", &stranger)
+            .await
+            .expect("re-judge peer");
+        assert!(petal_row(&peer).await["description"].is_null(), "the filled floor is demoted");
+        crate::handlers::clocked_row::rematerialize(&other, "verse-1", "petal", "petal-1", &stranger)
+            .await
+            .expect("re-judge publisher");
+        assert_eq!(petal_row(&other).await["description"], "beta", "the migration floor stays");
+
+        // An invalid plain column (legacy data) is skipped; the rest of the row still applies.
+        let mut tainted: serde_json::Value = serde_json::from_slice(&wire_a).expect("petal json");
+        tainted["bounds"] = serde_json::json!({"type": "Polygon", "coordinates": "not rings"});
+        let tainted = serde_json::to_vec(&tainted).expect("tainted bytes");
+        let third = fresh_peer().await;
+        assert_eq!(apply(&third, &tainted).await, applied);
+        let landed = petal_row(&third).await;
+        assert_eq!(landed["description"], "alpha");
+        assert!(landed["bounds"].is_null(), "the invalid column is not applied");
     }
 
     #[tokio::test]

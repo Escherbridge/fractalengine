@@ -29,8 +29,13 @@ pub(crate) fn canonical_bytes(version: &FieldVersion) -> Vec<u8> {
     }
 }
 
-/// Total order `(hlc, author bytes, canonical value bytes)` (spec §3.4).
+/// Total order `(hlc, author bytes, canonical value bytes)` (spec §3.4); two floors (hlc 0) compare value first (AGENTS.md §floor-fill).
 pub(crate) fn version_order(left: &FieldVersion, right: &FieldVersion) -> Ordering {
+    if left.hlc == 0 && right.hlc == 0 {
+        return canonical_bytes(left)
+            .cmp(&canonical_bytes(right))
+            .then_with(|| left.author.as_bytes().cmp(right.author.as_bytes()));
+    }
     left.hlc
         .cmp(&right.hlc)
         .then_with(|| left.author.as_bytes().cmp(right.author.as_bytes()))
@@ -106,11 +111,21 @@ mod tests {
         let equal_high = version("did:alice", 5, Some(json!({"a": 3})));
         let bob_low = version("did:bob", 4, Some(json!("bob-4")));
         let carol_newer = version("did:carol", 9, Some(json!("carol-9")));
+        // Floors (§floor-fill): peer A's own floor vs B's filled one, and the mirror on peer B.
+        let floor_zeta = version("", 0, Some(json!("zeta")));
+        let bob_floor_beta = version("did:bob", 0, Some(json!("beta")));
+        let floor_beta = version("", 0, Some(json!("beta")));
+        let alice_floor_zeta = version("did:alice", 0, Some(json!("zeta")));
 
         let standard = [alice_new.clone(), alice_old.clone(), bob_tie.clone(), carol_deleted.clone()];
         let byte_tie = [equal_low.clone(), equal_high.clone(), bob_low.clone(), carol_newer.clone()];
+        let floors_on_a = [floor_zeta.clone(), bob_floor_beta.clone()];
+        let floors_on_b = [floor_beta.clone(), alice_floor_zeta.clone()];
         // (versions, admitted authors, expected winner)
-        let cases: [(&[FieldVersion], &[&str], Option<&FieldVersion>); 6] = [
+        let cases: [(&[FieldVersion], &[&str], Option<&FieldVersion>); 8] = [
+            // Both peers settle on "zeta" whichever author carried it.
+            (&floors_on_a, &["", "did:bob"], Some(&floor_zeta)),
+            (&floors_on_b, &["", "did:alice"], Some(&alice_floor_zeta)),
             (&standard, &["did:alice", "did:bob", "did:carol"], Some(&carol_deleted)),
             (&standard, &["did:alice", "did:bob"], Some(&bob_tie)),
             (&standard, &["did:alice"], Some(&alice_new)),

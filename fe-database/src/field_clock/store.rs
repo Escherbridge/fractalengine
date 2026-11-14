@@ -4,7 +4,7 @@ use super::merge::canonical_value;
 use super::wire::FieldVersion;
 use crate::repo::Db;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Statements plus bindings a caller splices into its own `BEGIN TRANSACTION ... COMMIT` script.
 pub(crate) type SqlFragment = (Vec<String>, Vec<(String, Value)>);
@@ -19,6 +19,47 @@ pub(crate) const CLOCK_PRUNE: &str = "DELETE row_field_clock WHERE tbl=$fe_clock
 pub(crate) const CLOCK_WRITE: &str = "FOR $fe_winner IN $fe_clock_winners { UPSERT row_field_clock SET tbl=$fe_winner.tbl, rid=$fe_winner.rid, field_key=$fe_winner.field_key, hlc=$fe_winner.hlc, author=$fe_winner.author WHERE tbl=$fe_winner.tbl AND rid=$fe_winner.rid AND field_key=$fe_winner.field_key; }";
 /// Prove every cached winner landed (same SurrealDB 3 UPSERT caveat).
 pub(crate) const CLOCK_VERIFY: &str = "FOR $fe_winner IN $fe_clock_winners { IF array::len((SELECT VALUE hlc FROM row_field_clock WHERE tbl=$fe_winner.tbl AND rid=$fe_winner.rid AND field_key=$fe_winner.field_key AND hlc=$fe_winner.hlc AND author=$fe_winner.author)) != 1 { THROW 'field clock was not written'; }; }";
+
+/// Record each filled floor's claim hlc from `$fe_floor_claims` (AGENTS.md §floor-fill); runs after [`VERSIONS_WRITE`].
+pub(crate) const FLOOR_CLAIM_WRITE: &str = "FOR $fe_claim IN $fe_floor_claims { UPDATE row_field_version SET claim_hlc=$fe_claim.claim_hlc WHERE tbl=$fe_claim.tbl AND rid=$fe_claim.rid AND field_key=$fe_claim.field_key AND author=$fe_claim.author AND hlc=0; }";
+/// Prove every floor claim landed.
+pub(crate) const FLOOR_CLAIM_VERIFY: &str = "FOR $fe_claim IN $fe_floor_claims { IF array::len((SELECT VALUE hlc FROM row_field_version WHERE tbl=$fe_claim.tbl AND rid=$fe_claim.rid AND field_key=$fe_claim.field_key AND author=$fe_claim.author AND hlc=0 AND claim_hlc=$fe_claim.claim_hlc)) != 1 { THROW 'floor claim was not written'; }; }";
+
+/// Claim writes for filled floors `(field, author, claim hlc)` of one row.
+pub(crate) fn floor_claims_sql(table: &str, rid: &str, claims: &[(String, String, u64)]) -> anyhow::Result<SqlFragment> {
+    let elements = claims
+        .iter()
+        .map(|(field, author, claim)| -> anyhow::Result<Value> {
+            Ok(json!({"tbl": table, "rid": rid, "field_key": field, "author": author, "claim_hlc": stored_hlc(*claim)?}))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok((
+        vec![FLOOR_CLAIM_WRITE.into(), FLOOR_CLAIM_VERIFY.into()],
+        vec![("fe_floor_claims".into(), Value::Array(elements))],
+    ))
+}
+
+/// Claim hlc of every filled floor of one row, keyed by (field, author); migration floors carry none.
+pub(crate) async fn load_floor_claims(db: &Db, tbl: &str, rid: &str) -> anyhow::Result<BTreeMap<(String, String), u64>> {
+    let mut response = db
+        .query("SELECT field_key, author, claim_hlc FROM row_field_version WHERE tbl=$tbl AND rid=$rid AND hlc=0 AND author!='' TIMEOUT 5s")
+        .bind(("tbl", tbl.to_owned()))
+        .bind(("rid", rid.to_owned()))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let (Some(field), Some(author), Some(claim)) =
+                (row["field_key"].as_str(), row["author"].as_str(), row["claim_hlc"].as_u64())
+            else {
+                return None;
+            };
+            Some(((field.to_owned(), author.to_owned()), claim))
+        })
+        .collect())
+}
 
 /// The stored integer form of an HLC (SurrealDB ints are i64).
 pub(crate) fn stored_hlc(hlc: u64) -> anyhow::Result<i64> {

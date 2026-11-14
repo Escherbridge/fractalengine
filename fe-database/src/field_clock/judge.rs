@@ -51,6 +51,17 @@ impl VerseView {
             version.hlc,
         )
     }
+
+    /// [`Self::admits_at`] for a stored version: a filled floor (hlc 0, named author) is judged at its claim hlc (AGENTS.md §floor-fill).
+    pub(crate) fn admits_claimed(&self, table: &str, row_scope: &str, version: &FieldVersion, claim: Option<u64>) -> bool {
+        if version.hlc > 0 || version.author.is_empty() {
+            return self.admits_at(table, row_scope, version);
+        }
+        match claim {
+            Some(hlc) if hlc > 0 => self.admits_at(table, row_scope, &FieldVersion { hlc, ..version.clone() }),
+            _ => self.settled(version) == Some(true),
+        }
+    }
 }
 
 /// Level a key's author must have held at write time (spec §3.2); the scope is always the row's deepest.

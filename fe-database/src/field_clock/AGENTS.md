@@ -169,6 +169,43 @@ since the page was read and verified like any other write. Idempotent: a seeded 
 and is skipped next time. Rows whose verse cannot be resolved are skipped and counted in one warning;
 rows with no keys are not seeded. It returns the number of rows seeded.
 
+## §floor-fill
+
+Publish clocks only changed keys and `encode_own` never sends floor versions, so after the flag day a
+floored row edited once travels with an `own` map of just that key (review finding database-2). A peer
+that lacks the row (newly invited, or a snapshot import) used to deny it ("a new row carries no name")
+or create it hollow. The wire row still carries every committed column in plain form, and
+`clocked_row::apply_once` fills from it.
+
+- **Candidates.** Each plain key column not in `own`, for a key with no clocked version here (no stored
+  version and no cached winner with hlc > 0), from a non-empty entry author. A plain column that fails
+  `is_clock_key` or `static_field_violation` is skipped with one warning, never fatal: it is the
+  publisher's legacy data, not its write (`own` values stay strict).
+- **Filled floor.** A candidate is stored as `(author = entry author, hlc = 0)` in the author's own
+  slot, folded through `upsert_own`, and only if that author held the key's level at the row's max own
+  hlc (write-time role: the publish is the write). That hlc is recorded as the version's `claim_hlc`
+  (`row_field_version` column, `option<int>`; migration floors and older rows have none and load
+  unchanged). A withheld `name` defers a new row (`AuthorRole`); any other withheld key is just dropped.
+- **Judging.** `VerseView::admits_claimed`: the migration floor (author '') is always admitted; a filled
+  floor is judged by `admits_at` at its `claim_hlc` (no claim: owner only). `rejudge` finds filled
+  floors through `load_rows_by_authors` (their author is the sender), so a re-derived window or a
+  revoke cut below the claim demotes them like the sender's clocked versions.
+- **Convergence rule.** `merge::version_order` compares two hlc-0 versions by canonical value bytes
+  first, then author bytes; any hlc > 0 version beats every floor. The winner of a floor-only key is
+  therefore the greatest admissible floor value in the stored set, whatever author carried it. The set
+  grows by union (`upsert_own` keeps the greater value per author slot), so it is independent of
+  arrival order. A peer's own migration floor and an incoming filled floor compete under the same rule
+  on every peer that holds both. Peers converge once every distinct floor value has travelled once (a
+  peer's floor value travels when it publishes the row).
+- **Not chosen: claiming the floor at publish** (restamp every floor key at the publish HLC). A claim of
+  an untouched key at hlc H beats another member's real edit of that key at h < H (lost update), it
+  changes authorship on every peer holding the floored row, and an Editor's claim of a Manager key is
+  inadmissible and still leaves the key missing.
+- **Residuals.** A peer keeps its own migration floor when the sender of the competing value is
+  demoted there, while other peers drop it. `publish::stored_winner` ignores admission, so a demoted
+  value can make a later publish stamp a deletion of that key (same as for demoted clocked versions).
+  No live op_log entry is written, so imported snapshot history never becomes proof.
+
 ## §compat
 
 Flag day (user decision 2026-11-13): every peer upgrades together, as for the iroh 1.x port. There is

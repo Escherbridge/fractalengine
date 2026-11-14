@@ -52,6 +52,8 @@ struct ClockedRow {
     author: String,
     identity: Map<String, Value>,
     incoming: Vec<FieldVersion>,
+    /// Unclocked key columns (floor values the publisher does not re-clock).
+    plain: Vec<(String, Value)>,
     max_hlc: u64,
 }
 
@@ -153,7 +155,25 @@ fn parse_clocked_row(
             _ => {}
         }
     }
-    Ok(ClockedRow { rid, author: author_did.to_owned(), identity, incoming, max_hlc })
+    // Unclocked columns: candidates for a key this store holds no version of (field_clock/AGENTS.md §floor-fill).
+    let mut plain = Vec::new();
+    for (field, value) in wire::keys_of(table, &row) {
+        if field == wire::CLOCK_COLUMN || incoming.iter().any(|version| version.field == field) {
+            continue;
+        }
+        // Plain columns are the publisher's legacy data, not its write: a bad one is skipped, never fatal.
+        let rejected = if !is_plain_identifier(&field) || !wire::is_clock_key(table, &field) {
+            Some("not a clock key")
+        } else {
+            static_field_violation(table, &field, &value)
+        };
+        if let Some(reason) = rejected {
+            tracing::warn!(table, record_id, field = %field, reason, "Inbound clocked row: skipped an invalid plain column");
+            continue;
+        }
+        plain.push((field, value));
+    }
+    Ok(ClockedRow { rid, author: author_did.to_owned(), identity, incoming, plain, max_hlc })
 }
 
 /// `[A-Za-z_][A-Za-z0-9_]*`, the only column names the hierarchy schema defines.
@@ -307,11 +327,31 @@ async fn apply_once(
             written.push(kept);
         }
     }
-    if stored.is_some() && written.is_empty() && patch.is_empty() {
+    // Floor fill (database-2, field_clock/AGENTS.md §floor-fill): plain columns of keys with no clocked version here.
+    let floor_candidates: Vec<FieldVersion> = if row.author.is_empty() {
+        Vec::new()
+    } else {
+        row.plain
+            .iter()
+            .filter(|(field, _)| {
+                !versions.values().any(|version| &version.field == field && version.hlc > 0)
+                    && !cached.iter().any(|winner| &winner.field == field && winner.hlc > 0)
+            })
+            .filter_map(|(field, value)| {
+                let candidate = FieldVersion {
+                    field: field.clone(),
+                    author: row.author.clone(),
+                    hlc: 0,
+                    value: Some(value.clone()),
+                    deleted: false,
+                };
+                merge::upsert_own(versions.get(&(field.clone(), row.author.clone())), candidate)
+            })
+            .collect()
+    };
+    if stored.is_some() && written.is_empty() && patch.is_empty() && floor_candidates.is_empty() {
         return Ok(ReplicatedRowOutcome::NotApplicable);
     }
-
-    // Judge: the winner of each key is the maximum admissible version (write-time role, QA-0165).
     let view = match (&stored, table) {
         (None, "verse") => VerseView {
             owner: row.identity.get("created_by").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -319,17 +359,27 @@ async fn apply_once(
         },
         _ => VerseView::load(db, verse_id).await?,
     };
-    let mut verdicts: HashMap<(String, u64, bool), bool> = HashMap::new();
-    let mut by_key: BTreeMap<&str, Vec<FieldVersion>> = BTreeMap::new();
-    for version in versions.values() {
-        let manager = required_level(table, &version.field) == RoleLevel::Manager;
-        let admitted = *verdicts
-            .entry((version.author.clone(), version.hlc, manager))
-            .or_insert_with(|| view.admits_at(table, &scope, version));
-        if admitted {
-            by_key.entry(version.field.as_str()).or_default().push(version.clone());
+    let mut claims = store::load_floor_claims(db, table, rid).await?;
+    let mut new_claims: Vec<(String, String, u64)> = Vec::new();
+    let mut withheld_name = false;
+    for candidate in floor_candidates {
+        // Admitted only if the author held the key's level at the publish hlc (write-time role).
+        if !view.admits_at(table, &scope, &FieldVersion { hlc: row.max_hlc, ..candidate.clone() }) {
+            withheld_name |= candidate.field == CREATE_REQUIRED_KEY;
+            continue;
         }
+        let slot = (candidate.field.clone(), candidate.author.clone());
+        claims.insert(slot.clone(), row.max_hlc);
+        new_claims.push((slot.0.clone(), slot.1.clone(), row.max_hlc));
+        versions.insert(slot, candidate.clone());
+        written.push(candidate);
     }
+    if stored.is_some() && written.is_empty() && patch.is_empty() {
+        return Ok(ReplicatedRowOutcome::NotApplicable);
+    }
+
+    // Judge: the winner of each key is the maximum admissible version (write-time role, QA-0165).
+    let by_key = admissible_by_key(&view, table, &scope, &versions, &claims);
     let mut winners: BTreeMap<String, FieldVersion> = by_key
         .iter()
         .filter_map(|(field, admissible)| merge::winner(admissible, |_| true).map(|won| ((*field).to_owned(), won.clone())))
@@ -347,7 +397,7 @@ async fn apply_once(
     let cache_changed = !changed.is_empty() || winners.len() != cached.len();
 
     if stored.is_none() && !winners.contains_key(CREATE_REQUIRED_KEY) {
-        let offered = versions.keys().any(|(field, _)| field == CREATE_REQUIRED_KEY);
+        let offered = withheld_name || versions.keys().any(|(field, _)| field == CREATE_REQUIRED_KEY);
         if offered {
             // The name exists but no admissible author wrote it yet: retried when a role rises.
             tracing::debug!(verse_id, table, rid, author = %row.author, "new clocked row has no admissible name yet; deferred");
@@ -391,6 +441,11 @@ async fn apply_once(
         statements.extend(versions_statements);
         bindings.extend(versions_bindings);
     }
+    if !new_claims.is_empty() {
+        let (claim_statements, claim_bindings) = store::floor_claims_sql(table, rid, &new_claims)?;
+        statements.extend(claim_statements);
+        bindings.extend(claim_bindings);
+    }
     if cache_changed {
         let winner_refs: Vec<&FieldVersion> = winners.values().collect();
         let (clock_statements, clock_bindings) = store::clock_write_sql(table, rid, &winner_refs)?;
@@ -409,6 +464,30 @@ async fn apply_once(
     } else {
         ReplicatedRowOutcome::NotApplicable
     })
+}
+
+/// Admissible versions grouped by key; a filled floor is judged at its claim hlc (field_clock/AGENTS.md §floor-fill).
+fn admissible_by_key<'a>(
+    view: &VerseView,
+    table: &str,
+    scope: &str,
+    versions: &'a BTreeMap<(String, String), FieldVersion>,
+    claims: &BTreeMap<(String, String), u64>,
+) -> BTreeMap<&'a str, Vec<FieldVersion>> {
+    let mut verdicts: HashMap<(String, u64, bool), bool> = HashMap::new();
+    let mut by_key: BTreeMap<&'a str, Vec<FieldVersion>> = BTreeMap::new();
+    for (slot, version) in versions {
+        let manager = required_level(table, &version.field) == RoleLevel::Manager;
+        let claim = claims.get(slot).copied();
+        let judged_hlc = if version.hlc == 0 && !version.author.is_empty() { claim.unwrap_or(0) } else { version.hlc };
+        let admitted = *verdicts
+            .entry((version.author.clone(), judged_hlc, manager))
+            .or_insert_with(|| view.admits_claimed(table, scope, version, claim));
+        if admitted {
+            by_key.entry(version.field.as_str()).or_default().push(version.clone());
+        }
+    }
+    by_key
 }
 
 /// Column writes of one row update: MERGE patch, UNSET columns and the geometry value.
@@ -537,17 +616,8 @@ async fn rematerialize_once(
         .collect();
 
     // Judge every stored version afresh against the admitted statements (write-time role, QA-0165).
-    let mut verdicts: HashMap<(String, u64, bool), bool> = HashMap::new();
-    let mut by_key: BTreeMap<&str, Vec<FieldVersion>> = BTreeMap::new();
-    for version in versions.values() {
-        let manager = required_level(table, &version.field) == RoleLevel::Manager;
-        let admitted = *verdicts
-            .entry((version.author.clone(), version.hlc, manager))
-            .or_insert_with(|| view.admits_at(table, &scope, version));
-        if admitted {
-            by_key.entry(version.field.as_str()).or_default().push(version.clone());
-        }
-    }
+    let claims = store::load_floor_claims(db, table, rid).await?;
+    let by_key = admissible_by_key(view, table, &scope, &versions, &claims);
     let mut winners: BTreeMap<String, FieldVersion> = by_key
         .iter()
         .filter_map(|(field, admissible)| merge::winner(admissible, |_| true).map(|won| ((*field).to_owned(), won.clone())))

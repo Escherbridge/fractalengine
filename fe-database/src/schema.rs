@@ -355,7 +355,9 @@ define_table! {
         hlc: i64 => "TYPE int ASSERT $value >= 0",
         /// Canonical JSON text of the value; `NONE` when deleted.
         value_json: Option<String> => "TYPE option<string>",
-        deleted: bool => "TYPE bool"
+        deleted: bool => "TYPE bool",
+        /// Write time a filled floor (hlc 0, named author) is judged at; `NONE` otherwise (field_clock/AGENTS.md §floor-fill).
+        claim_hlc: Option<i64> => "TYPE option<int>"
     }
 }
 
