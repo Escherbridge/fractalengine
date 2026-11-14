@@ -1647,6 +1647,11 @@ could not grow, and the baseline commit on this box is ~80 GB (WSL VM 26 GB, VS 
 
 - Chunk = one fenced `cargo test` line under a `## R<n>`, `## Harness`, `## Misc batch` or `## Slow
   sub-batches` heading; `-Batches All` is every batch except `Full`, which the runner refuses.
+- Every chunk runs with `--no-fail-fast` (since 2026-11-14). Without it cargo stops a multi-binary chunk at
+  the first failing test binary, so the binaries after it never run and their failures stay hidden: the
+  first R7-R10 sweep reported 7 failing tests, and fixing those exposed 10 more, most in binaries that had not run.
+- To re-run a subset of chunks, pass `-BatchFile` a scratch markdown file holding only those `cargo test`
+  lines under their `## R<n>` headings; the guards and pruning stay in force.
 - After each chunk the runner deletes the `.exe`/`.pdb` files in `target/debug/deps` written since
   the chunk started (`-KeepArtifacts` keeps them); rlibs are untouched, so the next chunk re-links
   but does not recompile.

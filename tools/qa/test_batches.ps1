@@ -84,7 +84,8 @@ foreach ($chunk in $selected) {
     }
     $started = Get-Date
     $log = Join-Path $LogRoot ("{0}-{1}.log" -f $chunk.Batch, $chunk.Index)
-    $command = $chunk.Command -replace '^cargo test', "cargo test -j $Jobs"
+    # --no-fail-fast: one failing test binary must not hide the binaries cargo would run after it.
+    $command = $chunk.Command -replace '^cargo test', "cargo test -j $Jobs --no-fail-fast"
     "[{0:HH:mm:ss}] {1} #{2}: {3}" -f $started, $chunk.Batch, $chunk.Index, $command
     Push-Location $repoRoot
     & cmd /c "$command > `"$log`" 2>&1"

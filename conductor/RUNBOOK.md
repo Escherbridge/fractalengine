@@ -111,6 +111,33 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 — R7-R10 TEST SWEEP DONE: 17 FAILING TESTS, 4 PRODUCT FAULTS FIXED, 13 STALE TESTS REPAIRED.**
+  First run of batches `R7,R8,R9,R10` on the review fixes: 1,560 passed, 7 failed. Fixing those exposed 10 more,
+  because cargo stops a multi-binary chunk at its first failing test binary; `tools/qa/test_batches.ps1` now
+  passes `--no-fail-fast` (`tools/qa/AGENTS.md` §test-batches), and a subset of chunks is re-run by handing
+  `-BatchFile` a scratch file. Product faults (each found by a test, each fixed): (1) clock floors: a same-author
+  floor replaced by a greater value updated `row_field_version` but not the visible column, so peers diverged by
+  arrival order (`handlers/clocked_row.rs` `apply_once`: a winner this apply wrote now counts as changed);
+  (2) `handlers/preconditions.rs` `require_record_in_petal` compared a record id to a string, so
+  `UpdateRoomMetadata` / `UpdateModelMetadata` / `UpsertModelKv` never matched (broken since `5199352a`,
+  no live caller); same fix in `space_manager.rs` `get_room_detail`, and room edits now bind absent bounds and
+  spawn point as `Option`; (3) `fe-api/src/assets.rs` `get_asset` sent no `Content-Disposition` on the raw-blob
+  route; (4) `fe-api/src/ws.rs`: a revoked socket was dropped right after the close frame, which on Windows
+  resets the connection when the client has a frame in flight and loses `auth_invalid`; the server now drains
+  until the peer's close or 300 ms (`fe-api/AGENTS.md` §ws-close-drain). Stale tests repaired in
+  `fe-database` (`op_log.rs`, `tests/db_test.rs`, `tests/role_propagation_durable_test.rs`,
+  `tests/petal_snapshot_test.rs`, `tests/shared_handle_test.rs`), `fe-sync` (`relay_advertise.rs`,
+  `docs_engine.rs`) and `fe-api/tests` (`export_share_test.rs`, `mcp_integration.rs`, `token_lifecycle_test.rs`,
+  `vision_test.rs`, `ws_integration.rs`). Store-lock finding: a shared DB handle alive at DB-thread exit pins
+  the SurrealKV lock for the process (dependency's commit-coordinator thread); drop every clone BEFORE
+  `Shutdown`, then join (`fe-database/src/AGENTS.md` §shared-handle, §repo corrected). One assertion removed
+  in `shared_handle_test.rs` (reader held across a terminal reset errors), see RF-OPEN-14. New QA checks
+  RF-TS-1..4 and open items RF-OPEN-12..16 in `conductor/qa-checklist-round4.md`; the one that needs a
+  decision is RF-OPEN-12 (a node with more than about 48 KB of properties can no longer be published, because
+  `_fe_clock` carries every value twice against the 96 KiB row cap). Not run: batches R1-R6 and R11. Logs:
+  `.omc/logs/tests/{20261114-084030,rerun-20261114,fullpicture-20261114,rerun2-20261114,rerun3-20261114,rerun4-20261114}`.
+  Working rule that paid off: agents fix blind in parallel, one builder runs; for a long journey whose later
+  legs never ran, let ONE agent run its single test binary to green instead of a sweep per failure point.
 - **2026-11-14 — SCOPED REVIEW DONE, FIXES COMMITTED LOCALLY, TESTS RUNNING.** Review `wf_e715df70-1b8` over
   `2b289db1..HEAD`: 26 findings; skeptics confirmed 11 (2 HIGH, 6 MED, 3 LOW), refuted 2, 1 uncertain, 12 LOW
   unverified. Full findings: `.omc/state/round45-review-findings.json`. Seven fix agents (opus on the clock and

@@ -910,3 +910,17 @@ Checks for the fixes made after the scoped review of `2b289db1..HEAD`. Findings 
 - [ ] RF-API1-2 · api · Bind a `scene.create` hook on a fractal, then clear it from another manager (`mode: inherit`), then import a snapshot into that fractal -> not refused as `hook-unjudgeable`.
 - [ ] RF-SR1-3 · app · Lease a served verse through a write before the relay pins it, wait for the lease to expire -> the replica stays open (debug log), members stay admitted.
 - [ ] RF-BT1-2 · app · Desktop relay dial-back with no peer online -> attempts at about 0, 65, 195 and 455 s, then the relay stops.
+
+### Added by the R7-R10 test sweep (2026-11-14)
+Sweep of batches R7, R8, R9, R10 (crates CI never runs): 17 failing tests in all, 4 product faults, 13 stale or racy tests. Every chunk is green after the fixes. The four product fixes:
+- [ ] RF-TS-1 · sim · Two peers each hold a different pre-upgrade description for one petal, both authored by the same identity; publish both to a third peer in either order -> the third peer's visible description is the greater value both times (was: the stored version changed but the visible column kept the first arrival).
+- [ ] RF-TS-2 · batch · `UpdateRoomMetadata`, `UpdateModelMetadata` and `UpsertModelKv` on an existing room or model, by an Editor of the petal -> the edit is stored (was: always "matched no room" because the precondition compared a record id to a string). No screen or API route calls these three commands yet.
+- [ ] RF-TS-3 · api · `GET /api/v1/assets/{hash}` for any stored blob -> the response carries `Content-Disposition: attachment`, like the by-node and by-id routes.
+- [ ] RF-TS-4 · api · Open a websocket, authenticate, revoke its token, and send a command right away -> the client reads `auth_invalid` and a close frame, not a connection reset. The server closes within about 300 ms of the revocation check.
+
+Open after the sweep (not fixed):
+- [ ] RF-OPEN-12 · A node whose properties are larger than about 48 KB can no longer be published: the `_fe_clock` column carries every value a second time, so the row passes the 96 KiB per-row cap (the limit used to be about 96 KB of properties). Recovery counts such a row as "deferred" with no separate reason. Needs a decision: raise the cap, stop duplicating large values, or report the reason.
+- [ ] RF-OPEN-13 · Clock floors: two applies that replace the same floor slot at the same moment both pass the concurrency fence (it compares identities, not values), so the last commit wins; and a store that already shows a stale column from before the fix is not repaired by re-materializing.
+- [ ] RF-OPEN-14 · A shared database handle still alive when the database thread exits keeps the store locked until the process ends (a storage thread inside the database dependency never stops). No product flow reopens the store in-process today; an in-app restart feature would hit this. The test assertion "a reader held across a terminal reset gets an error" was removed because it cannot coexist with reopening the same store; the same exit path is still asserted after a plain shutdown.
+- [ ] RF-OPEN-15 · Websocket journey: a small race remains in the test if the server's 200 ms credential check fires between the revoke and the client's write.
+- [ ] RF-OPEN-16 · CI runs no tests for fe-database, fe-sync, fe-api, fe-policy or fe-runtime, which is how 13 tests went stale unnoticed (several written "code first" and never run). Batches R1-R6 and R11 have not been run in this sweep.
