@@ -326,7 +326,9 @@ impl HexonStore {
     /// Open an installed tileset as a lazy `HexonTileSource` (header phase only; tiles on demand).
     ///
     /// Backfills missing scale fields (FR-3) via [`backfill_scale_fields`];
-    /// idempotent — already-populated fields are left untouched.
+    /// idempotent — already-populated fields are left untouched. A licensed
+    /// archive serves only its free members until the caller attaches a gate
+    /// (`super::entitlement::tileset_entitlement` + `set_entitlement_gate`).
     pub fn load_tileset(&self, hexon_id: &str) -> Result<super::hexon_source::HexonTileSource> {
         if !is_safe_hexon_id(hexon_id) {
             bail!("{UNSAFE_HEXON_ID_ERROR}: {hexon_id:?}");
@@ -403,17 +405,20 @@ impl HexonStore {
         self.base_dir.join(format!("{hexon_id}.meta.json"))
     }
 
-    /// The DID whose signature covers the installed `{hexon_id}.hexon`; `None`
-    /// when nothing is installed, the install is unsealed, or it fails its
-    /// own header check (a broken install pins nothing and may be replaced).
-    pub fn installed_publisher(&self, hexon_id: &str) -> Option<String> {
+    /// Path of the installed `{hexon_id}.hexon`; `None` for an unsafe id or when nothing is installed.
+    pub fn installed_archive_path(&self, hexon_id: &str) -> Option<PathBuf> {
         if !is_safe_hexon_id(hexon_id) {
             return None;
         }
         let path = self.hexon_path(hexon_id);
-        if !path.is_file() {
-            return None;
-        }
+        path.is_file().then_some(path)
+    }
+
+    /// The DID whose signature covers the installed `{hexon_id}.hexon`; `None`
+    /// when nothing is installed, the install is unsealed, or it fails its
+    /// own header check (a broken install pins nothing and may be replaced).
+    pub fn installed_publisher(&self, hexon_id: &str) -> Option<String> {
+        let path = self.installed_archive_path(hexon_id)?;
         match HexonArchiveIndex::open(&path).ok()?.integrity_status() {
             IntegrityStatus::Sealed { publisher_did } => Some(publisher_did),
             IntegrityStatus::Unsealed => None,
@@ -529,8 +534,16 @@ fn write_synced_and_rename(tmp_path: &Path, final_path: &Path, bytes: &[u8]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::tiles::entitlement::{tileset_entitlement, EntitlementRequired, TilesetAccess};
+    use crate::tiles::source::TileCoord;
+    use fe_format::entitlement::{
+        EntitlementError, EntitlementExpectation, EntitlementVerifier, VerifiedEntitlement,
+    };
     use fe_format::manifest::{ElevationEncoding, HexonManifest, HexonType, TilesetMeta};
-    use fe_format::HexonArchive;
+    use fe_format::{HexonArchive, License, LicenseType};
+    use fe_hexon::entitlement_client::Licensee;
 
     // ------------------------------------------------------------------
     // Helpers
@@ -583,6 +596,45 @@ mod tests {
             .expect("export_tileset failed")
     }
 
+    const FREE_MEMBER: &str = "terrain/tiles/10/512/340.png";
+    const FREE_TILE: TileCoord = TileCoord { x: 512, y: 340, zoom: 10 };
+    const SEALED_TILE: TileCoord = TileCoord { x: 512, y: 341, zoom: 10 };
+    const PAYMENT_URL: &str = "https://publisher.example/pay/tileset";
+
+    /// A verifier that must never be reached: no token is held, so no gate may consult it.
+    struct UnreachableVerifier;
+
+    impl EntitlementVerifier for UnreachableVerifier {
+        fn verify(
+            &self,
+            _: &str,
+            _: &EntitlementExpectation<'_>,
+            _: &[u8; 32],
+            _: u64,
+        ) -> Result<VerifiedEntitlement, EntitlementError> {
+            panic!("a tileset without a token consulted the entitlement verifier");
+        }
+    }
+
+    fn paid_license(free_entries: Vec<String>) -> License {
+        License {
+            license_type: LicenseType::Paid,
+            payment_verification_url: Some(PAYMENT_URL.into()),
+            free_entries,
+            ..License::default()
+        }
+    }
+
+    /// A paid tileset with a free preview tile (`10/512/340`) and a non-free one (`10/512/341`).
+    fn make_licensed_hexon_bytes(id: &str, license: License) -> Vec<u8> {
+        let elevation = vec![
+            ("10/512/340".to_string(), vec![1u8; 64]),
+            ("10/512/341".to_string(), vec![2u8; 64]),
+        ];
+        HexonArchive::export_tileset(make_manifest(id), &make_meta(), &elevation, &[], Some(license))
+            .expect("export_tileset failed")
+    }
+
     fn temp_store() -> (HexonStore, std::path::PathBuf) {
         use std::time::{SystemTime, UNIX_EPOCH};
         let ts = SystemTime::now()
@@ -622,6 +674,52 @@ mod tests {
         let list = store.list_installed();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].hexon_id, "tileset-abc");
+
+        // HEXON-15 entitlement status: no token is held in-app for tilesets yet.
+        let identity = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let device_secret = [9u8; 32];
+        let licensee = Licensee { identity: &identity, device_secret: &device_secret };
+        let status = |id: &str| {
+            tileset_entitlement(&store, id, None, &licensee, &UnreachableVerifier)
+                .expect("installed tileset has an entitlement status")
+        };
+        let (free, free_gate) = status("tileset-abc");
+        assert_eq!(free.label, "installed");
+        assert_eq!(TilesetAccess::from_label(free.label), Some(TilesetAccess::Installed));
+        assert!(free.payment_verification_url.is_none());
+        let mut free_source = store.load_tileset("tileset-abc").expect("load free tileset");
+        free_source.set_entitlement_gate(Some(Arc::new(free_gate))).expect("matching terms");
+        assert!(free_source.load_tile_blocking(FREE_TILE).expect("free read").is_some());
+
+        let preview_license = paid_license(vec![FREE_MEMBER.to_string()]);
+        store
+            .install_tileset(&make_licensed_hexon_bytes("tileset-preview", preview_license))
+            .expect("install paid tileset with a preview tile");
+        let (preview, preview_gate) = status("tileset-preview");
+        assert_eq!(preview.label, "installed-preview");
+        assert_eq!(preview.payment_verification_url.as_deref(), Some(PAYMENT_URL));
+        let mut preview_source = store.load_tileset("tileset-preview").expect("load paid tileset");
+        // Without a gate the source already fails closed to the free members.
+        assert!(preview_source.load_tile_blocking(SEALED_TILE).is_err());
+        preview_source.set_entitlement_gate(Some(Arc::new(preview_gate))).expect("matching terms");
+        assert_eq!(
+            preview_source.load_tile_blocking(FREE_TILE).expect("free member loads").as_deref(),
+            Some(&[1u8; 64][..])
+        );
+        let refused = preview_source
+            .load_tile_blocking(SEALED_TILE)
+            .expect_err("a non-free member needs an entitlement");
+        assert!(refused.downcast_ref::<EntitlementRequired>().is_some(), "{refused:#}");
+        // A gate opened for another archive's terms is refused.
+        assert!(preview_source.set_entitlement_gate(Some(Arc::new(status("tileset-abc").1))).is_err());
+
+        store
+            .install_tileset(&make_licensed_hexon_bytes("tileset-sealed", paid_license(vec![])))
+            .expect("install fully paid tileset");
+        let (sealed, _) = status("tileset-sealed");
+        assert_eq!(TilesetAccess::from_label(sealed.label), Some(TilesetAccess::EntitlementRequired));
+        assert!(tileset_entitlement(&store, "not-installed", None, &licensee, &UnreachableVerifier).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

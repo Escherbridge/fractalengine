@@ -1,15 +1,18 @@
 //! Tile source over one `.hexon` tileset: lazy offset index + pinned byte cache; see `src/AGENTS.md` §lazy-tiles.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use fe_format::manifest::{TilesetBundleIndex, TilesetMeta};
 use fe_format::{ArchiveChanged, HexonArchive, HexonArchiveIndex, Layout};
+use fe_hexon::entitlement_gate::{EntitlementGate, GateRefusal, LicenseTerms};
 
 use crate::splat::format::{decode_baked_splats, read_baked_splats_from_archive, BakedSplatBuffer};
 
+use super::entitlement::{license_terms, read_license, EntitlementRequired};
 use super::residency::{ByteLru, TILE_BYTE_BUDGET};
 use super::source::TileCoord;
 
@@ -241,6 +244,10 @@ pub struct HexonTileSource {
     pub tileset_meta: TilesetMeta,
     backing: Backing,
     cache: Mutex<ByteLru<LayerKey, ResidentTile>>,
+    /// Terms from the archive's own `license.json` (unlicensed when absent).
+    license_terms: LicenseTerms,
+    /// Gate over the archive's licensed members; `None` loads only free members of a licensed archive.
+    entitlement_gate: Option<Arc<EntitlementGate>>,
 }
 
 impl HexonTileSource {
@@ -266,6 +273,11 @@ impl HexonTileSource {
         let tileset_meta = data
             .tileset_meta
             .context("archive is missing tileset_meta (not a TerrainTileset hexon)")?;
+        let terms = license_terms(data.license.as_ref());
+        // An eager source never takes a gate: a licensed archive keeps only its free members.
+        let admitted = |layer: TileLayer, key: TileKey| {
+            !terms.is_licensed() || terms.is_free_entry(&layer.member_name(key))
+        };
 
         let mut tiles = MemoryTiles {
             layers: HashMap::new(),
@@ -276,7 +288,9 @@ impl HexonTileSource {
             (TileLayer::Satellite, data.satellite_tiles),
         ] {
             for (cache_key, bytes) in members {
-                tiles.insert_bytes(layer, &cache_key, bytes);
+                if parse_tile_key(&cache_key).is_some_and(|key| admitted(layer, key)) {
+                    tiles.insert_bytes(layer, &cache_key, bytes);
+                }
             }
         }
         // Best-effort (FR-5): a malformed/absent splats section never fails the load.
@@ -285,13 +299,17 @@ impl HexonTileSource {
             .unwrap_or_default();
         for (cache_key, splats) in splats {
             if let Some(key) = parse_tile_key(&cache_key) {
-                tiles.insert(
-                    (TileLayer::BakedSplats, key),
-                    ResidentTile::Splats(Arc::new(splats)),
-                );
+                if admitted(TileLayer::BakedSplats, key) {
+                    tiles.insert(
+                        (TileLayer::BakedSplats, key),
+                        ResidentTile::Splats(Arc::new(splats)),
+                    );
+                }
             }
         }
-        Ok(Self::with_backing(tileset_meta, Backing::Memory(tiles)))
+        let mut source = Self::with_backing(tileset_meta, Backing::Memory(tiles));
+        source.license_terms = terms;
+        Ok(source)
     }
 
     /// Lazily open an installed `.hexon` file: header phase only, members on
@@ -303,6 +321,18 @@ impl HexonTileSource {
     pub fn open(path: &Path) -> Result<Self> {
         let index = HexonArchiveIndex::open(path)
             .with_context(|| format!("failed to index hexon archive {}", path.display()))?;
+        let terms = license_terms(
+            read_license(&index)
+                .with_context(|| format!("failed to read the licence of {}", path.display()))?
+                .as_ref(),
+        );
+        let mut source = Self::open_index(path, index)?;
+        source.license_terms = terms;
+        Ok(source)
+    }
+
+    /// Build the lazy backing for an opened index (container or monolithic).
+    fn open_index(path: &Path, index: HexonArchiveIndex) -> Result<Self> {
         match index.layout() {
             Layout::Container { .. } => {
                 let chunk_index_bytes = index
@@ -377,6 +407,72 @@ impl HexonTileSource {
             tileset_meta,
             backing,
             cache: Mutex::new(ByteLru::new(TILE_BYTE_BUDGET)),
+            license_terms: LicenseTerms::unlicensed(),
+            entitlement_gate: None,
+        }
+    }
+
+    /// Terms from the archive's `license.json`.
+    pub fn license_terms(&self) -> &LicenseTerms {
+        &self.license_terms
+    }
+
+    /// Attach (or with `None`, drop) the gate from `tiles::entitlement::tileset_entitlement`; empties the tile cache.
+    ///
+    /// Refuses a gate whose terms differ from this archive's own `license.json` (a gate for another build).
+    pub fn set_entitlement_gate(&mut self, gate: Option<Arc<EntitlementGate>>) -> Result<()> {
+        if let Some(gate) = &gate {
+            if gate.terms() != &self.license_terms {
+                bail!("entitlement gate terms do not match this tileset's license.json");
+            }
+        }
+        self.entitlement_gate = gate;
+        let cache = self
+            .cache
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.release_all_pins();
+        cache.clear_unpinned();
+        Ok(())
+    }
+
+    /// Licence check for one stored member: free/unlicensed pass, sealed ones open only through an entitled gate.
+    fn admit_member<'stored>(&self, member: &str, stored: &'stored [u8]) -> Result<Cow<'stored, [u8]>> {
+        match &self.entitlement_gate {
+            Some(gate) => gate.load(member, stored).map_err(|refusal| match refusal {
+                GateRefusal::EntitlementRequired { entry_id } => {
+                    anyhow::Error::new(EntitlementRequired { member: entry_id })
+                }
+                other => anyhow::Error::new(other),
+            }),
+            None if self.license_terms.is_licensed() && !self.license_terms.is_free_entry(member) => {
+                Err(EntitlementRequired { member: member.to_owned() }.into())
+            }
+            None => Ok(Cow::Borrowed(stored)),
+        }
+    }
+
+    /// [`admit_member`](Self::admit_member) over owned bytes, without copying a pass-through member.
+    fn admit_owned(&self, member: &str, stored: Vec<u8>) -> Result<Vec<u8>> {
+        let opened = match self.admit_member(member, &stored)? {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(plaintext) => Some(plaintext),
+        };
+        Ok(opened.unwrap_or(stored))
+    }
+
+    /// Licence check for a container member already decoded from its chunk (cannot be opened): free or unlicensed only.
+    fn admit_container_value(&self, layer: TileLayer, key: TileKey, value: ResidentTile) -> Result<ResidentTile> {
+        if !self.license_terms.is_licensed() {
+            return Ok(value);
+        }
+        let member = layer.member_name(key);
+        match value {
+            ResidentTile::Bytes(bytes) => Ok(ResidentTile::Bytes(Arc::from(
+                self.admit_member(&member, &bytes)?.into_owned(),
+            ))),
+            ResidentTile::Splats(_) if self.license_terms.is_free_entry(&member) => Ok(value),
+            ResidentTile::Splats(_) => Err(EntitlementRequired { member }.into()),
         }
     }
 
@@ -480,6 +576,7 @@ impl HexonTileSource {
                 let Some(value) = container.read_tile(layer, key.1)? else {
                     return Ok(None);
                 };
+                let value = self.admit_container_value(layer, key.1, value)?;
                 self.cache().insert(key, value.clone(), value.byte_cost());
                 return Ok(Some(value));
             }
@@ -488,13 +585,14 @@ impl HexonTileSource {
         if let Some(hit) = self.cache().get(&key) {
             return Ok(Some(hit));
         }
+        let member = layer.member_name(key.1);
         let mut archive = Self::archive(lock);
         let mut reindexed = false;
         let data = loop {
             if !archive.members.contains(&key) {
                 return Ok(None);
             }
-            match archive.index.read_member(&layer.member_name(key.1)) {
+            match archive.index.read_member(&member) {
                 Ok(data) => break data,
                 Err(err) if !reindexed && err.downcast_ref::<ArchiveChanged>().is_some() => {
                     reindexed = true;
@@ -519,6 +617,7 @@ impl HexonTileSource {
         let Some(data) = data else {
             return Ok(None);
         };
+        let data = self.admit_owned(&member, data)?;
         let value = match layer {
             TileLayer::Elevation | TileLayer::Satellite => ResidentTile::Bytes(Arc::from(data)),
             TileLayer::BakedSplats => match decode_baked_splats(&data) {
