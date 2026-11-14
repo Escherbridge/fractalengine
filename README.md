@@ -101,7 +101,7 @@ macOS build.
 
 | Requirement | Version | Install |
 |---|---|---|
-| Rust (stable) | 1.91+ | `rustup toolchain install stable` |
+| Rust | 1.96+ | `rustup toolchain install stable` (the repo pins 1.99.0 in `rust-toolchain.toml`, which rustup picks up automatically) |
 | rustfmt | latest | `rustup component add rustfmt` |
 | clippy | latest | `rustup component add clippy` |
 
@@ -293,13 +293,15 @@ replicator remains mock-backed — it is not part of this path.)
 - **BI egress.** Export nodes and IoT readings as Parquet/CSV over signed,
   time-limited share URLs for DuckDB, PowerBI, or a spreadsheet — no database
   credentials required. See [docs/bi-egress.md](docs/bi-egress.md).
-- **MCP surface.** 49 machine-callable tools in total (no shipped binary
+- **MCP surface.** 54 machine-callable tools in total (no shipped binary
   advertises all of them) behind one table-driven authorization path: a role
   floor plus a scope rule resolved from the DB, never from caller-supplied
   ancestry ids. 36 are advertised on every host.
   The desktop app adds `screenshot`, `get_camera`, `inject_input` and five UI
   inspection and window-control tools (`ui_tree`, `ui_state`, `ui_logs`,
-  `dialog_answers`, `window`). `screenshot` and `get_camera` are on unless
+  `dialog_answers`, `window`) and, on GUI hosts, five extension and binding tools
+  (`list_extensions`, `extension_command`, `list_bindings`, `set_binding`,
+  `clear_binding`). `screenshot` and `get_camera` are on unless
   `FE_API_SCREENSHOT_ALLOW=0`; the rest need `FE_API_INPUT_ALLOW=1` (see
   [Environment Variables](#environment-variables)); the five `sim_*` tools
   appear only on a simulation-lab relay.
@@ -334,7 +336,7 @@ Verse                the top-level P2P namespace
 
 ## Workspace Crates
 
-24 crates; the load-bearing ones:
+26 workspace members; the load-bearing ones:
 
 | Crate | Purpose | Thread |
 |---|---|---|
@@ -355,7 +357,11 @@ Verse                the top-level P2P namespace
 | `fe-format` / `fe-entity-store` | Canonical data formats + entity storage | Shared |
 | `fe-hexon` / `fe-hexon-registry` | `.hexon` packaging and publishing, plus a registry HTTP service | Shared |
 | `fe-plugin` / `fe-sdk` / `fe-plugin-test` | Plugin engines, stable SDK, test kit | T7 |
+| `fe-canonical-log` | Signed canonical operation log | Shared |
+| `fe-sim` | Deterministic multi-peer simulation lab (sim-only) | Test |
 | `fe-test-harness` | Multi-peer integration scenarios | Test |
+| `extensions/iot-bridge` | Reference extension | T7 |
+| `tools/fe-ext` | Extension authoring CLI | Tooling |
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Prerequisites (all platforms)
 
-- **Rust 1.91+** (stable toolchain)
+- **Rust 1.96+** (the repo pins 1.99.0 via `rust-toolchain.toml`; rustup selects it automatically)
 - **Git**
 
 ```bash
@@ -31,6 +31,10 @@ cargo build --release -p fractalengine
 rustup target add aarch64-pc-windows-msvc
 cargo build --release -p fractalengine --target aarch64-pc-windows-msvc
 ```
+
+### SmartScreen
+
+Early releases may trigger a SmartScreen warning even when signed, because reputation accrues per publisher. Choose **More info**, then **Run anyway**. To verify checksums and signatures first, see [docs/release-signing.md](docs/release-signing.md).
 
 ## Linux (Ubuntu/Debian)
 
@@ -75,9 +79,11 @@ cargo build --release -p fractalengine
 - No additional system packages required
 - WKWebView is included with macOS
 
+Buildable locally; not built or tested in CI (the macOS jobs were removed 2026-08-19).
+
 ### Supported targets
 
-| Target | Status |
+| Target | Status (not CI-verified) |
 |--------|--------|
 | `aarch64-apple-darwin` | Apple Silicon (M1+) |
 | `x86_64-apple-darwin` | Intel Mac |

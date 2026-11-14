@@ -40,7 +40,11 @@ merely restate them will be deduplicated against this list.
   integrity or non-repudiation. The site-by-site register is in
   `conductor/tracks/oss_release_20260717/spec.md` (FR-2). It was
   re-verified 2026-10-11 with `git grep -n '"00"\.repeat(64)' -- '*.rs'`,
-  which returned 22 hits: 21 production sites plus 1 test fixture.
+  which returned 22 hits: 21 production sites plus 1 test fixture. Re-run
+  2026-11-13 it returns 45 hits across `fe-database` (including `#[cfg(test)]`
+  fixtures and tests) and `fe-api` tests; new write paths added since keep the
+  same placeholder, so the statement above holds and the count is not a
+  stable figure.
 - **Known dependency advisories are triaged, not yet fixed.** `deny.toml`
   explicitly ignores these RustSec IDs, each with a reason:
   - None for `wasmtime`: the 19 ignores for 29.0.1 were retired when
