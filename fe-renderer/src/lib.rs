@@ -10,4 +10,5 @@ pub mod loader;
 pub mod scene_analysis;
 pub mod terrain_height;
 pub mod terrain_overlay;
+pub mod section_profile;
 pub mod viewport;

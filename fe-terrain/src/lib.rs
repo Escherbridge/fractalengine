@@ -29,6 +29,10 @@ pub mod ruler_plugin;
 #[cfg(feature = "render")]
 pub mod terrain_plugin;
 
+// Bevy-only: section_responder depends on bevy and fe-renderer, both optional under `render`.
+#[cfg(feature = "render")]
+mod section_responder;
+
 use serde::{Deserialize, Serialize};
 
 /// A command to create or update a node in the database.

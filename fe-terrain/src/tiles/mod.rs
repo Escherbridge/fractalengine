@@ -1,6 +1,7 @@
 #[cfg(feature = "fetch")]
 pub mod builder;
 pub mod bundle;
+pub mod entitlement;
 pub mod cache;
 pub mod composite;
 pub mod distribution;
