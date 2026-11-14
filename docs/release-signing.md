@@ -70,7 +70,9 @@ How the job handles the key:
 
 - `MINISIGN_CONFIGURED` is derived from the `MINISIGN_SECRET_KEY` secret on the job (secrets cannot
   be read in `if:`). Unset: the job emits `::notice::SHA256SUMS is unsigned` and publishes anyway, so
-  unsigned releases and forks stay green; the release notes then say "Checksums signed: no".
+  unsigned releases and forks stay green; the release notes then say "Checksums signed: no". Once
+  `docs/release-signing.pub` is committed, a missing secret is a lost or expired key, so the job
+  raises a `::warning::` instead (still publishes; fix the secret and re-run before announcing).
 - The key is written to `$RUNNER_TEMP/minisign.key` with mode 600, outside `release-assets/` (every
   file there is uploaded), and never printed; an `if: always()` step deletes it.
 - When `docs/release-signing.pub` is committed, a verify step checks the new signature against it

@@ -24,13 +24,7 @@ Docker: `docker pull ghcr.io/{{OWNER}}/fractalengine-relay:{{TAG}}`
 
 ## Verify
 
-1. Checksums (every archive, any platform):
-
-   ```sh
-   sha256sum -c SHA256SUMS --ignore-missing
-   ```
-
-2. Checksum signature (when checksums are signed). Take the public key from the repository,
+1. Checksum signature first (when checksums are signed). Take the public key from the repository,
    [`docs/release-signing.pub` at {{TAG}}](https://github.com/{{REPOSITORY}}/blob/{{TAG}}/docs/release-signing.pub),
    not from this release page, save it as `release-signing.pub`, then:
 
@@ -38,8 +32,16 @@ Docker: `docker pull ghcr.io/{{OWNER}}/fractalengine-relay:{{TAG}}`
    minisign -V -p release-signing.pub -m SHA256SUMS
    ```
 
+   It must print `Signature and comment signature verified` and the trusted comment
+   `fractalengine {{TAG}} SHA256SUMS`; a different tag means the file belongs to another release.
    A valid signature over `SHA256SUMS` covers every archive listed in it, Linux `.tar.gz`
    files included. Details: [docs/release-signing.md](https://github.com/{{REPOSITORY}}/blob/{{TAG}}/docs/release-signing.md).
+
+2. Checksums (every archive, any platform), trusted once step 1 passes:
+
+   ```sh
+   sha256sum -c SHA256SUMS --ignore-missing
+   ```
 
 3. Windows Authenticode (after extracting the zip):
 

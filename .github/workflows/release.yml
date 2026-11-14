@@ -377,9 +377,17 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/minisign.key"
 
+      # A committed public key with no secret is a lost or expired secret: warn, still publish.
       - name: Note unsigned checksums
         if: env.MINISIGN_CONFIGURED != 'true'
-        run: echo "::notice::SHA256SUMS is unsigned (MINISIGN_SECRET_KEY not set)"
+        env:
+          PUBLIC_KEY_COMMITTED: ${{ hashFiles('docs/release-signing.pub') != '' }}
+        run: |
+          if [ "$PUBLIC_KEY_COMMITTED" = "true" ]; then
+            echo "::warning::SHA256SUMS is unsigned although docs/release-signing.pub is committed (MINISIGN_SECRET_KEY not set)"
+          else
+            echo "::notice::SHA256SUMS is unsigned (MINISIGN_SECRET_KEY not set)"
+          fi
 
       # Catches a secret key that does not match the committed public key before publishing.
       - name: Verify SHA256SUMS signature
