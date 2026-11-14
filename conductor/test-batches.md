@@ -71,10 +71,11 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 | `fe-ui/src/node_manager/{mod,context_pick,viewport_pick,selection,shortcuts,sidebar_sync,inspector_sync,transform_broadcast,dispatch,router,pointer/mod,measure}.rs` | 143 |
 | `fe-ui/src/gimbal.rs`, `fe-ui/src/geometry.rs` | 24 |
 | `fe-ui/src/actions/{transform,node,node_props,dimension_callout,asset}.rs` | 35 |
-| `fe-ui/src/dialogs/{gltf_import,context_menu,node_options,mod}.rs` | 30 |
+| `fe-ui/src/dialogs/{gltf_import,context_menu,node_options}.rs` (`dialogs/mod.rs` tests are R6) | 29 |
 | `fe-ui/src/panels/annotation_card.rs` | 12 |
 | `fe-ui/src/node_manager/ground_snap.rs` (terrain-or-Y=0 placement, CITY-04) | new |
 | `fe-ui/src/editor_batch/**` (ordered selection and shared editor routing, DATA-02) | new |
+| `fe-database/src/handlers/editor_batch/**` (no tests at HEAD), `fe-database/src/handlers/stamp_transform.rs` (`euler_to_quat_xyzw` table, 1 test) | 1 |
 | `fe-renderer/src/{camera,axis_gizmo,addressing,grid,instancing}.rs`, `fe-renderer/tests/renderer_test.rs` | 76 |
 | `fractalengine/src/asset_bridge.rs` | 11 |
 | `fe-runtime/src/scene_write.rs` (shared scene door: GUI and REST verdicts, `scene_write::tests::`; turn 3) | new |
@@ -83,6 +84,8 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 
 ```bash
 cargo test -p fe-ui --lib -- node_manager::tests:: node_manager::context_pick node_manager::viewport_pick node_manager::selection node_manager::shortcuts node_manager::sidebar_sync node_manager::inspector_sync node_manager::transform_broadcast node_manager::dispatch node_manager::router node_manager::pointer node_manager::measure gimbal:: geometry:: actions::transform actions::node:: actions::node_props actions::dimension_callout actions::asset dialogs::gltf_import dialogs::context_menu dialogs::node_options panels::annotation_card node_manager::ground_snap editor_batch::
+# fe-database scene-write stamping (DATA-01, DATA-02, INT5-15): `handlers::editor_batch` has no test module at HEAD, so its entry reaches nothing yet
+cargo test -p fe-database --lib -- handlers::editor_batch:: handlers::stamp_transform::
 cargo test -p fe-renderer
 cargo test -p fractalengine --bin fractalengine -- asset_bridge::
 # GUI gate journey (turn 3): the shared scene door's verdict and stage journey; R9 door parity points here
@@ -159,6 +162,7 @@ cargo test -p fe-ui --lib -- terrain_map:: terrain_preview terrain_proposal_stat
 cargo test -p fe-database --lib -- handlers::petal_terrain handlers::petal_render_distance
 cargo test -p fe-database --test petal_render_distance_test
 cargo test -p fe-api --test terrain_mutation_test --test petal_render_distance_api_test --test hexon_tileset_test
+cargo test -p fe-api --lib -- terrain::tests::
 cargo test -p fractalengine --bin fractalengine -- terrain_bridge::
 cargo test -p fe-renderer --lib -- terrain_overlay terrain_height
 
@@ -194,6 +198,7 @@ GPX import, pen tool, curve/handle editing, stamped-asset materialization.
 cargo test -p fe-ui --lib -- node_manager::path_handle_interaction node_manager::path_gimbal_drag node_manager::path_segment_interaction node_manager::path_point_interaction node_manager::curve actions::path panels::path_editor_card verse_manager::path_asset node_manager::road_snap node_manager::road_chain node_manager::road_interaction node_manager::road_overlay
 cargo test -p fe-database --test gpx_path_persistence_test --test gpx_pipeline_test
 cargo test -p fractalengine --bin fractalengine -- gpx_bridge::
+cargo test -p fe-api --lib -- gpx::export_tree_tests::
 ```
 
 ---
@@ -209,13 +214,14 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 | `fe-ui/src/settings.rs`, `fe-ui/src/portal/mod.rs`, `fe-ui/src/plugin.rs` (shared wiring — see consolidation note) | 35 |
 | `fe-webview/**` | 64 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | 5 |
-| `fe-ui/src/actions/mod.rs` (`active_dialog_entity_settings` journey only, UI-07) | new |
+| `fe-ui/src/actions/mod.rs` (`actions::tests::` module: notice queue, active dialog, reveal, proposal select, path delete; superset of the UI-07 `active_dialog_entity_settings` journey) | 20 |
 | `fe-ui/src/dialogs/peer_debug.rs` (network diagnostics panel) | new |
+| `fe-ui/src/dialogs/mod.rs` (tests only: TreeAppearance layout at 1280x720 and 1024x640, QA-0112), `fe-ui/src/panels/mod.rs` (tests only), `fe-ui/src/native_accessibility/{navigation_ui,provider_identity}.rs` (`journey::` modules) | 3+ |
 
 **Total ≈ 198**
 
 ```bash
-cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin:: actions::tests::active_dialog_entity_settings dialogs::peer_debug
+cargo test -p fe-ui --lib -- notice:: ui_shell:: dialogs::join panels::widgets panels::toolbar panels::sidebar panels::tool_options panels::tool_inspector panels::tool_panel settings:: portal:: plugin:: actions::tests::active_dialog_entity_settings actions::tests:: dialogs::peer_debug dialogs::tests:: panels::tests:: native_accessibility::
 cargo test -p fe-webview --lib --test security_test --test tauri_backend_test --test tauri_cutover_test
 cargo test -p fe-webview --test portal_protocol_journey --test portal_ipc_journey
 cargo test -p fractalengine --bin fractalengine -- portal_host::
@@ -319,6 +325,7 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | 32 |
 | `fractalengine/tests/security_harness.rs` | 5 |
 | `fe-api/src/{bindings,bound_routes}.rs`, `fe-api/tests/{bindings_api_test,extensions_api_test}.rs` (already inside `fe-api/**`; listed for the batch filter) | 4 |
+| `fe-api/src/{assets,import_hooks,input,portal_bundles,timeseries_query}.rs`, `fe-runtime/src/input.rs`, `fractalengine/src/input_bridge.rs` (module `tests::` only, INT5-15) | 6 |
 
 **Total ≈ 297**
 
@@ -329,10 +336,10 @@ REST, MCP tools, operator gate, screenshot/vision/input, egress/export, elevated
 ```bash
 cargo test -p fe-api --test api_integration --test api_harness_smoke --test mcp_integration --test screenshot_test --test vision_test --test vision_scope_test --test token_lifecycle_test --test namespace_capability_test --test existence_oracle_test --test record_id_read_test --test gis_test --test export_share_test --test share_signer_persistence_test --test analytics_scope_test --test portal_bundle_test --test ws_integration
 cargo test -p fe-api --test bindings_api_test --test extensions_api_test
-cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws:: network:: network_ops:: metrics:: relay_advertise::
+cargo test -p fe-api --lib -- auth:: crs:: bridge_client endpoint:: entity_store_bridge export:: operator_gate query_guard rest:: mcp:: share:: upload:: visibility:: vision:: ws:: network:: network_ops:: metrics:: relay_advertise:: assets::tests:: import_hooks::tests:: input::tests:: portal_bundles::tests:: timeseries_query::tests::
 cargo test -p fe-database --lib -- handlers::elevated_query api_token_store session_cache handlers::api_token
-cargo test -p fe-runtime --lib -- vision:: usage::
-cargo test -p fractalengine --bin fractalengine -- screenshot_bridge vision_bridge
+cargo test -p fe-runtime --lib -- vision:: usage:: input::tests::
+cargo test -p fractalengine --bin fractalengine -- screenshot_bridge vision_bridge input_bridge::
 cargo test -p fractalengine --test security_harness
 ```
 
@@ -350,6 +357,7 @@ fe-identity, migrations, reconcile, generic DB handlers, canonical data-log (fe-
 | `fe-database/tests/petal_snapshot_test.rs` (HEXON-09) | new |
 | `fe-database/src/{op_log,repo,merge,reconcile,space_manager,model_url_meta,replication_mode,atlas,lib}.rs` | 63 |
 | `fe-database/src/handlers/{blob_migration,asset_gc,asset_backfill,inbound_admissions,ts_partial,verse_settings}.rs` | 27 |
+| `fe-database/src/handlers/crate_registry.rs` (per-petal install and uninstall, HEXON5-01), `fe-database/src/lib.rs` test modules (`namespace_id_tests`, `join_verse_dispatch_tests`, `subdir_tests`, `migration_tests`) | new |
 | `fe-database/src/migration/**`, `fe-database/src/schema.rs` | 40 |
 | `fe-database/src/canon_log/**` | 25 |
 | `fe-database/tests/{db_test,shared_handle_test,schema_idempotent,migration_conformance_test,migration_equivalence_harness,replication_backpressure_test,canon_log_replay_payload_facts_test,canon_log_composed_admission_test,canon_log_materialization_test,dcl20_bypass_counter_test}.rs` | 69 |
@@ -359,7 +367,7 @@ fe-identity, migrations, reconcile, generic DB handlers, canonical data-log (fe-
 ```bash
 cargo test -p fe-identity
 cargo test -p fe-canonical-log
-cargo test -p fe-database --lib -- op_log:: repo:: merge:: reconcile:: space_manager model_url_meta replication_mode atlas:: handlers::blob_migration handlers::asset_gc handlers::asset_backfill handlers::inbound_admissions handlers::ts_partial handlers::verse_settings migration:: schema:: canon_log:: field_clock:: handlers::replicated_row:: handlers::scene_publication::
+cargo test -p fe-database --lib -- op_log:: repo:: merge:: reconcile:: space_manager model_url_meta replication_mode atlas:: handlers::blob_migration handlers::asset_gc handlers::asset_backfill handlers::inbound_admissions handlers::ts_partial handlers::verse_settings migration:: schema:: canon_log:: field_clock:: handlers::replicated_row:: handlers::scene_publication:: handlers::crate_registry:: namespace_id_tests:: join_verse_dispatch_tests:: subdir_tests:: migration_tests::
 cargo test -p fe-database --test db_test --test shared_handle_test --test schema_idempotent --test migration_conformance_test --test migration_equivalence_harness --test replication_backpressure_test --test canon_log_replay_payload_facts_test --test canon_log_composed_admission_test --test canon_log_materialization_test --test dcl20_bypass_counter_test --test petal_snapshot_test
 ```
 
@@ -489,7 +497,8 @@ engage/disengage run is a sim run (flags in `tools/qa/AGENTS.md` §sim), not a c
 
 **Extension sim lane (not cargo):** `ext-fleet`, `ext-device`, `ext-bindings` and `ext-install-gui` drive administration
 through the GUI surface or the `fe-ext admin` channel, never REST (user decision 2026-11-09). Structural check:
-`python tools/qa/sim/run.py validate ext-fleet ext-device ext-bindings ext-install-gui`. The GUI QA path (install from
+`python tools/qa/sim/run.py validate ext-fleet ext-device ext-bindings ext-install-gui fleet-terrain`.
+User-named sim batch `fleet-terrain`: `python tools/qa/sim/run.py fleet-terrain` (QA Terrain fixture; run only when the user names it). The GUI QA path (install from
 file and from the static index, consent, enable, disable, update with a delta, uninstall, plus one `fe-ext admin` leg)
 is `ext-install-gui.json`, run as a sim scenario.
 
@@ -547,9 +556,10 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `fe-ui/src/node_manager/road_{snap,chain,interaction,overlay}.rs` | R5 |
 | `fe-ui/src/node_manager/ground_snap.rs` | R2 |
 | `fe-ui/src/editor_batch/**` | R2 |
+| `fe-database/src/handlers/{editor_batch/**,stamp_transform.rs}` | R2 |
 | `fe-ui/src/panels/hierarchy_info.rs` | R3 |
 | `fe-ui/src/panels/section_profile_panel.rs` | R4 |
-| `fe-ui/src/actions/mod.rs` (`active_dialog_entity_settings` only) | R6 |
+| `fe-ui/src/actions/mod.rs` (`actions::tests::` module) | R6 |
 | `fractalengine/src/extension_host/{licence_client,governance}.rs` | R11-ENT |
 | `fe-hexon/tests/remote_registry_test.rs` | R11-STORE |
 | `fe-database/src/field_clock/**`, `fe-database/src/handlers/{replicated_row,scene_publication/**}`, `fe-database/tests/petal_snapshot_test.rs` | R10 |
@@ -583,7 +593,7 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `fe-database/src/handlers/extension_binding.rs`, `fe-database/tests/extension_binding_test.rs` | R7 |
 | `fe-database/src/handlers/elevated_query.rs` | R9 |
 | `fe-database/src/handlers/{api_token}.rs`, `api_token_store.rs`, `session_cache.rs` | R9 |
-| `fe-database/src/handlers/` (rest: blob_migration, asset_gc, asset_backfill, inbound_admissions, ts_partial, verse_settings) | R10 |
+| `fe-database/src/handlers/` (rest: blob_migration, asset_gc, asset_backfill, inbound_admissions, ts_partial, verse_settings, crate_registry) | R10 |
 | `fe-database/src/{invite,scoped_invite,scope,rbac,role_manager,role_grants}.rs` | R7 |
 | `fe-database/src/canon_log/`, `migration/`, `schema.rs`, `op_log.rs`, `repo.rs`, `merge.rs`, `reconcile.rs`, `space_manager.rs`, `model_url_meta.rs`, `replication_mode.rs`, `atlas.rs`, `lib.rs`, `verse.rs` | R10 (`verse.rs` → R1) |
 | `fe-database/tests/role_propagation_inbound_test.rs` | R7 **SLOW** |
