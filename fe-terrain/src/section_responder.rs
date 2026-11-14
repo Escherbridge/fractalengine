@@ -226,7 +226,7 @@ mod tests {
                 })
                 .sum();
             assert!(
-                (result.fill_area - integrated).abs() < 1.0,
+                (result.fill_area - f64::from(integrated)).abs() < 1.0,
                 "section fill {} must match the shared surface integral {}",
                 result.fill_area,
                 integrated
