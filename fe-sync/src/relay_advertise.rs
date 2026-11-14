@@ -311,7 +311,12 @@ impl RelayAdvertisementBook {
         let mut dropped_memos = 0;
         for records in self.tombstones.values_mut() {
             let before = records.len();
-            records.retain(|_, memo| memo.seen_at_ms.saturating_add(MAX_ADVERT_TTL_MS) >= now_ms);
+            records.retain(|_, memo| {
+                memo.seen_at_ms
+                    .saturating_add(MAX_ADVERT_TTL_MS)
+                    .saturating_add(ADVERT_ISSUED_SKEW_MS)
+                    >= now_ms
+            });
             dropped_memos += before - records.len();
         }
         self.tombstones.retain(|_, records| !records.is_empty());
@@ -409,9 +414,9 @@ impl RelayAdvertisementBook {
         self.tombstone_evicted
     }
 
-    /// True when a remembered withdrawal by another author outranks this row; otherwise a superseding row clears the memo.
+    /// True when a remembered withdrawal by another author outranks this row; only an admitted row clears the memo.
     fn tombstone_refuses(
-        &mut self,
+        &self,
         verse_id: &str,
         record_id: &str,
         author_did: &str,
@@ -420,12 +425,11 @@ impl RelayAdvertisementBook {
         let Some(memo) = self.tombstones.get(verse_id).and_then(|records| records.get(record_id)) else {
             return false;
         };
-        let refused = memo.tombstoner_did != author_did
-            && row.issued_at_ms.map_or(true, |issued| issued <= memo.seen_at_ms);
-        if !refused {
-            self.forget_tombstone(verse_id, record_id);
-        }
-        refused
+        // The skew allowance keeps an author whose clock runs ahead from out-dating the withdrawal.
+        memo.tombstoner_did != author_did
+            && row
+                .issued_at_ms
+                .map_or(true, |issued| issued <= memo.seen_at_ms.saturating_add(ADVERT_ISSUED_SKEW_MS))
     }
 
     fn forget_tombstone(&mut self, verse_id: &str, record_id: &str) {
@@ -457,10 +461,9 @@ impl RelayAdvertisementBook {
             let oldest = self
                 .tombstones
                 .iter()
-                .flat_map(|(verse, records)| {
-                    records.iter().map(move |(id, memo)| (memo.arrival, verse.clone(), id.clone()))
-                })
-                .min();
+                .flat_map(|(verse, records)| records.iter().map(move |(id, memo)| (memo.arrival, verse, id)))
+                .min_by_key(|(arrival, _, _)| *arrival)
+                .map(|(arrival, verse, id)| (arrival, verse.clone(), id.clone()));
             if let Some((_, verse, id)) = oldest {
                 self.forget_tombstone(&verse, &id);
                 self.tombstone_evicted += 1;
@@ -511,6 +514,7 @@ impl RelayAdvertisementBook {
         }
     }
 
+    /// Admits a row the memo did not refuse; an admitted superseding row retires the record's withdrawal memo.
     fn make_eligible(
         &mut self,
         verse_id: &str,
@@ -519,6 +523,7 @@ impl RelayAdvertisementBook {
         url: String,
         row: RelayAdvertisementRow,
     ) {
+        self.forget_tombstone(verse_id, record_id);
         self.admitted.entry(verse_id.to_string()).or_default().insert(
             record_id.to_string(),
             AdmittedAdvert {
@@ -1003,8 +1008,30 @@ mod tests {
         assert!(memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&older), false, roles.role_of(), memo_now).is_empty());
         assert!(memo_book.urls_by_verse().is_empty() && memo_book.admitted(VERSE).is_empty(), "the late older row stays withdrawn");
         assert_eq!(memo_book.quarantine_len(), 0, "a memo-refused row is never quarantined");
-        // A row issued after the memo's receipt is a legitimate re-advertisement and clears the memo.
-        let later_now = memo_now + 10_000;
+        // A cross-author clock running ahead inside the skew allowance cannot out-date the withdrawal.
+        let ahead = signed_row(&memo_signer, "https://memo.example.org", memo_now + ADVERT_ISSUED_SKEW_MS / 2, |_| {});
+        assert!(memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&ahead), false, roles.role_of(), memo_now).is_empty());
+        assert_eq!(memo_book.tombstone_len(), 1, "the skewed row leaves the memo in place");
+        // A sub-floor author's fresh row is quarantined and must not erase the withdrawal memo.
+        let sub_floor_signer = fe_identity::keypair::NodeKeypair::from_bytes(&[8u8; 32]).expect("seed key");
+        let fresh_after = memo_now + ADVERT_ISSUED_SKEW_MS + 5_000;
+        let sub_floor_row = signed_row(&sub_floor_signer, "https://memo-sub.example.org", fresh_after, |_| {});
+        assert!(memo_book
+            .observe_at(VERSE, "r-x", &sub_floor_signer.to_did_key(), &wire(&sub_floor_row), false, roles.role_of(), fresh_after)
+            .is_empty());
+        assert_eq!(memo_book.quarantine_len(), 1, "the sub-floor row waits in quarantine");
+        assert_eq!(memo_book.tombstone_len(), 1, "only an admitted row clears the memo");
+        let stale_after_sub_floor = signed_row(&memo_signer, "https://memo.example.org", memo_now, |row| {
+            row.expires_at_ms = Some(memo_now + 600_000);
+        });
+        assert!(
+            memo_book
+                .observe_at(VERSE, "r-x", &memo_did, &wire(&stale_after_sub_floor), false, roles.role_of(), fresh_after)
+                .is_empty(),
+            "a stale cross-author row stays withdrawn after a sub-floor row"
+        );
+        // A row issued after the memo's receipt plus the skew allowance is a legitimate re-advertisement and clears the memo.
+        let later_now = memo_now + ADVERT_ISSUED_SKEW_MS + 10_000;
         let newer = signed_row(&memo_signer, "https://memo.example.org", later_now, |_| {});
         assert_eq!(
             memo_book.observe_at(VERSE, "r-x", &memo_did, &wire(&newer), false, roles.role_of(), later_now),
