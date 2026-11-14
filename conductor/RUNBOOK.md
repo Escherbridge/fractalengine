@@ -137,6 +137,12 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   Do NOT `git push origin main` while the swarm runs: it would publish unbuilt swarm commits and cancel the CI
   run. Push a named commit (`git push -4 origin <sha>:main`) only for a CI fix that sits below the swarm commits;
   everything else waits for the refine pass.
+  **Open security finding (21:40, MEDIUM, confirmed):** `fe-runtime/src/relay_advertisement.rs::
+  validate_advertised_relay_url` (NET-05, `35e366bc`) accepts any http/https host, and advertised relay rows are
+  peer-authored, so a member could make this node dial loopback, link-local/metadata or LAN addresses. Not
+  fixed by the orchestrator (the file is swarm-owned); routed as a binding steer in `.omc/state/turn4-steer.md`
+  to gate R-NET-1 and the dial-site owners. **Verify at the refine pass** that R-NET-1's review file records it
+  and that the table test has the refused rows; if not, fix it before any push of swarm code.
   **After the swarm:** read the result with python from the task output or journal (it is large); relay
   `user_questions`; apply `needs` that no integration slice took; refine pass in plan §10 order; then §7 step 3.
 - **2026-11-13 18:55 MST — ROUND 4 PLANNING (done 20:40; `wf_d595d1cd-8d1`, 12 agents, 3.0M tokens); CI fix PUSHED (`8530377d`, 18:40), CI verdict due ~20:15.**
