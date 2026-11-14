@@ -372,6 +372,17 @@ fn send_unqueued(
     full: FullChannel,
     now: Instant,
 ) -> GuiSend {
+    // A correlated write never overtakes a queued one; uncorrelated reads still bypass.
+    if let Some(correlation_id) = command_correlation_id(&command) {
+        if !lock(doors).waiting.is_empty() {
+            if full == FullChannel::Report {
+                return GuiSend::Busy;
+            }
+            source.correlation_id = Some(correlation_id);
+            let original = command.clone();
+            return queue_retry(doors, source, original, command, SceneAugments::default(), now);
+        }
+    }
     match send_plain(source.sender, command, blocking) {
         Delivery::Done(sent) => sent,
         Delivery::Full(_) if full == FullChannel::Report => GuiSend::Busy,
@@ -1013,6 +1024,27 @@ mod tests {
         assert!(!discard_dead_letter_in(&doors, third_id));
         assert_eq!(door_counts(&doors), (0, 0));
         assert!(matches!(retry_dead_letter_in(&doors, third_id, third_at), GuiSend::Refused(_)));
+
+        // Plain-write order leg: a correlated write with no petal queues behind a backing-off head.
+        {
+            let (tx, rx) = crossbeam::channel::bounded(1);
+            tx.send(DbCommand::Ping).unwrap();
+            let base = start + Duration::from_secs(400);
+            let a = submit_with(&doors, &door, &tx, property_write("order-a"), false, petal, FullChannel::Retry, base);
+            assert_eq!(a, GuiSend::Waiting);
+            let b = submit_with(&doors, &door, &tx, property_write("order-b"), false, None, FullChannel::Retry, base);
+            assert_eq!(b, GuiSend::Waiting, "a plain correlated write queues behind the backing-off head");
+            assert!(write_in_door(&doors, "order-b"));
+            let busy = submit_with(&doors, &door, &tx, property_write("order-c"), false, None, FullChannel::Report, base);
+            assert_eq!(busy, GuiSend::Busy);
+            assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
+            let settled = pump_scene_door_at(&doors, base + Duration::from_millis(60));
+            assert!(matches!(settled.first(), Some(Settled::Sent(_))));
+            assert_eq!(received_id(&rx).as_deref(), Some("order-a"));
+            pump_scene_door_at(&doors, base + Duration::from_secs(10));
+            assert_eq!(received_id(&rx).as_deref(), Some("order-b"));
+            assert_eq!(door_counts(&doors), (0, 0));
+        }
 
         // Petal-hint leg: a follow-up write is judged against the node's own petal, not the active one.
         {
