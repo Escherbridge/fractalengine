@@ -24,6 +24,60 @@ pub enum FixtureOp {
     PortalIpcStats,
     /// Engage or restore the portal resolver's host-disabled state (the Disable all path); served by the binary.
     PortalKillSwitch { engage: bool },
+    /// Post one fixed PJ2 IPC row through the open bundle's bridge; `expect` pins the mount it must hit; served by the binary.
+    PortalIpcPost { row: IpcPostRowName, expect: MountExpectation },
+}
+
+/// The fixed PJ2 rows, mirrored from `fe_webview::portal_bundle::qa_rows::IpcPostRow` (fe-runtime has no fe-webview dependency).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum IpcPostRowName {
+    Unsigned,
+    Unadmitted,
+    External,
+    ForeignFrame,
+    Hidden,
+    Stale,
+    Control,
+}
+
+/// Optional identity the open mount must have (BLAKE3 of the package id; the content hash's 32 bytes); `None` = any.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct MountExpectation {
+    pub package_digest: Option<[u8; 32]>,
+    pub content_hash: Option<[u8; 32]>,
+}
+
+impl MountExpectation {
+    /// From the request's optional strings; `None` when `content_hash` is not 64 hex characters.
+    pub fn from_request(package_id: Option<&str>, content_hash: Option<&str>) -> Option<Self> {
+        let content_hash = match content_hash {
+            Some(raw) => Some(decode_content_hash(raw)?),
+            None => None,
+        };
+        Some(Self {
+            package_digest: package_id.map(package_digest),
+            content_hash,
+        })
+    }
+
+    /// True when the open mount's `package_id` and hex `content_hash` satisfy every pinned field.
+    pub fn matches(&self, package_id: &str, content_hash: &str) -> bool {
+        self.package_digest.is_none_or(|digest| digest == package_digest(package_id))
+            && self
+                .content_hash
+                .is_none_or(|expected| decode_content_hash(content_hash) == Some(expected))
+    }
+}
+
+fn package_digest(package_id: &str) -> [u8; 32] {
+    *blake3::hash(package_id.as_bytes()).as_bytes()
+}
+
+fn decode_content_hash(raw: &str) -> Option<[u8; 32]> {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(raw, &mut bytes).ok()?;
+    Some(bytes)
 }
 
 #[derive(Clone, Debug)]

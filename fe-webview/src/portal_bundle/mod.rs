@@ -9,6 +9,7 @@ pub mod mount;
 pub mod navigation;
 pub mod origin;
 pub mod protocol;
+pub mod qa_rows;
 
 pub use ipc::{
     BindRequest, BridgeWebview, BrokerClient, BrokerEvent, DeliveryKind, Ingress, IpcCounters, IpcError, IpcStats,

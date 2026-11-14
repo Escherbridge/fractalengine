@@ -6,9 +6,11 @@ use fe_runtime::bridge::BridgeRequest;
 use crate::portal_host::resolver::PortalResolverRes;
 use fe_runtime::qa_portal::{
     self as fixture, FixtureCommand, FixtureObservation, FixtureOp, FixtureOutcome, FixtureReceipt,
-    FixtureReceiver, FixtureResult,
+    FixtureReceiver, FixtureResult, IpcPostRowName, MountExpectation,
 };
 use fe_webview::portal_bundle::admission::GovernanceView;
+use fe_webview::portal_bundle::qa_rows::{self, IpcPostRow};
+use fe_webview::portal_bundle::BridgeWebview;
 use fe_ui::{
     actions::UiManager, navigation_manager::NavigationManager, node_manager::NodeManager, plugin::LocalUserRole,
 };
@@ -67,22 +69,91 @@ fn kill_switch(resolver: &crate::portal_host::resolver::PortalResolver, engage: 
     let view = resolver.view();
     view.set_kill_switch(engage);
     let disabled = view.host_disabled();
+    host_result(
+        scope,
+        FixtureOp::PortalKillSwitch { engage },
+        "killswitch",
+        engage,
+        serde_json::json!({"killswitch": {"engaged": engage, "host_disabled": disabled}}),
+    )
+}
+
+/// One fixed PJ2 row through the open bundle's bridge (`qa_rows::post_row`); a pinned mount that differs is refused.
+fn ipc_post(
+    resource: &WebViewBackendRes,
+    row: IpcPostRowName,
+    expect: MountExpectation,
+    scope: String,
+) -> FixtureOutcome {
+    let (Some(native), Some(host)) = (resource.backend.as_ref(), resource.bundles.as_ref()) else {
+        return Err(fixture::unavailable());
+    };
+    let Some(bridge) = native.portal_bridge() else {
+        return Err(fixture::unavailable());
+    };
+    let mounts = host.mounts();
+    let pinned = expect != MountExpectation::default();
+    if pinned
+        && !mounts
+            .current()
+            .is_some_and(|mount| expect.matches(&mount.package_id, &mount.content_hash))
+    {
+        return Err(fixture::failure(
+            "portal_fixture_mount_mismatch",
+            "The open bundle is not the package or build the request names",
+        ));
+    }
+    let Some(outcome) = qa_rows::post_row(bridge, mounts, web_row(row), std::time::Instant::now()) else {
+        return Err(fixture::failure(
+            "portal_fixture_row_unavailable",
+            "This row needs an open bundle (admitted for hidden, stale and control)",
+        ));
+    };
+    Ok(host_result(
+        scope,
+        FixtureOp::PortalIpcPost { row, expect },
+        "ipc_post",
+        outcome.delivered,
+        serde_json::json!({"ipc_post": {
+            "row": row,
+            "dropped_origin_delta": outcome.dropped_origin_delta,
+            "delivered": outcome.delivered,
+            "replied": outcome.replied,
+        }}),
+    ))
+}
+
+/// The fe-runtime mirror of a row to fe-webview's.
+fn web_row(row: IpcPostRowName) -> IpcPostRow {
+    match row {
+        IpcPostRowName::Unsigned => IpcPostRow::Unsigned,
+        IpcPostRowName::Unadmitted => IpcPostRow::Unadmitted,
+        IpcPostRowName::External => IpcPostRow::External,
+        IpcPostRowName::ForeignFrame => IpcPostRow::ForeignFrame,
+        IpcPostRowName::Hidden => IpcPostRow::Hidden,
+        IpcPostRowName::Stale => IpcPostRow::Stale,
+        IpcPostRowName::Control => IpcPostRow::Control,
+    }
+}
+
+/// Receipt for a host-side op: no page was read, so no URL; the outcome rides in `portal`.
+fn host_result(scope: String, operation: FixtureOp, page: &str, invoked: bool, portal: serde_json::Value) -> FixtureResult {
     FixtureResult {
         receipt: FixtureReceipt {
             scope,
-            operation: FixtureOp::PortalKillSwitch { engage },
+            operation,
             popup_session: 0,
             page_generation: 0,
             url: String::new(),
-            // The legacy observation is a required field; the outcome rides in `portal`.
+            // The legacy observation is a required field.
             observation: FixtureObservation {
-                page: "killswitch".into(),
+                page: page.into(),
                 title: String::new(),
                 heading: String::new(),
                 second_link: String::new(),
                 third_link: String::new(),
                 ready: true,
-                invoked: engage,
+                invoked,
             },
             link_invoked: false,
             native_refusal_observed: false,
@@ -90,7 +161,7 @@ fn kill_switch(resolver: &crate::portal_host::resolver::PortalResolver, engage: 
             width: None,
             height: None,
             sha256: None,
-            portal: Some(serde_json::json!({"killswitch": {"engaged": engage, "host_disabled": disabled}})),
+            portal: Some(portal),
         },
         png: None,
     }
@@ -162,6 +233,21 @@ fn serve(
             } else {
                 match (resolver.as_deref(), nav.active_scope()) {
                     (Some(resolver), Some(scope)) => Ok(kill_switch(&resolver.0, engage, scope)),
+                    _ => Err(fixture::unavailable()),
+                }
+            };
+            request.reply(reply);
+            continue;
+        }
+        // A fixed IPC row is the bridge's own ingress, not a page job: it runs now on the open bundle.
+        if let FixtureOp::PortalIpcPost { row, expect } = request.op.operation {
+            let reply = if !view.covers(&request.caller_scope, Some(&nav)) || current.is_none() {
+                Err(fe_runtime::qa_debug::QaFailure::denied())
+            } else if !request.op.is_current() || request.reply_tx.is_closed() {
+                Err(fixture::stale())
+            } else {
+                match (backend.as_deref(), nav.active_scope()) {
+                    (Some(resource), Some(scope)) => ipc_post(resource, row, expect, scope),
                     _ => Err(fixture::unavailable()),
                 }
             };

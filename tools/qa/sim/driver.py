@@ -1035,12 +1035,19 @@ class Driver:
             # Fixed body {engage} only, behind the portal-fixture Owner+input gate (steer 2026-11-09 02:15).
             return client.send("POST", portal_probe.DEBUG_BASE + "killswitch", {"engage": bool(args.get("engage", True))},
                                client.debug_token(), 8.0)
+        if op == "portal_ipc_post":
+            # Fixed PJ2 row (protocol.md section 9): {row} plus optional mount pins, same gate as the kill switch.
+            body = {"row": str(args["row"])}
+            for key in ("package_id", "content_hash"):
+                if args.get(key):
+                    body[key] = str(args[key])
+            return client.send("POST", portal_probe.DEBUG_BASE + "ipc-post", body, client.debug_token(), 8.0)
         if op == "portal_admit":
             return self._portal_admit(client, args)
         if op == "regrant_role":
             return self._regrant_role(client, args)
         return Outcome(status=0, ok=False, refused=True, code="portal_op_unwired",
-                       error="%s has no API route or GUI affordance in this build (IPC row posts)" % op)
+                       error="%s has no API route or GUI affordance in this build" % op)
 
     def _portal_admit(self, client, args):
         """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5), then the consent dialog's "Enable <package_id>"."""

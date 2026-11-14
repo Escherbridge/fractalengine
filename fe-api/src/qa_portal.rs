@@ -8,7 +8,9 @@ use axum::{
     Extension, Json,
 };
 use fe_identity::api_token::ApiClaims;
-use fe_runtime::qa_portal::{FixtureCommand, FixtureOp, FixtureResult, JOB_LIMIT};
+use fe_runtime::qa_portal::{
+    FixtureCommand, FixtureOp, FixtureResult, IpcPostRowName, MountExpectation, JOB_LIMIT,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -106,8 +108,8 @@ async fn admitted(
             error.message,
         )
     })?;
-    let url_ok = if matches!(operation, FixtureOp::PortalKillSwitch { .. }) {
-        // Host governance op: no page, so the receipt carries no URL.
+    let url_ok = if matches!(operation, FixtureOp::PortalKillSwitch { .. } | FixtureOp::PortalIpcPost { .. }) {
+        // Host-side ops (governance, the bridge's own ingress): no page is read, so the receipt carries no URL.
         result.receipt.url.is_empty()
     } else if matches!(operation, FixtureOp::PortalIpcStats) && unmounted_totals(&result) {
         result.receipt.url.is_empty()
@@ -393,6 +395,63 @@ pub async fn portal_killswitch(
         Ok(result) => Json(json!({"ok":true,"data":{
             "scope": result.receipt.scope,
             "killswitch": result.receipt.portal.and_then(|portal| portal.get("killswitch").cloned()),
+        }}))
+        .into_response(),
+        Err(error) => error,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IpcPostRequest {
+    row: IpcPostRowName,
+    /// Informational in the scenario; when present the open mount must have this package id (else 409).
+    #[serde(default)]
+    package_id: Option<String>,
+    /// Informational in the scenario; when present the open mount must have this content hash (else 409).
+    #[serde(default)]
+    content_hash: Option<String>,
+}
+
+/// POST /api/v1/debug/portal/ipc-post: `{"row": <fixed PJ2 row>}` (+ optional mount pins); gated like `portal_killswitch`.
+/// The binary posts that row's fixed envelope from its fixed source through the open bundle's bridge.
+pub async fn portal_ipc_post(
+    State(state): State<Arc<ApiState>>,
+    Extension(claims): Extension<ApiClaims>,
+    uri: Uri,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Err(error) = crate::qa_debug::QA_GATE
+        .admit(state.input.allowed, &state, &claims)
+        .await
+    {
+        return refusal(error.status(), "qa_gate_refused", &error.message());
+    }
+    let parsed = serde_json::from_slice::<IpcPostRequest>(&body)
+        .ok()
+        .filter(|_| uri.query().is_none())
+        .and_then(|request| {
+            MountExpectation::from_request(request.package_id.as_deref(), request.content_hash.as_deref())
+                .map(|expect| (request.row, expect))
+        });
+    let Some((row, expect)) = parsed else {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "invalid_fixture_operation",
+            "Only {\"row\": <fixed row>, \"package_id\"?, \"content_hash\"?} is accepted",
+        );
+    };
+    if crate::auth::require_role_level(&claims, fe_database::RoleLevel::Owner).is_err() {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "qa_gate_refused",
+            "QA authorization is no longer current",
+        );
+    }
+    match admitted(&state, &claims, FixtureOp::PortalIpcPost { row, expect }).await {
+        Ok(result) => Json(json!({"ok":true,"data":{
+            "scope": result.receipt.scope,
+            "ipc_post": result.receipt.portal.and_then(|portal| portal.get("ipc_post").cloned()),
         }}))
         .into_response(),
         Err(error) => error,

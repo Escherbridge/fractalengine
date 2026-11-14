@@ -18,6 +18,7 @@ use fe_webview::portal_bundle::admission::{
 use fe_webview::portal_bundle::feeds::{serve, FeedSource, FEEDS_PATH};
 use fe_webview::portal_bundle::ipc::PAGE_API_PATH;
 use fe_webview::portal_bundle::origin::{admitted_label, static_label};
+use fe_webview::portal_bundle::qa_rows::{self, IpcPostRow};
 use fe_webview::portal_bundle::{
     prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleHost, BundleIdentity, BundleParts,
     BundleResolver, BundleSource, BundleTarget, BundleWebview, Decision, DeliveryKind, Ingress, IpcError, Label,
@@ -590,6 +591,23 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
     page.bridge.set_visible(false);
     assert_eq!(page.post_from(&page.sender.clone(), &subscribe), Ingress::Dropped, "hidden portal");
     page.bridge.set_visible(true);
+
+    // PJ2's fixed rows (the `ipc-post` QA op, fixed sources and envelopes): each non-control row is exactly one origin
+    // drop, never delivered or answered; control is heard and answered. Mutation check: a row posted from the admitted
+    // document with its live token (or `hidden` left visible) goes red here.
+    for row in IpcPostRow::ALL {
+        let outcome = qa_rows::post_row(&page.bridge, &page.mounts, row, page.now).expect("an admitted bundle is open");
+        let heard = row == IpcPostRow::Control;
+        assert_eq!(
+            (outcome.dropped_origin_delta, outcome.delivered, outcome.replied),
+            (u64::from(!heard), heard, false),
+            "{row:?}"
+        );
+    }
+    page.pump();
+    assert_eq!(page.ok(qa_rows::ROW_ENVELOPE_ID)["api"], "fe.portal.v1", "control is answered");
+    let answered = page.received.iter().filter(|message| message["re"] == json!(qa_rows::ROW_ENVELOPE_ID)).count();
+    assert_eq!(answered, 1, "only the control row is answered");
 
     // SP-9, the native path: the sender is judged before the body is read, so an unreadable or over-cap Source, or any
     // origin but the admitted document's, never has its body read; the document's own over-cap or non-string body is
