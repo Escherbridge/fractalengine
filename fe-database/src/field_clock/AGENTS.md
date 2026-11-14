@@ -194,7 +194,12 @@ or create it hollow. The wire row still carries every committed column in plain 
   first, then author bytes; any hlc > 0 version beats every floor. The winner of a floor-only key is
   therefore the greatest admissible floor value in the stored set, whatever author carried it. The set
   grows by union (`upsert_own` keeps the greater value per author slot), so it is independent of
-  arrival order. A peer's own migration floor and an incoming filled floor compete under the same rule
+  arrival order. A greater floor replaces the lesser one IN its author slot, so the winner's cached
+  identity `(field, hlc 0, author)` does not change while its value does; `row_field_clock` is
+  value-less, so `apply_once` treats any winner it wrote this apply as changed and rewrites the column
+  (comparing only identities left the first-arrived value materialized). A cached-fallback winner never
+  equals a written version (it carries no value), so an inadmissible rewrite is not materialized.
+  A peer's own migration floor and an incoming filled floor compete under the same rule
   on every peer that holds both. Peers converge once every distinct floor value has travelled once (a
   peer's floor value travels when it publishes the row).
 - **Not chosen: claiming the floor at publish** (restamp every floor key at the publish HLC). A claim of

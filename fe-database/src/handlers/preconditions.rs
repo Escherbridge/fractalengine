@@ -150,7 +150,7 @@ async fn require_record_in_petal(
     operation: &str,
     target_kind: &str,
 ) -> anyhow::Result<String> {
-    let sql = format!("SELECT petal_id FROM {table} WHERE id = $id LIMIT 1");
+    let sql = format!("SELECT petal_id FROM {table} WHERE id = type::record($id) LIMIT 1");
     let mut result = db
         .query(sql)
         .bind(("id", id.to_string()))

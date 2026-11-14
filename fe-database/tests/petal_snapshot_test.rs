@@ -84,6 +84,9 @@ async fn seed_op(db: &Db, node_id: &str, op_type: OpType, payload: Value) {
 
 /// Two petals, a verse-level role and decoy rows; only the exported petal's state may come back.
 async fn seed_two_petals(db: &Db) {
+    // The verse the space-manager edits resolve roles against (owner is not the editing actor).
+    run(db, "CREATE verse CONTENT { verse_id: $vid, name: 'V', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"vid": VERSE})).await;
     seed_fractal(db).await;
     for petal_id in [PETAL, SIBLING] {
         run(db, "CREATE petal CONTENT { petal_id: $pid, name: $pid, node_id: 'did:key:owner', created_at: '2026-11-13T00:00:00Z', visibility: 'private', tags: [], fractal_id: $fid }",
@@ -354,9 +357,11 @@ async fn petal_snapshot_export_then_import_journey() {
     assert!(unstamped.is_empty(), "no actor and a forged archive value: imported_by stays absent: {unstamped:?}");
     let restored = export_petal_snapshot(&restored_db, PETAL).await.expect("export the restored petal");
     // Quarantine: imported history is never live op-log, so no proof or marker lookup can read it.
-    let live_types = select(&restored_db, "SELECT VALUE op_type FROM op_log ORDER BY lamport_clock ASC").await;
+    // SurrealDB 3 needs the ORDER BY field selected: read whole rows, project in Rust.
+    let project = |rows: Vec<Value>, field: &str| rows.iter().map(|row| row[field].clone()).collect::<Vec<Value>>();
+    let live_types = project(select(&restored_db, "SELECT * FROM op_log ORDER BY lamport_clock ASC").await, "op_type");
     assert_eq!(live_types, [json!("ImportPetal"), json!("ExportPetal")], "only this node's own audit entries are live");
-    let quarantined = select(&restored_db, "SELECT VALUE source_id FROM op_log_imported ORDER BY lamport_clock ASC").await;
+    let quarantined = project(select(&restored_db, "SELECT * FROM op_log_imported ORDER BY lamport_clock ASC").await, "source_id");
     let source_ids: Vec<Value> = snapshot.oplog.iter().map(|entry| entry["id"].clone()).collect();
     assert_eq!(quarantined, source_ids, "every imported entry is quarantined under its original record id");
     assert_eq!(restored.petal, snapshot.petal, "petal row restored verbatim");

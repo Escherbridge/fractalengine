@@ -185,16 +185,11 @@ impl SpaceManager {
             require_room_in_petal(db, &room_id, petal_id, "UpdateRoomMetadata").await?;
         let scope = require_petal_scope(db, &target_petal_id, "UpdateRoomMetadata").await?;
         crate::rbac::require_write_role(db, caller_node_id, &scope).await?;
-        let bounds_val = meta
-            .bounds
-            .as_ref()
-            .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
-            .unwrap_or(serde_json::Value::Null);
-        let spawn_val = meta
-            .spawn_point
-            .as_ref()
-            .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
-            .unwrap_or(serde_json::Value::Null);
+        // Option binds: None reaches the option<object> column as NONE, not NULL.
+        let bounds_val: Option<serde_json::Value> =
+            meta.bounds.as_ref().and_then(|b| serde_json::to_value(b).ok());
+        let spawn_val: Option<serde_json::Value> =
+            meta.spawn_point.as_ref().and_then(|s| serde_json::to_value(s).ok());
 
         let entry = OpLogEntry {
             lamport_clock: 0,
@@ -236,7 +231,7 @@ impl SpaceManager {
         room_id: String,
     ) -> anyhow::Result<Option<Room>> {
         let mut result: surrealdb::IndexedResults = db
-            .query("SELECT * FROM room WHERE id = $id")
+            .query("SELECT * FROM room WHERE id = type::record($id)")
             .bind(("id", room_id))
             .await?;
         let raw: Option<serde_json::Value> = result.take(0)?;

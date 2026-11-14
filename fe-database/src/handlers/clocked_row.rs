@@ -388,10 +388,12 @@ async fn apply_once(
     for winner in &cached {
         winners.entry(winner.field.clone()).or_insert_with(|| winner.clone());
     }
+    // A winner written by this apply is changed even at its cached (field, hlc, author): the cache is value-less (§floor-fill).
     let is_cached = |winner: &FieldVersion| {
-        cached
-            .iter()
-            .any(|old| old.field == winner.field && old.hlc == winner.hlc && old.author == winner.author)
+        !written.contains(winner)
+            && cached
+                .iter()
+                .any(|old| old.field == winner.field && old.hlc == winner.hlc && old.author == winner.author)
     };
     let changed: Vec<&FieldVersion> = winners.values().filter(|winner| !is_cached(*winner)).collect();
     let cache_changed = !changed.is_empty() || winners.len() != cached.len();
