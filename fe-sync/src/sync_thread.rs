@@ -2075,7 +2075,7 @@ impl RelayAdoption {
         self.replan = true;
     }
 
-    /// Relays a peer address may name: Configured, Default and inserted, plus DialOnly URLs that pass the public-address check.
+    /// Relays a peer address may name: Configured, Default and inserted, plus DialOnly URLs whose resolved addresses pass the advertised-relay address policy.
     async fn allowlist(&mut self) -> BTreeSet<String> {
         let now = std::time::Instant::now();
         let mut allowed: BTreeSet<String> = self
@@ -2103,7 +2103,7 @@ impl RelayAdoption {
         let mut lookups = tokio::task::JoinSet::new();
         for url in pending {
             lookups.spawn(async move {
-                let verdict = advertised_relay_insertable(&url).await;
+                let verdict = dial_only_relay_allowed(&url).await;
                 (url, verdict)
             });
         }
@@ -2441,6 +2441,37 @@ async fn resolve_public_relay(raw: &str) -> Result<Vec<std::net::SocketAddr>, St
 /// A pinned or home-eligible advert may enter the relay map only as a public https relay whose every resolved address is public.
 async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
     resolve_public_relay(raw).await.map(|_| ())
+}
+
+/// A DialOnly advert may join the peer-address allowlist when every resolved address passes the process address policy (private reach only under the operator opt-in, loopback and link-local never).
+async fn dial_only_relay_allowed(raw: &str) -> Result<(), String> {
+    use fe_runtime::relay_advertisement::{
+        check_resolved_relay_address, validate_advertised_relay_url, AdvertisedRelayPolicy,
+    };
+    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
+    // IP-literal hosts were classified by the validator under the same policy.
+    let Some(domain) = advertised.url().domain() else {
+        return Ok(());
+    };
+    let port = advertised.url().port_or_known_default().unwrap_or(443);
+    let resolved = tokio::time::timeout(
+        ADVERTISED_RELAY_RESOLVE_TIMEOUT,
+        tokio::net::lookup_host((domain, port)),
+    )
+    .await
+    .map_err(|_| "host resolution timed out".to_string())?
+    .map_err(|error| format!("host resolution failed: {error}"))?;
+    let policy = AdvertisedRelayPolicy::process();
+    let mut any_address = false;
+    for address in resolved {
+        check_resolved_relay_address(address.ip(), policy).map_err(|error| error.to_string())?;
+        any_address = true;
+    }
+    if any_address {
+        Ok(())
+    } else {
+        Err("host resolved to no address".to_string())
+    }
 }
 
 /// One adopted-relay health check: a TCP connect, within the probe budget, to an address that passed the public-address check.

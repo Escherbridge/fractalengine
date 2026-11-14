@@ -166,7 +166,8 @@ fn start(runtime: &tokio::runtime::Handle, hosted_verses: BTreeSet<String>) -> O
         Ok(relay) => {
             let handle = RelayServeHandle { _relay: relay };
             let served = handle.served_verse_ids();
-            tracing::info!(verses = served.len(), ids = ?served, "desktop relay serving verses");
+            tracing::info!(verses = served.len(), "desktop relay serving verses");
+            tracing::debug!(ids = ?served, "desktop relay served verse ids");
             let known_names = fe_ui::settings::relay_servable_verses();
             let published = served
                 .into_iter()
