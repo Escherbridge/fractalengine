@@ -41,7 +41,7 @@ fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'st
         let id = sql_literal(&sel.node_id);
         templates.push((
             "This node",
-            format!("SELECT * FROM node WHERE node_id = '{id}'"),
+            format!("SELECT * FROM node WHERE node_id = '{id}' AND tombstone = NONE"),
         ));
         templates.push((
             "This node's device data",
@@ -51,7 +51,7 @@ fn query_templates(nav: &NavigationManager, node_mgr: &NodeManager) -> Vec<(&'st
     if let Some(petal_id) = nav.active_petal_id.as_deref() { templates.push((
         "All nodes in this petal",
         format!(
-            "SELECT * FROM node WHERE petal_id = '{}'",
+            "SELECT * FROM node WHERE petal_id = '{}' AND tombstone = NONE",
             sql_literal(petal_id)
         ),
     )) }
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(templates[0].0, "All nodes in this petal");
         assert_eq!(
             templates[0].1,
-            "SELECT * FROM node WHERE petal_id = 'petal-123'"
+            "SELECT * FROM node WHERE petal_id = 'petal-123' AND tombstone = NONE"
         );
     }
 
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(templates[0].0, "This node");
         assert_eq!(
             templates[0].1,
-            "SELECT * FROM node WHERE node_id = 'node-42'"
+            "SELECT * FROM node WHERE node_id = 'node-42' AND tombstone = NONE"
         );
         assert_eq!(templates[1].0, "This node's device data");
         assert_eq!(

@@ -75,10 +75,10 @@ fn escape_sql_str(s: &str) -> String {
     s.replace('\'', "''")
 }
 
-/// Default petal-scope node SELECT.
+/// Default petal-scope node SELECT; `tombstone = NONE` hides soft-deleted rows like REST.
 pub(crate) fn petal_scope_sql(petal_id: &str) -> String {
     format!(
-        "SELECT * FROM node WHERE petal_id = '{}'",
+        "SELECT * FROM node WHERE petal_id = '{}' AND tombstone = NONE",
         escape_sql_str(petal_id)
     )
 }
@@ -86,7 +86,7 @@ pub(crate) fn petal_scope_sql(petal_id: &str) -> String {
 /// Single-node SELECT within a petal.
 pub(crate) fn node_selection_sql(petal_id: &str, node_id: &str) -> String {
     format!(
-        "SELECT * FROM node WHERE petal_id = '{}' AND node_id = '{}'",
+        "SELECT * FROM node WHERE petal_id = '{}' AND node_id = '{}' AND tombstone = NONE",
         escape_sql_str(petal_id),
         escape_sql_str(node_id),
     )
@@ -119,7 +119,8 @@ pub(crate) fn bbox_sql(petal_id: &str, min: [f32; 2], max: [f32; 2]) -> String {
     format!(
         "SELECT * FROM node WHERE petal_id = '{}' \
          AND position.coordinates[0] >= {min_x} AND position.coordinates[0] <= {max_x} \
-         AND position.coordinates[1] >= {min_z} AND position.coordinates[1] <= {max_z}",
+         AND position.coordinates[1] >= {min_z} AND position.coordinates[1] <= {max_z} \
+         AND tombstone = NONE",
         escape_sql_str(petal_id),
     )
 }
@@ -247,7 +248,7 @@ mod tests {
     fn petal_scope_sql_exact() {
         assert_eq!(
             petal_scope_sql("petal-1"),
-            "SELECT * FROM node WHERE petal_id = 'petal-1'"
+            "SELECT * FROM node WHERE petal_id = 'petal-1' AND tombstone = NONE"
         );
     }
 
@@ -255,7 +256,7 @@ mod tests {
     fn petal_scope_sql_escapes_single_quote() {
         assert_eq!(
             petal_scope_sql("pe'tal"),
-            "SELECT * FROM node WHERE petal_id = 'pe''tal'"
+            "SELECT * FROM node WHERE petal_id = 'pe''tal' AND tombstone = NONE"
         );
     }
 
@@ -263,7 +264,7 @@ mod tests {
     fn node_selection_sql_exact() {
         assert_eq!(
             node_selection_sql("petal-1", "node-9"),
-            "SELECT * FROM node WHERE petal_id = 'petal-1' AND node_id = 'node-9'",
+            "SELECT * FROM node WHERE petal_id = 'petal-1' AND node_id = 'node-9' AND tombstone = NONE",
         );
     }
 
@@ -271,7 +272,8 @@ mod tests {
     fn bbox_sql_exact_and_normalizes_reversed_bounds() {
         let expect = "SELECT * FROM node WHERE petal_id = 'petal-1' \
                       AND position.coordinates[0] >= -50 AND position.coordinates[0] <= 50 \
-                      AND position.coordinates[1] >= -50 AND position.coordinates[1] <= 50";
+                      AND position.coordinates[1] >= -50 AND position.coordinates[1] <= 50 \
+                      AND tombstone = NONE";
         assert_eq!(bbox_sql("petal-1", [-50.0, -50.0], [50.0, 50.0]), expect);
         assert_eq!(
             bbox_sql("petal-1", [50.0, 50.0], [-50.0, -50.0]),
@@ -371,6 +373,84 @@ mod tests {
             api_string_for("node-9").as_deref(),
             Some("SELECT * FROM node WHERE node_id = 'node-9' AND tombstone = NONE"),
         );
+        pasted_string_reads_same_node_then_nothing_after_tombstone();
+    }
+
+    /// FR-5 + QA-0127: the pasted string reads the node through the real DB thread, nothing once tombstoned.
+    fn pasted_string_reads_same_node_then_nothing_after_tombstone() {
+        use fe_runtime::messages::{CallerAuth, DbCommand, DbResult};
+        use std::time::Duration;
+        const TIMEOUT: Duration = Duration::from_secs(20);
+        let (cmd_tx, cmd_rx) = crossbeam::channel::bounded::<DbCommand>(64);
+        let (res_tx, res_rx) = crossbeam::channel::bounded::<DbResult>(64);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("paste_rt.db").to_string_lossy().to_string();
+        let blob_store: fe_database::BlobStoreHandle =
+            std::sync::Arc::new(fe_runtime::blob_store::mock::MockBlobStore::new());
+        let thread = fe_database::spawn_db_thread_shared(
+            cmd_rx, res_tx, blob_store, None, None, None, None, Some(db_path), None,
+        )
+        .expect("spawn db thread");
+        let recv = || res_rx.recv_timeout(TIMEOUT).expect("db result within timeout");
+        assert!(matches!(recv(), DbResult::Started));
+
+        cmd_tx.send(DbCommand::CreateVerse { name: "V".into() }).unwrap();
+        let DbResult::VerseCreated { id: verse_id, .. } = recv() else { panic!("VerseCreated") };
+        cmd_tx.send(DbCommand::CreateFractal { verse_id, name: "F".into() }).unwrap();
+        let DbResult::FractalCreated { id: fractal_id, .. } = recv() else { panic!("FractalCreated") };
+        cmd_tx.send(DbCommand::CreatePetal { fractal_id, name: "P".into() }).unwrap();
+        let DbResult::PetalCreated { id: petal_id, .. } = recv() else { panic!("PetalCreated") };
+        cmd_tx
+            .send(DbCommand::CreateNode {
+                petal_id: petal_id.clone(),
+                name: "Pasted".into(),
+                position: [0.0, 0.0, 0.0],
+                correlation_id: None,
+            })
+            .unwrap();
+        let DbResult::NodeCreated { id: node_id, .. } = recv() else { panic!("NodeCreated") };
+        cmd_tx
+            .send(DbCommand::SetNodeProperty {
+                node_id: node_id.clone(),
+                key: "label".into(),
+                value: serde_json::json!("pasted"),
+                correlation_id: None,
+            })
+            .unwrap();
+        assert!(matches!(recv(), DbResult::NodePropertySet { .. }));
+
+        let pasted = api_string_for(&node_id).expect("api string");
+        let run_pasted = || {
+            cmd_tx
+                .send(DbCommand::ScopedQuery {
+                    sql: pasted.clone(),
+                    vars: Default::default(),
+                    petal_scope: vec![petal_id.clone()],
+                    correlation_id: "paste-read".into(),
+                })
+                .unwrap();
+            match recv() {
+                DbResult::QueryResult { data, .. } => data,
+                other => panic!("expected QueryResult, got {other:?}"),
+            }
+        };
+        let rows = run_pasted();
+        assert_eq!(rows.len(), 1, "pasted string reads the node: {pasted}");
+        assert_eq!(rows[0]["node_id"], node_id);
+        cmd_tx
+            .send(DbCommand::GetNodeProperties { node_id: node_id.clone(), correlation_id: None })
+            .unwrap();
+        let DbResult::NodePropertiesLoaded { properties, .. } = recv() else { panic!("NodePropertiesLoaded") };
+        assert_eq!(rows[0]["properties"], properties, "pasted read matches GetNodeProperties");
+
+        cmd_tx
+            .send(DbCommand::TombstoneNode { node_id: node_id.clone(), auth: CallerAuth::Local })
+            .unwrap();
+        assert!(matches!(recv(), DbResult::NodeDeleted { .. }));
+        assert!(run_pasted().is_empty(), "tombstoned node hidden from the pasted read");
+
+        drop(cmd_tx); // close the channel so the DB loop exits before the temp dir drops
+        let _ = thread.join_handle.join();
     }
 
     #[test]
