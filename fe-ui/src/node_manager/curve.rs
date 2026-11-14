@@ -112,18 +112,25 @@ fn hermite_cardinal(
 /// `samples` is the number of samples emitted per cubic segment. For `< 2`
 /// control points the input is returned unchanged.
 pub fn bezier(control: &[[f32; 3]], samples: usize) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    bezier_into(control, samples, &mut out);
+    out
+}
+
+/// Appends the points `bezier` returns to `out` (no allocation once `out` has capacity).
+pub fn bezier_into(control: &[[f32; 3]], samples: usize, out: &mut Vec<[f32; 3]>) {
     if control.len() < 2 {
-        return control.to_vec();
+        out.extend_from_slice(control);
+        return;
     }
     let steps = samples.max(1);
-    let mut out: Vec<[f32; 3]> = Vec::new();
     out.push(control[0]);
 
     let mut i = 0usize;
     while i + 3 < control.len() {
         // Full cubic segment P_i..P_{i+3}, reusing P_{i+3} as next start.
         let seg = [control[i], control[i + 1], control[i + 2], control[i + 3]];
-        push_cubic(&mut out, seg, steps);
+        push_cubic(out, seg, steps);
         i += 3;
     }
     // Handle the tail (remaining points after the last full cubic).
@@ -145,11 +152,10 @@ pub fn bezier(control: &[[f32; 3]], samples: usize) -> Vec<[f32; 3]> {
             // Cubic control points equivalent to the quadratic.
             let c1 = lerp3(p0, p1, 2.0 / 3.0);
             let c2 = lerp3(p2, p1, 2.0 / 3.0);
-            push_cubic(&mut out, [p0, c1, c2, p2], steps);
+            push_cubic(out, [p0, c1, c2, p2], steps);
         }
         _ => {}
     }
-    out
 }
 
 /// Append `steps` samples of a single cubic Bezier segment (excluding the
@@ -484,6 +490,16 @@ mod tests {
         let out = bezier(&control, samples);
         // 1 cubic segment: samples + 1 start point.
         assert_eq!(out.len(), samples + 1);
+
+        // `bezier_into` appends (prefix preserved) and matches `bezier`.
+        let three = [control[0], control[1], control[3]];
+        let one = [control[0]];
+        for input in [&control[..], &three[..], &one[..]] {
+            let mut appended = vec![[9.0, 9.0, 9.0]];
+            bezier_into(input, samples, &mut appended);
+            assert_eq!(appended[0], [9.0, 9.0, 9.0]);
+            assert_eq!(&appended[1..], bezier(input, samples).as_slice());
+        }
     }
 
     #[test]

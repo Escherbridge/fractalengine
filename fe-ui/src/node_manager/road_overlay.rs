@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use super::measure::measure_world_scale;
-use super::road_chain::{decimate_into, expand_segment, pending_length, RoadBuilderState, RoadMode};
+use super::road_chain::{decimate_into, expand_segment_into, pending_length, RoadBuilderState, RoadMode};
 use super::road_interaction::RoadHoverState;
 use super::road_snap::{Guide, SnapKind};
 use crate::geometry::{format_distance_m, meters_to_world, world_to_meters};
@@ -79,7 +79,7 @@ pub(crate) fn classify_validity(
 }
 
 /// Fill `out` with the in-flight segment preview; empty until a chain anchor exists.
-/// Straight and freeform reuse `out` (no per-frame allocation); curved samples via `bezier`.
+/// Straight and freeform reuse `out` (no per-frame allocation); curved samples via `bezier_into`.
 pub(crate) fn ghost_polyline_into(
     state: &RoadBuilderState,
     hover: &RoadHoverState,
@@ -94,11 +94,12 @@ pub(crate) fn ghost_polyline_into(
         // Same two points `expand_segment(Straight, ..)` commits.
         RoadMode::Straight => out.extend_from_slice(&[anchor, cursor]),
         RoadMode::Curved => match state.pending.first() {
-            Some(&control) => out.extend(expand_segment(
+            Some(&control) => expand_segment_into(
                 RoadMode::Curved,
                 &[anchor, control, cursor],
                 settings.curve_samples,
-            )),
+                out,
+            ),
             None => out.extend_from_slice(&[anchor, cursor]),
         },
         RoadMode::Freeform => {
@@ -299,7 +300,7 @@ pub(crate) fn draw_road_readout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_manager::road_chain::decimate;
+    use crate::node_manager::road_chain::{decimate, expand_segment};
     use crate::node_manager::road_snap::SnapOutcome;
 
     fn at(x: f32, z: f32) -> [f32; 3] {
@@ -360,6 +361,14 @@ mod tests {
             curved.settings.curve_samples,
         );
         assert_eq!(ghost_polyline(&curved, &hover), expected);
+        let mut appended = Vec::new();
+        expand_segment_into(
+            RoadMode::Curved,
+            &[at(0.0, 0.0), at(5.0, 5.0), at(10.0, 0.0)],
+            curved.settings.curve_samples,
+            &mut appended,
+        );
+        assert_eq!(appended, expected, "into form matches the allocating wrapper");
 
         let mut freeform = state_with(RoadMode::Freeform, Some(at(0.0, 0.0)));
         freeform.freeform_samples = vec![at(0.0, 0.0), at(5.0, 0.0), at(5.5, 0.0)];

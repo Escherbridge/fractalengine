@@ -6,7 +6,7 @@
 
 use bevy::prelude::Resource;
 
-use super::curve::bezier;
+use super::curve::bezier_into;
 
 /// Defense-in-depth cap on buffered freeform drag samples.
 pub(crate) const MAX_FREEFORM_SAMPLES: usize = 8192;
@@ -438,10 +438,22 @@ pub(crate) fn expand_segment(
     controls: &[[f32; 3]],
     samples: usize,
 ) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    expand_segment_into(mode, controls, samples, &mut out);
+    out
+}
+
+/// Appends `expand_segment`'s points to `out`; ghost and commit share this path.
+pub(crate) fn expand_segment_into(
+    mode: RoadMode,
+    controls: &[[f32; 3]],
+    samples: usize,
+    out: &mut Vec<[f32; 3]>,
+) {
     match mode {
-        RoadMode::Curved if controls.len() >= 2 => bezier(controls, samples),
-        RoadMode::Straight => controls.iter().take(2).copied().collect(),
-        _ => controls.to_vec(),
+        RoadMode::Curved if controls.len() >= 2 => bezier_into(controls, samples, out),
+        RoadMode::Straight => out.extend(controls.iter().take(2).copied()),
+        _ => out.extend_from_slice(controls),
     }
 }
 

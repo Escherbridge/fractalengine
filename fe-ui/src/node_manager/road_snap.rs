@@ -2,7 +2,6 @@
 //! (vertex > guide intersection > single guide > angle > raw). XZ-plane math,
 //! Y passthrough, `[f32; 3]` in/out, no ECS types. See
 //! `fe-ui/src/node_manager/AGENTS.md` §road-snap.
-#![allow(dead_code)] // consumed by the road tool systems (CITY-11)
 
 use super::path_point_interaction::SnapCandidate;
 
@@ -184,6 +183,7 @@ pub(crate) enum GuideKind {
 pub(crate) struct Guide {
     pub origin: [f32; 3],
     pub dir: [f32; 2],
+    #[allow(dead_code)] // set by `guidelines`, asserted in tests; no production reader
     pub kind: GuideKind,
 }
 
