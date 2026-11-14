@@ -1,14 +1,14 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-11-08
-head: cf6f9750
+updated: 2026-11-13
+head: acb39de6
 ---
 
 # FractalEngine — Runbook
 
-**Last updated:** 2026-11-08 11:35 · **Branch:** `main` · **Last commit:** `cf6f9750 docs(conductor): P2P
-convergence campaign converged` (+ this hand-off commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
+**Last updated:** 2026-11-13 19:45 · **Branch:** `main` · **Last commit:** `acb39de6 docs(conductor): runbook — repair a
+tab left by an escaped path` (+ this hand-off commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
 `tracks.md`, and the work queue `conductor/doneness-ledger.md`.
@@ -111,6 +111,17 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-13 19:45 — HAND-OFF, focus: HELD-OUT WORK. CI on `main` is RED.** Run `43470091074` (`acb39de6`):
+  Windows build + package green, Lint green, Linux `Test sweep` FAILED, so `latest` was NOT republished (there is
+  no public prerelease right now). fe-ui: 1067 passed / 2 failed; the two earlier terminal-reset failures are gone
+  (`FE_DEV_TOOLS=1` worked). Both failures are on the queue-full path and are believed (not proven) to come
+  from the scene-gate rewiring in `1f6e7ca5`:
+  `actions::earthwork_volumes::tests::brush_commit_bind_and_volume_gate_compose_without_repeat_writes`
+  (`fe-ui/src/actions/earthwork_volumes_journey.rs:484`, `queued.write` is `None` after a pump against a full
+  channel) and `panels::inspector::tests::inspector_transform_and_typed_property_editing_journey`
+  (`fe-ui/src/panels/inspector.rs:5756`, `editor_batch.start` no longer returns an error containing "busy").
+  Captured log: `.omc/research/ci-43470091074-20261113.log`. The held-out register is §7 (H1-H7); nothing in it
+  has started. No workflow, agent, cron or background process is running.
 - **2026-11-13 — SWARM TURN 3 COMPLETE AND COMPILED; pushed.** Turn 3 (`wf_b0df7ead-28e`, 73 slices: 62 done /
   11 partial / 0 failed) completed the extension system (admin CLI `fe-ext admin` over a local OS-user channel,
   one scene gate in the shared write path, decode provenance, store client contract v1, Browse/Install/Update UI,
@@ -251,6 +262,11 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 | Phase | Checkpoint | Findings | Verdict |
 |---|---|---|---|
+| Swarm turn 3 (`wf_b0df7ead-28e`, 73 slices) | per-slice reviewers + automated security findings routed as steers (`conductor/tracks/*/review-turn3/`) | R-STORE, R-ZM fixes confirmed; others recorded per track | PASS-WITH-FIXES per slice; NO whole-surface review |
+| Turn-3 close + refine (`wf_949ff699-7d5`) | `cargo check --all-targets`, public + examples + private | compile fixes only | COMPILES; untested |
+| Orchestrator scene-gate rewiring `450ca722`, `1f6e7ca5` | none (written and committed by the orchestrator) | CI: 2 fe-ui queue-full regressions | UNREVIEWED, RED |
+| Track merges into `main` (`6fdbd951`, 2026-11-09) | merge-gate `/code-review` + `/security-review` | not run | UNREVIEWED (scheduled: §7 step 3) |
+| CI signing step (`build-artifacts.yml`, `release.yml`) | security review of the action pin | action pinned to a commit SHA | FIXED; never exercised (no secrets) |
 | CI fix `0682517` | independent review of async-trait diff | 1 misread corrected | SOUND |
 | `94be5b6` terrain correlation | adversarial review-and-fix | 1H 3M 2L | FIXED |
 | `ba0b8d2` elevated + query guard | security review-and-fix | 1H (record-id leak) 2M 1L | FIXED |
@@ -283,6 +299,17 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 | Critic tick 8 (W4 close / role-propagation pre-launch) | accountability critic | 11 directives AC-41..AC-51 (C11-C21): RP-4s + RP-9b dual review added, AC-42 durable local-statement re-emit, AC-43 three-valued confinement, AC-44 enrolment floor Deferred split, AC-45 C3 false-premise correction, AC-46 stale-API-token cap, AC-47 STREAMED-TERRAIN-PIN promoted to RP-4b, AC-48 gate-text + harness-manifest fix, AC-49 RP-0 (oversized-window test + typed rejection), AC-50 BLOB-HASH-CAPABILITY ledger row, AC-51 bookkeeping | ON_TRACK |
 
 ## 3. Decisions
+
+**2026-11-13 19:40 (user, hand-off grill):**
+- **Order = fix CI, then round 4, then review, then tests.** Chosen over "tests now" because a round-4 change
+  would force a second sweep and the standing rule is tests only after work is complete. *Reversal: cheap.*
+- **The skipped merge review runs once, after round 4 and before tests,** over the whole extension surface;
+  its fixes fold into the single sweep. Chosen over reviewing today's `main` (round 4 would need a second
+  review). *Reversal: cheap.*
+- **Private marketplace tests = plain `cargo test -p <crate>`, one crate at a time, in the private repo.** No
+  private copy of the chunked runner (three small crates). *Reversal: cheap.*
+- **Signing: step wired, provider undecided; old first release deleted; auto-publish kept** (user, earlier
+  2026-11-13). Builds stay unsigned until the secrets in `docs/release-signing.md` exist.
 
 **2026-11-08 ~22:00 (user, mid-swarm): extension governance + scoped bindings.**
 - **OD-E1 = no withdrawal:** a revoked extension stops after its in-flight writes complete; rows it wrote
@@ -452,6 +479,22 @@ canonical-data-log network rollout / relay seeding / inbound P2P / `/ws/canonica
 NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never pushed.
 
 ## 4. Assumptions (highest reversal cost first — confirm the top line before building on it)
+
+**Added 2026-11-13 (unasked at the hand-off):**
+- Self-serve publishing and paid listings stay OFF in the private config until the approval-gate fix (§7 H2)
+  lands · default taken: allow-list only · to reverse: none while it stays off; turning it on first would let an
+  unreviewed listing go active.
+- The entitlement client (§7 H1) verifies tokens against a pinned issuers file shipped with the app, and talks
+  to the issuer anonymously with no redirects and no proxy · default taken: the design in the turn-3 steer · to
+  reverse: moderate (token store format and the bridge API would change).
+- The queue-full regressions are fixed in the product code (keep the pending write and the "busy" error on a
+  full channel), not by editing the two tests · default taken: tests are right, `1f6e7ca5` is wrong · to
+  reverse: cheap, but read the test intent first (`earthwork_volumes_journey.rs:470-490`).
+- The six analytics findings (§7 H6) ride in round 4 as ordinary slices, not a new conductor track · default
+  taken: slices · to reverse: cheap.
+- Earlier unasked defaults still stand: admin channel on with the GUI, Postgres for the private services,
+  counter-signature optional; binding demotion, rollback, LAN targets, tileset trust roots, WS transform judging
+  and portal admission carry-over as recorded in the track checkpoints.
 
 **Added 2026-11-08 (unasked; the user was handing off):**
 - The user starts the EXT sessions by pasting the one-line bootstraps (not headless `claude -p` runs
@@ -634,6 +677,50 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 7. Continuation plan
 
+**CURRENT PLAN (2026-11-13 hand-off; supersedes steps 1-2 of the legacy list below, which described the
+three-session bus model that this single orchestrator session replaced).** Standing rules: no clippy; no test
+run until step 4; `cargo check -p <crate>` is the only gate; never stage `conductor/.conductor_session_log`;
+leak grep before every public commit.
+
+1. **Get `main` green.** Open `fe-ui/src/actions/node.rs` (`try_submit_scene_write_on` / `submit_scene_write`)
+   and the two call sites changed in `1f6e7ca5`: `fe-ui/src/actions/earthwork_volumes.rs` and
+   `fe-ui/src/editor_batch/mod.rs`. On a full DB channel the old code kept the pending write for the next pump
+   (earthwork) and returned an error containing "busy" (editor batch); restore both behaviours through the gated
+   path. Gate: `cargo check -p fe-ui --all-targets`. Do not run tests locally unless the user names the batch;
+   push and let CI's sweep confirm (`gh run list --branch main --limit 2`). A green run republishes `latest`.
+2. **Round 4: the held-out code.** One swarm, same shape as turn 3 (`ext-program-swarm-turn3.js` as the template,
+   width 5, one owner per central file, leaves never build, serialized commit step with ignore check + leak
+   grep; add `AZURE_TENANT_ID` to the leak-grep allow-list). Slices:
+   - **H1 licence tokens (public).** `request_licence_token` in the plugin bridge still answers not-available.
+     Build an `EntitlementClient` there: anonymous transport with redirects and proxies disabled, a keyring
+     verifier over the pinned issuers file, a file token store. Types already exist in
+     `fe-format/src/entitlement.rs`. Until this lands, paid extensions cannot be acquired in-app.
+   - **H2 approval gate (private).** Listing activation ignores the review `ApprovalGate`, and
+     `publisher_verified` is never set. Must land before self-serve publishing is switched on.
+   - **H3 `blob.mirror`.** The binding exists but nothing calls the mirror after a blob commit; add the
+     after-commit caller.
+   - **H4 earthwork petal.** Follow-up earthwork writes check the scene hook against the active petal, not the
+     node's own petal (`fe-ui/src/actions/earthwork_volumes.rs`). Fold into step 1 if it is the same edit.
+   - **H5 journeys never run.** AC-6 real-registry plugin install journey; portal journeys PJ1-PJ9; the WebView2
+     spikes. Write or finish the journey code in round 4; the runs belong to step 4.
+   - **H6 analytics findings** (`.omc/state/turn3-extra-findings.md`): live readings view in the Data window;
+     the Measurements chart shows the first 1024 points, not the latest; Copy-for-BI is not snapshot-safe on live
+     readings; scoped share link; peer name in the window title; a terrain + roadway sim fixture.
+   - **H7 older leftovers:** diagram pass (legacy step 9); QA-0173..0177 triage; QA-0165 decision (legacy
+     step 5).
+   Then one refine pass: `cargo check --all-targets` per touched crate, public and private.
+3. **The skipped merge review, once.** `/code-review high` and `/security-review` over the extension surface
+   as it stands after round 4 (fe-plugin, fe-ext, fe-api scene gate + admin channel, fe-webview portal, fe-format
+   entitlement, fe-hexon-registry, and the three private crates). Record the verdict in the ledger; fixes are
+   applied but not tested here.
+4. **Tests, when the user names them.** Public: `tools/qa/test_batches.ps1 -Batches <ids>` (ids:
+   `.omc/plans/turn3-plan.md` line 295 and `conductor/test-batches.md`); never `cargo test --workspace`.
+   Private: `cargo test -p <crate>` one crate at a time in the private repo. Then run the H5 journeys.
+5. **Signing.** When the user picks a provider and sets the secrets, re-run the release workflow and confirm
+   the Windows exe is signed (`docs/release-signing.md`).
+
+**Legacy list (pre-2026-11-09; steps 3, 4, 6 and 7 still apply as written):**
+
 0. **Run §0** (grill loop) when the user is present; when resuming autonomously, read §4's top
    lines and start at step 1.
 1. **Orchestrate, don't build.** On each bus-monitor tick (or a SendMessage from an EXT session):
@@ -673,6 +760,17 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
    no PERMISSIONS clause, no 2 GB cache tiers (critic findings 2026-11-08).
 
 ## 8. Session log
+
+### 2026-11-13 19:45 — hand-off, focus on held-out work
+- Done: swarm turns 1-3 (extension platform, portal surface, private marketplace services); both tracks merged
+  into `main`; turn-3 close + refine green on `cargo check --all-targets`; clippy removed everywhere; toolchain
+  pinned 1.99.0; optional Windows signing wired; five 30 s teasers delivered; public `acb39de6` and private
+  `5423823` pushed.
+- Reviewed: per-slice only. No whole-surface review; the orchestrator's own scene-gate commits are unreviewed.
+- In flight: nothing running. CI red on two fe-ui queue-full tests (§2 top entry).
+- Blocked (user): test batch names; signing provider + secrets; QA-0165.
+- Held out: §7 H1-H7.
+- Next: fix the two regressions inline (two call sites, one gate function), then `/slice` for round 4.
 
 ### 2026-10-13 — grill loop → purge → W0 + planning swarm (rolling)
 - Done: 6-round grill (§3 R1–R6, §4); git identity → `Jade Zaher` (+ Claude co-author trailer);
@@ -803,6 +901,16 @@ NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never p
 
 ## 9. Recommended invocations
 
+**Current (2026-11-13):**
+- **Inline edit, no agent** for §7 step 1 — trigger: "two call sites and one gate function in fe-ui; the
+  failing assertions name the lost behaviour".
+- **`/slice` then a Workflow swarm** for §7 step 2 — trigger: "seven held-out groups across two repos with
+  disjoint files; sonnet executors, opus only for H1 (transport + verification) and H2 (approval path)".
+- **`/code-review high` + `/security-review`** for §7 step 3 — trigger: "entitlements, signing, admin channel
+  and IPC were merged with the gate review skipped".
+- **`/handoff rolling`** when round 4 launches — trigger: "a swarm that outlives the context window".
+
+**Earlier:**
 - **`.omc/plans/bus-monitor.ps1` run directly** on every cron tick, flag rules from
   `.omc/plans/bus-monitor.md` — trigger: "long-horizon orchestration of three sessions; facts
   first, then act". Not a haiku agent per tick (90-110k tokens each on 2026-11-08 for a 2 KB report).
