@@ -313,6 +313,11 @@ pub(super) fn handle_road_interaction(
         .filter(|_| arbiter.is_available())
         .and_then(|ray| sources.ground(&ray))
         .map(|ground| ground.to_array());
+    let world_scale = measure_world_scale(&petal_map, nav.active_petal_id.as_deref());
+    // Bit compare (NaN-safe) so change detection only fires on a real scale change.
+    if state.world_scale.to_bits() != world_scale.to_bits() {
+        state.world_scale = world_scale;
+    }
     let resolved = raw_ground.map(|cursor| {
         let active_petal = nav.active_petal_id.as_deref();
         sources.candidates_into(path_state.editing_track_id.as_deref(), active_petal, candidates);
@@ -328,7 +333,6 @@ pub(super) fn handle_road_interaction(
                 );
             }
         }
-        let world_scale = measure_world_scale(&petal_map, active_petal);
         let suspended = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
         resolve_cursor(cursor, &state, world_scale, suspended, candidates, guide_sources)
     });

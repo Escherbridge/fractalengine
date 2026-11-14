@@ -105,7 +105,8 @@ pub(crate) fn ghost_polyline_into(
             if state.freeform_samples.is_empty() {
                 out.push(anchor);
             } else {
-                decimate_into(&state.freeform_samples, settings.freeform_spacing_m, out);
+                let spacing_world = meters_to_world(settings.freeform_spacing_m, state.world_scale);
+                decimate_into(&state.freeform_samples, spacing_world, out);
             }
             out.push(cursor);
         }
@@ -298,6 +299,7 @@ pub(crate) fn draw_road_readout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_manager::road_chain::decimate;
     use crate::node_manager::road_snap::SnapOutcome;
 
     fn at(x: f32, z: f32) -> [f32; 3] {
@@ -364,6 +366,12 @@ mod tests {
         let trail = ghost_polyline(&freeform, &hover);
         assert_eq!(trail.last(), Some(&at(10.0, 0.0)));
         assert!(trail.len() >= 3);
+
+        // 1:100 petal: ghost decimates at the same 0.02 world spacing as commit (plus the cursor).
+        freeform.world_scale = 0.01;
+        freeform.freeform_samples = (0..=40).map(|step| at(step as f32 * 0.005, 0.0)).collect();
+        let committed_count = decimate(&freeform.freeform_samples, 0.02).len();
+        assert_eq!(ghost_polyline(&freeform, &hover).len(), committed_count + 1);
 
         let idle = state_with(RoadMode::Straight, None);
         assert!(ghost_polyline(&idle, &hover).is_empty());

@@ -173,6 +173,8 @@ pub struct RoadBuilderState {
     pub(crate) track_counter: u32,
     /// Undone point indices still to remove, ascending; issued highest first, one at a time.
     pub(crate) pending_removals: Vec<usize>,
+    /// World units per real metre of the active petal map; NaN or 0 = no map.
+    pub world_scale: f64,
 }
 
 impl RoadBuilderState {
@@ -303,7 +305,8 @@ fn on_click(state: &mut RoadBuilderState, point: [f32; 3]) -> Vec<RoadCommit> {
 
 fn on_drag_end(state: &mut RoadBuilderState) -> Vec<RoadCommit> {
     let samples = std::mem::take(&mut state.freeform_samples);
-    let decimated = decimate(&samples, state.settings.freeform_spacing_m);
+    let spacing_world = crate::geometry::meters_to_world(state.settings.freeform_spacing_m, state.world_scale);
+    let decimated = decimate(&samples, spacing_world);
     commit_points(state, decimated)
 }
 
@@ -588,6 +591,28 @@ mod tests {
         commits.extend(reduce(&mut state, RoadEvent::DragEnd));
         assert!(matches!(&commits[..], [RoadCommit::CreateTrack { points }] if points.len() == kept.len()));
         assert_eq!(state.anchor, samples.last().copied());
+
+        // 1:100 petal: 2 m spacing is 0.02 world units; without a map it stays 2.0 world.
+        let fine: Vec<[f32; 3]> = (0..=40).map(|step| at(step as f32 * 0.005, 0.0)).collect();
+        let committed_points = |world_scale: f64| {
+            let mut scaled = RoadBuilderState::default();
+            scaled.world_scale = world_scale;
+            reduce(&mut scaled, RoadEvent::SetMode(RoadMode::Freeform));
+            let mut scaled_commits = Vec::new();
+            for sample in &fine {
+                scaled_commits.extend(reduce(&mut scaled, RoadEvent::DragSample(*sample)));
+            }
+            scaled_commits.extend(reduce(&mut scaled, RoadEvent::DragEnd));
+            match scaled_commits.as_slice() {
+                [RoadCommit::CreateTrack { points }] => points.clone(),
+                other => panic!("expected one CreateTrack, got {other:?}"),
+            }
+        };
+        let scaled_points = committed_points(0.01);
+        assert_eq!(scaled_points.len(), decimate(&fine, 0.02).len());
+        assert_eq!(scaled_points.len(), 11);
+        assert!(scaled_points.windows(2).all(|pair| planar_distance(pair[0], pair[1]) >= 0.02 - 1e-6));
+        assert_eq!(committed_points(f64::NAN).len(), 2);
 
         assert_eq!(pending_length(&[at(0.0, 0.0), at(3.0, 4.0)]), 5.0);
         assert_eq!(expand_segment(RoadMode::Straight, &[at(0.0, 0.0), at(1.0, 0.0), at(2.0, 0.0)], 4).len(), 2);
