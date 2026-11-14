@@ -131,3 +131,13 @@ QA42 independently reviewed four incomplete geometry states with zero measured v
 - [~] QA55 all38 data steps/521 recorded assertions plus actual productv3 preview and calibrated21,23,25 chart independently reviewed. Drivercoverage_ready=false/log_review_required=true retained; peer/finalbuild/restart/playbacktimer and all original Both gates remain. QA54 failed preflight is preserved.
 - [ ] QA0074 broader layout follow-up: retain focused closure at actual67/79/167/260 widths; establish eligible divider interaction and verify actually reached52/520 or documented supported boundaries, remaining row/confirmation states and wider catalog coverage. The source fix/review/build and focused draft/Save/Delete acceptance are complete.
 - [~] Require-existing startup design reviewed; SDK spike explicitly partial/notintegrable, missing protected admission/promotion and app wiring remain. Retained stores HOLD.
+
+## Round 4 additions
+
+Items with no conductor track of their own. Each box is ticked only when its gate verdict in `review-turn4/` is PASS or PASS-WITH-FIXES. Test runs for these items are user-gated and stay pending.
+
+- [x] NEW-01 scene-write retry door: opt-in `submit_scene_write_retrying` with bounded backoff (8 attempts, 50 ms to 2 s), a backing-off head never freezes the FIFO or the frame, gate refusals are final, dead letters are session-only and capped at 32 (`fe-ui/src/actions/node.rs:575`, `:590`). Code done; run pending (user-gated). Gate: R-NEW-1.
+- [x] NEW-02 undo and stamp promotion opt into the retrying door (`fe-ui/src/undo.rs:560`, `:875`; `fe-ui/src/node_manager/stamp_selection.rs:593`). Code done; run pending (user-gated). Gate: R-NEW-1.
+- [x] NEW-03 status bar "Unsaved edits" chip with Retry and Discard (`fe-ui/src/panels/unsaved_edits.rs:79-90`). Code done; run pending (user-gated). Gate: R-NEW-1.
+- [x] NEW-04 RUNBOOK H4 petal judge: follow-up earthwork and callout SetNodeProperty writes are judged against the node's own petal, not the active one (`fe-ui/src/verse_manager/db_results/nodes.rs`, `fe-ui/src/actions/dimension_callout.rs`). Code done; run pending (user-gated). Gate: R-NEW-1.
+- [x] NEW-05 registry install reports monotonic byte progress with a final N/N before `RegistryInstalled` (`fe-hexon/src/remote.rs:363`, `fractalengine/src/terrain_bridge.rs:1142`). Code done; run pending (user-gated). Gate: R-NEW-2.
