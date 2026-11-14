@@ -25,7 +25,12 @@ pub(crate) async fn update_node_transform_granted(
     {
         anyhow::bail!("transform components must be finite");
     }
-    reject_stamp_translate(db, node_id, position).await?;
+    let is_stamp = reject_stamp_translate(db, node_id, position).await?;
+    let stamp_mirror = if is_stamp {
+        Some(super::stamp_transform::mirror_overrides(db, &scope, rotation, scale).await?)
+    } else {
+        None
+    };
 
     let payload = serde_json::json!({
         "node_id": node_id,
@@ -44,11 +49,17 @@ pub(crate) async fn update_node_transform_granted(
     };
     let rot: Vec<f64> = rotation.iter().map(|&v| v as f64).collect();
     let sc: Vec<f64> = scale.iter().map(|&v| v as f64).collect();
-    super::node_history::commit_mutations_in_scope(db, entry,
-        vec!["UPDATE node SET position = <geometry<point>> [$x, $z], elevation = $y, rotation = $rot, scale = $sc, edit_seq = edit_seq + 1 WHERE node_id = $node_id".into()],
-        vec![("x".into(), serde_json::json!(position[0] as f64)), ("z".into(), serde_json::json!(position[2] as f64)), ("y".into(), serde_json::json!(position[1] as f64)),
-            ("rot".into(), serde_json::json!(rot)), ("sc".into(), serde_json::json!(sc)), ("node_id".into(), serde_json::json!(node_id))],
-        actor, vec![("full_transform".into(), serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({}))], scope).await?;
+    let mut statements = vec!["UPDATE node SET position = <geometry<point>> [$x, $z], elevation = $y, rotation = $rot, scale = $sc, edit_seq = edit_seq + 1 WHERE node_id = $node_id".to_string()];
+    let mut bindings: Vec<(String, serde_json::Value)> = vec![("x".into(), serde_json::json!(position[0] as f64)), ("z".into(), serde_json::json!(position[2] as f64)), ("y".into(), serde_json::json!(position[1] as f64)),
+        ("rot".into(), serde_json::json!(rot)), ("sc".into(), serde_json::json!(sc)), ("node_id".into(), serde_json::json!(node_id))];
+    let mut changes = vec![("full_transform".to_string(), serde_json::json!({"position":position,"rotation":rotation,"scale":scale}), serde_json::json!({}))];
+    // A stamp renders from its overrides, so they commit in the same transaction as the row.
+    if let Some(mirror) = stamp_mirror {
+        statements.extend(mirror.statements);
+        bindings.extend(mirror.bindings);
+        changes.extend(mirror.changes);
+    }
+    super::node_history::commit_mutations_in_scope(db, entry, statements, bindings, actor, changes, scope).await?;
     Ok(())
 }
 
@@ -57,8 +68,8 @@ const STAMP_POSITION_EPSILON: f64 = 1e-4;
 
 /// D-A5 position lock: a `node_kind = 'stamp'` row is path-derived, so a
 /// request that moves it fails BEFORE the op-log commit (no row, no op).
-/// Rotation/scale-only updates pass. See src/AGENTS.md §lifecycle.
-async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> anyhow::Result<()> {
+/// Rotation/scale-only updates pass and return `true` for a stamp row. See src/AGENTS.md §lifecycle.
+async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> anyhow::Result<bool> {
     let mut res = db
         .query(
             "SELECT properties.node_kind AS node_kind, position, elevation FROM node \
@@ -71,10 +82,10 @@ async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> a
         .take(0)
         .map_err(|e| anyhow::anyhow!("UpdateNodeTransform stamp-lock take failed: {e}"))?;
     let Some(row) = rows.first() else {
-        return Ok(());
+        return Ok(false);
     };
     if row["node_kind"].as_str() != Some("stamp") {
-        return Ok(());
+        return Ok(false);
     }
     let coords = &row["position"]["coordinates"];
     let stored = [
@@ -91,7 +102,7 @@ async fn reject_stamp_translate(db: &Db, node_id: &str, position: [f32; 3]) -> a
             "position-locked: stamp {node_id} is path-derived (D-A5); only rotation/scale may change"
         );
     }
-    Ok(())
+    Ok(true)
 }
 
 // Canonical presence/value snapshots preserve NONE across JSON bindings.

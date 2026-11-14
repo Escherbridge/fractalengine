@@ -811,6 +811,7 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
         }
     };
     let (origin, _, _) = transform(&stamp);
+    let properties_before = h.get_properties(&stamp);
 
     // Moving it is refused before the op-log commit: the row is unchanged.
     h.send(DbCommand::UpdateNodeTransform {
@@ -823,6 +824,11 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
     assert_eq!(position, origin, "a stamp must not translate");
     assert_eq!(rotation, [0.0, 0.0, 0.0], "a rejected move writes nothing");
     assert_eq!(scale, [1.0, 1.0, 1.0]);
+    assert_eq!(
+        h.get_properties(&stamp),
+        properties_before,
+        "a rejected move writes no stamp override"
+    );
 
     // Same position, new rotation/scale: persisted.
     h.send(DbCommand::UpdateNodeTransform {
@@ -835,6 +841,25 @@ fn stamp_translate_is_rejected_but_rotation_and_scale_persist() {
     assert_eq!(position, origin);
     assert_eq!(rotation, [0.0, 1.0, 0.0]);
     assert_eq!(scale, [2.0, 2.0, 2.0]);
+    // ...and mirrored into the per-stamp overrides the renderer reads.
+    let properties = h.get_properties(&stamp);
+    assert_eq!(
+        properties["stamp.override.scale"],
+        serde_json::json!([2.0, 2.0, 2.0])
+    );
+    let quaternion: Vec<f64> = properties["stamp.override.rotation"]
+        .as_array()
+        .expect("stamp.override.rotation is a quaternion array")
+        .iter()
+        .map(|v| v.as_f64().expect("quaternion component is a number"))
+        .collect();
+    assert_eq!(quaternion.len(), 4);
+    assert!(quaternion.iter().all(|v| v.is_finite()));
+    // 1 radian about Y, xyzw (the Inspector's EulerRot::XYZ order).
+    let expected = [0.0, 0.5f64.sin(), 0.0, 0.5f64.cos()];
+    for (got, want) in quaternion.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-5, "rotation override {quaternion:?}");
+    }
 
     // A plain node still moves freely.
     let node = h.create_node(&petal, "plain");
