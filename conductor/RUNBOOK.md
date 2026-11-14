@@ -111,7 +111,26 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-14 01:20 MST — REFINE PASS GREEN; SECURITY FIXES RUNNING.** Refine `wf_00887a68-005`: all twelve
+- **2026-11-14 01:45 MST — SECURITY FIX ROUND 1 DONE (partly); ROUND 2 RUNNING.** Round 1 (`wf_638c1519-f8d`,
+  commits `11a2b0f8` fe-database, `1e83a398` fe-sync, `1c24fd41` fe-api, cargo check green, no tests run). The
+  opus verifier's verdict: **FIXED** 8-gap, 9, 13, 14; **PARTLY** 2 (snapshot import is a second creation path
+  with no numeric bounds), 6 (op_log rows are used as PROOF by local features — group deletion, group restore,
+  tombstone proof by `lamport_clock` — so an op-type allow-list cannot make imported history safe), 7 (an
+  admitted endpoint can still close the relay for everyone through `PerEndpointCap` denials), 15 (served-verse
+  set is correct now, but it is not shown in the consent UI; stale warning text). Also: the snapshot REST route
+  drops hook augments (`let _admission`), has no gate test, and two `node_id` test rows were not
+  mutation-sensitive. Answer to the audit's open question: nothing grants ROLES from op_log, but fe-database
+  uses op_log rows as authority-bearing proofs and idempotency markers. **Round 2** `wf_0763b288-447` (task
+  `wwpsep0r8`): opus on fe-database (shared numeric rule for import; imported history goes to a quarantine
+  table that no proof lookup reads — the orchestrator's default, unasked: imported history becomes display-only,
+  so a group deleted before an export cannot be restored after import), sonnet on fe-sync (single-source denials
+  never close the listener) and fe-api (refuse an import when a hook returns augments; gate tests), then a
+  builder and an opus re-verify that also lists `push_blockers`. Resume: `Workflow({scriptPath: "<session
+  dir>/workflows/scripts/round4-security-fixes-2-wf_0763b288-447.js", resumeFromRunId: "wf_0763b288-447"})`.
+  **Deferred to round 5:** the consent-UI display of the served verses (`EmbeddedRelay::gate().
+  served_verse_ids()` has no caller; fe-ui + `fractalengine/src/relay_serve_bridge.rs`). **Push rule:** push the
+  swarm code when the re-verify returns no `push_blockers`.
+- **2026-11-14 01:20 MST — REFINE PASS GREEN; SECURITY FIXES (round 1 finished 01:40, see above).** Refine `wf_00887a68-005`: all twelve
   steps green at the first attempt, 73 errors fixed (10 fe-hexon, 3 fe-database tests, 4 fe-sync, 2 fe-api
   tests, 1 fe-webview example, 8 fe-ui, 19 private foundry, 26 doc links), 12 sonnet agents, 1.07M tokens,
   57 min; `cargo check --all-targets` is green on every public crate, the three private service crates and
