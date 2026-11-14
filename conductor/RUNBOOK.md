@@ -129,6 +129,16 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   `gh run view <id> --log-failed` to `.omc/research/`, list every `test result:` and `FAILED` line, hand the
   failing tests to sonnet agents grouped by file (the pattern of 2026-11-13: most were stale test setup, decide
   product vs test per case), one `cargo check` at the end, push the fix.
+  **In flight (02:40):** pushed as `43f03526` (`git push -4`); a background shell is polling that CI run and
+  will write `.omc/research/ci-<run>-failed-20261114.log` when it ends. **Do not push while it runs** (a push
+  cancels it). Round-5 PLANNING workflow `wf_8e026152-8ba` (task `wdo0ae19d`): eleven sonnet scopers (inputs
+  `.omc/state/turn5-inputs/<GROUP>.json`, built from the round-4 journal; they check every open item against
+  code at HEAD), one opus merge, one sonnet critic; outputs `.omc/state/turn5-dag.json`, `turn5-args.json`,
+  `turn5-slices/<id>.json`, `.omc/plans/turn5-plan.md`. Resume: `Workflow({scriptPath: "<session dir>/workflows/
+  scripts/round5-plan-wf_8e026152-8ba.js", resumeFromRunId: "wf_8e026152-8ba"})`. Round 5 EXECUTION is not
+  launched: verify the DAG first (`scratchpad/orch_verify.py` logic: 0 unordered ownership overlaps, no cycles),
+  fix CI failures first if they touch the same files, and launch with the round-4 swarm script re-pointed at the
+  turn-5 files (model tiers from the plan: sonnet by default, opus only for security-bearing gates).
   **Open, for round 5 (plan it from these):** the 32 partial slices (`python -I .omc/plans/turn4-result.py
   <journal> .omc/state/turn4-args.json partial`; nine gave no "left" text and need a look), the ten
   `completeness-turn4.md` files' partial/missing rows, the 32 worker questions (`… questions`), `imported_by` on
