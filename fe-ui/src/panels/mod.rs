@@ -400,6 +400,7 @@ pub fn gardener_console(
                     crate::dialogs::render_node_options_dialog(ctx, ui_mgr, hierarchy, db_tx, nav, local_role)
                 });
                 let _ = guarded(modal, "dialog_entity_settings", || {
+                    crate::dialogs::entity_access::mark_verse_local_only_from_tree(&mut ui_mgr.active_dialog, hierarchy);
                     crate::dialogs::render_entity_settings_dialog(ctx, ui_mgr, db_tx, local_role,known_peers,inspector.api_endpoint)
                 });
                 // FR-2 (shell_ux_sidebar): the Map Manager is a right-sidebar
