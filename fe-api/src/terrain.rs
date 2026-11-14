@@ -244,6 +244,11 @@ pub(crate) async fn set_petal_terrain_core(
         let config = serde_json::from_value::<TerrainConfig>(terrain.clone())
             .map_err(|e| TerrainWriteError::InvalidConfig(e.to_string()))?;
         validate_publisher_pins(&config).map_err(TerrainWriteError::InvalidConfig)?;
+        if !fe_format::scale::is_world_scale_in_range(config.world_scale) {
+            return Err(TerrainWriteError::InvalidConfig(
+                "world_scale is outside the supported range".to_string(),
+            ));
+        }
         Some(terrain.clone())
     };
 

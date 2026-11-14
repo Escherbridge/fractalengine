@@ -295,8 +295,13 @@ async fn refused_puts_leave_the_stored_terrain_untouched() {
         "precondition: the array alone would pass TerrainConfig parsing"
     );
 
+    let with_world_scale = |scale: f64| {
+        let mut body = api_config();
+        body["world_scale"] = json!(scale);
+        body
+    };
     // (case, token, body, expected status, error fragment)
-    let cases: [(&str, &str, serde_json::Value, StatusCode, &str); 4] = [
+    let cases: [(&str, &str, serde_json::Value, StatusCode, &str); 6] = [
         (
             "viewer role",
             &viewer,
@@ -324,6 +329,20 @@ async fn refused_puts_leave_the_stored_terrain_untouched() {
             array_body,
             StatusCode::BAD_REQUEST,
             "must be a JSON object",
+        ),
+        (
+            "world_scale above the global range",
+            &editor,
+            with_world_scale(1e300),
+            StatusCode::BAD_REQUEST,
+            "world_scale",
+        ),
+        (
+            "world_scale below the global range",
+            &editor,
+            with_world_scale(1e-300),
+            StatusCode::BAD_REQUEST,
+            "world_scale",
         ),
     ];
     for (case, token, body, status, fragment) in cases {

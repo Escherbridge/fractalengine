@@ -14,9 +14,11 @@ use fe_identity::api_token::ApiClaims;
 use fe_policy::Action;
 use fe_runtime::messages::{ApiCommand, DbCommand, DbResult};
 use fe_runtime::petal_snapshot::PetalSnapshotRows;
+use fe_runtime::scene_hook_gate::SceneCallerKind;
 use serde_json::Value;
 
 use crate::auth::require_role;
+use crate::mcp::scene_gate::{admit, Door};
 use crate::rest::NOT_FOUND_OR_DENIED;
 use crate::server::ApiState;
 use crate::types::{is_valid_ulid, ApiResponse};
@@ -228,12 +230,13 @@ pub async fn import_petal_snapshot(
 
     // Parse-only pass: read the petal row without touching the blob store.
     let parse_bytes = Arc::clone(&archive);
-    let petal_row = match tokio::task::spawn_blocking(move || {
-        fe_format::snapshot::import_petal_snapshot(&parse_bytes).map(|imported| imported.data.petal)
+    let (petal_row, snapshot_nodes) = match tokio::task::spawn_blocking(move || {
+        fe_format::snapshot::import_petal_snapshot(&parse_bytes)
+            .map(|imported| (imported.data.petal, imported.data.nodes))
     })
     .await
     {
-        Ok(Ok(petal)) => petal,
+        Ok(Ok(parsed)) => parsed,
         Ok(Err(error)) => {
             return envelope_error(StatusCode::BAD_REQUEST, format!("invalid petal snapshot: {error:#}"))
         }
@@ -259,6 +262,21 @@ pub async fn import_petal_snapshot(
     if manager_covers(&claims, resolved).is_none() {
         return denied();
     }
+
+    // Scene gate: bound extensions judge the import (one create per node) before any blob is written.
+    // A call count over MAX_HOOK_CALLS_PER_WRITE is refused by the door (413), never skipped.
+    let gate_rows = PetalSnapshotRows {
+        petal: petal_row.clone(),
+        nodes: snapshot_nodes,
+        ..Default::default()
+    };
+    let gate_command = DbCommand::ImportPetalSnapshot { rows: Box::new(gate_rows), correlation_id: None };
+    let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
+    // Node ids are only known to the DB; the admission's create augments cannot be staged here, so drop them.
+    let _admission = match admit(door, &snapshot_petal_id, gate_command).await {
+        Ok((_, admission)) => admission,
+        Err(denied) => return crate::rest::scene_denied_response(denied),
+    };
 
     let restore_bytes = Arc::clone(&archive);
     let restored = tokio::task::spawn_blocking(move || {
