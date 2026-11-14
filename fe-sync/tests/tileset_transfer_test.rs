@@ -134,8 +134,14 @@ async fn a_published_tileset_downloads_verified_and_complete() {
     assert_eq!(stored_events, 5);
     assert!(saw_complete);
 
-    // Rate-cap leg (PAS-P5-P2P-POLICY): the same tileset under a download cap
-    // takes at least bytes/rate; the lower bound is a floor, never an upper bound.
+    // Rate-cap leg (PAS-P5-P2P-POLICY): two tilesets downloaded at once by one
+    // capped service share ONE rate window, so together they take at least
+    // (both byte counts) / rate; the bound is a floor, never an upper bound.
+    let ridge_source = SourceTileset::write(&alice_dir.path().join("ridge"), "ridge", 5);
+    let ridge = publisher
+        .publish("ridge", ridge_source.index_json.clone(), &ridge_source.bundle_paths)
+        .await
+        .unwrap();
     let capped_dir = TempDir::new().unwrap();
     let rate: u64 = 1_000_000;
     let capped = service(&network.transport("carol"), capped_dir.path()).with_limits(
@@ -144,22 +150,27 @@ async fn a_published_tileset_downloads_verified_and_complete() {
             ..TransferLimits::default()
         },
     );
-    let capped_meta = capped
-        .request_download_meta(&[alice.provider_ref()], "valley", entry.root)
-        .await
-        .unwrap();
-    capped
-        .confirm("valley", &capped_meta.chunk_hashes)
-        .await
-        .unwrap();
+    for (tileset_id, root) in [("valley", entry.root), ("ridge", ridge.root)] {
+        let capped_meta = capped
+            .request_download_meta(&[alice.provider_ref()], tileset_id, root)
+            .await
+            .unwrap();
+        capped
+            .confirm(tileset_id, &capped_meta.chunk_hashes)
+            .await
+            .unwrap();
+    }
     let started = std::time::Instant::now();
-    let capped_report = capped.download("valley", None).await.unwrap();
+    let (valley_report, ridge_report) =
+        tokio::join!(capped.download("valley", None), capped.download("ridge", None));
     let elapsed = started.elapsed();
-    assert!(capped_report.complete.is_some());
-    let floor = std::time::Duration::from_nanos((entry.bytes as u128 * 1_000_000_000 / rate as u128) as u64);
+    assert!(valley_report.unwrap().complete.is_some());
+    assert!(ridge_report.unwrap().complete.is_some());
+    let both_bytes = u128::from(entry.bytes + ridge.bytes);
+    let floor = std::time::Duration::from_nanos((both_bytes * 1_000_000_000 / u128::from(rate)) as u64);
     assert!(
         elapsed + std::time::Duration::from_millis(50) >= floor,
-        "capped download took {elapsed:?}, floor {floor:?}"
+        "capped downloads took {elapsed:?}, shared floor {floor:?}"
     );
 }
 

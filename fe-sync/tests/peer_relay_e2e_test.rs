@@ -216,8 +216,8 @@ async fn relay_only_members_sync_a_row_and_diagnostics_report_relayed() {
     assert_eq!(change.author_id, did_of(1), "authorship is the endpoint identity");
     assert_eq!(lab.gate.total_connections(), 2, "only the two admitted members hold relay connections");
 
-    // AC-13: the live path to bob is relay-only, and the relay host is named.
-    let relay_host = lab.url.host_str().map(str::to_owned);
+    // AC-13: the live path to bob is relay-only, and the relay host is named (an IP-literal host only as its family).
+    let relay_host = lab.url.host_str().map(|host| fe_runtime::net_diagnostics::redact_host(host, false));
     let mut row = None;
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline {
@@ -247,7 +247,7 @@ async fn relay_only_members_sync_a_row_and_diagnostics_report_relayed() {
     });
     let hint = snapshot.node.downgrade_hint.expect("a relay-only node carries a hint");
     assert!(hint.contains("All peers connect through a relay"), "downgrade hint: {hint}");
-    assert!(hint.contains(VERSE) && hint.contains("not advertised"), "hazard-B warning names the verse: {hint}");
+    assert_eq!(snapshot.node.unadvertised_home_verses, vec![VERSE.to_string()], "hazard-B warning names the verse");
     let clean = build_snapshot(SnapshotInputs {
         relay_mode: "custom",
         home_relay: None,
@@ -258,7 +258,8 @@ async fn relay_only_members_sync_a_row_and_diagnostics_report_relayed() {
         unadvertised_home_verses: &BTreeSet::new(),
         peers: Vec::new(),
     });
-    assert!(clean.node.downgrade_hint.is_none(), "no peers and no unadvertised verse means no hazard-B warning");
+    assert!(clean.node.downgrade_hint.is_none(), "no peers means no downgrade hint");
+    assert!(clean.node.unadvertised_home_verses.is_empty(), "no unadvertised verse means no hazard-B warning");
 
     alice_stack.shutdown().await;
     bob_stack.shutdown().await;

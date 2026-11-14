@@ -585,6 +585,8 @@ pub struct TilesetTransfer {
     active: Arc<Mutex<HashMap<String, usize>>>,
     /// Ids a full download was requested for and not yet confirmed or cancelled.
     requested: Mutex<HashSet<String>>,
+    /// One rate window shared by every concurrent full download of this service.
+    pacer: Mutex<DownloadPacer>,
 }
 
 /// Marks a download id busy for as long as it lives (cache eviction skips it).
@@ -703,6 +705,15 @@ impl TilesetTransfer {
             ledgers: Mutex::new(HashMap::new()),
             active: Arc::new(Mutex::new(HashMap::new())),
             requested: Mutex::new(HashSet::new()),
+            pacer: Mutex::new(DownloadPacer::new(None)),
+        }
+    }
+
+    /// Account `bytes` against the shared rate cap and sleep off any debt (no lock held across the sleep).
+    async fn pace(&self, bytes: u64) {
+        let owed = lock(&self.pacer).record(bytes);
+        if !owed.is_zero() {
+            tokio::time::sleep(owed).await;
         }
     }
 
@@ -771,6 +782,7 @@ impl TilesetTransfer {
     /// The same service under explicit size caps (tests use small ones).
     pub fn with_limits(mut self, limits: TransferLimits) -> Self {
         self.limits = limits;
+        self.pacer = Mutex::new(DownloadPacer::new(limits.max_download_rate_bytes_per_sec));
         self
     }
 
@@ -1243,7 +1255,6 @@ impl TilesetTransfer {
         let cap = self.limits.max_download_bytes;
         let mut over_cap = stored_bytes > cap;
         let mut in_flight = tokio::task::JoinSet::new();
-        let mut pacer = DownloadPacer::new(self.limits.max_download_rate_bytes_per_sec);
         loop {
             while !over_cap && in_flight.len() < MAX_CONCURRENT_CHUNK_FETCHES {
                 let Some(seq) = missing.next() else { break };
@@ -1267,16 +1278,14 @@ impl TilesetTransfer {
                     received[seq as usize] = true;
                     stored_bytes = stored_bytes.saturating_add(chunk.byte_len);
                     over_cap = stored_bytes > cap;
-                    let owed = pacer.record(chunk.byte_len);
+                    let byte_len = chunk.byte_len;
                     report.stored.push(seq);
                     emit(TransferEvent::ChunkStored {
                         tileset_id: tileset_id.to_string(),
                         chunk,
                     });
-                    // Pay the rate debt before the next chunk fetch is spawned.
-                    if !owed.is_zero() {
-                        tokio::time::sleep(owed).await;
-                    }
+                    // Pay the shared rate debt before the next chunk fetch is spawned.
+                    self.pace(byte_len).await;
                 }
                 Err(error) => {
                     tracing::warn!(tileset_id, seq, %error, "Tileset bundle failed");

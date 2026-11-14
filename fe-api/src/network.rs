@@ -1,5 +1,6 @@
 //! `GET /api/v1/network/diagnostics`: scope-confined, address-redacted network posture (see `fe-api/AGENTS.md` §network-diagnostics).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,8 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use fe_identity::api_token::ApiClaims;
 use fe_runtime::net_diagnostics::{
-    redact, NetworkDiagnostics, NetworkDiagnosticsCall, NetworkDiagnosticsCallSender,
+    redact, redact_host, redact_relay_url, NetworkDiagnostics, NetworkDiagnosticsCall,
+    NetworkDiagnosticsCallSender,
 };
 
 use crate::auth::{require_role_and_scope, require_role_level};
@@ -76,13 +78,22 @@ pub fn detail_enabled_from_env() -> bool {
     opt_in_value_enables(value.as_deref(), NETWORK_DETAIL_GATE.default_on)
 }
 
-/// Keeps only peers sharing a verse the token reads at Viewer+, trims each peer's verse list to those, and redacts addresses unless `detail`.
+/// Keeps only peers and hazard-B verses the token reads at Viewer+ (each verse judged once), and redacts addresses and IP-literal relay hosts unless `detail`.
 pub fn confine_to_claims(mut snapshot: NetworkDiagnostics, claims: &ApiClaims, detail: bool) -> NetworkDiagnostics {
-    let readable = |verse_id: &str| require_role_and_scope(claims, "viewer", &format!("VERSE#{verse_id}")).is_ok();
+    let mut judged: BTreeMap<String, bool> = BTreeMap::new();
+    let mut readable = |verse_id: &str| -> bool {
+        if let Some(allowed) = judged.get(verse_id) {
+            return *allowed;
+        }
+        let allowed = require_role_and_scope(claims, "viewer", &format!("VERSE#{verse_id}")).is_ok();
+        judged.insert(verse_id.to_owned(), allowed);
+        allowed
+    };
     snapshot.peers.retain_mut(|peer| {
         peer.verse_ids.retain(|verse_id| readable(verse_id));
         !peer.verse_ids.is_empty()
     });
+    snapshot.node.unadvertised_home_verses.retain(|verse_id| readable(verse_id));
     if !detail {
         // Defense in depth: the sync side already redacts, but a raw address must never leave this seam.
         for peer in &mut snapshot.peers {
@@ -91,6 +102,12 @@ pub fn confine_to_claims(mut snapshot: NetworkDiagnostics, claims: &ApiClaims, d
                     *address = redact(&parsed);
                 }
             }
+            if let Some(host) = peer.relay_host.as_mut() {
+                *host = redact_host(host, false);
+            }
+        }
+        if let Some(home_relay) = snapshot.node.home_relay.as_mut() {
+            *home_relay = redact_relay_url(home_relay, false);
         }
     }
     snapshot
@@ -210,10 +227,16 @@ mod tests {
         std::thread::spawn(move || {
             while let Ok(call) = receiver.recv() {
                 let _ = seen_tx.send(call.detail);
+                let mut visible = peer("did:key:zVisible", &["v1"], "203.0.113.7:51820");
+                visible.relay_host = Some("198.51.100.77".to_string());
                 let fixture = NetworkDiagnostics {
-                    node: NodeDiagnostics::default(),
+                    node: NodeDiagnostics {
+                        home_relay: Some("https://203.0.113.50:3340/".to_string()),
+                        unadvertised_home_verses: vec!["v1".to_string(), "v2".to_string()],
+                        ..NodeDiagnostics::default()
+                    },
                     peers: vec![
-                        peer("did:key:zVisible", &["v1"], "203.0.113.7:51820"),
+                        visible,
                         peer("did:key:zHidden", &["v2"], "198.51.100.9:51820"),
                         peer("did:key:zShared", &["v1", "v2"], "192.0.2.4:443"),
                     ],
@@ -259,7 +282,11 @@ mod tests {
         assert_eq!(dids, vec!["did:key:zVisible", "did:key:zShared"]);
         assert_eq!(snapshot.peers[1].verse_ids, vec!["v1".to_string()]);
         assert_eq!(snapshot.peers[0].addrs, vec!["ipv4:ephemeral".to_string()]);
+        assert_eq!(snapshot.peers[0].relay_host.as_deref(), Some("ipv4-literal"), "a peer-run relay IP stays hidden");
+        assert_eq!(snapshot.node.home_relay.as_deref(), Some("https://ipv4-literal"));
+        assert_eq!(snapshot.node.unadvertised_home_verses, vec!["v1".to_string()], "hazard-B list confined to readable verses");
         assert!(!body.contains("203.0.113") && !body.contains("198.51.100") && !body.contains("192.0.2"));
+        assert!(!body.contains("v2"), "an unreadable verse id never leaves the API");
         assert!(!seen.recv().expect("call seen"), "sync side must be asked for redacted addresses");
 
         // Owner without the operator opt-in stays redacted; with it, sees full addresses of readable peers only.

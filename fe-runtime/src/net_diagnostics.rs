@@ -23,6 +23,9 @@ pub struct NodeDiagnostics {
     pub reachability_verdict: String,
     pub relay_server_state: String,
     pub downgrade_hint: Option<String>,
+    /// Hazard B: open verses whose adverts omit the home relay (a list, so the API can confine it per caller).
+    #[serde(default)]
+    pub unadvertised_home_verses: Vec<String>,
 }
 
 /// One remote peer's connection state; `addrs` is redacted unless detail was requested.
@@ -74,6 +77,34 @@ pub fn render_addrs<'a>(addrs: impl IntoIterator<Item = &'a SocketAddr>, detail:
         .collect()
 }
 
+/// Hides an IP-literal host unless `detail`; DNS names pass through (a peer-run relay's IP is that peer's address).
+pub fn redact_host(host: &str, detail: bool) -> String {
+    if detail {
+        return host.to_owned();
+    }
+    match host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(_)) => "ipv4-literal".to_owned(),
+        Ok(std::net::IpAddr::V6(_)) => "ipv6-literal".to_owned(),
+        Err(_) => host.to_owned(),
+    }
+}
+
+/// A relay URL with its IP-literal host hidden unless `detail`; unparseable text is hidden entirely.
+pub fn redact_relay_url(relay_url: &str, detail: bool) -> String {
+    if detail {
+        return relay_url.to_owned();
+    }
+    match url::Url::parse(relay_url) {
+        Ok(parsed) => match parsed.host() {
+            Some(url::Host::Domain(_)) => relay_url.to_owned(),
+            Some(url::Host::Ipv4(_)) => format!("{}://ipv4-literal", parsed.scheme()),
+            Some(url::Host::Ipv6(_)) => format!("{}://ipv6-literal", parsed.scheme()),
+            None => "redacted".to_owned(),
+        },
+        Err(_) => "redacted".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +121,23 @@ mod tests {
         assert!(redacted.iter().all(|row| !row.contains("203.0.113") && !row.contains("2001:db8")));
         let detailed = render_addrs(&addrs, true);
         assert_eq!(detailed[0], "203.0.113.7:51820");
+        // Relay hosts and URLs: an IP literal (a peer-run relay) is hidden, a DNS name is kept.
+        for (host, expected) in [
+            ("relay.example.org", "relay.example.org"),
+            ("203.0.113.7", "ipv4-literal"),
+            ("[2001:db8::1]", "ipv6-literal"),
+        ] {
+            assert_eq!(redact_host(host, false), expected);
+            assert_eq!(redact_host(host, true), host);
+        }
+        for (relay_url, expected) in [
+            ("https://relay.example.org/", "https://relay.example.org/"),
+            ("https://203.0.113.7:3340/", "https://ipv4-literal"),
+            ("https://[2001:db8::1]/", "https://ipv6-literal"),
+            ("not a url", "redacted"),
+        ] {
+            assert_eq!(redact_relay_url(relay_url, false), expected);
+        }
 
         let snapshot = NetworkDiagnostics {
             node: NodeDiagnostics::default(),

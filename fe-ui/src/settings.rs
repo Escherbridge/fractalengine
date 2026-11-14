@@ -161,6 +161,19 @@ pub fn record_self_test_verdict(label: Option<String>) {
     }
 }
 
+/// Bevy system: copies a changed diagnostics snapshot's self-test verdict into the Settings reason line.
+pub fn mirror_self_test_verdict(diagnostics: Option<Res<fe_sync::status::NetworkDiagnosticsState>>) {
+    let Some(diagnostics) = diagnostics else { return };
+    if !diagnostics.is_changed() {
+        return;
+    }
+    let Some(snapshot) = diagnostics.0.as_ref() else { return };
+    let verdict = snapshot.node.reachability_verdict.as_str();
+    if verdict != "pending" && last_self_test_verdict().as_deref() != Some(verdict) {
+        record_self_test_verdict(Some(verdict.to_owned()));
+    }
+}
+
 /// Latest recorded self-test verdict label.
 pub fn last_self_test_verdict() -> Option<String> {
     match LAST_SELF_TEST_VERDICT.lock() {

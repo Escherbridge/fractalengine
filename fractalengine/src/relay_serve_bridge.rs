@@ -45,7 +45,14 @@ pub struct RelayServeHandle {
     _relay: fe_sync::relay_server::EmbeddedRelay,
 }
 
-/// Registers the settings toggles with fe-sync and, only when [`decide`] says `Start`, spawns the relay; call before the sync thread starts.
+/// Registers the startup-read toggles with fe-sync and the Settings UI; call once before the sync thread starts.
+pub fn register_settings(settings: &fe_ui::settings::AppSettings) {
+    fe_sync::relay_config::set_auto_home_relay(settings.auto_home_relay);
+    fe_sync::dialback_responder::set_act_as_prober(settings.act_as_prober);
+    fe_ui::settings::set_relay_serve_built(cfg!(feature = "relay-server"));
+}
+
+/// Spawns the relay only when [`decide`] says `Start`; call from a plain (non-async) thread once a self-test verdict and dial-back result exist.
 pub fn maybe_start(
     runtime: &tokio::runtime::Handle,
     settings: &fe_ui::settings::AppSettings,
@@ -53,10 +60,10 @@ pub fn maybe_start(
     dialback_passed: bool,
     hosted_verses: BTreeSet<String>,
 ) -> Option<RelayServeHandle> {
-    fe_sync::relay_config::set_auto_home_relay(settings.auto_home_relay);
-    fe_sync::dialback_responder::set_act_as_prober(settings.act_as_prober);
-    fe_ui::settings::set_relay_serve_built(cfg!(feature = "relay-server"));
-    fe_ui::settings::record_self_test_verdict(self_test_verdict.map(str::to_owned));
+    register_settings(settings);
+    if self_test_verdict.is_some() {
+        fe_ui::settings::record_self_test_verdict(self_test_verdict.map(str::to_owned));
+    }
 
     let decision = decide(
         cfg!(feature = "relay-server"),
@@ -85,6 +92,12 @@ pub fn maybe_start(
 #[cfg(feature = "relay-server")]
 fn start(runtime: &tokio::runtime::Handle, hosted_verses: BTreeSet<String>) -> Option<RelayServeHandle> {
     use fe_sync::relay_server::{install_gate, EmbeddedRelay, RelayMembershipGate};
+
+    // `block_on` inside a runtime would panic, and this binary aborts on panic: refuse instead.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tracing::warn!("desktop relay not started: maybe_start was called from inside an async runtime");
+        return None;
+    }
 
     let config = match fe_sync::relay_server::RelayServeConfig::from_env_desktop() {
         Ok(Some(config)) => config,

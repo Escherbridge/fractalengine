@@ -1102,11 +1102,14 @@ pub fn spawn_sync_thread_with_sources(
                             relay_adoption.check_adopted(&adoption_probe_tx, std::time::Instant::now());
                         }
                         relay_adoption.on_tick(std::time::Instant::now());
-                        // NET-28: re-run the self-test and emit the redacted snapshot when it changed, only after a request subscribed.
-                        if last_diagnostics.is_some() {
-                            if let Some(verdict) = endpoint.as_ref().and_then(|ep| crate::net_diagnostics::reachability_self_test(ep.inner())) {
-                                diagnostics_verdict = Some(verdict);
-                            }
+                        // NET-28: re-run the (cheap, cached-report) self-test every tick; emit the redacted snapshot when it
+                        // changed after a request subscribed, or once per verdict change so Settings learns the verdict unasked.
+                        let fresh_verdict = endpoint.as_ref().and_then(|ep| crate::net_diagnostics::reachability_self_test(ep.inner()));
+                        let verdict_changed = fresh_verdict.is_some() && fresh_verdict != diagnostics_verdict;
+                        if fresh_verdict.is_some() {
+                            diagnostics_verdict = fresh_verdict;
+                        }
+                        if last_diagnostics.is_some() || verdict_changed {
                             let redacted = network_diagnostics_snapshot(
                                 false, &relay_config, relay_health, &relay_adoption, &replicas, endpoint.as_ref(), diagnostics_verdict,
                             ).await;
@@ -2109,7 +2112,9 @@ async fn network_diagnostics_snapshot(
     }
     crate::net_diagnostics::build_snapshot(crate::net_diagnostics::SnapshotInputs {
         relay_mode: crate::net_diagnostics::relay_mode_label(relay_config),
-        home_relay: adoption.home_connected(),
+        home_relay: adoption
+            .home_connected()
+            .map(|url| fe_runtime::net_diagnostics::redact_relay_url(&url, detail)),
         relay_health,
         portmapper: "unknown",
         reachability_verdict: verdict,

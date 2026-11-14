@@ -4,7 +4,7 @@ use crate::messages::{SyncCommand, SyncCommandSender};
 use crate::reachability::ReachabilityVerdict;
 use crate::relay_config::{RelayConfig, RelayHealth};
 use fe_runtime::net_diagnostics::{
-    render_addrs, NetworkDiagnostics, NetworkDiagnosticsCall, NetworkDiagnosticsCallReceiver, NodeDiagnostics,
+    redact_host, render_addrs, NetworkDiagnostics, NetworkDiagnosticsCall, NetworkDiagnosticsCallReceiver, NodeDiagnostics,
     PeerConnectionKind, PeerDiagnostics,
 };
 use iroh::endpoint::{RemoteInfo, TransportAddrUsage};
@@ -47,9 +47,10 @@ pub fn connection_kind<'a>(active: impl Iterator<Item = &'a TransportAddr>) -> (
     (kind, relay_host)
 }
 
-/// Builds one peer row from its active paths; addresses are redacted unless `detail`.
+/// Builds one peer row from its active paths; addresses and IP-literal relay hosts are redacted unless `detail`.
 pub fn peer_diagnostics(peer_did: String, verse_ids: Vec<String>, active: &[TransportAddr], detail: bool) -> PeerDiagnostics {
     let (kind, relay_host) = connection_kind(active.iter());
+    let relay_host = relay_host.map(|host| redact_host(&host, detail));
     let ip_addrs: Vec<&SocketAddr> = active
         .iter()
         .filter_map(|addr| match addr {
@@ -136,19 +137,10 @@ pub struct SnapshotInputs<'a> {
     pub peers: Vec<PeerDiagnostics>,
 }
 
-/// Shapes the node and peer rows; the downgrade hint and the hazard-B warning share one field.
+/// Shapes the node and peer rows; the hazard-B verses stay a list so the API can confine them to the caller's scope.
 pub fn build_snapshot(inputs: SnapshotInputs<'_>) -> NetworkDiagnostics {
     let kinds: Vec<PeerConnectionKind> = inputs.peers.iter().map(|peer| peer.kind).collect();
-    let mut hints: Vec<String> = downgrade_hint(inputs.relay_mode, inputs.home_relay.as_deref(), &kinds)
-        .into_iter()
-        .collect();
-    if !inputs.unadvertised_home_verses.is_empty() {
-        let verses: Vec<&str> = inputs.unadvertised_home_verses.iter().map(String::as_str).collect();
-        hints.push(format!(
-            "The home relay is not advertised in verse(s) {}; their peers may not reach this node through it.",
-            verses.join(", ")
-        ));
-    }
+    let downgrade = downgrade_hint(inputs.relay_mode, inputs.home_relay.as_deref(), &kinds);
     NetworkDiagnostics {
         node: NodeDiagnostics {
             relay_mode: inputs.relay_mode.to_owned(),
@@ -157,7 +149,8 @@ pub fn build_snapshot(inputs: SnapshotInputs<'_>) -> NetworkDiagnostics {
             portmapper: inputs.portmapper.to_owned(),
             reachability_verdict: inputs.reachability_verdict.unwrap_or("pending").to_owned(),
             relay_server_state: inputs.relay_server_state.to_owned(),
-            downgrade_hint: if hints.is_empty() { None } else { Some(hints.join(" ")) },
+            downgrade_hint: downgrade,
+            unadvertised_home_verses: inputs.unadvertised_home_verses.iter().cloned().collect(),
         },
         peers: inputs.peers,
     }
@@ -260,6 +253,9 @@ mod tests {
         });
         assert_eq!(snapshot.node.reachability_verdict, "pending");
         assert_eq!(snapshot.node.relay_health, "disabled");
-        assert!(snapshot.node.downgrade_hint.as_deref().is_some_and(|hint| hint.contains("verse-a")));
+        assert_eq!(snapshot.node.unadvertised_home_verses, vec!["verse-a".to_owned()]);
+        assert!(snapshot.node.downgrade_hint.is_none(), "a disabled-relay node with only direct peers needs no downgrade hint");
+        let relay_literal = peer_diagnostics("did:key:z".into(), vec![], &[relay("https://203.0.113.9:3340")], false);
+        assert_eq!(relay_literal.relay_host.as_deref(), Some("ipv4-literal"), "a peer-run relay IP is redacted by default");
     }
 }
