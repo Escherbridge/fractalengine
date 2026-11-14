@@ -9,7 +9,7 @@ use crate::repo::Db;
 use fe_runtime::messages::ReplicatedRowOutcome;
 use std::sync::Mutex;
 
-/// Rows one call re-judges; the rest are warned and wait for the next re-judge of those authors.
+/// Rows re-judged between yields to the runtime; a larger set is warned once and still finished in this call.
 pub(crate) const REJUDGE_ROW_CAP: usize = 4096;
 /// Local re-judge results held for the DB loop's next echo before the oldest is dropped.
 const LOCAL_OUTBOX_CAP: usize = 4096;
@@ -50,16 +50,20 @@ pub(crate) async fn rejudge_authors_detailed(
     if rows.is_empty() {
         return Ok(rejudged);
     }
+    // Rows are sorted, so a cap would skip the same tail on every call and leave its winners unjudged (fail-open).
     if rows.len() > REJUDGE_ROW_CAP {
-        tracing::warn!(
-            verse_id,
-            rows = rows.len(),
-            cap = REJUDGE_ROW_CAP,
-            "re-judge capped; the remaining rows are re-judged by a later role change of these authors"
-        );
+        tracing::warn!(verse_id, rows = rows.len(), chunk = REJUDGE_ROW_CAP, "large re-judge; yielding between chunks");
     }
     let view = VerseView::load(db, verse_id).await?;
-    for (table, rid) in rows.iter().take(REJUDGE_ROW_CAP) {
+    if view.owner.is_empty() {
+        // Nothing is admissible before the manifest names an owner; demoting now would erase every key.
+        tracing::warn!(verse_id, "re-judge skipped: the verse owner is not known yet");
+        return Ok(rejudged);
+    }
+    for (index, (table, rid)) in rows.iter().enumerate() {
+        if index > 0 && index % REJUDGE_ROW_CAP == 0 {
+            tokio::task::yield_now().await;
+        }
         let result = match table.as_str() {
             // A present node is recomputed from its stored versions (judged against the admitted statements);
             // an absent one is left to the candidate re-judge, which holds its petal identity.
@@ -118,10 +122,14 @@ pub(crate) async fn rejudge_local(db: &Db, verse_id: &str, dids: &[String]) -> a
         return Ok(());
     };
     outbox.push((verse_id.to_owned(), rejudged));
-    let held: usize = outbox.iter().map(|(_, held)| held.reports.len() + held.removed_nodes.len()).sum();
+    let size = |held: &Rejudge| held.reports.len() + held.removed_nodes.len();
+    let mut held: usize = outbox.iter().map(|(_, held)| size(held)).sum();
     if held > LOCAL_OUTBOX_CAP {
-        tracing::warn!(held, cap = LOCAL_OUTBOX_CAP, "local re-judge outbox full; the oldest echo is dropped");
-        outbox.remove(0);
+        tracing::warn!(held, cap = LOCAL_OUTBOX_CAP, "local re-judge outbox full; the oldest echoes are dropped");
+    }
+    // Keep the newest entry even when it alone exceeds the cap (its rows are already written).
+    while held > LOCAL_OUTBOX_CAP && outbox.len() > 1 {
+        held -= size(&outbox.remove(0).1);
     }
     Ok(())
 }

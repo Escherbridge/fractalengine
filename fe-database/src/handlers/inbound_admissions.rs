@@ -18,6 +18,8 @@ use crate::role_grants::ROLE_DOC_TABLE;
 pub const DEFERRED_PER_VERSE: usize = 4096;
 /// Deferred content rows held per (verse, author) before that author's oldest is dropped (A4).
 pub const DEFERRED_PER_AUTHOR: usize = 512;
+/// Re-judge-removed nodes held for the DB loop's `NodeDeleted` send before the oldest is dropped.
+const REMOVED_NODES_CAP: usize = 4096;
 /// Bug guard on one call's retry worklist (it terminates anyway — see §inbound-admissions).
 const MAX_RETRIES_PER_CALL: usize = 4 * DEFERRED_PER_VERSE;
 
@@ -113,7 +115,17 @@ impl InboundAdmissions {
     /// Collect a run's re-judge results: rows into `reports`, removed nodes into the queue's outbox.
     fn collect_rejudged(&mut self, report: &mut ApplyReport, reports: &mut Vec<RowReport>) {
         reports.append(&mut report.rejudged);
-        self.removed_nodes.append(&mut report.removed_nodes);
+        self.hold_removed(std::mem::take(&mut report.removed_nodes));
+    }
+
+    /// Hold removed nodes for [`Self::take_removed_nodes`], dropping the oldest past the cap (an untaken queue stays bounded).
+    fn hold_removed(&mut self, nodes: Vec<(String, String)>) {
+        self.removed_nodes.extend(nodes);
+        let excess = self.removed_nodes.len().saturating_sub(REMOVED_NODES_CAP);
+        if excess > 0 {
+            tracing::warn!(dropped = excess, cap = REMOVED_NODES_CAP, "re-judge removed-node queue full; the oldest are dropped");
+            self.removed_nodes.drain(..excess);
+        }
     }
 
     /// Queued rows across every verse.
@@ -225,7 +237,7 @@ impl InboundAdmissions {
                 fe_runtime::messages::SceneChange::NodeRemoved { node_id: node_id.clone(), petal_id: petal_id.clone() },
             );
         }
-        self.removed_nodes.extend(local.removed_nodes);
+        self.hold_removed(local.removed_nodes);
         let mut reports = local.reports;
         self.drain(db, triggers, entity_change_tx, &mut reports)
             .await;

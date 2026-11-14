@@ -403,7 +403,8 @@
         {"id": "rest_prop", "peer": "editor", "via": "rest", "op": "set_property", "args": {"node_id": "$n1.id", "key": "revoked_rest", "value": 1}, "sync": "+26", "expect": "refused", "needs": ["editor_demoted"]},
         {"id": "mcp_prop", "peer": "editor", "via": "mcp", "op": "set_property", "args": {"node_id": "$n1.id", "key": "revoked_mcp", "value": 1}, "sync": "+27", "expect": "refused", "needs": ["editor_demoted"]},
         {"id": "mcp_tf", "peer": "editor", "via": "mcp", "op": "update_transform", "args": {"node_id": "$n1.id", "position": [9, 0, 9], "rotation": [0, 0, 0], "scale": [1, 1, 1]}, "sync": "+28", "expect": "refused", "needs": ["editor_demoted"]},
-        {"id": "reenter", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic", "exact": true}, "sync": "+90", "needs": ["revoke"]}
+        {"id": "reenter", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open verse QA Basic", "exact": true}, "sync": "+90", "needs": ["revoke"]},
+        {"id": "pre_revoke2", "peer": "editor2", "via": "rest", "op": "set_property", "args": {"node_id": "$n2.id", "key": "pre_revoke2", "value": 1}, "requires": ["editor2"], "covers": "QA-0165 a write editor2 makes while still Editor, one step before its revoke"}
       ],
       "expect": [
         {"probe": "role", "target": "$fixture.verse_id", "peers": ["editor"], "predicate": "not_equals", "value": "editor", "after": "revoke", "within_s": 30, "needs": ["revoke"], "covers": "QA-0120 the revoke issued from the all-verses card while the owner's verse replica is closed reaches the editor within 30 s (publication lease), not at the owner's next visit; QA-0132 demotion judged while that replica is closed"},
@@ -413,7 +414,7 @@
         {"probe": "properties", "target": "$n1.id", "path": "revoked_rest", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121/0122 rows that arrived before the revoke are dropped on every peer"},
         {"probe": "properties", "target": "$n1.id", "path": "revoked_mcp", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"]},
         {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121 every peer back on the durable value; written by the owner (step 12), never by the revoked editor, so it is not a past authorized edit of the editor"},
-        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke", "within_s": 40, "needs": ["revoke"], "covers": "QA-0165 a revoke keeps the revoked editor's authorized past transform edits: N2 does not change or diverge on any peer"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke", "within_s": 40, "needs": ["revoke"], "covers": "QA-0165 agreement only: N2's contested step-6 winner is not predictable, so this cannot prove the keep; the N4 step-12 rows below do"},
         {"probe": "properties", "target": "$n4.id", "path": "after_restart_rest", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "post_restart_rest"], "covers": "QA-0165 the editor's step-12 REST property written while authorized stays on every peer after the revoke"},
         {"probe": "properties", "target": "$n4.id", "path": "after_restart_mcp", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "post_restart_mcp"], "covers": "QA-0165 the editor's step-12 MCP property written while authorized stays on every peer after the revoke"}
       ]
@@ -446,9 +447,10 @@
         {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "within_s": 30, "needs": ["revoke2"]},
         {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "revoked2_rest", "predicate": "absent", "mode": "always", "hold_s": 40, "needs": ["revoke2"]},
         {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "race2_rest", "predicate": "absent", "after": "revoke2", "within_s": 30, "needs": ["race2_rest"], "covers": "QA-0121/0131 a row written after the revoke is refused or re-judged away on every other peer"},
-        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke2", "within_s": 40, "needs": ["revoke2"], "covers": "QA-0165 a revoke keeps editor2's authorized past transform edits: N2 does not change or diverge on any peer"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke2", "within_s": 40, "needs": ["revoke2"], "covers": "QA-0165 agreement only after editor2's revoke (the step-6 winner is not predictable, so the keep itself is not asserted here)"},
         {"probe": "properties", "target": "$n4.id", "path": "after_restart_rest", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "post_restart_rest"], "covers": "QA-0165 step-12 rows stay on every peer after the second revoke"},
-        {"probe": "properties", "target": "$n4.id", "path": "after_restart_mcp", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "post_restart_mcp"], "covers": "QA-0165 step-12 rows stay on every peer after the second revoke"}
+        {"probe": "properties", "target": "$n4.id", "path": "after_restart_mcp", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "post_restart_mcp"], "covers": "QA-0165 step-12 rows stay on every peer after the second revoke"},
+        {"probe": "properties", "target": "$n2.id", "path": "pre_revoke2", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "pre_revoke2"], "covers": "QA-0165 editor2's authorized past write survives its revoke on every peer (re-judge is write-time only)"}
       ]
     },
     {
@@ -524,7 +526,7 @@
         {"probe": "properties", "target": "$n4.id", "path": "clock_owner_key", "predicate": "equals", "value": "owner", "within_s": 30, "covers": "QA-0156 concurrent writes of different keys: the owner's key is present on every peer"},
         {"probe": "properties", "target": "$n4.id", "path": "clock_editor2_key", "predicate": "equals", "value": "editor2", "within_s": 30, "covers": "QA-0156 concurrent writes of different keys: editor2's key is present on every peer"},
         {"probe": "properties", "target": "$n4.id", "path": "clock_same", "predicate": "agree", "within_s": 30, "covers": "QA-0156 concurrent writes of the same key: every peer agrees (winner is max (HLC, author DID))"},
-        {"probe": "hierarchy", "target": "$fixture.verse_id", "path": "petals", "predicate": "includes", "value": "Swarm Fractal/A", "after": "rename_a2", "within_s": 30, "needs": ["rename_a2"], "covers": "QA-0166 the last rename A -> B -> A wins by clock: every peer shows the petal as 'A'"},
+        {"probe": "hierarchy", "target": "$fixture.verse_id", "path": "petals", "predicate": "includes", "value": "Swarm Fractal/A", "after": "rename_a2", "within_s": 30, "needs": ["rename_a2"], "covers": "QA-0166 single-author flip-flop: the last rename A -> B -> A wins by clock on every peer (the two-author restore is the R8 replicator journey: only a Manager renames a petal)"},
         {"probe": "hierarchy", "target": "$fixture.verse_id", "path": "petals", "predicate": "excludes", "value": "Swarm Fractal/B", "after": "rename_a2", "within_s": 30, "needs": ["rename_a2"], "covers": "QA-0166 no peer is left on the stale name 'B'"}
       ]
     },

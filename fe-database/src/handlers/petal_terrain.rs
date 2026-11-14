@@ -370,6 +370,12 @@ mod tests {
         let row_bytes = mock_store
             .bytes_for(&event.content_hash)
             .expect("blob present");
+        let published: serde_json::Value = serde_json::from_slice(&row_bytes).expect("row json");
+        assert_eq!(published["_fe_clock"]["author"], "owner-did", "the clocked seam signs the own map as the local author");
+        assert_eq!(
+            published["_fe_clock"]["own"]["terrain"]["value"], terrain,
+            "the terrain key carries its own clocked version"
+        );
 
         let peer_db = db_with_full_hierarchy("p1").await;
         let outcome = crate::handlers::replicated_row::apply_replicated_row_handler(
