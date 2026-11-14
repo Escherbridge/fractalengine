@@ -61,6 +61,7 @@ struct HarnessOptions {
     upload_quota_bytes: u64,
     screenshot: fe_api::screenshot::ScreenshotSurface,
     input: fe_api::input::InputSurface,
+    hexon_registry_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for HarnessOptions {
@@ -76,6 +77,7 @@ impl Default for HarnessOptions {
             upload_quota_bytes: fe_api::upload::DEFAULT_UPLOAD_QUOTA_BYTES,
             screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
             input: fe_api::input::InputSurface::disabled(),
+            hexon_registry_dir: None,
         }
     }
 }
@@ -209,6 +211,15 @@ impl ApiHarness {
         .await
     }
 
+    /// Like [`Self::spawn`], mounting a real `HexonRegistry` rooted at `registry_dir` (the `/crates` routes).
+    pub async fn spawn_with_hexon_registry(registry_dir: std::path::PathBuf) -> Result<Self> {
+        Self::spawn_with_options(HarnessOptions {
+            hexon_registry_dir: Some(registry_dir),
+            ..HarnessOptions::default()
+        })
+        .await
+    }
+
     /// Like [`Self::spawn`], with `blob_store: None` — a host that cannot
     /// store asset bytes, so uploads fail closed (503).
     pub async fn spawn_without_blob_store() -> Result<Self> {
@@ -243,6 +254,7 @@ impl ApiHarness {
             upload_quota_bytes,
             screenshot,
             input,
+            hexon_registry_dir,
         } = options;
         // Production DB startup initialises the HLC before any op-log write; the
         // harness bypasses that startup, so do it once per process here.
@@ -289,7 +301,11 @@ impl ApiHarness {
             query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             entity_store: None,
             tileset_registry,
-            hexon_registry: None,
+            hexon_registry: hexon_registry_dir.map(|registry_dir| {
+                Arc::new(std::sync::Mutex::new(
+                    fe_hexon::registry::HexonRegistry::new(registry_dir),
+                ))
+            }),
             announcement_store: None,
             replication_tx: None,
             distributed_tx,
