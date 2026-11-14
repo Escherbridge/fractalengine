@@ -879,6 +879,7 @@ mod tests {
                 ..Default::default()
             }),
             correlation_id: Some("import-1".into()),
+            actor: None,
         }
     }
 

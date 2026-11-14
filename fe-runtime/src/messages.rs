@@ -1191,6 +1191,8 @@ pub enum DbCommand {
     ImportPetalSnapshot {
         rows: Box<crate::petal_snapshot::PetalSnapshotRows>,
         correlation_id: Option<String>,
+        /// DID of the API token holder who triggered the import; stamped on quarantined history, never an authorization input.
+        actor: Option<String>,
     },
     /// Desktop-only material projection, checked as the local Viewer at DB use.
     ReadSceneMaterials {
@@ -1353,9 +1355,11 @@ pub enum DbCommand {
         label: String,
         metadata: serde_json::Value,
     },
-    /// Uninstall a hexon crate from a petal.
+    /// Uninstall a hexon crate from one petal (or from all when petal_id is None).
     UninstallCrate {
         hexon_uri: String,
+        /// Some = drop only this petal's row; None = every petal's (legacy).
+        petal_id: Option<String>,
     },
     // --- Petal terrain binding ---
     /// Read declarations using the DB thread's actual local identity.
@@ -1638,6 +1642,8 @@ pub enum DbResult {
         /// FR-1) so callers don't have to wait for a hierarchy reload to know
         /// where the node actually landed.
         position: [f32; 3],
+        /// Scale the row was written with ([1.0; 3] when none applied).
+        scale: [f32; 3],
     },
     /// Native import failure retains its originating dialog ownership.
     ImportGltfFailed {

@@ -323,6 +323,7 @@ impl TestPeer {
                                             has_asset: false,
                                             correlation_id,
                                             position,
+                                            scale: [1.0; 3],
                                         })
                                         .ok();
                                 }
@@ -1114,7 +1115,7 @@ impl TestPeer {
                                 tracing::warn!("CrateEntryInstalled send failed: {e:?}");
                             }
                         }
-                        Ok(DbCommand::UninstallCrate { hexon_uri }) => {
+                        Ok(DbCommand::UninstallCrate { hexon_uri, .. }) => {
                             if let Err(e) =
                                 db_result_tx.send(DbResult::CrateUninstalled { hexon_uri })
                             {

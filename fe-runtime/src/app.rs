@@ -363,6 +363,8 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::GetFieldSchema { correlation_id, .. }
         | DbCommand::CommitNodeMutation { correlation_id, .. }
         | DbCommand::CreateObject { correlation_id, .. }
+        | DbCommand::ExportPetalSnapshot { correlation_id, .. }
+        | DbCommand::ImportPetalSnapshot { correlation_id, .. }
         | DbCommand::ReadNodeHistory { correlation_id, .. } => correlation_id.as_deref(),
         DbCommand::ElevatedQuery { correlation_id, .. }
         | DbCommand::ScopedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
@@ -403,6 +405,9 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::DevicePayloadsInserted { correlation_id, .. }
         | DbResult::DevicePayloadsRejected { correlation_id, .. }
         | DbResult::DevicePayloadsListed { correlation_id, .. }
+        | DbResult::PetalSnapshotExported { correlation_id, .. }
+        | DbResult::PetalSnapshotImported { correlation_id, .. }
+        | DbResult::PetalSnapshotImportRefused { correlation_id, .. }
         | DbResult::QueryResult { correlation_id, .. } => correlation_id.as_deref(),
         DbResult::QueryFailed { correlation_id, .. }
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
@@ -474,6 +479,10 @@ enum ReplyKind {
     DeviceFormat,
     /// `InsertDevicePayloads`/`ListDevicePayloads` replies (CDL-SPEC10 A3).
     DevicePayload,
+    /// `ExportPetalSnapshot` replies (`PetalSnapshotExported`).
+    PetalSnapshotExport,
+    /// `ImportPetalSnapshot` replies (`PetalSnapshotImported` or `PetalSnapshotImportRefused`).
+    PetalSnapshotImport,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -539,6 +548,8 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         EnrolLocalDevice { .. } | RevokeLocalDevice { .. } => ReplyKind::DeviceEnrolment,
         RegisterDeviceFormat { .. } | ListDeviceFormats { .. } => ReplyKind::DeviceFormat,
         InsertDevicePayloads { .. } | ListDevicePayloads { .. } => ReplyKind::DevicePayload,
+        ExportPetalSnapshot { .. } => ReplyKind::PetalSnapshotExport,
+        ImportPetalSnapshot { .. } => ReplyKind::PetalSnapshotImport,
         _ => return None,
     })
 }
@@ -609,6 +620,10 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         DevicePayloadsInserted { .. }
         | DevicePayloadsRejected { .. }
         | DevicePayloadsListed { .. } => ReplyKind::DevicePayload,
+        PetalSnapshotExported { .. } => ReplyKind::PetalSnapshotExport,
+        PetalSnapshotImported { .. } | PetalSnapshotImportRefused { .. } => {
+            ReplyKind::PetalSnapshotImport
+        }
         _ => return None,
     })
 }
@@ -1143,6 +1158,7 @@ mod tests {
             has_asset: false,
             correlation_id: None,
             position: [0.0, 0.0, 0.0],
+            scale: [1.0; 3],
         }
     }
 
@@ -1324,6 +1340,48 @@ mod tests {
         assert!(matches!(
             revoke_rx.try_recv(),
             Ok(DbResult::RequestFailed { ref correlation_id, .. }) if correlation_id == "api-revoke"
+        ));
+
+        // Petal snapshot legs: a refused import and an export each reach only their own waiter.
+        let refused = |correlation_id: Option<&str>| DbResult::PetalSnapshotImportRefused {
+            petal_id: "p".to_string(),
+            reason: "conflict".to_string(),
+            correlation_id: correlation_id.map(str::to_string),
+        };
+        let exported = |correlation_id: Option<&str>| DbResult::PetalSnapshotExported {
+            petal_id: "p".to_string(),
+            rows: Box::default(),
+            correlation_id: correlation_id.map(str::to_string),
+        };
+        let (import_tx, mut import_rx) = tokio::sync::oneshot::channel();
+        let (export_tx, mut export_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(
+            &DbCommand::ImportPetalSnapshot {
+                rows: Box::default(),
+                correlation_id: Some("api-import".to_string()),
+                actor: None,
+            },
+            import_tx,
+        );
+        pending.enqueue_for(
+            &DbCommand::ExportPetalSnapshot {
+                petal_id: "p".to_string(),
+                correlation_id: Some("api-export".to_string()),
+            },
+            export_tx,
+        );
+        assert!(!pending.try_deliver(refused(None)));
+        assert!(import_rx.try_recv().is_err(), "an uncorrelated refusal leaked");
+        assert!(pending.try_deliver(exported(Some("api-export"))));
+        assert!(matches!(
+            export_rx.try_recv(),
+            Ok(DbResult::PetalSnapshotExported { correlation_id: Some(ref c), .. }) if c == "api-export"
+        ));
+        assert!(import_rx.try_recv().is_err(), "an export reply reached the import waiter");
+        assert!(pending.try_deliver(refused(Some("api-import"))));
+        assert!(matches!(
+            import_rx.try_recv(),
+            Ok(DbResult::PetalSnapshotImportRefused { correlation_id: Some(ref c), .. }) if c == "api-import"
         ));
     }
 
