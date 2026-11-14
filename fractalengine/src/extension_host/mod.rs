@@ -17,6 +17,8 @@ pub(crate) mod net_sources;
 pub(crate) mod ops_drain;
 /// `petal.map` hook resolution for the terrain bridge.
 pub(crate) mod petal_map;
+/// Install/Update offers: configured sources' builds and their header `provides`, shared with the binding resolver.
+pub(crate) mod registry_offers;
 /// The OD-8 signed revocation-list pull.
 pub(crate) mod revocation_pull;
 /// Other packages' slot commands onto the integration bus.

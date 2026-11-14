@@ -1,12 +1,13 @@
 //! Drains the Extensions panel's queued `ExtensionOp`s and the admin channel's `AdminJob`s on one worker thread against
 //! the `PluginManager` (docs/extensions/extensions-ui.md §Operations seam, docs/extensions/admin-channel.md §4-§7).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read as _;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use crossbeam::channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use fe_database::handlers::extension_policy::{version_matches, AuditAction};
 use fe_hexon::package::{verify_plugin_package, PluginPackage, PluginPackageError, PluginPackageStore, PluginTrust};
 use fe_hexon::registry_source::{
@@ -22,7 +23,7 @@ use fe_plugin::lifecycle::{
 };
 use fe_runtime::extension_binding::{
     hook_spec, key_allowed, served_hook_ids, BindingMode, BindingOffer, BindingRecord, BindingResolution, HookKeyKind,
-    BINDING_SCHEMA_VERSION,
+    UnresolvedReason, BINDING_SCHEMA_VERSION,
 };
 use fe_sdk::manifest_v2::{parse_and_validate, ValidatedManifest};
 use fe_ui::extensions::bindings::{BindingPointRow, BindingsSnapshot, ProviderOption, ScopeTarget};
@@ -38,12 +39,17 @@ use fe_ui::verse_manager::VerseManager;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::registry_offers::RegistryOffers;
 use super::sources::SourceSet;
 
 /// Audit `channel` of an action taken in the app window.
 pub const CHANNEL_GUI: &str = "gui";
 /// Audit `channel` of an action that arrived over the local admin channel (`fe_plugin::admin::protocol::AUDIT_CHANNEL`).
 pub const CHANNEL_CLI: &str = fe_plugin::admin::protocol::AUDIT_CHANNEL;
+/// Registry offers are re-read at most this often when nothing else asks (src/AGENTS.md §plugin-host "Registry offers").
+const OFFER_REFRESH_PERIOD: Duration = Duration::from_secs(10 * 60);
+/// The first registry-offer read after start, once navigation has seeded the scope.
+const OFFER_FIRST_REFRESH: Duration = Duration::from_secs(20);
 
 /// The verse and petal an op runs in: the navigation cursor when the op was queued.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -135,6 +141,8 @@ pub trait OpsPorts: Send {
     fn open_external(&self, url: &str) -> Result<(), String> {
         open_in_system_browser(url)
     }
+    /// The registry offers changed: re-resolve `verse_id` (every verse when empty) so Install/Update can show.
+    fn registry_offers_changed(&self, _verse_id: &str) {}
 }
 
 /// One licence token request (store-client contract v1 §entitlements).
@@ -396,6 +404,14 @@ pub struct OpsWorker {
     gui_scope: Arc<Mutex<ActiveScope>>,
     /// Audit channel of the job being served.
     audit_channel: &'static str,
+    /// Install/Update builds shared with the plugin worker's `LocalFacts.registry`.
+    registry_offers: RegistryOffers,
+    /// Package ids the open petal's unresolved bindings name (not-installed, version-unsatisfied, not-provided).
+    offer_packages: BTreeSet<String>,
+    /// The ids the last offer refresh covered; a new id refreshes at once.
+    offers_covered: BTreeSet<String>,
+    /// When the periodic offer refresh is next due.
+    offers_next_refresh: Instant,
 }
 
 fn lock(manager: &Mutex<PluginManager>) -> MutexGuard<'_, PluginManager> {
@@ -429,7 +445,8 @@ fn describe_package_error(error: PluginPackageError) -> String {
     }
 }
 
-fn semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
+/// `major.minor.patch` of a SemVer string, pre-release and build ignored.
+pub(super) fn semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
     let core = version.split(['-', '+']).next()?;
     let mut parts = core.split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
@@ -437,6 +454,22 @@ fn semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
 
 fn is_newer(candidate: &str, current: &str) -> bool {
     matches!((semver_triplet(candidate), semver_triplet(current)), (Some(a), Some(b)) if a > b)
+}
+
+/// Package ids of published resolutions a registry build could turn into Install or Update (bindings.md §5.5).
+fn offer_packages_of(snapshot: &BindingsSnapshot) -> BTreeSet<String> {
+    snapshot
+        .points
+        .iter()
+        .filter_map(|row| match &row.resolution {
+            Some(BindingResolution::Unresolved {
+                package_id,
+                reason: UnresolvedReason::NotInstalled | UnresolvedReason::VersionUnsatisfied | UnresolvedReason::NotProvided,
+                ..
+            }) => Some(package_id.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn short_did(did: &str) -> String {
@@ -536,7 +569,17 @@ impl OpsWorker {
             entitlements: HashMap::new(),
             gui_scope: Arc::new(Mutex::new(ActiveScope::default())),
             audit_channel: CHANNEL_GUI,
+            registry_offers: RegistryOffers::new(),
+            offer_packages: BTreeSet::new(),
+            offers_covered: BTreeSet::new(),
+            offers_next_refresh: Instant::now() + OFFER_FIRST_REFRESH,
         }
+    }
+
+    /// Share `offers` with the plugin worker (the binding resolver reads them as `LocalFacts.registry`).
+    pub(crate) fn with_registry_offers(mut self, offers: RegistryOffers) -> Self {
+        self.registry_offers = offers;
+        self
     }
 
     /// One local lifecycle change, audited on the channel of the job being served.
@@ -575,9 +618,18 @@ impl OpsWorker {
         }
     }
 
-    /// Serve panel ops and admin jobs, in arrival order, until every sender is gone.
+    /// Serve panel ops and admin jobs, in arrival order, until every sender is gone; idle, refresh registry offers.
     pub fn run(mut self, jobs: Receiver<WorkerInput>, events: Sender<ExtensionEvent>) {
-        while let Ok(input) = jobs.recv() {
+        loop {
+            let wait = self.offers_next_refresh.saturating_duration_since(Instant::now());
+            let input = match jobs.recv_timeout(wait) {
+                Ok(input) => input,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.periodic_offer_refresh();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
             let produced = match input {
                 WorkerInput::Panel(job) => {
                     job.ops.into_iter().flat_map(|op| self.handle(op, &job.scope)).collect::<Vec<_>>()
@@ -699,6 +751,9 @@ impl OpsWorker {
         match source.list(query) {
             Ok(listing) => {
                 self.note_offers(&source_id, &listing.entries);
+                if !self.offer_packages.is_empty() {
+                    self.refresh_registry_offers(&scope.verse_id);
+                }
                 vec![ExtensionEvent::Browse(BrowseEvent::Listing { source_id, listing }), self.rows_event(scope)]
             }
             Err(error) => {
@@ -1333,18 +1388,19 @@ impl OpsWorker {
     // ---- Bindings (bindings.md §5, §9) ------------------------------------------------------
 
     /// The Bindings view of the open petal: the host's plane, this worker's providers, offers only where they can run.
-    fn fresh_bindings(&self, scope: &ActiveScope) -> Result<BindingsSnapshot, String> {
+    fn fresh_bindings(&mut self, scope: &ActiveScope) -> Result<BindingsSnapshot, String> {
         if scope.petal_id.is_empty() {
             return Err("Open a petal to see its bindings".into());
         }
         let mut snapshot = self.ports.bindings_snapshot(scope)?;
+        self.note_offer_packages(&snapshot, &scope.verse_id);
         snapshot.providers = self.providers();
         self.add_unbound_points(&mut snapshot);
         self.filter_offers(&mut snapshot);
         Ok(snapshot)
     }
 
-    fn bindings_event(&self, scope: &ActiveScope) -> Result<ExtensionEvent, String> {
+    fn bindings_event(&mut self, scope: &ActiveScope) -> Result<ExtensionEvent, String> {
         self.fresh_bindings(scope).map(ExtensionEvent::Bindings)
     }
 
@@ -1422,6 +1478,36 @@ impl OpsWorker {
                 *offer = None;
             }
         }
+    }
+
+    /// Remember the packages the open petal's published resolutions could be offered; a new one refreshes at once.
+    fn note_offer_packages(&mut self, snapshot: &BindingsSnapshot, verse_id: &str) {
+        self.offer_packages = offer_packages_of(snapshot);
+        if !self.offer_packages.is_subset(&self.offers_covered) {
+            self.refresh_registry_offers(verse_id);
+        }
+    }
+
+    /// Re-read the configured sources for the offer packages; a change re-resolves the verse.
+    fn refresh_registry_offers(&mut self, verse_id: &str) {
+        let changed = self.registry_offers.refresh(&self.sources, &self.offer_packages, &self.trust.is_killed);
+        self.offers_covered = self.offer_packages.clone();
+        self.offers_next_refresh = Instant::now() + OFFER_REFRESH_PERIOD;
+        if changed {
+            self.ports.registry_offers_changed(verse_id);
+        }
+    }
+
+    /// The idle refresh: re-read the open petal's bindings (when one is open), then the sources.
+    fn periodic_offer_refresh(&mut self) {
+        let scope = self.gui_scope.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        if !scope.petal_id.is_empty() {
+            match self.ports.bindings_snapshot(&scope) {
+                Ok(snapshot) => self.offer_packages = offer_packages_of(&snapshot),
+                Err(reason) => tracing::debug!(%reason, "bindings unreadable; registry offers keep the last packages"),
+            }
+        }
+        self.refresh_registry_offers(&scope.verse_id);
     }
 
     /// The highest listed build of `package_id` fitting `version_req` (and newer than the installed one for an update).
