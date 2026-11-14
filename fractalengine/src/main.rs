@@ -114,9 +114,12 @@ fn main() {
         8765
     };
     let qa_logs = fe_runtime::qa_debug::QaLogRing::default();
+    // `FE_LOG_FORMAT=json` swaps the text layer for one JSON object per line (fe-runtime/src/AGENTS.md §log-format).
+    let log_format = fe_runtime::log_format::LogFormat::from_env();
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
+        .with((log_format == fe_runtime::log_format::LogFormat::Text).then(|| tracing_subscriber::fmt::layer()))
+        .with((log_format == fe_runtime::log_format::LogFormat::Json).then(|| tracing_subscriber::fmt::layer().json()))
         .with(qa_enabled.then(|| qa_log::QaLogLayer(qa_logs.clone())))
         .init();
     if qa_enabled {
@@ -263,6 +266,10 @@ fn main() {
         fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
             .expect("recreate keypair from seed")
     });
+    // Relay adverts are checked against the iroh-docs author, which is the sync endpoint's key: the node seed.
+    let advertisement_signer = Arc::new(
+        fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes()).expect("recreate keypair from seed"),
+    );
 
     // Phase E: replication channel (DB → sync bridge).
     // The DB thread emits ReplicationEvents; we bridge them to SyncCommand::WriteRowEntry
@@ -808,6 +815,11 @@ fn main() {
         extension_host: plugin_bridge::api_extension_host(&app),
         binding_host: plugin_bridge::api_binding_host(&app),
         import_hooks: plugin_bridge::import_hooks_handle(&app),
+        // Usage log and metrics bind from env; relay adverts signed as the sync author (fe-api/AGENTS.md §usage-metering).
+        network_ops: fe_api::network_ops::NetworkOps {
+            advertisement_signer: Some(advertisement_signer),
+            ..fe_api::network_ops::NetworkOps::from_env()
+        },
     }));
 
     // Agent QA: write loopback-only API tokens for every local verse once the
@@ -837,6 +849,7 @@ fn main() {
         app.insert_resource(fe_ui::ui_shell::topbar::TopbarState::with_brand_icon(icon));
     }
     app.add_systems(bevy::prelude::Update, window_chrome::set_window_icon);
+    app.add_systems(bevy::prelude::Update, window_chrome::sync_window_title);
 
     // Window captures: API bridge (agents) + F12 save-to-file (humans).
     screenshot_bridge::install(&mut app, screenshot_rx);

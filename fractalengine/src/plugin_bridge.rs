@@ -109,6 +109,7 @@ use crate::extension_host::import_hooks::{ImportHostAdapter, ImportWorkerPort, W
 use crate::extension_host::ops_drain::{
     ActiveScope, BuildToRun, ExtensionOpsPlugin, OpsPorts, OpsWorker, CHANNEL_GUI,
 };
+use crate::extension_host::registry_offers::RegistryOffers;
 use crate::extension_host::slot_drain::{BusSlotCaller, SlotCommand, SlotDrain, SlotReport};
 use crate::extension_host::sources::{load_source_configs, SourceSet};
 use crate::extension_host::{net_sources, revocation_pull, ui_registry};
@@ -504,6 +505,11 @@ impl ExtensionBlobSlot {
     /// Bind once; later calls are ignored.
     pub(crate) fn bind(&self, store: fe_database::BlobStoreHandle) {
         let _ = self.0.set(store);
+    }
+
+    /// The bound store; `None` until the binary binds it.
+    pub(crate) fn get(&self) -> Option<&fe_database::BlobStoreHandle> {
+        self.0.get()
     }
 }
 
@@ -1092,6 +1098,11 @@ impl ExtensionBlobMirror {
     /// The queue a blob-commit tap feeds; `None` until the plugin worker built the mirror.
     pub(crate) fn queue(&self) -> Option<&MirrorQueue> {
         self.0.get()
+    }
+
+    /// Publish the queue once; false when one is already published.
+    pub(crate) fn publish(&self, queue: MirrorQueue) -> bool {
+        self.0.set(queue).is_ok()
     }
 }
 
@@ -2250,6 +2261,8 @@ struct BindingWorker {
     mirror_queue: ExtensionBlobMirror,
     /// Off-worker calls the blob services make on the serving builds.
     hook_caller: Arc<dyn HookCaller>,
+    /// Install/Update offers the ops worker refreshes from configured sources (`LocalFacts.registry`).
+    registry_offers: RegistryOffers,
 }
 
 /// One `LoadBindingSnapshot` round trip (pinned I-DB command).
@@ -2309,7 +2322,7 @@ impl BindingWorker {
         if self.blob_mirror.is_none() {
             if let Some(store) = self.reader.blobs.0.get() {
                 let (queue, mirror) = blob_mirror_channel(store.clone());
-                if self.mirror_queue.0.set(queue).is_ok() {
+                if self.mirror_queue.publish(queue) {
                     self.blob_mirror = Some(mirror);
                 }
             }
@@ -2564,8 +2577,7 @@ impl BindingWorker {
                 .map(|build| build_facts(build, verse_id, petals, local, &self.governance))
                 .collect(),
             accepted: local.acceptances(),
-            // No listing carries `provides` on this worker yet: nothing is offered from a registry (fail closed).
-            registry: Vec::new(),
+            registry: self.registry_offers.snapshot(),
             package_policy: PackagePolicy::default(),
             default_access,
             admitted_bundles,
@@ -2949,6 +2961,9 @@ struct BridgeOpsPorts {
     view: BindingView,
     /// Identity key and device X25519 secret a licence request names; `None` answers `not-available`.
     licence_keys: Option<LicenceKeys>,
+    /// Token client over the pinned issuers; `None` when it could not be built (answers `not-available`).
+    #[cfg(feature = "entitlement")]
+    licence_tokens: Option<crate::extension_host::licence_client::LicenceTokens>,
 }
 
 /// The licensee's keys, held only for the ops worker's licence ports.
@@ -3400,15 +3415,30 @@ impl OpsPorts for BridgeOpsPorts {
         let licensee = keys.licensee();
         Ok((licensee.did(), licensee.device_did()))
     }
-    /// The keys are wired; the token client (transport, pinned verifier, token store) is not yet (R-BIN-19).
+    /// Ask the source's issuer through the token client; a verified token is filed where row 6 reads it.
     fn request_licence_token(
         &self,
-        _request: &crate::extension_host::ops_drain::LicenceRequest<'_>,
+        request: &crate::extension_host::ops_drain::LicenceRequest<'_>,
     ) -> Result<crate::extension_host::ops_drain::LicenceAnswer, String> {
         if !cfg!(feature = "entitlement") || self.licence_keys.is_none() {
             return Err("not-available: licences need the entitlement feature on this host".into());
         }
-        Err("not-available: licence token requests are not wired on this host yet".into())
+        #[cfg(feature = "entitlement")]
+        {
+            if let (Some(keys), Some(tokens)) = (&self.licence_keys, &self.licence_tokens) {
+                return tokens.request(request, keys.licensee(), fe_format::entitlement::unix_now());
+            }
+        }
+        let _ = request;
+        Err("not-available: the licence token client could not be built on this host".into())
+    }
+    /// Re-resolve `verse_id` (every verse when empty) so a changed Install/Update offer shows.
+    fn registry_offers_changed(&self, verse_id: &str) {
+        if verse_id.is_empty() {
+            self.signals.send(BindingSignal::AllDirty(Trigger::Lifecycle));
+        } else {
+            self.signals.dirty(verse_id, Trigger::Lifecycle);
+        }
     }
 }
 
@@ -4422,6 +4452,13 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     let governance_config =
         GovernanceConfig::from_env(local_did.clone(), qa_root.as_deref()).with_device_entitlement(config.device_key);
     let data_dir: PathBuf = governance_config.config_dir.clone();
+    // The token client only exists beside licence keys; an unreadable issuers file leaves it off (fail closed).
+    #[cfg(feature = "entitlement")]
+    let licence_tokens = licence_keys.as_ref().and_then(|_| {
+        crate::extension_host::licence_client::LicenceTokens::new(&data_dir)
+            .map_err(|reason| tracing::error!(%reason, "licence token client unavailable"))
+            .ok()
+    });
     let governance = governance::install(app, governance_config);
     let audit = governance.audit_sink();
     let role_source: Arc<dyn RoleSource> = roles;
@@ -4675,6 +4712,10 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     });
     let mirror_queue = ExtensionBlobMirror::default();
     app.insert_resource(mirror_queue.clone());
+    // Committed local imports feed the mirror queue once the worker built it (src/AGENTS.md §plugin-host).
+    app.add_systems(Update, crate::extension_host::blob_mirror_tap::feed_blob_mirror);
+    // One offer set: the ops worker refreshes it, the binding worker resolves against it.
+    let registry_offers = RegistryOffers::new();
 
     let worker = BindingWorker {
         manager: manager.clone(),
@@ -4705,6 +4746,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         blob_slot,
         blob_mirror: None,
         mirror_queue,
+        registry_offers: registry_offers.clone(),
     };
     let service = OwnedService::spawn("ext-bindings", move |stop| worker.run(signal_rx, stop));
     app.insert_resource(ExtensionBindingService(Mutex::new(Some(service))));
@@ -4719,6 +4761,8 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         signals,
         view,
         licence_keys,
+        #[cfg(feature = "entitlement")]
+        licence_tokens,
     };
     let ops_trust = source_trust(&governance, allow_dev);
     let worker_trust = source_trust(&governance, allow_dev);
@@ -4735,6 +4779,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
             sources,
             Box::new(ports),
         )
+        .with_registry_offers(registry_offers)
     });
     let admin_jobs = ops.admin_jobs();
     app.add_plugins(ops);

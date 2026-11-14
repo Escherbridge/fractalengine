@@ -43,9 +43,16 @@ fn main() -> anyhow::Result<()> {
         std::env::set_var("SURREAL_DATASTORE_SYNC_DATA", "every");
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    // `FE_LOG_FORMAT=json` selects one JSON object per line; the text arm is the unchanged default.
+    match fe_runtime::log_format::LogFormat::from_env() {
+        fe_runtime::log_format::LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init(),
+        fe_runtime::log_format::LogFormat::Text => tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init(),
+    }
 
     tracing::info!("Starting FractalEngine Relay (headless)");
 
@@ -117,6 +124,10 @@ fn main() -> anyhow::Result<()> {
 
     let db_keypair = fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes())
         .expect("recreate keypair from seed");
+    // Relay adverts are checked against the iroh-docs author, which is the sync endpoint's key: the node seed.
+    let advertisement_signer = Arc::new(
+        fe_identity::NodeKeypair::from_bytes(&node_kp.seed_bytes()).expect("recreate keypair from seed"),
+    );
 
     let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(256);
     // Clone for the API thread's emit seam (A11: the API ingestion path writes
@@ -496,6 +507,11 @@ fn main() -> anyhow::Result<()> {
         extension_host: None,
         binding_host: None,
         import_hooks: None,
+        // Usage log and metrics bind from env; relay adverts signed as the sync author (fe-api/AGENTS.md §usage-metering).
+        network_ops: fe_api::network_ops::NetworkOps {
+            advertisement_signer: Some(advertisement_signer),
+            ..fe_api::network_ops::NetworkOps::from_env()
+        },
     });
 
     app.insert_resource(RevocationBroadcastSender(revocation_tx));
