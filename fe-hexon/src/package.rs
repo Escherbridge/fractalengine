@@ -1158,6 +1158,8 @@ mod tests {
             }
             Some(body)
         };
+        let drop_component = |name: &str, body: Vec<u8>| (name != "plugin/component.wasm").then_some(body);
+        let drop_extension = |name: &str, body: Vec<u8>| (name != "plugin/extension.json").then_some(body);
         let unsign = |name: &str, body: Vec<u8>| {
             if name == "manifest.json" {
                 let mut doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1209,6 +1211,20 @@ mod tests {
                 invalid("uncommitted-member plugin/extra.bin"),
             ),
             (
+                "removed component member",
+                rezip(&sealed, &drop_component, None),
+                None,
+                &trust,
+                invalid("missing-member plugin/component.wasm"),
+            ),
+            (
+                "removed extension member",
+                rezip(&sealed, &drop_extension, None),
+                None,
+                &trust,
+                invalid("missing-member plugin/extension.json"),
+            ),
+            (
                 "signature removed",
                 rezip(&sealed, &unsign, None),
                 None,
@@ -1256,6 +1272,9 @@ mod tests {
                 invalid("id-mismatch"),
             ),
         ];
+        // The untouched control verifies under the same trust the tamper rows are refused under.
+        let control = verify_plugin_package(&sealed, None, &trust).expect("untouched control verifies");
+        assert_eq!(control.package_id, "org.example.fleet-sim");
         let never_revoked = |_: &str| false;
         for (label, bytes, expected_id, trust, expected) in rows {
             let err = store

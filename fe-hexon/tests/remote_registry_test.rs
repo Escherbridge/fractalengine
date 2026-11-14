@@ -79,6 +79,23 @@ fn build_hexon(
     .expect("fixture export failed")
 }
 
+const PLUGIN_ID: &str = "org.example.fleet-sim";
+const PLUGIN_EXTENSION_JSON: &[u8] =
+    br#"{"id":"org.example.fleet-sim","version":"1.0.0","name":"Fleet Sim","contract":"fractalengine:plugin@2.0.0"}"#;
+
+/// Publisher key of the sealed plugin fixture; the journey's trust root accepts exactly its did:key.
+fn plugin_publisher_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[21u8; 32])
+}
+
+/// A sealed, signed `HexonType::Plugin` package (wasm component preamble + body).
+fn plugin_fixture() -> Vec<u8> {
+    let component = [&[0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00][..], b"fleet-sim body"].concat();
+    fe_hexon::publisher::PluginHexonBuilder::new(PLUGIN_EXTENSION_JSON, component)
+        .build(&plugin_publisher_key())
+        .expect("sealed plugin fixture")
+}
+
 fn write_fixtures(dir: &Path) {
     let fixtures = [
         (
@@ -124,6 +141,7 @@ fn write_fixtures(dir: &Path) {
     for (name, bytes) in fixtures {
         std::fs::write(dir.join(name), bytes).expect("fixture write failed");
     }
+    std::fs::write(dir.join(format!("{PLUGIN_ID}@1.0.0.hexon")), plugin_fixture()).expect("plugin fixture write failed");
 }
 
 /// Serve the registry router on an ephemeral local port.
@@ -197,6 +215,7 @@ async fn search_download_verify_roundtrip() {
 
     // Missing package surfaces a registry error.
     assert!(client.manifest("no-such-hexon").await.is_err());
+    let plugin_bytes = client.download(PLUGIN_ID).await.unwrap();
 
     // Through the RegistrySource trait: the registry advertises protocol v1, so the listing carries each
     // content_hash and a content hexon (terrain tileset) verifies through `fetch_hexon` (R32).
@@ -216,9 +235,32 @@ async fn search_download_verify_roundtrip() {
         assert!(source.header(&entry).is_err());
         // A tileset is never verified as a plugin: `fetch` refuses it, `fetch_hexon` verifies it as content.
         assert!(matches!(source.fetch(&entry), Err(RegistryError::PackageInvalid(_))));
-        // The Extensions source (anonymous, plugin packages only) does not offer these content fixtures.
-        let extensions = remote_extension_source("extensions", base, trust).unwrap();
-        assert!(extensions.list(None).unwrap().entries.is_empty());
+        // AC-6: the Extensions source (anonymous, plugin packages only) lists exactly the sealed plugin, not the content fixtures.
+        let publisher_did = fe_format::verifying_key_to_did(&plugin_publisher_key().verifying_key());
+        let plugin_trust = SourceTrust::new(Arc::new(move |did| did == publisher_did));
+        let extensions = remote_extension_source("extensions", base.clone(), plugin_trust.clone()).unwrap();
+        let plugin_listing = extensions.list(None).unwrap();
+        assert_eq!(plugin_listing.entries.len(), 1);
+        let plugin_entry = plugin_listing.entries[0].clone();
+        assert_eq!(plugin_entry.package_id, PLUGIN_ID);
+        assert_eq!(plugin_entry.version, "1.0.0");
+        assert_eq!(plugin_entry.content_hash.len(), 64);
+        // Header phase returns the committed extension.json before any download; fetch verifies against the listed hash.
+        assert_eq!(extensions.header(&plugin_entry).unwrap(), PLUGIN_EXTENSION_JSON);
+        let installed = extensions.fetch(&plugin_entry).unwrap();
+        assert_eq!(installed.package.package_id, PLUGIN_ID);
+        assert_eq!(installed.package.content_hash, plugin_entry.content_hash);
+        assert_eq!(installed.bytes, plugin_bytes);
+        // A renamed copy (signed id differs from the listed id) is refused on identity, via the uri check and via the seal reader.
+        let renamed = RegistryEntry { package_id: "org.example.other".into(), ..plugin_entry.clone() };
+        assert!(matches!(extensions.fetch(&renamed), Err(RegistryError::PackageInvalid(_))));
+        let renamed_bytes = fe_hexon::registry_source::verify_fetched(plugin_bytes.clone(), &renamed, &plugin_trust);
+        assert!(matches!(renamed_bytes, Err(RegistryError::PackageInvalid(reason)) if reason.contains("id-mismatch")));
+        // The same bytes under a kill predicate that matches the hash are refused.
+        let killed_hash = plugin_entry.content_hash.clone();
+        let killing = plugin_trust.with_kill_list(Arc::new(move |_, hash| hash == killed_hash));
+        let killed = remote_extension_source("extensions", base, killing).unwrap();
+        assert!(matches!(killed.fetch(&plugin_entry), Err(RegistryError::Revoked { .. })));
         let wrong = RegistryEntry { content_hash: "0".repeat(64), ..entry.clone() };
         let refused = source.fetch_hexon(&wrong).unwrap_err();
         let accepted = source.fetch_hexon(&entry).unwrap();
@@ -266,7 +308,7 @@ async fn bearer_token_is_applied() {
 
     let authed = RemoteRegistryClient::new(format!("http://{addr}"), Some("s3cret".into()));
     let hits = authed.search(None, None, None).await.unwrap();
-    assert_eq!(hits.len(), 3);
+    assert_eq!(hits.len(), 4);
     let bytes = authed.download("morning-run@0.1.0").await.unwrap();
     assert!(HexonArchive::import(&bytes).is_ok());
 }
