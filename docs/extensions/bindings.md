@@ -69,6 +69,8 @@ point, author), the role-statement shape (`role/{scope}/{peer}/{grantor}`, fe-da
 }
 ```
 
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
+
 | Field | Rule | Meaning |
 |---|---|---|
 | `schema_version` | `1` | Record shape version. |
@@ -502,6 +504,8 @@ world extension-with-hooks {
 }
 ```
 
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
+
 **The export is required.** A manifest with `provides` needs a component that exports `hooks`.
 The component check is `missing-export hooks`
 ([package-format.md](package-format.md#component-checks-at-install)). Plain 2.0 components stay
@@ -537,6 +541,8 @@ and the fault is counted. Fuel exhaustion also degrades the instance (R4).
                        "properties": { "district": { "type": "string", "maxLength": 64 } } } }
 ]
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 Fractal F's Manager writes, at `VERSE#V-FRACTAL#F`: `hook: "petal.map"`, `mode: "extension"`,
 `package_id: "org.example.city-map"`, `version_req: ">=1.2.0, <2.0.0"`,

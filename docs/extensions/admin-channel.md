@@ -67,6 +67,8 @@ mandatory label.
 {"v": 1, "id": "c1", "verb": "install-file", "args": {"path": "C:\\pkgs\\fleet-sim.hexon"}}
 ```
 
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
+
 - `v` is the protocol version, exactly `1`. Any other value answers `unsupported-version`.
 - `id` is chosen by the client: 1 to 64 characters of `A-Z a-z 0-9 _ -`. Every reply frame echoes it.
 - `args` is an object and may be omitted for verbs without arguments.
@@ -117,6 +119,8 @@ uninstall) is allowed from the terminal. Granting things is not.
 {"v": 1, "id": "c1", "status": "ok", "result": {"installations": [{"installation_id": "01J…", "package_id": "org.example.fleet-sim", "name": "Fleet sim", "version": "1.2.0", "status": "Running", "bindings": []}]}}
 {"v": 1, "id": "c1", "status": "refused", "code": "consent-declined", "message": "Declined in the app"}
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 - Every request gets exactly one final reply: `ok` or `refused`. A request whose verb may raise the
   dialog can first get exactly one `pending-consent`. The client refuses any other interim frame.

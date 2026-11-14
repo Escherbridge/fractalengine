@@ -96,6 +96,8 @@ already commits the payload.
 }
 ```
 
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
+
 - Each entry signs the SAME `signing_bytes` as the publisher (plugin_host_revival's `{key_id,
   signature}` list), so a second party can counter-sign a published package without resealing it.
 - `key_id` is the signer's `did:key`, so a signature is checkable without a lookup; whether that

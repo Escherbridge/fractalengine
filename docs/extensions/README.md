@@ -36,18 +36,18 @@ Reference contracts (normative; the guides above explain them, they do not repla
 
 | `kind` | Use it for | Example |
 |---|---|---|
-| `simulation` | Fleets of movers and sensors driven by a config | [`extensions/fleet-sim`](../../extensions/fleet-sim) |
-| `device-adapter` | HTTP, websocket or MQTT devices turned into readings | [`extensions/device-adapter`](../../extensions/device-adapter) |
-| `bi-connector` | Pushing query results to an external analytics target | [`extensions/bi-push`](../../extensions/bi-push) |
+| `simulation` | Fleets of movers and sensors driven by a config | [`extensions/fleet-sim`](../../extensions/fleet-sim/extension.json) |
+| `device-adapter` | HTTP, websocket or MQTT devices turned into readings | [`extensions/device-adapter`](../../extensions/device-adapter/extension.json) |
+| `bi-connector` | Pushing query results to an external analytics target | [`extensions/bi-push`](../../extensions/bi-push/extension.json) |
 | `general` | Anything else that uses the same grants | `fe-ext new general <name>` ([`tools/fe-ext/src/new.rs`](../../tools/fe-ext/src/new.rs)) |
 
 The fleet-sim and device-adapter `extension.json` files are byte copies of the schema examples of
-the same name in [`fe-sdk/schema/examples/`](../../fe-sdk/schema/examples). `web-bundle` is reserved for the portal
+the same name in [`fe-sdk/schema/examples/`](../../fe-sdk/schema/examples/fleet-sim.extension.json). `web-bundle` is reserved for the portal
 track and is refused for extensions (`reserved-kind`).
 
 ## Tools
 
-- [`tools/fe-ext`](../../tools/fe-ext): the authoring CLI (`new`, `build`, `validate`, `pack`, `sign`,
+- [`tools/fe-ext`](../../tools/fe-ext/Cargo.toml): the authoring CLI (`new`, `build`, `validate`, `pack`, `sign`,
   `countersign`, `inspect`, `run --sandbox`, `keygen`). Design notes: [`tools/fe-ext/AGENTS.md`](../../tools/fe-ext/AGENTS.md).
 - [`tools/fe-ext/guest`](../../tools/fe-ext/guest/src/lib.rs): the Rust guest SDK (generated 2.0 bindings, the
   `Extension` trait and `extension!` macro, write-window, readings-batching and snap-to-alert helpers).

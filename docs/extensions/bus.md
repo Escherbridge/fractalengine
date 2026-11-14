@@ -87,6 +87,8 @@ on this host), for one petal.
                  "recorded_at_ms": 1762631400000, "source_did": "did:key:z6Mk…",
                  "origin": "local"}]}
   ```
+
+  Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
   `origin` is `local` or `replicated`. At most 1 000 readings per event.
 - **Loss:** a full queue drops the oldest events and counts them (`dropped-before`); readings are
   independent facts, so there is no resync. A consumer that needs completeness re-queries.
@@ -242,6 +244,8 @@ a command is a deliberate delegation of the host's identity.
 {"sub": 7, "source": "org.example.fleet-sim/positions", "seq": 42, "kind": "delta",
  "dropped_before": 0, "at_ms": 1762631400000, "data": {"count": 4, "movers": []}}
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 - `seq` increases by one per event on a subscription; a gap equals `dropped_before` on the next delivery.
 - `kind`: `snapshot`, `delta`, `resync-required`, `ended` (data `{"reason": …}`).

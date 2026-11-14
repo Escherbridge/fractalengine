@@ -29,6 +29,8 @@ template in [`tools/fe-ext/src/new.rs`](../../tools/fe-ext/src/new.rs) (`manifes
   "tick": { "cadence_ms": 1000, "max_ops": 16, "max_readings": 16, "fuel": 200000 } }
 ```
 
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
+
 The manifest is the whole capability surface: the host grants nothing it does not declare. Four
 rules decide most validation errors (full table in [manifest-v2.md](manifest-v2.md#validation)):
 
@@ -64,6 +66,8 @@ Declare it in the manifest, then answer the host's calls:
 "provides": [{ "hook": "petal.map" }]
 ```
 
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
+
 `provides` is checked at validation: a hook outside the catalogue is `unknown-hook` (V17), and a hook
 whose needs the manifest does not declare (bindings.md section 6) is `hook-capability-missing` (V18). Keyed hooks
 may list `keys` (an exact key, a `prefix*` or `*`). A provider builds against the `extension-with-hooks`
@@ -81,11 +85,15 @@ The rule that shapes every guest is stated at the top of the WIT file:
 // - A refused call returns host-error and changes nothing; it never traps.
 ```
 
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
+
 So a guest never "saves" a transform. It stages one, and the host commits it with everything else from that tick:
 
 ```wit
 stage-set-transform: func(node: node-id, patch: transform-patch) -> result<_, host-error>;
 ```
+
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
 
 Two things to notice:
 

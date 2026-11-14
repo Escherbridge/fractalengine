@@ -32,11 +32,15 @@ path the REST tracking uses, and it is cached until the route node changes.
 sample: func(route: node-id, progress: f64) -> result<route-sample, host-error>;
 ```
 
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
+
 Then stage the transform. Nothing moves until the next tick flush:
 
 ```wit
 stage-set-transform: func(node: node-id, patch: transform-patch) -> result<_, host-error>;
 ```
+
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
 
 *Smart part:* `progress` is clamped by the host, so a bad clock cannot send a mover past the end of its route.
 *Watch for:* the route is cached by node change, not by your call. A route edit is seen on the next
@@ -71,6 +75,8 @@ also needs `scene.read`. `host/readings` takes an optional `metrics` filter, and
 ```wit
 subscribe: func(source: string, params: json) -> result<subscription-id, host-error>;
 ```
+
+Example file: [`fractal-plugin-2.wit`](../../fe-plugin/wit/fractal-plugin-2.wit).
 
 Deliveries arrive in batches through `bus-hooks.on-events`, at most 64 events per call, in
 `seq` order per subscription. A `seq` gap means drops; a `resync-required` means the stream
@@ -107,6 +113,8 @@ Declare the stream on the producer. Its address is `<package_id>/<stream_id>`:
 "bus": { "expose": { "streams": [
   { "id": "positions", "max_rate_hz": 10, "max_event_bytes": 16384, "role_floor": "viewer" } ] } }
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 Publish with `bus.publish(name, event)`. Pass the stream id, not the full address.
 
@@ -148,6 +156,8 @@ Forward only the headers you need, and never a credential:
 ```json
 "forward_headers": ["x-device-id"]
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 Do not declare `authorization`, `cookie`, `x-api-key` or any header the host uses to authenticate
 (any `x-fe-*`). The host strips those whatever the manifest says, and the schema refuses a manifest

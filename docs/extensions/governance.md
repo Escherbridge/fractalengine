@@ -66,6 +66,8 @@ revocation_url = "https://…"      # OD-8 pull source; only meaningful with rev
 role = "publisher"                # NEW (E10, additive, default "publisher"): "release" | "publisher" | "dev"
 ```
 
+Example file: [`fleet-sim Cargo.toml`](../../extensions/fleet-sim/Cargo.toml).
+
 - `release` roots sign first-party packages (release_ci_20260429). `dev` roots load only when the
   dev flag is set, and the dev flag is unreachable from release builds.
 - A package is **trusted** when its publisher signature verifies and the ed25519 key of
@@ -98,6 +100,8 @@ precedent) and judged role-at-write on every replica like any row.
   }
 }
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 | Field | Values | Default (no row) |
 |---|---|---|
@@ -158,6 +162,8 @@ A local record per installation, never replicated (R20; plugin_host_revival S3's
   "at": "2026-11-08T19:50:00Z"
 }
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 - `capability_digest` is defined in [manifest-v2.md](manifest-v2.md#capability-digest); for
   `kind: web-bundle` it is the portal contract's digest (`docs/spec/portal-bundle/README.md` §7.2),
@@ -266,6 +272,8 @@ the Extensions UI.
   "args_digest": "4be0…"
 }
 ```
+
+Example file: [`fleet-sim.extension.json`](../../fe-sdk/schema/examples/fleet-sim.extension.json).
 
 `action` ∈ `install`, `update`, `consent`, `consent-revoke`, `bind`, `unbind`, `enable`, `disable`,
 `uninstall`, `revocation`, `policy-change`, `bus-subscribe`, `bus-unsubscribe`, `command-call`,
