@@ -157,6 +157,11 @@ pub fn blob_mirror_channel(blobs: BlobStoreHandle) -> (MirrorQueue, BlobMirror) 
 }
 
 impl BlobMirror {
+    /// Committed blobs queued and not yet taken by a pump.
+    pub fn pending(&self) -> usize {
+        self.jobs.len()
+    }
+
     /// Hand committed blobs to the mirrors bound at their petal while call slots are free. An unbound petal costs
     /// nothing and starts nothing; a bound blob over 8 MiB is skipped and counted. Returns the jobs taken.
     pub fn pump(

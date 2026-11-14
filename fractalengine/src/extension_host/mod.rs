@@ -2,6 +2,8 @@
 
 /// The local admin-channel listener (`fe-ext admin`) relaying OS-user requests to the ops worker.
 pub(crate) mod admin_channel;
+/// The `blob.mirror` after-commit tap over committed local imports.
+pub(crate) mod blob_mirror_tap;
 /// R19 rows 6-8, the Owner kill-list override, consent and override hydration, the durable audit sink.
 pub(crate) mod governance;
 /// `asset.import` over the binding worker (fe-api `ImportHooks`).
