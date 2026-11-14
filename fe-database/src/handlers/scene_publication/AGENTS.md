@@ -59,8 +59,12 @@ concurrent same-value local Save leaves row bytes and the scene clock unchanged.
 The guard selects both row_version and the raw-record fingerprint before ordering; its
 expected object list has that same exact shape, preserving the empty-list absence fence.
 Legacy direct apply wrappers retain their signatures and cannot invent that missing identity.
-Ordering compares original HLC, then authenticated publisher lexical order. Older/equal
-full live rows are ignored without materialization events. Local tombstones dominate every
+Per-key clock (per_key_clock_20261113): a complete snapshot carries `_fe_clock`, the publisher's
+own per-key versions (`field_clock/AGENTS.md` §wire). Each key orders by its own `(hlc, author)`
+(`field_clock::merge::winner`), so two editors writing different keys both survive, and the same key
+converges to the max on every peer. A snapshot without `_fe_clock` (legacy writer) is seeded at the
+legacy floor (`field_clock/AGENTS.md` §legacy-migration) and loses to any clocked version.
+Older/equal full live rows are ignored without materialization events. Local tombstones dominate every
 live row regardless of clock. An incoming tombstone can dominate a newer live state; an
 older tombstone cannot replace a known later tombstone. Replica-open transport timestamps
 are never substituted for original commit clocks. The local clock is an ordering watermark,

@@ -53,6 +53,16 @@ exists on the intended host, so it answers `not-found` (loud), never acts on the
 index (device-adapter), both consented by the dialog's own button, a CLI `disable` and a panel `enable`, then both
 uninstalled; the viewer proves installations stay host-local. Two peers because `run.py` needs at least two.
 
+## §p2p-core-clock
+
+`scenarios/p2p-core.json` checks the per-key clock (per_key_clock_20261113). Steps 13a/13b (revoke and
+revoke2, `mode always`, `hold_s 40`, QA-0165) require N2's transform and N4's step-12 properties to stay
+unchanged on every peer: rows the revoked editor wrote before the revoke stay, and rows written after it
+stay refused. Steps 5 and 6 agree on every peer. The winner is max `(hlc, author DID)` per key, the
+QA-0126 documented rule, not the owner's value. Step 14p races two editors on different keys and on one
+key at the same instant (QA-0156), then flips Swarm Petal A -> B -> A through the Options dialog (QA-0166)
+and expects every peer to show A within 30 s. Run only when the user names `p2p-core`.
+
 ## Scenario list
 
 - `fleet-terrain` (`scenarios/fleet-terrain.json`): fixture terrain, three roadway GPX tracks imported, then fleet-sim movers

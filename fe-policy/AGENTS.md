@@ -154,9 +154,20 @@ lower that stays at Editor+ (or Manager) keeps the prior's value; a revoke or a 
 the level restarts it. `validate_statement` denies a field the statement does not back, or
 one later than its `hlc` (`RejectReason::InvalidContinuity`). `materialize_at(owner,
 statements, at)` materializes only what each statement is known to have granted at `at`
-(`as_of`). Callers AND it with the current view (fe-database `src/AGENTS.md`
-§write-time-role). Both fields are skipped on the wire when absent, so older statements
-keep their bytes, and an absent field means "since its own `hlc`".
+(`as_of`). Clocked rows use `held_at` alone (QA-0165, no current-role AND); the legacy path still ANDs
+(fe-database `src/AGENTS.md` §write-time-role). Both fields are skipped on the wire when absent, so
+older statements keep their bytes, and an absent field means "since its own `hlc`".
+
+**Grant windows (QA-0165).** `windows: Vec<GrantWindow>` holds closed-open `[since, until)` intervals
+in which a level was granted before a break, so a revoke does not erase past authority. A revoke or
+lower appends the prior open interval, ended at the revoker's write frontier by
+`continuing_with_frontier` (`min(self.hlc, frontier)`; an empty window is skipped). `as_of(at)` for
+`at < hlc` honours a window that contains `at`. `validate_statement` requires windows sorted,
+non-overlapping, `since < until <= hlc`, role Editor or Manager, and at most `MAX_GRANT_WINDOWS` (8);
+the oldest is dropped on overflow. `held_at(owner, statements, author, scope, level, at)` is the
+write-time judge: the owner, or `materialize_at(.., at)` reaches the level. A window is honoured
+only when the local, already-admitted history of its statement key proves it; the payload alone never
+does, and no window reaches past what the grantor could grant at that scope and time.
 
 Pure per-grantor role-statement model
 (`conductor/tracks/role_propagation_20261013` RP-1; plan §2.2–§2.4).

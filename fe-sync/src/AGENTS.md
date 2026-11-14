@@ -2301,6 +2301,12 @@ then every author's entry for those keys from the snapshot, and sends ONE
 `DbCommand::RejudgeReplicatedNodes` batch per verse (`send_rejudge_batch`; fe-database
 `src/AGENTS.md` §write-time-role).
 
+Per-key clock (per_key_clock_20261113): the DB plane re-judges clocked rows locally
+(`field_clock::rejudge`, fe-database `src/AGENTS.md` §per-key-clock), so this batch now serves
+legacy nodes only. A demotion no longer reverts pre-revoke edits (QA-0165): a demoted author's
+version written inside its grant window stays. Flag day: every peer upgrades together, with no
+dual-format writing and no version negotiation.
+
 Critic fixes, 2026-11-07:
 
 - **No lost demotion (QA-0132).** The queues are peeked (`pending_rejudges`/
@@ -2386,7 +2392,8 @@ is live, so it adds no traffic to a healthy swarm and cannot recreate the QA-010
 every author (`Query::single_latest_per_key`, a local store read) is this author's, holds the same
 content hash, and the blob is complete locally (a migrated entry whose content is missing is
 rewritten). The newest-across-authors test is load-bearing (critic pass 3): verse/fractal/petal rows
-carry no version and merge in arrival order, and a snapshot keeps the newest entry per key, so
+carry per-key versions now (`_fe_clock`, `fe-database/src/field_clock/AGENTS.md`); before
+per_key_clock_20261113 they merged in arrival order, and a snapshot kept the newest entry per key, so
 when Bob overwrote Alice's petal name and Alice set it back to her earlier bytes, a skip keyed on
 her own entry alone left every peer on Bob's name while Alice showed hers. Bytes another author
 has since overtaken are therefore a new version and are re-set. Every iroh-docs
