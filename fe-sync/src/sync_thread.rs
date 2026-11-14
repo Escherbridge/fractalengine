@@ -37,10 +37,11 @@ use crate::event_outbox::{EventOutbox, EventSink, SHUTDOWN_FLUSH_TIMEOUT};
 use crate::messages::{SyncCommand, SyncCommandReceiver, SyncEvent, SyncEventSender};
 use crate::placement::Retention;
 use crate::relay_config::{
-    advertised_relay_entry, configured_urls, RelayAdvertisePolicy, RelayConfig, RelayHealth,
+    advertised_relay_entry, auto_home_relay, RelayAdvertisePolicy, RelayConfig, RelayHealth,
     RelayStatusSummary,
 };
-use crate::relay_reconcile::{RelayOp, RelayReconciler};
+use crate::relay_reconcile::{RelayOp, RelayReconcileInputs, RelayReconciler, RelaySource};
+use crate::relay_trust::evaluate_coverage;
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
     ReplicatorFuture, RowChange, VerseReplicator,
@@ -961,8 +962,13 @@ pub fn spawn_sync_thread_with_sources(
             // LOCAL policy (never replicated); configured relays are never touched.
             let relay_advertise_policy =
                 RelayAdvertisePolicy::from_env().effective_for(&relay_config);
-            let mut relay_reconciler = RelayReconciler::new(configured_urls(&relay_config));
-            let mut relay_reconcile_open_verses: BTreeSet<String> = BTreeSet::new();
+            // NET-22: Configured / Default / Advertised tiers, coverage, the adopted-relay health loop.
+            let mut relay_adoption =
+                RelayAdoption::new(RelayReconciler::from_relay_config(&relay_config));
+            let (adoption_probe_tx, mut adoption_probe_rx) =
+                tokio::sync::mpsc::channel::<(String, bool)>(32);
+            let mut relay_adoption_tick = tokio::time::interval(RELAY_ADOPTION_TICK);
+            relay_adoption_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // NET-21: members-only relay admission, re-pushed on every role or `__peers` change.
             #[cfg(feature = "relay-server")]
             let mut relay_admission = RelayAdmissionPusher::default();
@@ -1035,9 +1041,9 @@ pub fn spawn_sync_thread_with_sources(
                 reconcile_advertised_relays(
                     &mut fabrics,
                     &replicas,
-                    &mut relay_reconcile_open_verses,
-                    &mut relay_reconciler,
+                    &mut relay_adoption,
                     &relay_advertise_policy,
+                    relay_health,
                     endpoint.as_ref(),
                 )
                 .await;
@@ -1069,15 +1075,29 @@ pub fn spawn_sync_thread_with_sources(
                             }
                         }
                     }
+                    _ = relay_adoption_tick.tick() => {
+                        // NET-22: 30 s re-plan (advert expiry, cooled failures) and adopted-relay health checks.
+                        if let Some(endpoint) = endpoint.as_ref() {
+                            let statuses = endpoint.home_relay_status().get();
+                            relay_adoption.observe_home(&statuses);
+                            relay_adoption.check_adopted(&adoption_probe_tx, std::time::Instant::now());
+                        }
+                        relay_adoption.on_tick(std::time::Instant::now());
+                    }
+                    Some((relay, healthy)) = adoption_probe_rx.recv() => {
+                        relay_adoption.record_probe(&relay, healthy, std::time::Instant::now());
+                    }
                     maybe_status = next_relay_status(&mut relay_watch), if relay_watch.is_some() => {
                         match maybe_status {
                             Some(statuses) => {
                                 relay_health = apply_relay_status(
                                     relay_health,
                                     &statuses,
-                                    &relay_reconciler,
+                                    &relay_adoption.reconciler,
                                     &evt_tx,
                                 );
+                                // A home change re-plans Default demotion and coverage on the next pass.
+                                relay_adoption.observe_home(&statuses);
                             }
                             // Watcher disconnected (last endpoint clone
                             // dropped) — stop polling it.
@@ -1738,101 +1758,371 @@ impl RelayAdmissionPusher {
     }
 }
 
-/// S7 reconciliation loop: re-plan the advertised relays when adverts or the open-verse set changed, then apply.
+/// How often the relay planner re-runs without another trigger (advert expiry, cooled failures, health checks).
+const RELAY_ADOPTION_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Consecutive failed health checks after which an adopted (advertised) relay is removed.
+const ADOPTED_RELAY_FAILURE_LIMIT: u32 = 3;
+
+/// How long a removed unhealthy relay stays out before it may be adopted again.
+const ADOPTED_RELAY_FAILED_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Budget for one adopted-relay reachability probe (TCP connect to a resolved, public address).
+const ADOPTED_RELAY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Consecutive-failure counter for adopted relays; a relay that fails `ADOPTED_RELAY_FAILURE_LIMIT` checks in a row is held out for a cooldown.
+#[derive(Debug, Default)]
+struct AdoptedRelayHealth {
+    failures: HashMap<String, u32>,
+    failed_until: HashMap<String, std::time::Instant>,
+}
+
+impl AdoptedRelayHealth {
+    /// Fold one check result; `true` when this check marked the relay failed.
+    fn record(&mut self, url: &str, healthy: bool, now: std::time::Instant) -> bool {
+        if self.failed_until.contains_key(url) {
+            return false;
+        }
+        if healthy {
+            self.failures.remove(url);
+            return false;
+        }
+        let count = self.failures.entry(url.to_string()).or_default();
+        *count += 1;
+        if *count < ADOPTED_RELAY_FAILURE_LIMIT {
+            return false;
+        }
+        self.failures.remove(url);
+        self.failed_until
+            .insert(url.to_string(), now + ADOPTED_RELAY_FAILED_COOLDOWN);
+        true
+    }
+
+    fn is_failed(&self, url: &str) -> bool {
+        self.failed_until.contains_key(url)
+    }
+
+    /// Release relays whose cooldown ended; `true` when any was released.
+    fn release_cooled(&mut self, now: std::time::Instant) -> bool {
+        let before = self.failed_until.len();
+        self.failed_until.retain(|_, until| *until > now);
+        before != self.failed_until.len()
+    }
+}
+
+/// The sync thread's relay adoption state (local only, never replicated); see `src/AGENTS.md` §relay-trust.
+struct RelayAdoption {
+    reconciler: RelayReconciler,
+    /// Participating verses = replicas open at the last plan.
+    open_verses_seen: BTreeSet<String>,
+    /// Latest home-relay snapshot as (canonical URL, summary).
+    home: Vec<(String, RelayStatusSummary)>,
+    health: AdoptedRelayHealth,
+    /// Adopted relays with a reachability probe in flight.
+    probing: HashSet<String>,
+    /// Default-tier entries taken out of the relay map while demoted, restored verbatim.
+    removed_defaults: HashMap<String, Arc<iroh::RelayConfig>>,
+    /// Relay allowlist last pushed to the endpoint.
+    last_allowlist: BTreeSet<String>,
+    /// Set by the tick, a home change or a health verdict: re-plan on the next pass.
+    replan: bool,
+    /// Hazard B (AC-9): open verses whose adverts omit this node's advertised home relay (NET-28 diagnostics).
+    unadvertised_home_verses: BTreeSet<String>,
+}
+
+impl RelayAdoption {
+    fn new(reconciler: RelayReconciler) -> Self {
+        Self {
+            last_allowlist: reconciler
+                .configured()
+                .union(reconciler.defaults())
+                .cloned()
+                .collect(),
+            reconciler,
+            open_verses_seen: BTreeSet::new(),
+            home: Vec::new(),
+            health: AdoptedRelayHealth::default(),
+            probing: HashSet::new(),
+            removed_defaults: HashMap::new(),
+            replan: true,
+            unadvertised_home_verses: BTreeSet::new(),
+        }
+    }
+
+    /// Record a home-relay snapshot; a change triggers a re-plan.
+    fn observe_home(&mut self, statuses: &[iroh::endpoint::RelayStatus]) {
+        let changed = statuses.len() != self.home.len()
+            || statuses.iter().zip(&self.home).any(|(status, (url, summary))| {
+                status.url().as_str() != url.as_str() || RelayStatusSummary::from_status(status) != *summary
+            });
+        if changed {
+            self.home = statuses
+                .iter()
+                .map(|status| (status.url().to_string(), RelayStatusSummary::from_status(status)))
+                .collect();
+            self.replan = true;
+        }
+    }
+
+    /// The home relay iroh reports as connected, if any.
+    fn home_connected(&self) -> Option<String> {
+        self.home
+            .iter()
+            .find(|(_, summary)| summary.connected)
+            .map(|(url, _)| url.clone())
+    }
+
+    /// One health check per adopted advertised relay: home status when it is a home relay, else a reachability probe.
+    fn check_adopted(
+        &mut self,
+        probe_tx: &tokio::sync::mpsc::Sender<(String, bool)>,
+        now: std::time::Instant,
+    ) {
+        let adopted: BTreeSet<String> = self
+            .reconciler
+            .inserted()
+            .keys()
+            .filter(|url| self.reconciler.source_of(url) == Some(RelaySource::Advertised))
+            .cloned()
+            .collect();
+        self.health.failures.retain(|url, _| adopted.contains(url));
+        for url in adopted {
+            let home_verdict = self
+                .home
+                .iter()
+                .find(|(home_url, _)| *home_url == url)
+                .and_then(|(_, summary)| {
+                    if summary.connected {
+                        Some(true)
+                    } else if summary.has_error || summary.auth_denied {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+            match home_verdict {
+                Some(healthy) => self.record_check(&url, healthy, now),
+                None if self.probing.insert(url.clone()) => {
+                    let probe_tx = probe_tx.clone();
+                    tokio::spawn(async move {
+                        let healthy = probe_adopted_relay(&url).await;
+                        if probe_tx.send((url, healthy)).await.is_err() {
+                            tracing::warn!("adopted relay probe result dropped: the sync loop has stopped");
+                        }
+                    });
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Fold a finished reachability probe.
+    fn record_probe(&mut self, url: &str, healthy: bool, now: std::time::Instant) {
+        self.probing.remove(url);
+        if self.reconciler.is_inserted(url) {
+            self.record_check(url, healthy, now);
+        }
+    }
+
+    fn record_check(&mut self, url: &str, healthy: bool, now: std::time::Instant) {
+        if self.health.record(url, healthy, now) {
+            tracing::warn!(
+                relay = %url,
+                failures = ADOPTED_RELAY_FAILURE_LIMIT,
+                "adopted relay failed consecutive health checks; removing it from the relay map"
+            );
+            self.replan = true;
+        }
+    }
+
+    /// The periodic tick always re-plans (advert expiry is judged at read time).
+    fn on_tick(&mut self, now: std::time::Instant) {
+        self.health.release_cooled(now);
+        self.replan = true;
+    }
+
+    /// Relays a peer address may name: Configured and Default (demoted or not) plus every advertised relay listed.
+    fn allowlist(&self) -> BTreeSet<String> {
+        self.reconciler
+            .configured()
+            .iter()
+            .chain(self.reconciler.defaults())
+            .chain(self.reconciler.inserted().keys())
+            .chain(self.reconciler.known())
+            .cloned()
+            .collect()
+    }
+}
+
+/// Relay reconciliation (S7, NET-22): re-plan the three relay tiers when adverts, open verses, home status or health changed, then apply.
 async fn reconcile_advertised_relays(
     fabrics: &mut HashMap<String, VerseFabric>,
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
-    open_verses_seen: &mut BTreeSet<String>,
-    reconciler: &mut RelayReconciler,
+    adoption: &mut RelayAdoption,
     policy: &RelayAdvertisePolicy,
+    home_health: RelayHealth,
     endpoint: Option<&SyncEndpoint>,
 ) {
     // Compared as a set: a close and an open in one pass leave the count unchanged.
-    let mut changed = replicas.len() != open_verses_seen.len()
-        || replicas.keys().any(|verse_id| !open_verses_seen.contains(verse_id));
+    let mut changed = adoption.replan
+        || replicas.len() != adoption.open_verses_seen.len()
+        || replicas.keys().any(|verse_id| !adoption.open_verses_seen.contains(verse_id));
     for fabric in fabrics.values_mut() {
         changed |= !fabric.drain_relay_advert_changes().is_empty();
     }
     if !changed {
         return;
     }
-    *open_verses_seen = replicas.keys().cloned().collect();
+    adoption.replan = false;
+    adoption.open_verses_seen = replicas.keys().cloned().collect();
 
-    // Only verses this node still has open count toward a relay's refcount.
+    // Only verses this node still has open count toward a relay's refcount; failed relays sit out their cooldown.
     let mut advertised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for fabric in fabrics.values() {
         for (verse_id, urls) in fabric.advertised_relay_urls() {
             if replicas.contains_key(&verse_id) {
-                advertised.entry(verse_id).or_default().extend(urls);
+                advertised
+                    .entry(verse_id)
+                    .or_default()
+                    .extend(urls.into_iter().filter(|url| !adoption.health.is_failed(url)));
             }
         }
     }
 
-    let ops = reconciler.plan(policy, &advertised);
+    let coverage = evaluate_coverage(&adoption.open_verses_seen, &advertised);
+    let home_connected = adoption.home_connected();
+    let ops = adoption.reconciler.plan_tiers(&RelayReconcileInputs {
+        policy,
+        advertised: &advertised,
+        home_connected: home_connected.clone(),
+        coverage,
+        auto_home: auto_home_relay(),
+        home_health,
+    });
     let mut known = 0usize;
     for op in ops {
         match op {
             RelayOp::Known(_) => known += 1,
-            RelayOp::Insert(raw) => {
-                let Some(endpoint) = endpoint else {
-                    reconciler.forget_insert(&raw);
-                    continue;
-                };
-                if let Err(reason) = advertised_relay_insertable(&raw).await {
-                    tracing::warn!(relay = %raw, "pinned advertised relay not inserted: {reason}");
-                    reconciler.forget_insert(&raw);
-                    continue;
-                }
-                let url = match raw.parse::<iroh::RelayUrl>() {
-                    Ok(url) => url,
-                    Err(error) => {
-                        tracing::warn!(relay = %raw, "advertised relay not inserted: {error}");
-                        reconciler.forget_insert(&raw);
-                        continue;
-                    }
-                };
-                let entry = advertised_relay_entry(url.clone());
-                if let Some(replaced) = endpoint.inner().insert_relay(url.clone(), entry).await {
-                    // Never own an entry someone else put in the map (OD-10: it may carry a token); put it back.
-                    tracing::error!(
-                        relay = %url,
-                        token_bearing = replaced.auth_token.is_some(),
-                        "advertised relay collided with an existing relay entry; restoring it"
-                    );
-                    endpoint.inner().insert_relay(url, replaced).await;
-                    reconciler.forget_insert(&raw);
-                    continue;
-                }
-                tracing::info!(relay = %raw, "inserted pinned advertised relay into the relay map");
-            }
-            RelayOp::Remove(raw) => {
-                if reconciler.configured().contains(&raw) {
-                    tracing::error!(relay = %raw, "refusing to remove a configured relay");
-                    continue;
-                }
-                let Some(endpoint) = endpoint else { continue };
-                match raw.parse::<iroh::RelayUrl>() {
-                    Ok(url) => {
-                        endpoint.inner().remove_relay(&url).await;
-                        tracing::info!(relay = %raw, "removed advertised relay: no open verse advertises it");
-                    }
-                    Err(error) => tracing::warn!(relay = %raw, "advertised relay not removed: {error}"),
-                }
-            }
+            RelayOp::Insert(raw) => insert_planned_relay(adoption, &raw, endpoint).await,
+            RelayOp::Remove(raw) => remove_planned_relay(adoption, &raw, endpoint).await,
         }
     }
+
+    if let Some(endpoint) = endpoint {
+        let allowlist = adoption.allowlist();
+        if allowlist != adoption.last_allowlist {
+            endpoint.set_relay_allowlist(
+                allowlist
+                    .iter()
+                    .filter_map(|raw| raw.parse::<iroh::RelayUrl>().ok()),
+            );
+            adoption.last_allowlist = allowlist;
+        }
+    }
+
+    // Hazard B (AC-9): an advertised home relay that a shared verse does not advertise leaves that verse's peers unable to find us there.
+    let unadvertised: BTreeSet<String> = match home_connected.as_deref() {
+        Some(home) if adoption.reconciler.source_of(home) == Some(RelaySource::Advertised) => adoption
+            .open_verses_seen
+            .iter()
+            .filter(|verse_id| !advertised.get(*verse_id).is_some_and(|urls| urls.contains(home)))
+            .cloned()
+            .collect(),
+        _ => BTreeSet::new(),
+    };
+    for verse_id in unadvertised.difference(&adoption.unadvertised_home_verses) {
+        tracing::warn!(
+            verse_id = %verse_id,
+            home_relay = home_connected.as_deref().unwrap_or_default(),
+            "home relay is an advertised relay this verse does not advertise; its peers may not reach this node through it"
+        );
+    }
+    adoption.unadvertised_home_verses = unadvertised;
+
     tracing::debug!(
         known,
-        inserted = reconciler.inserted().len(),
-        "advertised relays reconciled"
+        inserted = adoption.reconciler.inserted().len(),
+        defaults_demoted = adoption.reconciler.defaults_demoted(),
+        unadvertised_home_verses = adoption.unadvertised_home_verses.len(),
+        "relay tiers reconciled"
     );
+}
+
+/// Apply one planned insert: a demoted Default relay is restored verbatim, an advertised one enters tokenless after the public-address check.
+async fn insert_planned_relay(adoption: &mut RelayAdoption, raw: &str, endpoint: Option<&SyncEndpoint>) {
+    let Some(endpoint) = endpoint else {
+        adoption.reconciler.forget_insert(raw);
+        return;
+    };
+    let url = match raw.parse::<iroh::RelayUrl>() {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!(relay = %raw, "relay not inserted: {error}");
+            adoption.reconciler.forget_insert(raw);
+            return;
+        }
+    };
+    if adoption.reconciler.source_of(raw) == Some(RelaySource::Default) {
+        let entry = adoption
+            .removed_defaults
+            .remove(raw)
+            .unwrap_or_else(|| Arc::new(iroh::RelayConfig::new(url.clone(), None)));
+        endpoint.inner().insert_relay(url, entry).await;
+        tracing::info!(relay = %raw, "restored default relay to the relay map");
+        return;
+    }
+    if let Err(reason) = advertised_relay_insertable(raw).await {
+        tracing::warn!(relay = %raw, "advertised relay not inserted: {reason}");
+        adoption.reconciler.forget_insert(raw);
+        return;
+    }
+    let entry = advertised_relay_entry(url.clone());
+    if let Some(replaced) = endpoint.inner().insert_relay(url.clone(), entry).await {
+        // Never own an entry someone else put in the map (OD-10: it may carry a token); put it back.
+        tracing::error!(
+            relay = %url,
+            token_bearing = replaced.auth_token.is_some(),
+            "advertised relay collided with an existing relay entry; restoring it"
+        );
+        endpoint.inner().insert_relay(url, replaced).await;
+        adoption.reconciler.forget_insert(raw);
+        return;
+    }
+    let mode = adoption.reconciler.adoption().get(raw).copied();
+    tracing::info!(relay = %raw, ?mode, "inserted advertised relay into the relay map");
+}
+
+/// Apply one planned removal; a Configured relay is never removed and a demoted Default entry is kept for its restore.
+async fn remove_planned_relay(adoption: &mut RelayAdoption, raw: &str, endpoint: Option<&SyncEndpoint>) {
+    let source = adoption.reconciler.source_of(raw);
+    if source == Some(RelaySource::Configured) {
+        tracing::error!(relay = %raw, "refusing to remove a configured relay");
+        return;
+    }
+    let Some(endpoint) = endpoint else { return };
+    let url = match raw.parse::<iroh::RelayUrl>() {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!(relay = %raw, "relay not removed: {error}");
+            return;
+        }
+    };
+    let removed = endpoint.inner().remove_relay(&url).await;
+    if source == Some(RelaySource::Default) {
+        if let Some(entry) = removed {
+            adoption.removed_defaults.insert(raw.to_string(), entry);
+        }
+        tracing::info!(relay = %raw, "demoted default relay: a fully covered advertised relay is the healthy home");
+    } else {
+        tracing::info!(relay = %raw, "removed advertised relay: no longer advertised, covered or healthy");
+    }
 }
 
 /// Budget for resolving a pinned advertised relay's host before it enters the relay map.
 const ADVERTISED_RELAY_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A pinned advert may enter the relay map (and so become home) only as a public https relay whose every resolved address is public.
-async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
+/// Resolve an advertised relay to its addresses, refusing anything but a public https relay whose every address is public.
+async fn resolve_public_relay(raw: &str) -> Result<Vec<std::net::SocketAddr>, String> {
     use fe_runtime::relay_advertisement::{
         check_resolved_relay_address, validate_advertised_relay_url, AdvertisedRelayPolicy,
         RelayReach,
@@ -1841,11 +2131,20 @@ async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
     if !advertised.home_eligible() {
         return Err("only a public https relay may enter the relay map".to_string());
     }
+    let port = advertised.url().port_or_known_default().unwrap_or(443);
     // IP-literal hosts were classified by the validator; a domain is checked at resolution.
     let Some(domain) = advertised.url().domain() else {
-        return Ok(());
+        let host = advertised
+            .url()
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let address: std::net::IpAddr = host
+            .parse()
+            .map_err(|error| format!("relay host is not an address: {error}"))?;
+        return Ok(vec![std::net::SocketAddr::new(address, port)]);
     };
-    let port = advertised.url().port_or_known_default().unwrap_or(443);
     let resolved = tokio::time::timeout(
         ADVERTISED_RELAY_RESOLVE_TIMEOUT,
         tokio::net::lookup_host((domain, port)),
@@ -1853,22 +2152,38 @@ async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
     .await
     .map_err(|_| "host resolution timed out".to_string())?
     .map_err(|error| format!("host resolution failed: {error}"))?;
-    let mut any = false;
+    let mut addresses = Vec::new();
     for address in resolved {
-        any = true;
         match check_resolved_relay_address(address.ip(), AdvertisedRelayPolicy::process()) {
-            Ok(RelayReach::Public) => {}
+            Ok(RelayReach::Public) => addresses.push(address),
             Ok(RelayReach::Private) => {
                 return Err(format!("host resolves to non-public address {}", address.ip()))
             }
             Err(error) => return Err(error.to_string()),
         }
     }
-    if any {
-        Ok(())
-    } else {
+    if addresses.is_empty() {
         Err("host resolved to no address".to_string())
+    } else {
+        Ok(addresses)
     }
+}
+
+/// A pinned or home-eligible advert may enter the relay map only as a public https relay whose every resolved address is public.
+async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
+    resolve_public_relay(raw).await.map(|_| ())
+}
+
+/// One adopted-relay health check: a TCP connect, within the probe budget, to an address that passed the public-address check.
+async fn probe_adopted_relay(raw: &str) -> bool {
+    let Ok(addresses) = resolve_public_relay(raw).await else {
+        return false;
+    };
+    let connect = tokio::net::TcpStream::connect(&addresses[..]);
+    matches!(
+        tokio::time::timeout(ADOPTED_RELAY_PROBE_TIMEOUT, connect).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Bridge-thread helper: forward one command into the tokio channel.

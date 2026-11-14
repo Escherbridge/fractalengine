@@ -3,11 +3,17 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use fe_policy::RoleLevel;
-use fe_runtime::relay_advertisement::{parse_row, RelayAdvertisementRow, RowParse};
+use fe_runtime::relay_advertisement::{
+    parse_row, verify_row_at, AdvertRefusal, RelayAdvertisementRow, RowParse,
+    MAX_ADVERTS_PER_VERSE, MAX_ADVERT_TTL_MS,
+};
 
 pub use fe_runtime::relay_advertisement::{
     validate_advertised_relay_url, RELAY_ADVERT_ROW_VERSION, RELAY_ADVERT_TABLE,
 };
+
+use crate::relay_config::RelayAdvertSignedMode;
+use crate::relay_trust::select_bounded;
 
 /// Bound on quarantined advertisements across all verses (same posture as `__shards`).
 pub const RELAY_QUARANTINE_CAP: usize = 1024;
@@ -33,7 +39,7 @@ pub enum AdvertChange {
     },
 }
 
-/// One admitted advertisement; `url` is the validator's normalized form.
+/// One role-eligible advertisement; `url` is the validator's normalized form.
 #[derive(Debug, Clone)]
 struct AdmittedAdvert {
     author_did: String,
@@ -53,10 +59,14 @@ struct QuarantinedAdvert {
     arrival: u64,
 }
 
-/// Per-verse admitted advertisements keyed by record id, plus a per-author bounded quarantine.
+/// Per-verse eligible advertisements, the bounded visible subset emitted as changes, and a per-author bounded quarantine.
 #[derive(Debug, Default)]
 pub struct RelayAdvertisementBook {
+    /// verse id → record id → structurally valid row whose author holds the floor.
     admitted: BTreeMap<String, BTreeMap<String, AdmittedAdvert>>,
+    /// verse id → record id → URL last emitted as admitted (unexpired, within `MAX_ADVERTS_PER_VERSE`).
+    visible: BTreeMap<String, BTreeMap<String, String>>,
+    signed_mode: RelayAdvertSignedMode,
     /// verse id → author DID → pending adverts, oldest first, one per record id.
     quarantine: BTreeMap<String, BTreeMap<String, VecDeque<QuarantinedAdvert>>>,
     quarantine_len: usize,
@@ -72,11 +82,20 @@ enum Structural {
 }
 
 impl RelayAdvertisementBook {
+    /// A book under the process signed-advert mode (`FE_SYNC_RELAY_ADVERT_SIGNED`).
     pub fn new() -> Self {
-        Self::default()
+        Self::with_signed_mode(RelayAdvertSignedMode::process())
     }
 
-    /// Judge one inbound `__relays` entry; `author_did` is the `SignedEntry` author, `role_of(did, scope)` the fabric's `role_at`.
+    /// A book under an explicit signed-advert mode.
+    pub fn with_signed_mode(signed_mode: RelayAdvertSignedMode) -> Self {
+        Self {
+            signed_mode,
+            ..Self::default()
+        }
+    }
+
+    /// Judge one inbound `__relays` entry now; see [`Self::observe_at`].
     pub fn observe(
         &mut self,
         verse_id: &str,
@@ -86,48 +105,74 @@ impl RelayAdvertisementBook {
         is_tombstone: bool,
         role_of: impl Fn(&str, &str) -> RoleLevel,
     ) -> Vec<AdvertChange> {
+        self.observe_at(verse_id, record_id, author_did, data, is_tombstone, role_of, unix_now_ms())
+    }
+
+    /// Judge one inbound `__relays` entry at `now_ms`; `author_did` is the `SignedEntry` author, `role_of(did, scope)` the fabric's `role_at`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_at(
+        &mut self,
+        verse_id: &str,
+        record_id: &str,
+        author_did: &str,
+        data: &[u8],
+        is_tombstone: bool,
+        role_of: impl Fn(&str, &str) -> RoleLevel,
+        now_ms: u64,
+    ) -> Vec<AdvertChange> {
         let scope = verse_scope(verse_id);
         let mut changes = Vec::new();
 
         if is_tombstone || data.is_empty() {
-            self.observe_withdrawal(verse_id, record_id, author_did, &scope, &role_of, &mut changes);
+            self.observe_withdrawal(verse_id, record_id, author_did, &scope, &role_of);
+            self.publish(verse_id, now_ms, &mut changes);
             return changes;
         }
 
         // The author's own earlier pending row for this record is superseded by this one.
         self.remove_pending(verse_id, author_did, record_id);
 
-        let (url, row) = match judge_structure(verse_id, record_id, author_did, data) {
-            Structural::Valid { url, row } => (url, row),
+        match judge_structure(verse_id, record_id, author_did, data, now_ms, self.signed_mode) {
+            Structural::Valid { url, row } => {
+                if role_of(author_did, &scope).is_at_least(RELAY_ADVERTISER_FLOOR) {
+                    self.make_eligible(verse_id, record_id, author_did, url, row);
+                } else {
+                    if self.admitted_author(verse_id, record_id) == Some(author_did) {
+                        self.retire(verse_id, record_id);
+                    }
+                    tracing::debug!(
+                        verse_id,
+                        record_id,
+                        author = author_did,
+                        "relay advertisement quarantined: advertiser is below Manager at the verse scope"
+                    );
+                    self.quarantine(QuarantinedAdvert {
+                        verse_id: verse_id.to_string(),
+                        record_id: record_id.to_string(),
+                        author_did: author_did.to_string(),
+                        url,
+                        row,
+                        arrival: 0,
+                    });
+                }
+            }
             Structural::Refused => {
                 // A refused rewrite by the same author retires that author's admission; others' stay.
                 if self.admitted_author(verse_id, record_id) == Some(author_did) {
-                    self.withdraw(verse_id, record_id, &mut changes);
+                    self.retire(verse_id, record_id);
                 }
-                return changes;
             }
-        };
+        }
 
-        if role_of(author_did, &scope).is_at_least(RELAY_ADVERTISER_FLOOR) {
-            self.admit(verse_id, record_id, author_did, url, row, &mut changes);
-        } else {
-            if self.admitted_author(verse_id, record_id) == Some(author_did) {
-                self.withdraw(verse_id, record_id, &mut changes);
-            }
-            tracing::debug!(
+        self.publish(verse_id, now_ms, &mut changes);
+        if self.is_held_over_bound(verse_id, record_id, now_ms) {
+            tracing::warn!(
                 verse_id,
                 record_id,
-                author = author_did,
-                "relay advertisement quarantined: advertiser is below Manager at the verse scope"
+                refusal = AdvertRefusal::OverBound.name(),
+                limit = MAX_ADVERTS_PER_VERSE,
+                "relay advertisement held back: the verse already has its bound of older adverts"
             );
-            self.quarantine(QuarantinedAdvert {
-                verse_id: verse_id.to_string(),
-                record_id: record_id.to_string(),
-                author_did: author_did.to_string(),
-                url,
-                row,
-                arrival: 0,
-            });
         }
         changes
     }
@@ -138,7 +183,8 @@ impl RelayAdvertisementBook {
         did: &str,
         role_of: impl Fn(&str, &str) -> RoleLevel,
     ) -> Vec<AdvertChange> {
-        let mut changes = Vec::new();
+        let now_ms = unix_now_ms();
+        let mut touched: BTreeSet<String> = BTreeSet::new();
 
         let demoted: Vec<(String, String)> = self
             .admitted
@@ -154,7 +200,8 @@ impl RelayAdvertisementBook {
             })
             .collect();
         for (verse_id, record_id) in demoted {
-            if let Some(advert) = self.withdraw(&verse_id, &record_id, &mut changes) {
+            if let Some(advert) = self.retire(&verse_id, &record_id) {
+                touched.insert(verse_id.clone());
                 self.quarantine(QuarantinedAdvert {
                     verse_id,
                     record_id,
@@ -196,8 +243,46 @@ impl RelayAdvertisementBook {
                     row,
                     ..
                 } = entry;
-                self.admit(&verse_id, &record_id, &author_did, url, row, &mut changes);
+                self.make_eligible(&verse_id, &record_id, &author_did, url, row);
             }
+            touched.insert(verse_id);
+        }
+
+        let mut changes = Vec::new();
+        for verse_id in touched {
+            self.publish(&verse_id, now_ms, &mut changes);
+        }
+        changes
+    }
+
+    /// Drop every eligible and quarantined row expired at `now_ms`, withdrawing the visible ones (the expiry timer).
+    pub fn expire(&mut self, now_ms: u64) -> Vec<AdvertChange> {
+        for records in self.admitted.values_mut() {
+            records.retain(|_, advert| !is_expired(&advert.row, now_ms));
+        }
+        self.admitted.retain(|_, records| !records.is_empty());
+
+        let mut removed = 0;
+        for authors in self.quarantine.values_mut() {
+            authors.retain(|_, pending| {
+                let before = pending.len();
+                pending.retain(|entry| !is_expired(&entry.row, now_ms));
+                removed += before - pending.len();
+                !pending.is_empty()
+            });
+        }
+        self.quarantine.retain(|_, authors| !authors.is_empty());
+        self.quarantine_len -= removed;
+
+        let verses: BTreeSet<String> = self
+            .visible
+            .keys()
+            .chain(self.admitted.keys())
+            .cloned()
+            .collect();
+        let mut changes = Vec::new();
+        for verse_id in verses {
+            self.publish(&verse_id, now_ms, &mut changes);
         }
         changes
     }
@@ -207,36 +292,50 @@ impl RelayAdvertisementBook {
         if let Some(authors) = self.quarantine.remove(verse_id) {
             self.quarantine_len -= authors.values().map(VecDeque::len).sum::<usize>();
         }
-        let Some(records) = self.admitted.remove(verse_id) else {
+        self.admitted.remove(verse_id);
+        let Some(records) = self.visible.remove(verse_id) else {
             return Vec::new();
         };
         records
             .into_iter()
-            .map(|(record_id, advert)| AdvertChange::Withdrawn {
+            .map(|(record_id, url)| AdvertChange::Withdrawn {
                 verse_id: verse_id.to_string(),
                 record_id,
-                url: advert.url,
+                url,
             })
             .collect()
     }
 
-    /// Normalized admitted relay URLs per verse.
+    /// Normalized admitted relay URLs per verse, excluding any advert that has expired since it was admitted.
     pub fn urls_by_verse(&self) -> BTreeMap<String, BTreeSet<String>> {
-        self.admitted
+        let now_ms = unix_now_ms();
+        self.visible
             .iter()
-            .map(|(verse_id, records)| {
-                let urls = records.values().map(|advert| advert.url.clone()).collect();
-                (verse_id.clone(), urls)
+            .filter_map(|(verse_id, records)| {
+                let urls: BTreeSet<String> = records
+                    .iter()
+                    .filter(|(record_id, _)| self.is_live(verse_id, record_id, now_ms))
+                    .map(|(_, url)| url.clone())
+                    .collect();
+                (!urls.is_empty()).then(|| (verse_id.clone(), urls))
             })
             .collect()
     }
 
     /// Admitted rows of one verse, in record-id order.
     pub fn admitted(&self, verse_id: &str) -> Vec<&RelayAdvertisementRow> {
-        self.admitted
-            .get(verse_id)
-            .map(|records| records.values().map(|advert| &advert.row).collect())
-            .unwrap_or_default()
+        let Some(records) = self.visible.get(verse_id) else {
+            return Vec::new();
+        };
+        records
+            .keys()
+            .filter_map(|record_id| {
+                self.admitted
+                    .get(verse_id)
+                    .and_then(|eligible| eligible.get(record_id))
+                    .map(|advert| &advert.row)
+            })
+            .collect()
     }
 
     /// How many advertisements are waiting on their author's role (diagnostics/tests).
@@ -261,7 +360,6 @@ impl RelayAdvertisementBook {
         author_did: &str,
         scope: &str,
         role_of: &impl Fn(&str, &str) -> RoleLevel,
-        changes: &mut Vec<AdvertChange>,
     ) {
         let author_is_manager = role_of(author_did, scope).is_at_least(RELAY_ADVERTISER_FLOOR);
         if author_is_manager {
@@ -274,7 +372,7 @@ impl RelayAdvertisementBook {
             .map(|admitted_by| admitted_by == author_did || author_is_manager);
         match may_withdraw {
             Some(true) => {
-                self.withdraw(verse_id, record_id, changes);
+                self.retire(verse_id, record_id);
             }
             Some(false) => tracing::warn!(
                 verse_id,
@@ -286,63 +384,107 @@ impl RelayAdvertisementBook {
         }
     }
 
-    fn admit(
+    fn make_eligible(
         &mut self,
         verse_id: &str,
         record_id: &str,
         author_did: &str,
         url: String,
         row: RelayAdvertisementRow,
-        changes: &mut Vec<AdvertChange>,
     ) {
-        let records = self.admitted.entry(verse_id.to_string()).or_default();
-        let previous = records.insert(
+        self.admitted.entry(verse_id.to_string()).or_default().insert(
             record_id.to_string(),
             AdmittedAdvert {
                 author_did: author_did.to_string(),
-                url: url.clone(),
+                url,
                 row,
             },
         );
-        match previous {
-            Some(previous) if previous.url == url => {}
-            Some(previous) => {
-                changes.push(AdvertChange::Withdrawn {
-                    verse_id: verse_id.to_string(),
-                    record_id: record_id.to_string(),
-                    url: previous.url,
-                });
-                changes.push(AdvertChange::Admitted {
-                    verse_id: verse_id.to_string(),
-                    record_id: record_id.to_string(),
-                    url,
-                });
-            }
-            None => changes.push(AdvertChange::Admitted {
-                verse_id: verse_id.to_string(),
-                record_id: record_id.to_string(),
-                url,
-            }),
-        }
     }
 
-    fn withdraw(
-        &mut self,
-        verse_id: &str,
-        record_id: &str,
-        changes: &mut Vec<AdvertChange>,
-    ) -> Option<AdmittedAdvert> {
+    fn retire(&mut self, verse_id: &str, record_id: &str) -> Option<AdmittedAdvert> {
         let records = self.admitted.get_mut(verse_id)?;
         let advert = records.remove(record_id)?;
         if records.is_empty() {
             self.admitted.remove(verse_id);
         }
-        changes.push(AdvertChange::Withdrawn {
-            verse_id: verse_id.to_string(),
-            record_id: record_id.to_string(),
-            url: advert.url.clone(),
-        });
         Some(advert)
+    }
+
+    /// Recompute the visible set of `verse_id` and emit the difference (withdrawals first).
+    fn publish(&mut self, verse_id: &str, now_ms: u64, changes: &mut Vec<AdvertChange>) {
+        let next = self.select_visible(verse_id, now_ms);
+        let previous = self.visible.remove(verse_id).unwrap_or_default();
+        for (record_id, url) in &previous {
+            if next.get(record_id) != Some(url) {
+                changes.push(AdvertChange::Withdrawn {
+                    verse_id: verse_id.to_string(),
+                    record_id: record_id.clone(),
+                    url: url.clone(),
+                });
+            }
+        }
+        for (record_id, url) in &next {
+            if previous.get(record_id) != Some(url) {
+                changes.push(AdvertChange::Admitted {
+                    verse_id: verse_id.to_string(),
+                    record_id: record_id.clone(),
+                    url: url.clone(),
+                });
+            }
+        }
+        if !next.is_empty() {
+            self.visible.insert(verse_id.to_string(), next);
+        }
+    }
+
+    /// Unexpired eligible rows cut to `MAX_ADVERTS_PER_VERSE` by `relay_trust::select_bounded` (oldest issued first).
+    fn select_visible(&self, verse_id: &str, now_ms: u64) -> BTreeMap<String, String> {
+        let Some(records) = self.admitted.get(verse_id) else {
+            return BTreeMap::new();
+        };
+        let live: Vec<(&String, &AdmittedAdvert)> = records
+            .iter()
+            .filter(|(_, advert)| !is_expired(&advert.row, now_ms))
+            .collect();
+        let rows = live.iter().map(|(_, advert)| advert.row.clone()).collect();
+        let (kept, _held_back) = select_bounded(rows, MAX_ADVERTS_PER_VERSE);
+        // The sort is stable, so identical rows keep record-id order: take the first unused match.
+        let mut used = vec![false; live.len()];
+        let mut visible = BTreeMap::new();
+        for row in &kept {
+            let found = live
+                .iter()
+                .enumerate()
+                .position(|(index, (_, advert))| !used[index] && advert.row == *row);
+            if let Some(index) = found {
+                used[index] = true;
+                let (record_id, advert) = live[index];
+                visible.insert(record_id.clone(), advert.url.clone());
+            }
+        }
+        visible
+    }
+
+    /// `true` when `record_id` is eligible and unexpired yet cut by the per-verse bound.
+    fn is_held_over_bound(&self, verse_id: &str, record_id: &str, now_ms: u64) -> bool {
+        let eligible_live = self
+            .admitted
+            .get(verse_id)
+            .and_then(|records| records.get(record_id))
+            .is_some_and(|advert| !is_expired(&advert.row, now_ms));
+        let visible = self
+            .visible
+            .get(verse_id)
+            .is_some_and(|records| records.contains_key(record_id));
+        eligible_live && !visible
+    }
+
+    fn is_live(&self, verse_id: &str, record_id: &str, now_ms: u64) -> bool {
+        self.admitted
+            .get(verse_id)
+            .and_then(|records| records.get(record_id))
+            .is_some_and(|advert| !is_expired(&advert.row, now_ms))
     }
 
     fn admitted_author(&self, verse_id: &str, record_id: &str) -> Option<&str> {
@@ -460,8 +602,63 @@ fn verse_scope(verse_id: &str) -> String {
     fe_policy::build_scope(verse_id, None, None)
 }
 
-/// Version, attribution and URL checks; refusals warn and are never quarantined.
-fn judge_structure(verse_id: &str, record_id: &str, author_did: &str, data: &[u8]) -> Structural {
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn is_expired(row: &RelayAdvertisementRow, now_ms: u64) -> bool {
+    row.expires_at_ms.is_some_and(|expires| expires <= now_ms)
+}
+
+/// Lifetime rules for an unsigned (compat) row: a stated expiry must be in the future and within the TTL cap.
+fn check_unsigned_lifetime(row: &RelayAdvertisementRow, now_ms: u64) -> Result<(), AdvertRefusal> {
+    let Some(expires) = row.expires_at_ms else {
+        return Ok(());
+    };
+    let start = row.issued_at_ms.unwrap_or(now_ms);
+    if expires.saturating_sub(start) > MAX_ADVERT_TTL_MS {
+        return Err(AdvertRefusal::TtlTooLong);
+    }
+    if expires <= now_ms {
+        return Err(AdvertRefusal::Expired);
+    }
+    Ok(())
+}
+
+/// Signature (against the author DID's own key), verse binding, lifetime and signed-mode checks.
+fn check_authenticity(
+    row: &RelayAdvertisementRow,
+    verse_id: &str,
+    author_did: &str,
+    now_ms: u64,
+    signed_mode: RelayAdvertSignedMode,
+) -> Result<(), &'static str> {
+    if row.verse_id.as_deref().is_some_and(|bound| bound != verse_id) {
+        return Err(AdvertRefusal::VerseMismatch.name());
+    }
+    if row.sig.is_some() {
+        let key = fe_identity::did_key::public_key_from_did_key(author_did)
+            .map_err(|_| AdvertRefusal::AuthorMismatch.name())?;
+        return verify_row_at(row, &key, now_ms, Some(verse_id)).map_err(AdvertRefusal::name);
+    }
+    if signed_mode == RelayAdvertSignedMode::Require {
+        return Err("unsigned");
+    }
+    check_unsigned_lifetime(row, now_ms).map_err(AdvertRefusal::name)
+}
+
+/// Version, attribution, URL and authenticity checks; refusals warn and are never quarantined.
+fn judge_structure(
+    verse_id: &str,
+    record_id: &str,
+    author_did: &str,
+    data: &[u8],
+    now_ms: u64,
+    signed_mode: RelayAdvertSignedMode,
+) -> Structural {
     let row = match parse_row(data) {
         RowParse::Row(row) => row,
         RowParse::UnknownVersion(version) => {
@@ -489,16 +686,24 @@ fn judge_structure(verse_id: &str, record_id: &str, author_did: &str, data: &[u8
         );
         return Structural::Refused;
     }
-    match validate_advertised_relay_url(&row.url) {
-        Ok(url) => Structural::Valid {
-            url: url.to_string(),
-            row,
-        },
+    let url = match validate_advertised_relay_url(&row.url) {
+        Ok(url) => url.to_string(),
         Err(error) => {
             tracing::warn!(verse_id, record_id, %error, "relay advertisement refused: invalid relay url");
-            Structural::Refused
+            return Structural::Refused;
         }
+    };
+    if let Err(refusal) = check_authenticity(&row, verse_id, author_did, now_ms, signed_mode) {
+        tracing::warn!(
+            verse_id,
+            record_id,
+            author = author_did,
+            refusal,
+            "relay advertisement refused"
+        );
+        return Structural::Refused;
     }
+    Structural::Valid { url, row }
 }
 
 #[cfg(test)]
@@ -557,6 +762,33 @@ mod tests {
         }
     }
 
+    /// A signed v1 row by `signer`, valid for a minute from `now`, after `mutate` (applied before signing).
+    fn signed_row(
+        signer: &fe_identity::keypair::NodeKeypair,
+        url: &str,
+        now: u64,
+        mutate: impl Fn(&mut RelayAdvertisementRow),
+    ) -> RelayAdvertisementRow {
+        let mut row = RelayAdvertisementRow {
+            v: RELAY_ADVERT_ROW_VERSION,
+            url: url.to_string(),
+            advertised_by: signer.to_did_key(),
+            verse_id: Some(VERSE.to_string()),
+            issued_at_ms: Some(now - 1_000),
+            expires_at_ms: Some(now + 60_000),
+            ..Default::default()
+        };
+        mutate(&mut row);
+        let mut message = fe_runtime::relay_advertisement::RELAY_ADVERT_SIGNING_DOMAIN.to_vec();
+        message.extend_from_slice(&fe_runtime::relay_advertisement::canonical_body(&row));
+        row.sig = Some(hex::encode(signer.sign(&message).to_bytes()));
+        row
+    }
+
+    fn wire(row: &RelayAdvertisementRow) -> Vec<u8> {
+        serde_json::to_vec(row).expect("advert row serializes")
+    }
+
     #[test]
     fn relay_advertisement_book_journey() {
         let roles = Roles::new(&[
@@ -564,7 +796,7 @@ mod tests {
             (MANAGER, RoleLevel::Manager),
             (VIEWER, RoleLevel::Viewer),
         ]);
-        let mut book = RelayAdvertisementBook::new();
+        let mut book = RelayAdvertisementBook::with_signed_mode(RelayAdvertSignedMode::Compat);
 
         // Owner advertises: admitted with the validator's normalized URL.
         let changes = book.observe(VERSE, "r-owner", OWNER, &row("https://eu.relay.example", OWNER), false, roles.role_of());
@@ -604,11 +836,15 @@ mod tests {
         assert!(book.observe(VERSE, "r-v2", OWNER, v2, false, roles.role_of()).is_empty());
 
         // Extra unknown field: admitted normally (AC-11 first half).
-        let extra = br#"{"v":1,"url":"https://extra.example","advertised_by":"did:key:owner","sig":"abc","expires_at":9}"#;
+        let extra = br#"{"v":1,"url":"https://extra.example","advertised_by":"did:key:owner","expires_at":9}"#;
         assert_eq!(
             book.observe(VERSE, "r-extra", OWNER, extra, false, roles.role_of()),
             vec![admitted("r-extra", "https://extra.example/")]
         );
+
+        // A `sig` that does not verify is refused even in compat mode.
+        let bad_sig = br#"{"v":1,"url":"https://sig.example","advertised_by":"did:key:owner","sig":"abc"}"#;
+        assert!(book.observe(VERSE, "r-bad-sig", OWNER, bad_sig, false, roles.role_of()).is_empty());
 
         let urls: Vec<String> = book.urls_by_verse()[VERSE].iter().cloned().collect();
         assert_eq!(urls, vec!["https://extra.example/".to_string(), "https://viewer.example/".to_string()]);
@@ -642,6 +878,59 @@ mod tests {
         roles.set(LATE, RoleLevel::Manager);
         assert_eq!(book.rejudge(LATE, roles.role_of()), vec![admitted("r-late", "https://late.example/")]);
         assert_eq!(book.quarantine_len(), RELAY_QUARANTINE_CAP - 1);
+
+        // NET-22, require mode: only rows signed by the author's own key, bound to this verse,
+        // unexpired, within the 30-day TTL and on the strict URL policy are admitted.
+        let signer = fe_identity::keypair::NodeKeypair::from_bytes(&[9u8; 32]).expect("seed key");
+        let signer_did = signer.to_did_key();
+        roles.set(&signer_did, RoleLevel::Manager);
+        let now = unix_now_ms();
+        let mut strict = RelayAdvertisementBook::with_signed_mode(RelayAdvertSignedMode::Require);
+        let observe = |book: &mut RelayAdvertisementBook, record: &str, data: &[u8]| {
+            book.observe_at(VERSE, record, &signer_did, data, false, roles.role_of(), now)
+        };
+
+        assert!(observe(&mut strict, "r-unsigned", &row("https://plain.example.org", &signer_did)).is_empty());
+        let mut tampered = signed_row(&signer, "https://relay-0.example.org", now, |_| {});
+        tampered.url = "https://evil.example.org".to_string();
+        let refused_rows = [
+            ("tampered", tampered),
+            ("other verse", signed_row(&signer, "https://relay-0.example.org", now, |row| row.verse_id = Some("verse-b".into()))),
+            ("ttl over 30 d", signed_row(&signer, "https://relay-0.example.org", now, |row| row.expires_at_ms = Some(now + MAX_ADVERT_TTL_MS))),
+            ("expired", signed_row(&signer, "https://relay-0.example.org", now, |row| row.expires_at_ms = Some(now - 1))),
+            ("port policy", signed_row(&signer, "https://relay-0.example.org:8443", now, |_| {})),
+        ];
+        for (case, refused) in refused_rows {
+            assert!(observe(&mut strict, "r-refused", &wire(&refused)).is_empty(), "{case} must be refused");
+        }
+        assert_eq!(strict.quarantine_len(), 0, "refused rows are never quarantined");
+
+        // The per-verse bound admits the four oldest-issued adverts; the fifth is held back.
+        for index in 1..=MAX_ADVERTS_PER_VERSE + 1 {
+            let url = format!("https://relay-{index}.example.org");
+            let advert = signed_row(&signer, &url, now, |row| row.issued_at_ms = Some(now - 10_000 + index as u64));
+            let changes = observe(&mut strict, &format!("r-signed-{index}"), &wire(&advert));
+            if index <= MAX_ADVERTS_PER_VERSE {
+                assert_eq!(changes, vec![admitted(&format!("r-signed-{index}"), &format!("{url}/"))]);
+            } else {
+                assert!(changes.is_empty(), "the fifth advert is refused while four are live");
+            }
+        }
+        // Withdrawing one frees a slot for the held-back advert.
+        let changes = strict.observe_at(VERSE, "r-signed-1", &signer_did, &[], true, roles.role_of(), now);
+        assert_eq!(
+            changes,
+            vec![
+                withdrawn("r-signed-1", "https://relay-1.example.org/"),
+                admitted("r-signed-5", "https://relay-5.example.org/"),
+            ]
+        );
+
+        // The expiry timer withdraws every advert once its signed lifetime ends.
+        let expired = strict.expire(now + 120_000);
+        assert_eq!(expired.len(), MAX_ADVERTS_PER_VERSE);
+        assert!(expired.iter().all(|change| matches!(change, AdvertChange::Withdrawn { .. })));
+        assert!(strict.urls_by_verse().is_empty());
     }
 
     #[test]
@@ -659,7 +948,7 @@ mod tests {
         ];
         for (role, data, expect_admitted, expect_quarantined) in cases {
             let roles = Roles::new(&[(OWNER, role)]);
-            let mut book = RelayAdvertisementBook::new();
+            let mut book = RelayAdvertisementBook::with_signed_mode(RelayAdvertSignedMode::Compat);
             let changes = book.observe(VERSE, "r1", OWNER, &data, false, roles.role_of());
             assert_eq!(!changes.is_empty(), expect_admitted, "role {role:?}, row {:?}", String::from_utf8_lossy(&data));
             assert_eq!(book.quarantine_len() == 1, expect_quarantined, "role {role:?}");

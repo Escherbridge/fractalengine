@@ -71,6 +71,56 @@ pub fn set_settings_relay_spec(raw: String) {
     }
 }
 
+/// `AppSettings.auto_home_relay` (OD-13 toggle, default on), registered at startup like the settings relay spec.
+static AUTO_HOME_RELAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Registers whether a fully covered advertised relay may become home automatically (local only, never replicated).
+pub fn set_auto_home_relay(enabled: bool) {
+    AUTO_HOME_RELAY.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The registered OD-13 toggle; `true` until a caller registers otherwise.
+pub fn auto_home_relay() -> bool {
+    AUTO_HOME_RELAY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Environment variable selecting [`RelayAdvertSignedMode`] (local only).
+pub const RELAY_ADVERT_SIGNED_ENV_VAR: &str = "FE_SYNC_RELAY_ADVERT_SIGNED";
+
+/// Whether unsigned `__relays` rows are still admitted (one-release compat window) or refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RelayAdvertSignedMode {
+    /// Signed rows are verified; unsigned rows are admitted under the remaining checks.
+    #[default]
+    Compat,
+    /// Every row must carry a valid signature.
+    Require,
+}
+
+impl RelayAdvertSignedMode {
+    /// Parse `compat` | `require`; anything else warns and yields `Compat`.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "compat" => Self::Compat,
+            "require" | "required" => Self::Require,
+            other => {
+                tracing::warn!(value = other, "Invalid {RELAY_ADVERT_SIGNED_ENV_VAR}; using compat");
+                Self::Compat
+            }
+        }
+    }
+
+    /// The mode from [`RELAY_ADVERT_SIGNED_ENV_VAR`], read once per process.
+    pub fn process() -> Self {
+        static MODE: std::sync::OnceLock<RelayAdvertSignedMode> = std::sync::OnceLock::new();
+        *MODE.get_or_init(|| {
+            std::env::var(RELAY_ADVERT_SIGNED_ENV_VAR)
+                .map(|raw| Self::parse(&raw))
+                .unwrap_or_default()
+        })
+    }
+}
+
 /// Relay precedence: the environment override wins over the settings spec;
 /// absent both → [`RelayConfig::Default`]. A spec that fails to parse warns and
 /// falls back to `Default` (it does not fall through to the next source).
@@ -577,6 +627,16 @@ mod tests {
                 expected,
                 "env {env:?}, settings {settings:?}"
             );
+        }
+
+        // Signed-advert mode: compat unless the operator says require.
+        for (raw, expected) in [
+            ("", RelayAdvertSignedMode::Compat),
+            ("COMPAT", RelayAdvertSignedMode::Compat),
+            (" require ", RelayAdvertSignedMode::Require),
+            ("strict", RelayAdvertSignedMode::Compat),
+        ] {
+            assert_eq!(RelayAdvertSignedMode::parse(raw), expected, "mode {raw:?}");
         }
     }
 
