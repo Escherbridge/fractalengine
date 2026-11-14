@@ -28,7 +28,7 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 dirs = "5"
 tracing = { workspace = true }
-fe-format = { path = "../fe-format" }
+fe-format = { path = "../fe-format", features = ["entitlement"] }
 fe-sdk = { path = "../fe-sdk" }
 # W2b F1: the streamed path's pinned-header check reuses fe-hexon's ONE
 # `verify_fetched_header` (no third copy of the RequireSealed+pin logic).

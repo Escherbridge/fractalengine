@@ -22,6 +22,8 @@ pub mod profile;
 
 #[cfg(feature = "render")]
 pub mod layers;
+#[cfg(feature = "render")]
+mod proposal_layer_mirror;
 
 #[cfg(feature = "render")]
 pub mod ruler_plugin;
