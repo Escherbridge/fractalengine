@@ -265,6 +265,38 @@ fn night_sky_hexon() -> Vec<u8> {
     ))
 }
 
+/// A sealed PetalSnapshot hexon built through `fe_format::snapshot` from synthetic rows.
+fn petal_snapshot_hexon() -> Vec<u8> {
+    use fe_format::snapshot::{
+        export_petal_snapshot, OpLogRange, PetalSnapshotData, SnapshotMeta, OPLOG_PREDICATE_VERSION,
+        SNAPSHOT_FORMAT_VERSION,
+    };
+    let blob = b"snapshot asset bytes".to_vec();
+    let (entry, blob) = fixtures::asset_entry("asset-node", EntryKind::Model, "bin", &blob);
+    let data = PetalSnapshotData {
+        petal: serde_json::json!({"petal_id": "petal-a", "name": "Petal A"}),
+        nodes: vec![serde_json::json!({"node_id": "node-a1", "petal_id": "petal-a"})],
+        assets: vec![serde_json::json!({"asset_id": "asset-node"})],
+        oplog: vec![
+            serde_json::json!({"lamport_clock": 1, "op_type": "CreatePetal"}),
+            serde_json::json!({"lamport_clock": 2, "op_type": "TransformUpdate"}),
+        ],
+        ..PetalSnapshotData::default()
+    };
+    let meta = SnapshotMeta {
+        snapshot_format_version: SNAPSHOT_FORMAT_VERSION,
+        oplog_predicate_version: OPLOG_PREDICATE_VERSION,
+        petal_id: "petal-a".into(),
+        scope: "VERSE#v-FRACTAL#f-PETAL#petal-a".into(),
+        source_node_id: "did:key:z6MkTestPublisher".into(),
+        exported_at: "2026-11-13T00:00:00Z".into(),
+        table_row_counts: [("nodes".to_string(), 1), ("assets".to_string(), 1), ("oplog".to_string(), 2)].into(),
+        op_log_range: OpLogRange { min_lamport: 1, max_lamport: 2, count: 2 },
+    };
+    let manifest = fixtures::manifest("petal-a-snapshot", "1.0.0", HexonType::PetalSnapshot, "Petal A", "Petal snapshot", &["snapshot"]);
+    fixtures::seal(export_petal_snapshot(manifest, &meta, &data, vec![entry], vec![blob]).expect("export petal snapshot"))
+}
+
 #[tokio::test]
 async fn publish_accepts_and_indexes() {
     let tmp = tempfile::tempdir().unwrap();
@@ -282,6 +314,23 @@ async fn publish_accepts_and_indexes() {
     let (status, body) = get(&router, "/api/v1/hexons/night-sky").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json_data(&body)["version"], "2.0.0");
+
+    // FR-10: a PetalSnapshot hexon publishes, is the only hit of its type filter, and downloads byte-for-byte.
+    let snapshot_bytes = petal_snapshot_hexon();
+    let (status, body) = post_publish(&router, snapshot_bytes.clone(), None).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_text(&body));
+    let (_, body) = get(&router, "/api/v1/hexons/search?type=petal_snapshot").await;
+    let hits = json_data(&body);
+    assert_eq!(hits.as_array().unwrap().len(), 1, "exactly the snapshot matches its type");
+    assert_eq!(hits[0]["hexon_id"], "petal-a-snapshot");
+    let (_, body) = get(&router, "/api/v1/hexons/search?type=skybox").await;
+    assert_eq!(json_data(&body).as_array().unwrap().len(), 1, "the snapshot does not leak into other type filters");
+    let (status, downloaded) = get(&router, "/api/v1/hexons/petal-a-snapshot@1.0.0/download").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(downloaded, snapshot_bytes, "download returns the published bytes");
+    let imported = fe_format::snapshot::import_petal_snapshot(&downloaded).expect("downloaded snapshot imports");
+    assert_eq!(imported.data.oplog.len(), 2);
+    assert_eq!(imported.blobs.len(), 1);
 }
 
 #[tokio::test]

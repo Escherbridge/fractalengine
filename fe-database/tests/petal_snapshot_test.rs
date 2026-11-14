@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fe_database::handlers::petal_snapshot::{export_petal_snapshot, import_petal_snapshot, ImportError};
 use fe_database::op_log::commit_operation;
 use fe_database::types::{NodeId, OpLogEntry, OpType};
+use fe_format::snapshot as archive_format;
+use fe_format::{AssetEntry, EntryKind, HexonManifest, HexonType};
+use fe_runtime::petal_snapshot::PetalSnapshotRows;
 use serde_json::{json, Value};
 
 type Db = surrealdb::Surreal<surrealdb::engine::local::Db>;
@@ -135,6 +138,146 @@ fn lamports(rows: &[Value]) -> Vec<u64> {
         .collect()
 }
 
+/// Rows to the plain-JSON section type fe-format archives.
+fn to_data(rows: &PetalSnapshotRows) -> archive_format::PetalSnapshotData {
+    archive_format::PetalSnapshotData {
+        petal: rows.petal.clone(),
+        nodes: rows.nodes.clone(),
+        node_log: rows.node_log.clone(),
+        field_defs: rows.field_defs.clone(),
+        rooms: rows.rooms.clone(),
+        models: rows.models.clone(),
+        assets: rows.assets.clone(),
+        roles: rows.roles.clone(),
+        iot_readings: rows.iot_readings.clone(),
+        oplog: rows.oplog.clone(),
+    }
+}
+
+/// The archive section back to the rows the import handler takes.
+fn to_rows(data: archive_format::PetalSnapshotData) -> PetalSnapshotRows {
+    PetalSnapshotRows {
+        petal: data.petal,
+        nodes: data.nodes,
+        node_log: data.node_log,
+        field_defs: data.field_defs,
+        rooms: data.rooms,
+        models: data.models,
+        assets: data.assets,
+        roles: data.roles,
+        iot_readings: data.iot_readings,
+        oplog: data.oplog,
+    }
+}
+
+/// One synthetic content-addressed blob per asset row, sorted by hash.
+fn blobs_for(rows: &PetalSnapshotRows) -> Vec<(String, Vec<u8>)> {
+    let mut blobs: Vec<(String, Vec<u8>)> = rows
+        .assets
+        .iter()
+        .filter_map(|asset| asset["asset_id"].as_str())
+        .map(|asset_id| {
+            let bytes = format!("blob-of-{asset_id}").into_bytes();
+            (blake3::hash(&bytes).to_hex().to_string(), bytes)
+        })
+        .collect();
+    blobs.sort();
+    blobs
+}
+
+/// Build the PetalSnapshot archive; `stamp` and `build_id` feed only the volatile fields.
+fn build_archive(rows: &PetalSnapshotRows, stamp: &str, build_id: Option<&str>) -> Vec<u8> {
+    let blobs = blobs_for(rows);
+    let entries: Vec<AssetEntry> = blobs
+        .iter()
+        .map(|(hash, _)| AssetEntry {
+            entry_id: format!("entry-{}", &hash[..8]),
+            kind: EntryKind::Model,
+            asset_hash: hash.clone(),
+            format: "bin".into(),
+            label: "snapshot blob".into(),
+            tags: vec![],
+            description: None,
+            is_placeable: false,
+            is_private: false,
+            auto_scale: false,
+            preview_image: None,
+            center: None,
+            extents: None,
+            sub_assets: None,
+            address: None,
+            metadata: None,
+        })
+        .collect();
+    let manifest = HexonManifest {
+        schema_version: "1.0.0".into(),
+        hexon_id: format!("petal-{PETAL}"),
+        hexon_type: HexonType::PetalSnapshot,
+        publisher_did: "did:key:owner".into(),
+        publisher_name: None,
+        version: "1.0.0".into(),
+        build_id: build_id.map(str::to_string),
+        name: PETAL.into(),
+        description: None,
+        tags: vec![],
+        created_at: stamp.into(),
+        updated_at: stamp.into(),
+        source_peer_did: None,
+        approx_size_bytes: None,
+        min_engine_version: None,
+        homepage_url: None,
+        dependencies: vec![],
+        platforms: vec![],
+        address: None,
+        integrity: None,
+        signature: None,
+    };
+    let lamport = |row: &Value| row["lamport_clock"].as_u64().expect("lamport_clock");
+    let op_log_range = match (rows.oplog.first(), rows.oplog.last()) {
+        (Some(first), Some(last)) => archive_format::OpLogRange {
+            min_lamport: lamport(first),
+            max_lamport: lamport(last),
+            count: rows.oplog.len() as u64,
+        },
+        _ => archive_format::OpLogRange::default(),
+    };
+    let meta = archive_format::SnapshotMeta {
+        snapshot_format_version: archive_format::SNAPSHOT_FORMAT_VERSION,
+        oplog_predicate_version: archive_format::OPLOG_PREDICATE_VERSION,
+        petal_id: PETAL.into(),
+        scope: petal_scope(PETAL),
+        source_node_id: "did:key:owner".into(),
+        exported_at: stamp.into(),
+        table_row_counts: rows
+            .table_row_counts()
+            .into_iter()
+            .map(|(table, count)| (table, count as u64))
+            .collect(),
+        op_log_range,
+    };
+    archive_format::export_petal_snapshot(manifest, &meta, &to_data(rows), entries, blobs)
+        .expect("build snapshot archive")
+}
+
+/// State tables as order-insensitive row sets (roles excluded: never restored).
+fn state_row_sets(rows: &PetalSnapshotRows) -> Vec<(&'static str, Vec<String>)> {
+    let sorted = |table: &[Value]| {
+        let mut rendered: Vec<String> = table.iter().map(Value::to_string).collect();
+        rendered.sort();
+        rendered
+    };
+    vec![
+        ("petal", vec![rows.petal.to_string()]),
+        ("nodes", sorted(&rows.nodes)),
+        ("node_log", sorted(&rows.node_log)),
+        ("field_defs", sorted(&rows.field_defs)),
+        ("rooms", sorted(&rows.rooms)),
+        ("models", sorted(&rows.models)),
+        ("assets", sorted(&rows.assets)),
+        ("iot_readings", sorted(&rows.iot_readings)),
+    ]
+}
+
 #[tokio::test]
 async fn petal_snapshot_export_then_import_journey() {
     let db = setup_db().await;
@@ -200,6 +343,39 @@ async fn petal_snapshot_export_then_import_journey() {
     assert!(lamports(&restored.oplog[imported..])[0] > *exported_lamports.last().unwrap());
     let again = import_petal_snapshot(&restored_db, snapshot.clone()).await;
     assert!(matches!(again, Err(ImportError::PetalExists)), "a second import is refused: {again:?}");
+
+    // FR-9 leg: rows -> archive -> rows -> fresh DB -> re-export is a fixed point (volatile stamps excluded).
+    let a_rows = export_petal_snapshot(&db, PETAL).await.expect("export for the archive loop");
+    let a_archive = build_archive(&a_rows, "2026-11-13T00:00:00Z", None);
+    assert_eq!(a_archive, build_archive(&a_rows, "2026-11-13T00:00:00Z", None), "same rows and stamps build byte-identical archives");
+    let read_back = archive_format::import_petal_snapshot(&a_archive).expect("archive imports");
+    assert_eq!(read_back.data, to_data(&a_rows), "the archive carries every row verbatim, op-log order included");
+    assert_eq!(read_back.meta.table_row_counts.get("oplog"), Some(&(a_rows.oplog.len() as u64)));
+    assert_eq!(read_back.blobs, blobs_for(&a_rows), "blobs come back sorted and intact");
+    assert!(read_back.blobs.iter().all(|(name, body)| blake3::hash(body).to_hex().as_str() == name), "every blob name re-hashes");
+    assert!(read_back.entries.iter().all(|entry| read_back.blobs.iter().any(|(name, _)| *name == entry.asset_hash)), "every catalog entry points at a shipped blob");
+
+    let c_db = fresh_db().await;
+    seed_fractal(&c_db).await;
+    import_petal_snapshot(&c_db, to_rows(read_back.data.clone())).await.expect("import the archive's rows into a fresh DB");
+    let c_rows = export_petal_snapshot(&c_db, PETAL).await.expect("re-export from the fresh DB");
+    assert_eq!(state_row_sets(&c_rows), state_row_sets(&a_rows), "every state table equal as a row set");
+    assert!(c_rows.roles.is_empty(), "roles are a signed-statement cache and are not restored");
+    let carried = a_rows.oplog.len();
+    assert_eq!(&c_rows.oplog[..carried], &a_rows.oplog[..], "op-log identical in count and order");
+    let tail: Vec<&str> = c_rows.oplog[carried..].iter().filter_map(|e| e["op_type"].as_str()).collect();
+    assert_eq!(tail, ["ImportPetal"], "only the import audit is new");
+
+    // Archive level: the re-export, minus the import audit and with roles carried over, is the same bytes.
+    let mut c_comparable = c_rows.clone();
+    c_comparable.oplog.truncate(carried);
+    c_comparable.roles = a_rows.roles.clone();
+    assert_eq!(build_archive(&c_comparable, "2026-11-13T00:00:00Z", None), a_archive, "re-exported archive is byte-identical");
+    // Volatile fields (stamps, build id) change without touching the proven content.
+    let restamped = archive_format::import_petal_snapshot(&build_archive(&c_comparable, "2027-01-01T00:00:00Z", Some("build-2"))).expect("restamped archive imports");
+    assert_eq!(restamped.data, read_back.data, "rows are independent of the volatile stamps");
+    assert_eq!(restamped.blobs, read_back.blobs);
+    assert_ne!(restamped.manifest.created_at, read_back.manifest.created_at);
 
     // HLC leg: an imported clock just inside the five-minute future bound must order every later write after it.
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_millis() as u64;
