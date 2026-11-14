@@ -1732,7 +1732,10 @@ fn handle_inbound_row_change(
         }
         return InboundVerdict::NotForwarded;
     }
-    if change.table == SHARD_TABLE || change.table == PEER_DECL_TABLE {
+    if change.table == SHARD_TABLE
+        || change.table == PEER_DECL_TABLE
+        || change.table == crate::relay_advertise::RELAY_ADVERT_TABLE
+    {
         return InboundVerdict::NotForwarded;
     }
 

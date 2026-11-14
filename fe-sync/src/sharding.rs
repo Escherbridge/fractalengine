@@ -522,6 +522,10 @@ pub struct VerseFabric {
     /// declaration is published and re-learned from our own snapshot rows
     /// after a restart, so a declaration is published once per shard.
     local_holdings: BTreeSet<String>,
+    /// Read-time role-gated `__relays` advertisements (see `src/AGENTS.md` §relay-advertise).
+    relay_adverts: crate::relay_advertise::RelayAdvertisementBook,
+    /// Advertisement admissions/withdrawals not yet drained by the relay reconciler.
+    pending_relay_changes: Vec<crate::relay_advertise::AdvertChange>,
 }
 
 impl Default for VerseFabric {
@@ -546,6 +550,8 @@ impl Default for VerseFabric {
             quarantine_evicted: 0,
             holders: BTreeMap::new(),
             local_holdings: BTreeSet::new(),
+            relay_adverts: crate::relay_advertise::RelayAdvertisementBook::new(),
+            pending_relay_changes: Vec::new(),
         }
     }
 }
@@ -1446,11 +1452,13 @@ impl VerseFabric {
         // Every DID that fell in ANY pass — a superset of the net fall,
         // which is all a mapping lapse can follow from.
         let mut fallen: HashSet<String> = HashSet::new();
+        let mut risen_any: HashSet<String> = HashSet::new();
         loop {
             let previous = std::mem::take(&mut self.effective);
             self.effective = fe_policy::materialize(&owner, self.role_statements.values());
             let changed = self.effective.diff(&previous);
             fallen.extend(changed.fallen);
+            risen_any.extend(changed.risen.iter().cloned());
             for did in changed.risen {
                 if !self.reread_queue.contains(&did) {
                     self.reread_queue.push_back(did);
@@ -1473,6 +1481,16 @@ impl VerseFabric {
             if !self.rejudge_queue.contains(did) {
                 self.rejudge_queue.push_back(did.clone());
             }
+        }
+        // Re-judge relay advertisements for every DID whose role moved (demotion withdraws, promotion admits).
+        let moved: BTreeSet<&String> = fallen.iter().chain(risen_any.iter()).collect();
+        for did in moved {
+            let effective = &self.effective;
+            let default_access = self.default_access;
+            let changes = self
+                .relay_adverts
+                .rejudge(did, |peer, scope| resolve_role(effective, default_access, peer, scope));
+            self.pending_relay_changes.extend(changes);
         }
         // Mappings before holders: a holder's scope comes from the map.
         self.reverdict_petal_mappings(verse_id, Some(&fallen));
@@ -1504,6 +1522,16 @@ impl VerseFabric {
     /// Remove re-judged DIDs whose work the DB thread accepted.
     pub fn ack_rejudges(&mut self, done: &[String]) {
         self.rejudge_queue.retain(|did| !done.contains(did));
+    }
+
+    /// Drain advertisement admissions/withdrawals for the relay reconciler.
+    pub fn drain_relay_advert_changes(&mut self) -> Vec<crate::relay_advertise::AdvertChange> {
+        std::mem::take(&mut self.pending_relay_changes)
+    }
+
+    /// Normalized admitted relay URLs per verse (read-time role-gated).
+    pub fn advertised_relay_urls(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.relay_adverts.urls_by_verse()
     }
 
     /// Keep a `role` row the DB thread's channel refused, for resend (QA-0132).
@@ -1832,6 +1860,19 @@ impl VerseFabric {
             }
             HOLDERS_TABLE => {
                 self.note_holder_row(verse_id, &change.record_id, &change.author_id, &change.data);
+            }
+            crate::relay_advertise::RELAY_ADVERT_TABLE => {
+                let effective = &self.effective;
+                let default_access = self.default_access;
+                let changes = self.relay_adverts.observe(
+                    verse_id,
+                    &change.record_id,
+                    &change.author_id,
+                    &change.data,
+                    change.is_tombstone,
+                    |peer, scope| resolve_role(effective, default_access, peer, scope),
+                );
+                self.pending_relay_changes.extend(changes);
             }
             _ => {}
         }
@@ -2454,6 +2495,29 @@ mod tests {
         // It stays quarantined (not silently discarded) — it would come
         // back through the re-read if the stranger were ever empowered.
         assert_eq!(fabric.quarantine_len(), 1);
+
+        // __relays leg (AC-10): a stranger's advertisement is never admitted; the owner's is.
+        let relay_row = |author: &str, url: &str| crate::replicator::RowChange {
+            table: crate::relay_advertise::RELAY_ADVERT_TABLE.into(),
+            record_id: format!("relay-{author}"),
+            content_hash: [0; 32],
+            author_id: author.to_string(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "v": 1, "url": url, "advertised_by": author,
+            }))
+            .unwrap(),
+        };
+        fabric.note_entry("v1", &relay_row(stranger, "https://forged.example.org/"));
+        assert!(fabric.advertised_relay_urls().is_empty());
+        assert!(fabric.drain_relay_advert_changes().is_empty());
+        fabric.note_entry("v1", &relay_row(OWNER, "https://relay.example.org/"));
+        assert_eq!(
+            fabric.advertised_relay_urls().get("v1").map(|urls| urls.len()),
+            Some(1)
+        );
+        assert_eq!(fabric.drain_relay_advert_changes().len(), 1);
     }
 
     #[test]
