@@ -110,7 +110,8 @@ pub struct VirtualGossipMessage {
     pub from: iroh::EndpointId,
     /// Always `true` from the hub (0-hop delivery) — see above.
     pub direct: bool,
-    /// The raw frame (`ComputeEnvelope` bytes for the compute plane).
+    /// The raw frame, byte-identical to what the publisher broadcast (a signed
+    /// gossip frame or `ComputeEnvelope`); the pump never re-encodes it.
     pub content: bytes::Bytes,
 }
 
@@ -126,6 +127,10 @@ pub struct VirtualGossipMessage {
 /// partitioned away MISSES the message (gossip has no history — the
 /// degradation scenario depends on this).
 pub trait VirtualGossipTopic: Send + Sync {
+    /// Implementations MUST deliver `content` unmodified (same bytes, no
+    /// re-serialisation): frames are signed before this call and verified on
+    /// the shared inbound path (see `fe-sync/src/AGENTS.md` §virtual-transport).
+    ///
     /// Broadcast one frame to the topic. Synchronous schedule into the
     /// hub's delivery heap; failures are returned as an honest reason
     /// (e.g. topic left).
