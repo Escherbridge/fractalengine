@@ -1465,24 +1465,44 @@ async fn handle_breaker(
 /// Process-wide gate the sync thread feeds (NET-21); same shape as `relay_config::set_settings_relay_spec`.
 static RELAY_GATE: OnceLock<Arc<RelayMembershipGate>> = OnceLock::new();
 
-/// Registers the gate before the sync thread spawns; first call wins (returns false and warns otherwise).
+/// Newest admission snapshot (revokes already removed), kept so a gate installed late starts populated; also the lock that orders push vs install.
+static LATEST_SNAPSHOT: Mutex<Option<RelayAdmissionSnapshot>> = Mutex::new(None);
+
+/// Locks the buffer, recovering from poison (a panicked pusher must not brick admission).
+fn lock_latest_snapshot() -> std::sync::MutexGuard<'static, Option<RelayAdmissionSnapshot>> {
+    LATEST_SNAPSHOT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Registers the gate; first call wins (returns false and warns otherwise) and the buffered snapshot is applied to it.
 pub fn install_gate(gate: Arc<RelayMembershipGate>) -> bool {
-    if RELAY_GATE.set(gate).is_err() {
+    let buffered = lock_latest_snapshot();
+    if RELAY_GATE.set(gate.clone()).is_err() {
         tracing::warn!("relay membership gate already installed; ignoring the new gate");
         return false;
+    }
+    if let Some(snapshot) = buffered.as_ref() {
+        gate.apply_snapshot(snapshot);
     }
     true
 }
 
-/// Pushes the latest admission snapshot to the installed gate; no-op without one.
+/// Buffers the latest admission snapshot, then applies it to the installed gate if any.
 pub fn push_snapshot(snapshot: RelayAdmissionSnapshot) {
+    let mut buffered = lock_latest_snapshot();
     if let Some(gate) = RELAY_GATE.get() {
         gate.apply_snapshot(&snapshot);
     }
+    *buffered = Some(snapshot);
 }
 
-/// Revokes a DID on the installed gate; no-op without one.
+/// Revokes a DID: dropped from the buffered snapshot (fail closed for a late gate) and revoked on the installed gate.
 pub fn push_revoke(did: &str) {
+    let mut buffered = lock_latest_snapshot();
+    if let Some(snapshot) = buffered.as_mut() {
+        for members in snapshot.members_by_verse.values_mut() {
+            members.remove(did);
+        }
+    }
     if let Some(gate) = RELAY_GATE.get() {
         gate.revoke(did);
     }
@@ -1581,15 +1601,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn member_admission_and_caps_journey() {
         let gate = gate(3, 1);
-        assert!(install_gate(gate.clone()), "first install wins");
         // The snapshot is the gate's only input: it has no default_access/open_to_all field, so an
         // open verse cannot widen admission here (NET-21 owns the fabric-side tripwire).
+        // Pushed BEFORE the gate exists: the buffered snapshot must populate a late-installed gate.
         push_snapshot(snapshot(&[
             // seeds 1, 2, 3, 4: explicit Viewer+; seed 2 is a fresh Viewer that never published `__peers`.
-            (VERSE, &[1, 2, 3, 4]),
+            // seed 7 is revoked before the gate exists and must stay denied after install.
+            (VERSE, &[1, 2, 3, 4, 7]),
             // seed 6 is a member of a verse this relay does not serve.
             (OTHER_VERSE, &[6]),
         ]));
+        push_revoke(&did_of(7));
+        assert!(install_gate(gate.clone()), "first install wins");
         let (_map, url, server) = iroh::test_utils::run_relay_server_with_access(false, gate.clone())
             .await
             .expect("in-process relay");
@@ -1602,6 +1625,11 @@ mod tests {
 
         let stranger = relay_client(5, &url).await;
         assert!(is_denied_with(&stranger, "not_member").await, "non-member is denied by name");
+        let revoked_before_install = relay_client(7, &url).await;
+        assert!(
+            is_denied_with(&revoked_before_install, "not_member").await,
+            "a DID revoked before the gate was installed is never re-admitted"
+        );
         let other_verse_member = relay_client(6, &url).await;
         assert!(
             is_denied_with(&other_verse_member, "not_member").await,
