@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,6 +114,27 @@ pub fn confine_to_claims(mut snapshot: NetworkDiagnostics, claims: &ApiClaims, d
     snapshot
 }
 
+/// Unix second of the last "bridge full" warning (at most one per 10 s).
+static LAST_FULL_WARN_SECOND: AtomicU64 = AtomicU64::new(0);
+
+fn warn_bridge_full_rate_limited() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let last = LAST_FULL_WARN_SECOND.load(Ordering::Relaxed);
+    if now.saturating_sub(last) >= 10
+        && LAST_FULL_WARN_SECOND.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        tracing::warn!("network diagnostics bridge queue is full; request refused");
+    }
+}
+
+/// Logs the loud detail opt-in warning once at startup (per-request reads stay silent).
+pub fn announce_detail_opt_in() {
+    NETWORK_DETAIL_GATE.opted_in_from_env();
+}
+
 /// Asks the sync thread for a snapshot and confines it to the caller; shared by REST and MCP.
 pub async fn collect_scoped_diagnostics(
     sender: Option<&NetworkDiagnosticsCallSender>,
@@ -123,9 +145,16 @@ pub async fn collect_scoped_diagnostics(
     let sender = sender.ok_or(DiagnosticsError::Unavailable)?;
     let detail = detail_allowed(claims, detail_enabled);
     let (reply, receiver) = tokio::sync::oneshot::channel();
-    if let Err(error) = sender.send(NetworkDiagnosticsCall { detail, reply }) {
-        tracing::warn!(%error, "network diagnostics bridge is gone; request dropped");
-        return Err(DiagnosticsError::Unavailable);
+    match sender.try_send(NetworkDiagnosticsCall { detail, reply }) {
+        Ok(()) => {}
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            warn_bridge_full_rate_limited();
+            return Err(DiagnosticsError::Unavailable);
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            tracing::warn!("network diagnostics bridge is gone; request dropped");
+            return Err(DiagnosticsError::Unavailable);
+        }
     }
     match tokio::time::timeout(reply_timeout, receiver).await {
         Ok(Ok(snapshot)) => Ok(confine_to_claims(snapshot, claims, detail)),
@@ -304,5 +333,12 @@ mod tests {
         let viewer_on = collect_scoped_diagnostics(Some(&sender), &viewer, true, REPLY_TIMEOUT).await.expect("viewer");
         assert_eq!(viewer_on.peers[0].addrs, vec!["ipv4:ephemeral".to_string()]);
         assert!(!seen.recv().expect("call seen"));
+
+        // A full bridge queue refuses immediately instead of blocking the async handler.
+        let (full_sender, _unread) = crossbeam::channel::bounded::<NetworkDiagnosticsCall>(1);
+        let (parked_reply, _parked_receiver) = tokio::sync::oneshot::channel();
+        full_sender.send(NetworkDiagnosticsCall { detail: false, reply: parked_reply }).expect("fill queue");
+        let full = collect_scoped_diagnostics(Some(&full_sender), &viewer, false, Duration::from_millis(50)).await;
+        assert_eq!(full.err(), Some(DiagnosticsError::Unavailable));
     }
 }
