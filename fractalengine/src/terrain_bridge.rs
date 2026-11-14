@@ -448,6 +448,12 @@ pub enum HexonAssembleOutcome {
         tileset_id: String,
         reason: String,
     },
+    /// QA-0173: a local "Install from file" was refused; carries the file name only (never the
+    /// path) so the drain can raise a user-facing error notice.
+    LocalInstallFailed {
+        file_name: String,
+        reason: String,
+    },
     /// PAS-P5 S7b: one "install from registry" fetch made progress (header
     /// resolved → `chunks_received == 0`; each verified chunk after that).
     /// Reuses the Downloads tab's existing progress bar, keyed by the
@@ -656,20 +662,18 @@ pub fn drain_hexon_ops(
                 };
                 let reg_for_task = registry.0.clone();
                 fe_runtime::maintenance::spawn_job(move || {
+                    let file_name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "the selected file".to_string());
                     let outcome = std::fs::read(&path)
-                        .map_err(|e| format!("could not read hexon file {}: {e}", path.display()))
-                        .and_then(|bytes| reg_for_task.install(&bytes).map_err(|e| e.to_string()));
+                        .map_err(|e| format!("could not read the file: {e}"))
+                        .and_then(|bytes| reg_for_task.install(&bytes).map_err(|e| format!("{e:#}")));
                     let result = match outcome {
                         Ok(installed) => HexonAssembleOutcome::Installed {
                             tileset_id: installed.hexon_id,
                         },
-                        Err(reason) => HexonAssembleOutcome::Failed {
-                            // The hexon_id isn't known until a successful
-                            // parse — the local file path is still useful
-                            // context for the warn log it reaches.
-                            tileset_id: path.display().to_string(),
-                            reason,
-                        },
+                        Err(reason) => HexonAssembleOutcome::LocalInstallFailed { file_name, reason },
                     };
                     if tx.send(result).is_err() {
                         tracing::warn!("Hexon install result channel closed");
@@ -1047,6 +1051,7 @@ pub fn drain_hexon_assemble_results(
     mut ui_mgr: ResMut<UiManager>,
     mut downloads: Option<ResMut<TilesetDownloads>>,
     sync_sender: Option<Res<fe_sync::SyncCommandSenderRes>>,
+    time: Res<Time>,
 ) {
     let Some(results) = results else { return };
     let mut refreshed = false;
@@ -1081,6 +1086,13 @@ pub fn drain_hexon_assemble_results(
                 if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&tileset_id)) {
                     dl.status = DownloadStatus::Failed(format!("Install failed: {reason}"));
                 }
+            }
+            HexonAssembleOutcome::LocalInstallFailed { file_name, reason } => {
+                tracing::warn!(file_name, reason, "local hexon install failed");
+                ui_mgr.show_error(
+                    format!("Could not install {file_name}: {reason}"),
+                    time.elapsed_secs_f64(),
+                );
             }
             // PAS-P5 S7b: "install from registry" — keyed by the requested
             // uri, never routed through `CancelTilesetDownload` (no P2P
@@ -2904,12 +2916,30 @@ mod tests {
             .0
             .push(HexonOp::Install(tampered_path.into()));
         app.update(); // drains the op, spawning the background install thread
-        match recv(&rx) {
-            HexonAssembleOutcome::Failed { reason, .. } => {
+        let failed = recv(&rx);
+        match &failed {
+            HexonAssembleOutcome::LocalInstallFailed { file_name, reason } => {
+                assert_eq!(file_name, "tampered.hexon");
                 assert!(!reason.is_empty(), "{reason}");
             }
-            other => panic!("expected Failed for a tampered local install, got {other:?}"),
+            other => panic!("expected LocalInstallFailed for a tampered local install, got {other:?}"),
         }
+        // QA-0173: the drain turns the refusal into exactly one Error notice naming the file only.
+        let (drain_tx, drain_rx) = crossbeam::channel::unbounded();
+        drain_tx.send(failed).expect("drain channel open");
+        app.insert_resource(HexonAssembleResults(drain_rx))
+            .init_resource::<Time>()
+            .add_systems(Update, drain_hexon_assemble_results);
+        app.update();
+        let notices: Vec<_> = app
+            .world()
+            .resource::<UiManager>()
+            .error_history()
+            .map(|notice| notice.text.clone())
+            .collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].starts_with("Could not install tampered.hexon: "), "{notices:?}");
+        assert!(!notices[0].contains(std::path::MAIN_SEPARATOR), "{notices:?}");
         assert!(
             tileset_registry.store().list_installed().is_empty(),
             "a tampered install must leave the store untouched"

@@ -193,7 +193,10 @@ impl HexonStore {
 
         match manifest.hexon_type {
             HexonType::TerrainTileset => {}
-            ref other => bail!("expected TerrainTileset hexon, got {:?}", other),
+            HexonType::Terrain => bail!(
+                "this is a legacy terrain hexon; re-export it as terrain_tileset"
+            ),
+            ref other => bail!("expected a terrain_tileset hexon, got {:?}", other),
         }
 
         let hexon_id = manifest.hexon_id.clone();
