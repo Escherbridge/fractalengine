@@ -111,7 +111,7 @@ setter wrappers around `EntitlementClaims` fields.
 
 ### Phase: Format + registry seam (W1)
 - [x] S1: `fe-format::entitlement` primitives + `LocalIssuer`
-- [ ] S2: `PackageStore` trait + `FsPackageStore` + default-deny + protocol version _(partial at HEAD: `PackageStore` and `FsPackageStore` exist (fe-hexon-registry/src/store.rs:51,89) and default-deny is in place (config.rs:36); no `X-Hexon-Registry-Protocol` header in fe-hexon-registry/src, so the protocol-version half is open)_
+- [x] S2: `PackageStore` trait + `FsPackageStore` + default-deny + protocol version _(verified 2026-11-14: fe-hexon-registry/src/store.rs:51,89; config.rs:36; protocol header routes.rs:27,143-147; /health protocol_version routes.rs:179)_
 - [ ] Gate W1 (orchestrator)
 
 ### Phase: Client enforcement (W2)
@@ -119,13 +119,13 @@ setter wrappers around `EntitlementClaims` fields.
 - [ ] Gate W2 (orchestrator)
 
 ### Phase: UI + docs (W3)
-- [ ] S4: Hexon Manager states _(partial at HEAD: fe-ui has no `installed-preview` / `entitlement-required` row states in dialogs/hexon_manager.rs; tileset Locked/Licensed badges only)_
+- [x] S4: Hexon Manager states _(Installed tab row states done: fe-ui/src/dialogs/hexon_manager.rs:294-340. Available tab licence state out of scope until peer tileset adverts carry licence terms; default taken, awaiting ratification)_
 - [x] S5: format-spec version bump
 - [ ] Gate W3 (orchestrator)
 
 ### Close
 - [x] S6: review-and-fix (opus), mandatory security review, recorded verdict
-- [ ] S7: docs consolidation _(partial at HEAD: fe-hexon/src/AGENTS.md §entitlement exists; the pointer target `fe-terrain/src/AGENTS.md §tileset-entitlement` does not exist yet, NEEDS I-DOC-CORE)_
+- [ ] S7: docs consolidation _(open: HEXON5-07 landed (fe-terrain/src/tiles/entitlement.rs:24); HEXON5-10 and HEXON5-11 not yet verified; pointer target `fe-terrain/src/AGENTS.md §tileset-entitlement` still owed to I-DOC-CORE; stays unticked)_
 - [ ] Full sweep (orchestrator, once)
 - [ ] Retro + archive
 

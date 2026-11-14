@@ -155,8 +155,7 @@ fe-hexon/src/signature.rs's raw-bytes scheme is deleted (its blake3
   versa; `signature_valid()` verifies via fe-format `verify_manifest`.
 - Tampered-manifest rejection test passes under the unified scheme (security
   testing requirement in workflow.md).
-- No `zip` entry remains in fe-hexon/Cargo.toml; workspace has one zip version
-  for hexon code.
+- One zip version for hexon code. fe-hexon/Cargo.toml uses zip 2 and still edits archives in place; zip 0.6 survives only through fe-ext. Relaxed 2026-11-14 from "no zip entry"; default taken, awaiting ratification.
 
 ### FR-3: Runtime layer rebuilt on fe-format (Priority: P0)
 
@@ -273,6 +272,8 @@ as an `OpType::ExportPetal` op-log entry.
   filename, consistent with the existing Scene export.
 
 ### FR-8: Petal snapshot import/restore (Priority: P0)
+
+> Round 5 note (2026-11-14): petal-scoped role rows are exported but not restored (HEXON-10). Imported history is quarantined in `op_log_imported` with `imported_by` (HEXON5-03/04) and never enters the live op_log.
 
 Import path `.hexon -> live DB` strictly through the DB thread: new
 `DbCommand::ImportPetalSnapshot`. Semantics:
@@ -451,6 +452,6 @@ containers for very large petals are explicitly deferred to the delta track
    portable (they belong to the destination's hierarchy). Flag in docs;
    revisit if operator feedback disagrees.
 
-## Open merge gate (round 4, 2026-11-13)
+## Merge gate (decided)
 
-fe-format and fe-hexon still need one decision on which of them owns the shared shape. The open task is in plan.md Phase 1. The rule from crate_consolidation_r2_20260718 FR-2 applies: whichever track executes second inherits the other's landed shape. No code change is made by this note.
+Decided 2026-11-14 (default taken, awaiting ratification): fe-format owns the shared shape (`HexonType`, `License`, `AssetEntry`, the snapshot layout and manifest signing). fe-hexon re-exports that shape and keeps only the runtime: registry, handlers, p2p, authz and in-place archive edits. This matches the code at HEAD. The crate_consolidation_r2_20260718 FR-2 rule applies: the landed fe-format shape is kept.

@@ -45,7 +45,7 @@ Tasks:
 - [x] Task: Add a `HexonKind`-string → `HexonType` compatibility parser
       (FromStr accepting legacy lowercase kind names) for API query params
       (TDD: parse table test)
-- [ ] Task: Decide the fe-format/fe-hexon merge gate (see crate_consolidation_r2_20260718 FR-2: whichever track executes second inherits the other's landed shape)
+- [x] Task: Decide the fe-format/fe-hexon merge gate (see crate_consolidation_r2_20260718 FR-2: whichever track executes second inherits the other's landed shape) _(decided 2026-11-14, default taken, awaiting ratification: fe-format owns the shape, fe-hexon re-exports; spec.md `## Merge gate (decided)`)_
 - [ ] Verification: fe-format tests green; `fe-format/Cargo.toml` diff shows _(code done 2026-11-13, run pending (user-gated))_
       zero new dependencies; manual review of enum/serde output against
       `docs/hexon-format-spec.md` [checkpoint marker]
@@ -59,7 +59,7 @@ authz, remote client) built on fe-format types; duplicate format code deleted.
 
 Tasks:
 
-- [x] Task: (AUDIT 2026-10-10: OPEN — `fe-hexon/Cargo.toml:39` still lists fe-format under [dev-dependencies]; `fe-hexon/src/manifest.rs:99` still has `crate_id`; `.fecrate` still referenced in `fe-hexon/src/{package,publisher}.rs`, `fe-api/src/hexon.rs`, `fe-database/src/schema.rs`; no `PetalSnapshot`/`HexonType::Script` anywhere; `fe-api/src/hexon.rs:246-295` `install_crate` still records no petal association. No task in Phases 1-6 has landed.) Promote fe-format from dev-dependency to real dependency of
+- [x] Task: Promote fe-format from dev-dependency to real dependency of
       fe-hexon; delete duplicate types in `fe-hexon/src/manifest.rs`,
       re-exporting `fe_format::{HexonManifest, HexonType, AssetEntry, License,
       ...}` for a smaller diff (TDD: port `manifest.rs` round-trip tests to
@@ -68,10 +68,10 @@ Tasks:
       fe-format canonical-JSON `sign_manifest`/`verify_manifest`; keep the
       blake3 `asset_hash` helper (TDD: tampered-manifest rejection test red
       under the new scheme first)
-- [ ] Task: Rebuild `HexonPackage::{build, open}` on
+- [x] Task: Rebuild `HexonPackage::{build, open}` on
       `HexonArchive::{export, import}`; output extension is `.hexon`; remove
       the zip 0.6 dependency from fe-hexon/Cargo.toml (TDD: package
-      round-trip + `signature_valid()` tests) _(code done; zip 0.6 removal still pending I-LIBS-1 per R-HEXON-1 R1-09)_
+      round-trip + `signature_valid()` tests)
 - [x] Task: Rebuild `HexonBuilder` (publisher.rs) to emit fe-format manifests
       (`hexon_id`, `schema_version: "1.0.0"`) with canonical signing (TDD:
       built package opens via `HexonArchive::import`)
@@ -107,14 +107,14 @@ Tasks:
 - [x] Task: Rebuild `fe-api/src/hexon.rs` DTOs and handlers on unified types
       (`crate_id` → `hexon_id`; kind parsing via the Phase-1 compat parser)
       (TDD: handler unit tests with an in-memory registry)
-- [ ] Task: Make `install_crate` real — route through _(partial at HEAD: `install_crate` exists at fe-api/src/hexon.rs:309; routing through the registry not verified in round 4)_
+- [x] Task: Make `install_crate` real — route through
       `HexonRegistry::install_as` so the petal association is recorded and
       authz-enforced; same for `uninstall_crate` (TDD: install-then-list
       shows the petal association; Editor allowed, Viewer denied)
 - [x] Task: Delete dead `.fecrate` paths and stale comments across fe-api;
       workspace grep-clean `fecrate` (production code) (TDD: compile +
       existing fe-api tests green)
-- [ ] Task: End-to-end publish flow test: `HexonBuilder` → POST _(not verified at HEAD in round 4)_
+- [x] Task: End-to-end publish flow test: `HexonBuilder` → POST
       `/api/v1/crates/publish` → GET `search`/`installed`/`{uri}/entries`
       return fe-format fields (TDD: axum integration test)
 - [ ] Verification: `cargo test -p fe-api` green; manual: publish a sample _(code done 2026-11-13, run pending (user-gated))_
@@ -190,7 +190,7 @@ Tasks:
       excluded) (TDD: this test IS the acceptance criterion — write it first
       against the Phase-4 export, watch it fail on import, drive import
       green)
-- [ ] Task: fe-hexon-registry — publish/index/search/download a PetalSnapshot _(partial at HEAD: no PetalSnapshot reference in fe-hexon-registry/src; HEXON-13 FR-10 open)_
+- [x] Task: fe-hexon-registry — publish/index/search/download a PetalSnapshot
       hexon through the existing routes; add type-filter plumbing only if
       search needs it (TDD: in-process router test)
 - [ ] Verification: all Phase-5 tests green; manual: export from dev node A's _(code done 2026-11-13, run pending (user-gated))_
