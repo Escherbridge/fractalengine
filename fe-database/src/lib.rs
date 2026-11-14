@@ -922,7 +922,7 @@ pub fn spawn_db_thread_shared(
                                         });
                                     }
                                 }
-                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id, position });
+                                send_result(&tx, DbResult::NodeCreated { id, petal_id, name, has_asset: false, correlation_id, position, scale: applied_scale });
                             }
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id,format!("Create node failed: {e}"))),
                         }
@@ -1762,6 +1762,7 @@ pub fn spawn_db_thread_shared(
                                     has_asset: copy.has_asset,
                                     correlation_id: None,
                                     position: copy.position,
+                                    scale: copy.scale,
                                 });
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Duplicate node failed: {e}"))),
@@ -2372,9 +2373,13 @@ pub fn spawn_db_thread_shared(
                             Err(e) => send_result(&tx, DbResult::Error(format!("Install crate entry failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::UninstallCrate { hexon_uri }) => {
+                    Ok(DbCommand::UninstallCrate { hexon_uri, petal_id }) => {
                         let tx = tx.clone();
-                        match handlers::crate_registry::uninstall_crate(&db, &hexon_uri).await {
+                        let outcome = match petal_id.as_deref() {
+                            Some(petal) => handlers::crate_registry::uninstall_crate_in_petal(&db, &hexon_uri, petal).await,
+                            None => handlers::crate_registry::uninstall_crate(&db, &hexon_uri).await,
+                        };
+                        match outcome {
                             Ok(()) => send_result(&tx, DbResult::CrateUninstalled { hexon_uri }),
                             Err(e) => send_result(&tx, DbResult::Error(format!("Uninstall crate failed: {e}"))),
                         }
@@ -2384,9 +2389,17 @@ pub fn spawn_db_thread_shared(
                         let reply = handlers::petal_snapshot::export_petal_snapshot_reply(&db, petal_id, correlation_id).await;
                         send_result(&tx, reply);
                     }
-                    Ok(DbCommand::ImportPetalSnapshot { rows, correlation_id }) => {
-                        let reply = handlers::petal_snapshot::import_petal_snapshot_reply(&db, *rows, correlation_id).await;
+                    Ok(DbCommand::ImportPetalSnapshot { rows, correlation_id, actor }) => {
+                        let reply = handlers::petal_snapshot::import_petal_snapshot_reply(&db, *rows, correlation_id, actor).await;
+                        let imported = matches!(reply, DbResult::PetalSnapshotImported { .. });
                         send_result(&tx, reply);
+                        // Local-only import: refresh the GUI tree, never publish restored rows.
+                        if imported {
+                            match handlers::crud::load_hierarchy_handler(&db, &blob_store).await {
+                                Ok(verses) => send_result(&tx, DbResult::HierarchyLoaded { verses }),
+                                Err(e) => tracing::warn!("Hierarchy refresh after petal snapshot import failed: {e}"),
+                            }
+                        }
                     }
                     // CDL-R2 (W4-8): self-signed device enrolment, published as an
                     // ordinary replicated row (canon_log/AGENTS.md §device-enrolment).

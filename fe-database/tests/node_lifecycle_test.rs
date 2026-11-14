@@ -559,6 +559,17 @@ fn rename_missing_or_tombstoned_node_is_an_error() {
 fn duplicate_copies_row_minus_path_identity_keys() {
     let h = Harness::start();
     let petal = h.create_hierarchy();
+    // CITY5-04: a mapped petal (world_scale 0.01) stamps its scale on created rows.
+    h.send(DbCommand::SetPetalTerrain {
+        petal_id: petal.clone(),
+        terrain: Some(serde_json::json!({ "world_scale": 0.01 })),
+        grant: fe_runtime::terrain_grant::TerrainWriteGrant::Local,
+        correlation_id: None,
+    });
+    assert!(
+        matches!(h.recv(), DbResult::PetalTerrainLoaded { .. }),
+        "terrain set echoes PetalTerrainLoaded"
+    );
     let node = h.create_node(&petal, "N");
     h.set_property(&node, "owning_path_id", serde_json::json!("path"));
     h.set_property(&node, "path_id", serde_json::json!("path"));
@@ -592,8 +603,10 @@ fn duplicate_copies_row_minus_path_identity_keys() {
             name,
             correlation_id,
             position,
+            scale,
             ..
         } => {
+            assert_eq!(scale, [0.01_f32; 3], "copy echoes the source's applied scale");
             assert_eq!(name, "N (copy)");
             assert_eq!(position, [1.0, 0.0, 1.0], "+1 m x/z in raw meters (N-1)");
             assert_eq!(correlation_id, None);
