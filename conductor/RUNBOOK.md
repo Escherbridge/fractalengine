@@ -149,6 +149,8 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   app). CITY-02, `271bb210`. Routed to gate R-CITY-1 by a steer (fixed global range in scale.rs, post-cast check
   in crud.rs, refusal at the terrain write). Same verification rule. Later automated findings on swarm commits
   are handled the same way: confirm, steer the owning gate, list here.
+  (22:20: the first finding was flagged again at its second entry point, `fe-api/src/relay_advertise.rs`; same
+  root cause, same gate; the steer now says the REST advertise handler applies the peer-row rules before signing.)
   **Third (22:10, MEDIUM, confirmed):** `fe-sync/src/relay_advertise.rs::quarantine` (NET-06, `55b64d4d`) is one
   global FIFO of 1024, so a non-Manager author can flood it and evict a Manager's advert that arrived before its
   role. Steered to R-NET-2: one entry per (verse, record), per-author cap, evict the heaviest author.
