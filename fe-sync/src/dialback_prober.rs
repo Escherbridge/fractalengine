@@ -99,6 +99,7 @@ pub struct DialbackProber {
     resolver: Box<dyn DialbackResolver>,
     clock: Box<dyn DialbackClock>,
     rate: Mutex<RateState>,
+    resolve_timeout: Duration,
 }
 
 impl DialbackProber {
@@ -117,7 +118,14 @@ impl DialbackProber {
             resolver,
             clock,
             rate: Mutex::new(RateState::default()),
+            resolve_timeout: PROBE_TOTAL_TIMEOUT,
         }
+    }
+
+    /// Overrides the DNS budget (default [`PROBE_TOTAL_TIMEOUT`]); a resolver past it refuses the probe.
+    pub fn with_resolve_timeout(mut self, timeout: Duration) -> Self {
+        self.resolve_timeout = timeout;
+        self
     }
 
     /// Charges the requester and global windows; a refused call consumes nothing.
@@ -146,10 +154,10 @@ impl DialbackProber {
 
     /// Resolves and checks every address; returns them only when all are public.
     async fn resolve_public(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, ProbeRefusal> {
-        let addresses = self
-            .resolver
-            .resolve(host, port)
+        // DNS runs inside its own budget so a slow resolver cannot hold a probe permit.
+        let addresses = tokio::time::timeout(self.resolve_timeout, self.resolver.resolve(host, port))
             .await
+            .map_err(|_| ProbeRefusal::ResolutionFailed("dns timed out".to_string()))?
             .map_err(|error| ProbeRefusal::ResolutionFailed(error.to_string()))?;
         if addresses.is_empty() {
             return Err(ProbeRefusal::ResolutionFailed("no addresses".to_string()));
@@ -250,6 +258,9 @@ mod tests {
     #[async_trait::async_trait]
     impl DialbackResolver for FakeResolver {
         async fn resolve(&self, host: &str, _port: u16) -> io::Result<Vec<IpAddr>> {
+            if host == "hang.example" {
+                return std::future::pending().await;
+            }
             match self.0.get(host) {
                 Some(addresses) => Ok(addresses.iter().map(|text| text.parse().unwrap()).collect()),
                 None => Err(io::Error::new(io::ErrorKind::NotFound, "nxdomain")),
@@ -280,13 +291,14 @@ mod tests {
             Box::new(FakeResolver(table)),
             Box::new(FakeClock(now)),
         )
+        .with_resolve_timeout(Duration::from_millis(50))
     }
 
-    #[test]
-    fn prober_refuses_private_loopback_mixed_record_rebinding_and_redirect_targets() {
+    #[tokio::test]
+    async fn prober_refuses_private_loopback_mixed_record_rebinding_and_redirect_targets() {
         let now = Arc::new(AtomicU64::new(1_000_000));
         let prober = prober(now.clone());
-        let rows: [(&str, &str, fn(&ProbeRefusal) -> bool); 11] = [
+        let rows: [(&str, &str, fn(&ProbeRefusal) -> bool); 12] = [
             ("did:a", "https://private.example", |r| matches!(r, ProbeRefusal::ForbiddenAddress(_))),
             ("did:b", "https://loopback.example", |r| matches!(r, ProbeRefusal::ForbiddenAddress(_))),
             ("did:c", "https://linklocal.example", |r| matches!(r, ProbeRefusal::ForbiddenAddress(_))),
@@ -298,10 +310,11 @@ mod tests {
             ("did:i", "http://example.org", |r| matches!(r, ProbeRefusal::UrlPolicy(_))),
             ("did:j", "https://127.0.0.1", |r| matches!(r, ProbeRefusal::UrlPolicy(_))),
             ("did:k", "https://example.org:8443", |r| matches!(r, ProbeRefusal::UrlPolicy(_))),
+            // A resolver that never answers refuses within the DNS budget instead of holding the permit.
+            ("did:l", "https://hang.example", |r| matches!(r, ProbeRefusal::ResolutionFailed(reason) if reason == "dns timed out")),
         ];
         for (requester, url, expected) in rows {
-            let refusal = futures_lite::future::block_on(prober.probe(requester, url))
-                .expect_err(url);
+            let refusal = prober.probe(requester, url).await.expect_err(url);
             assert!(expected(&refusal), "{url}: {refusal}");
         }
 
@@ -310,19 +323,19 @@ mod tests {
         assert!(build_pinned_client("example.org", &pinned).is_ok());
 
         // Rate limits: a valid-URL refusal at resolution still charged the requester window.
-        let again = futures_lite::future::block_on(prober.probe("did:a", "https://private.example"));
+        let again = prober.probe("did:a", "https://private.example").await;
         assert_eq!(again.unwrap_err(), ProbeRefusal::RateLimitedRequester);
         now.fetch_add(PER_REQUESTER_WINDOW_MS, Ordering::SeqCst);
-        let after_window = futures_lite::future::block_on(prober.probe("did:a", "https://private.example"));
+        let after_window = prober.probe("did:a", "https://private.example").await;
         assert!(matches!(after_window.unwrap_err(), ProbeRefusal::ForbiddenAddress(_)));
 
         // Global window: ten admissions per window across distinct requesters, the eleventh is refused.
         for index in 0..(GLOBAL_PROBES_PER_WINDOW - 1) {
             let requester = format!("did:r{index}");
-            let result = futures_lite::future::block_on(prober.probe(&requester, "https://private.example"));
+            let result = prober.probe(&requester, "https://private.example").await;
             assert!(matches!(result.unwrap_err(), ProbeRefusal::ForbiddenAddress(_)));
         }
-        let over = futures_lite::future::block_on(prober.probe("did:over", "https://private.example"));
+        let over = prober.probe("did:over", "https://private.example").await;
         assert_eq!(over.unwrap_err(), ProbeRefusal::RateLimitedGlobal);
     }
 }

@@ -60,6 +60,8 @@ pub const EVICTION_TARGET: Duration = Duration::from_secs(5);
 pub const ABUSE_LOG_WINDOW: Duration = Duration::from_secs(60);
 /// Bound on the abuse-log rate-limit table.
 const ABUSE_LOG_CAPACITY: usize = 4096;
+/// Bound on the per-source non-member denial table.
+const NON_MEMBER_SOURCE_CAPACITY: usize = 4096;
 /// Denials per minute that make a minute "hot" for the breaker.
 pub const BREAKER_DENIALS_PER_MINUTE: u32 = 600;
 /// Consecutive hot minutes that trip the breaker.
@@ -143,10 +145,11 @@ pub enum ServedVerses {
 }
 
 impl ServedVerses {
-    fn serves(&self, verse_id: &str) -> bool {
+    /// `AllHosted` serves only verses in the hosted set; no hosted set serves nothing.
+    fn serves(&self, verse_id: &str, hosted: Option<&BTreeSet<String>>) -> bool {
         match self {
             Self::Listed(verses) => verses.contains(verse_id),
-            Self::AllHosted => true,
+            Self::AllHosted => hosted.is_some_and(|hosted| hosted.contains(verse_id)),
         }
     }
 }
@@ -540,7 +543,47 @@ enum BreakerTransition {
     Cleared,
 }
 
-/// Denial circuit breaker: trips after `BREAKER_HOT_MINUTES` consecutive minutes above the rate.
+/// Per-source non-member denial counts: bounded, evicts the oldest-window source when full.
+#[derive(Debug)]
+struct NonMemberTracker {
+    capacity: usize,
+    sources: HashMap<EndpointId, (Instant, u32)>,
+    total_denials: u64,
+}
+
+impl NonMemberTracker {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            sources: HashMap::new(),
+            total_denials: 0,
+        }
+    }
+
+    /// Counts one denial; true only for the source's first denial in the current window (the one worth logging).
+    fn record(&mut self, source: EndpointId, now: Instant) -> bool {
+        self.total_denials = self.total_denials.saturating_add(1);
+        if let Some((window_start, count)) = self.sources.get_mut(&source) {
+            if now.saturating_duration_since(*window_start) < ABUSE_LOG_WINDOW {
+                *count = count.saturating_add(1);
+                return false;
+            }
+            *window_start = now;
+            *count = 1;
+            return true;
+        }
+        if self.sources.len() >= self.capacity {
+            let oldest = self.sources.iter().min_by_key(|(_, (start, _))| *start).map(|(id, _)| *id);
+            if let Some(oldest) = oldest {
+                self.sources.remove(&oldest);
+            }
+        }
+        self.sources.insert(source, (now, 1));
+        true
+    }
+}
+
+/// Denial circuit breaker (fed by member cap denials only): trips after `BREAKER_HOT_MINUTES` consecutive minutes above the rate.
 #[derive(Debug)]
 struct DenialBreaker {
     minute_start: Instant,
@@ -629,6 +672,7 @@ struct GateState {
     total_connections: usize,
     pending_eviction: HashMap<EndpointId, PendingEviction>,
     abuse_log_last: HashMap<(AbuseEvent, EndpointId), Instant>,
+    non_members: NonMemberTracker,
     breaker: DenialBreaker,
 }
 
@@ -669,6 +713,8 @@ impl GateState {
 pub struct GateSettings {
     pub limits: GateLimits,
     pub served_verses: ServedVerses,
+    /// Verses this node hosts; `AllHosted` admits through these only (`None` admits nothing).
+    pub hosted_verses: Option<BTreeSet<String>>,
     pub log_client_ips: bool,
 }
 
@@ -705,6 +751,7 @@ impl RelayMembershipGate {
                 total_connections: 0,
                 pending_eviction: HashMap::new(),
                 abuse_log_last: HashMap::new(),
+                non_members: NonMemberTracker::new(NON_MEMBER_SOURCE_CAPACITY),
                 breaker: DenialBreaker::new(Instant::now()),
             }),
             eviction_wake: tokio::sync::Notify::new(),
@@ -718,6 +765,7 @@ impl RelayMembershipGate {
         Self::new(GateSettings {
             limits: config.limits,
             served_verses: config.served_verses.clone(),
+            hosted_verses: config.hosted_verses.clone(),
             log_client_ips: config.log_client_ips,
         })
     }
@@ -749,12 +797,32 @@ impl RelayMembershipGate {
         self.lock().breaker.tripped
     }
 
+    /// Verse ids this gate admits members through (the set a consent screen should list).
+    pub fn served_verse_ids(&self) -> BTreeSet<String> {
+        match (&self.settings.served_verses, &self.settings.hosted_verses) {
+            (ServedVerses::Listed(verses), _) => verses.clone(),
+            (ServedVerses::AllHosted, Some(hosted)) => hosted.clone(),
+            (ServedVerses::AllHosted, None) => BTreeSet::new(),
+        }
+    }
+
+    /// Non-member denials seen so far (never fed to the breaker).
+    pub fn non_member_denials(&self) -> u64 {
+        self.lock().non_members.total_denials
+    }
+
+    /// Denials the breaker counted this minute (member cap hits only).
+    #[cfg(test)]
+    fn breaker_denials_this_minute(&self) -> u32 {
+        self.lock().breaker.denials_this_minute
+    }
+
     /// Replaces the admitted set (served verses only) and marks every now-unadmitted live endpoint for eviction.
     pub fn apply_snapshot(&self, snapshot: &RelayAdmissionSnapshot) {
         let now = Instant::now();
         let mut admitted = HashSet::new();
         for (verse_id, members) in &snapshot.members_by_verse {
-            if self.settings.served_verses.serves(verse_id) {
+            if self.settings.served_verses.serves(verse_id, self.settings.hosted_verses.as_ref()) {
                 admitted.extend(members.iter().cloned());
             }
         }
@@ -848,13 +916,17 @@ impl RelayMembershipGate {
                     state.total_connections += 1;
                     (decision, None)
                 }
-                Err(reason) => {
+                Err(DenyReason::NotMember) => {
+                    // A non-member can mint endpoint ids freely, so its denials never reach the breaker.
+                    let first_in_window = state.non_members.record(endpoint, now);
+                    (decision, first_in_window.then_some(AbuseEvent::Denied))
+                }
+                Err(DenyReason::PerEndpointCap | DenyReason::GlobalCap) => {
+                    // Cap denials need an admitted endpoint, so only members can feed the breaker.
                     state.breaker.record_denial(now);
-                    let event = match reason {
-                        DenyReason::NotMember => AbuseEvent::Denied,
-                        DenyReason::PerEndpointCap | DenyReason::GlobalCap => AbuseEvent::CapHit,
-                    };
-                    let log = state.should_log(event, endpoint, now).then_some(event);
+                    let log = state
+                        .should_log(AbuseEvent::CapHit, endpoint, now)
+                        .then_some(AbuseEvent::CapHit);
                     (decision, log)
                 }
             }
@@ -1350,6 +1422,7 @@ mod tests {
                 max_connections_per_endpoint,
             },
             served_verses: ServedVerses::Listed([VERSE.to_string()].into()),
+            hosted_verses: None,
             log_client_ips: false,
         })
     }
@@ -1441,6 +1514,42 @@ mod tests {
         let fourth = relay_client(4, &url).await;
         assert!(is_denied_with(&fourth, "global_cap").await, "global cap denies by name");
         assert_eq!(gate.total_connections(), 3, "denied connections are never counted");
+
+        // Entry 7: non-member denials never reach the breaker; the two member cap denials do.
+        assert!(gate.non_member_denials() >= 2, "non-member denials are counted per source");
+        assert_eq!(gate.breaker_denials_this_minute(), 2, "only cap denials feed the breaker");
+        let mut flood = Vec::new();
+        for seed in 40..46u8 {
+            let client = relay_client(seed, &url).await;
+            assert!(is_denied_with(&client, "not_member").await, "flooding non-member is denied");
+            flood.push(client);
+        }
+        assert_eq!(gate.breaker_denials_this_minute(), 2, "a non-member flood leaves the breaker untouched");
+        assert!(!gate.breaker_tripped());
+        assert!(relay.is_listening(), "the listener stays open for members");
+
+        // The tracker is bounded: a full table evicts the oldest source instead of growing.
+        let mut tracker = NonMemberTracker::new(3);
+        let start = Instant::now();
+        for (index, seed) in (60..66u8).enumerate() {
+            let source = SecretKey::from_bytes(&[seed; 32]).public();
+            assert!(tracker.record(source, start + Duration::from_millis(index as u64)), "first denial logs");
+            assert!(tracker.sources.len() <= 3, "the table never exceeds its cap");
+        }
+        let repeat = SecretKey::from_bytes(&[65; 32]).public();
+        assert!(!tracker.record(repeat, start + Duration::from_secs(1)), "a repeat in the window is not logged");
+        let evicted = SecretKey::from_bytes(&[60; 32]).public();
+        assert!(tracker.record(evicted, start + Duration::from_secs(2)), "an evicted source starts fresh");
+        for client in flood {
+            client.close().await;
+        }
+
+        // Entry 15: AllHosted admits only hosted verses, and nothing without a hosted set.
+        let hosted: BTreeSet<String> = [VERSE.to_string()].into();
+        let all_hosted = ServedVerses::AllHosted;
+        assert!(all_hosted.serves(VERSE, Some(&hosted)), "a hosted verse is served");
+        assert!(!all_hosted.serves(OTHER_VERSE, Some(&hosted)), "a joined, unhosted verse is not served");
+        assert!(!all_hosted.serves(VERSE, None), "no hosted set serves nothing");
 
         for endpoint in [member, fresh_viewer, stranger, other_verse_member, member_second_session, third, fourth] {
             endpoint.close().await;

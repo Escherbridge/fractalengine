@@ -23,6 +23,8 @@ pub const MAX_REQUEST_PAYLOAD_BYTES: usize = 4096;
 pub const MAX_PENDING_REQUESTS: usize = 16;
 /// Verse topics one local request is broadcast on.
 pub const MAX_REQUEST_VERSES: usize = 4;
+/// Longest one dial-back answer may hold a probe permit: DNS budget plus HTTP budget.
+const ANSWER_BUDGET: Duration = Duration::from_secs(PROBE_TOTAL_TIMEOUT.as_secs() * 2);
 /// How long [`request_dialback`] waits for a signed answer.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(PROBE_TOTAL_TIMEOUT.as_secs() + 5);
 
@@ -169,7 +171,10 @@ impl DialbackResponder {
         let (verse_id, requester_did, payload) = (verse_id.to_owned(), requester_did.to_owned(), payload.to_vec());
         tokio::spawn(async move {
             let _permit = permit;
-            match responder.answer(&verse_id, &requester_did, &payload).await {
+            let answered = tokio::time::timeout(ANSWER_BUDGET, responder.answer(&verse_id, &requester_did, &payload))
+                .await
+                .unwrap_or_else(|_| Err(RequestRefusal::Probe(ProbeRefusal::ResolutionFailed("probe timed out".to_string()))));
+            match answered {
                 Ok(frame) => {
                     if let Err(error) = sink.send(frame.into()).await {
                         tracing::warn!(verse_id, "Failed to broadcast dial-back result: {error}");
@@ -185,6 +190,8 @@ impl DialbackResponder {
 /// One local request waiting for its signed answer.
 struct PendingDialback {
     url: String,
+    /// Verses the request was broadcast on; `None` accepts a record from any verse.
+    verses: Option<Vec<String>>,
     reply: oneshot::Sender<Option<DialbackRecord>>,
 }
 
@@ -195,12 +202,26 @@ pub struct DialbackRequester {
 }
 
 impl DialbackRequester {
-    /// Holds `reply` until a record for `url` arrives; false when the table is full.
+    /// Holds `reply` until a passing record for `url` arrives from any verse; false when the table is full.
     pub fn register(&mut self, url: String, reply: oneshot::Sender<Option<DialbackRecord>>) -> bool {
+        self.push(url, None, reply)
+    }
+
+    /// Like [`Self::register`], but only a record that arrived on one of `verses` settles the waiter.
+    pub fn register_in_verses(
+        &mut self,
+        url: String,
+        verses: Vec<String>,
+        reply: oneshot::Sender<Option<DialbackRecord>>,
+    ) -> bool {
+        self.push(url, Some(verses), reply)
+    }
+
+    fn push(&mut self, url: String, verses: Option<Vec<String>>, reply: oneshot::Sender<Option<DialbackRecord>>) -> bool {
         if self.is_full() {
             return false;
         }
-        self.pending.push(PendingDialback { url, reply });
+        self.pending.push(PendingDialback { url, verses, reply });
         true
     }
 
@@ -210,12 +231,30 @@ impl DialbackRequester {
         self.pending.len() >= MAX_PENDING_REQUESTS
     }
 
-    /// Delivers a verified record addressed to `local_did`; returns how many waiters it completed.
+    /// Delivers a verified record addressed to `local_did` from any verse; returns how many waiters it completed.
     pub fn accept_result(&mut self, local_did: &str, author_did: &str, payload: &[u8], now_ms: u64) -> usize {
+        self.accept(local_did, author_did, None, payload, now_ms)
+    }
+
+    /// Like [`Self::accept_result`] for a record that arrived on `verse_id` (waiters bound to other verses stay pending).
+    pub fn accept_result_in_verse(
+        &mut self,
+        local_did: &str,
+        author_did: &str,
+        verse_id: &str,
+        payload: &[u8],
+        now_ms: u64,
+    ) -> usize {
+        self.accept(local_did, author_did, Some(verse_id), payload, now_ms)
+    }
+
+    /// Only a passing (`ok`) record settles a waiter; a failing one never decides the outcome, the timeout does.
+    fn accept(&mut self, local_did: &str, author_did: &str, verse_id: Option<&str>, payload: &[u8], now_ms: u64) -> usize {
         let Ok(record) = serde_json::from_slice::<DialbackRecord>(payload) else {
             return 0;
         };
-        let bound = record.prober_did == author_did
+        let bound = record.ok
+            && record.prober_did == author_did
             && record.prober_did != local_did
             && record.requester_did == local_did
             && record.at_ms <= now_ms.saturating_add(DIALBACK_FUTURE_SKEW_MS)
@@ -227,7 +266,13 @@ impl DialbackRequester {
         let mut delivered = 0;
         let mut index = 0;
         while index < self.pending.len() {
-            if self.pending[index].url == record.url {
+            let entry = &self.pending[index];
+            let verse_matches = match (&entry.verses, verse_id) {
+                (None, _) => true,
+                (Some(verses), Some(arrival)) => verses.iter().any(|verse| verse == arrival),
+                (Some(_), None) => false,
+            };
+            if entry.url == record.url && verse_matches {
                 let waiter = self.pending.swap_remove(index);
                 if waiter.reply.send(Some(record.clone())).is_ok() {
                     delivered += 1;
@@ -369,9 +414,34 @@ mod tests {
         let self_attested = serde_json::to_vec(&self_attested).unwrap();
         assert_eq!(requester.accept_result(&requester_did, &requester_did, &self_attested, NOW_MS), 0);
         assert!(answer.try_recv().is_err(), "a node never vouches for its own reachability");
+        // A forged ok=false record from an authorized prober does not settle the waiter.
+        let failing = DialbackRecord::sign(
+            &SigningKey::from_bytes(&responder_secret.to_bytes()),
+            &requester_did,
+            url,
+            NOW_MS,
+            false,
+        );
+        let failing = serde_json::to_vec(&failing).unwrap();
+        assert_eq!(requester.accept_result(&requester_did, &frame.author_did, &failing, NOW_MS), 0);
+        assert!(answer.try_recv().is_err(), "an ok=false record leaves the waiter pending for the timeout");
         assert_eq!(requester.accept_result(&requester_did, &frame.author_did, &frame.payload, NOW_MS), 1);
         let record = answer.try_recv().expect("delivered").expect("record");
         assert!(record.ok && record.requester_did == requester_did);
+
+        // A verse-bound waiter ignores a passing record from another verse and settles on its own.
+        let (reply, mut bound_answer) = oneshot::channel();
+        assert!(requester.register_in_verses(url.to_owned(), vec![VERSE.to_owned()], reply));
+        assert_eq!(
+            requester.accept_result_in_verse(&requester_did, &frame.author_did, "verse-other", &frame.payload, NOW_MS),
+            0
+        );
+        assert!(bound_answer.try_recv().is_err(), "a record from a verse the request never went to is ignored");
+        assert_eq!(
+            requester.accept_result_in_verse(&requester_did, &frame.author_did, VERSE, &frame.payload, NOW_MS),
+            1
+        );
+        assert!(bound_answer.try_recv().expect("delivered").is_some());
 
         assert_eq!(
             responder.answer(VERSE, &requester_did, b"{\"nope\":1}").await,

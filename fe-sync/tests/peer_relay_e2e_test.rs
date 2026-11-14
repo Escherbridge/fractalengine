@@ -72,6 +72,7 @@ impl RelayLab {
         let gate = RelayMembershipGate::new(GateSettings {
             limits: GateLimits { max_clients: 16, max_connections_per_endpoint: 2 },
             served_verses: ServedVerses::Listed([VERSE.to_string()].into()),
+            hosted_verses: None,
             log_client_ips: false,
         });
         gate.apply_snapshot(&snapshot(member_seeds));

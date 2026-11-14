@@ -2472,6 +2472,8 @@ The embedded members-only relay (`fe_sync::relay_server`, feature `relay-server`
 - Admission: `RelayMembershipGate` admits only Viewer+ members of the verses in `FE_RELAY_SERVE_VERSES`. Its membership set is a snapshot the fabric pushes on every role or `__peers` change (NET-21), not a database read per connection.
 - `FE_RELAY_SERVE_ACCESS` accepts only `members` (or unset). Any open value refuses to start.
 - Profiles `RelayServeProfile::{Operator, Desktop}`. Default client caps are 1024 and 64. The desktop profile has a denial breaker (`BREAKER_DENIALS_PER_MINUTE` = 600, `BREAKER_HOT_MINUTES` = 3) with a `DESKTOP_BREAKER_COOLDOWN` of 600 s.
+- Breaker input: only member cap denials (`PerEndpointCap`, `GlobalCap`) feed the listener-closing breaker, because a non-member mints endpoint ids freely and the gate sees no client IP. `NotMember` denials go to a bounded per-endpoint `NonMemberTracker` (4096 sources, oldest evicted) that only rate-limits their log line and counts them (`non_member_denials`).
+- `ServedVerses::AllHosted` admits through `GateSettings.hosted_verses` (the node's hosted set) only, not every verse in the admission snapshot; no hosted set admits nothing. The set is fixed at start, so a verse hosted later is served after a relay restart. `served_verse_ids()` is what a consent screen lists.
 - Client IP logging is opt-in (`FE_RELAY_SERVE_LOG_IPS`). Abuse log lines are rate-limited per `ABUSE_LOG_WINDOW` (60 s).
 - Certificates: `FE_RELAY_SERVE_CERT_MODE` selects ACME (`FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`) or supplied files (`FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`).
 - The desktop serves a relay only after consent and a passing reachability self-test (fe-ui §app-settings).
@@ -2485,6 +2487,7 @@ How this node proves it is reachable from the internet (`fe_sync::reachability`,
 - Dial-back is the proof. A node asks a verse member to probe it by sending a signed `reach_probe` frame (`DialbackRequester`, `request_dialback`). The member's `DialbackResponder` answers with a signed `reach_result` frame. Limits: `MAX_CONCURRENT_PROBES` (4), `MAX_PENDING_REQUESTS` (16), `MAX_REQUEST_VERSES` (4), and `REQUEST_TIMEOUT` (probe timeout plus 5 s).
 - Acting as a prober is opt-in: the `act_as_prober` setting, default off (`set_act_as_prober`).
 - The HTTPS prober (`DialbackProber`) fetches `/ping` (`PROBE_PATH`), reads at most `MAX_PROBE_BODY_BYTES` (1024), and gives up after `PROBE_TOTAL_TIMEOUT` (5 s). It is rate-limited globally (`GLOBAL_PROBES_PER_WINDOW` = 10) and per requester, per 60 s window.
+- A waiter settles only on an `ok` record (`accept_result`); a failing record leaves it pending so the timeout reports failure. `register_in_verses` / `accept_result_in_verse` also bind it to the verses the request went to. Each answer holds its probe permit for at most `ANSWER_BUDGET`, and DNS has its own `resolve_timeout` inside the prober.
 - SSRF controls: the target URL passes the advertised-relay validator, every address the resolver returns is checked (`ProbeRefusal::ForbiddenAddress`), and the connection uses an address that was checked. Residual: the checks run at resolution. A client that resolves again at connect time reopens a DNS rebinding window.
 
 ## §net-diagnostics

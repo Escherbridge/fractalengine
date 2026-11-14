@@ -4180,7 +4180,7 @@ fn handle_reach_result(
         tracing::debug!(verse_id = %incoming.verse_id, ?refusal, "Dial-back result from an unauthorized prober ignored");
         return;
     }
-    requester.accept_result(local_did, author_did, &incoming.content, unix_now_ms());
+    requester.accept_result_in_verse(local_did, author_did, &incoming.verse_id, &incoming.content, unix_now_ms());
 }
 
 /// NET-29: sign and broadcast a local dial-back request on up to a few joined verse topics.
@@ -4200,9 +4200,9 @@ async fn broadcast_dialback_request(
         let _ = reply.send(None);
         return;
     }
-    let mut sent = 0usize;
+    let mut sent_verses: Vec<String> = Vec::new();
     for (topic_key, sender) in gossip_senders {
-        if sent >= dialback_responder::MAX_REQUEST_VERSES {
+        if sent_verses.len() >= dialback_responder::MAX_REQUEST_VERSES {
             break;
         }
         let Some(verse_id) = verse_of_gossip_topic(topic_key) else {
@@ -4210,13 +4210,13 @@ async fn broadcast_dialback_request(
         };
         match dialback_responder::build_request_frame(secret, verse_id, &url) {
             Ok(frame) => match sender.broadcast(frame.into()).await {
-                Ok(()) => sent += 1,
+                Ok(()) => sent_verses.push(verse_id.to_string()),
                 Err(error) => tracing::warn!(verse_id, "Failed to broadcast dial-back request: {error}"),
             },
             Err(error) => tracing::warn!(verse_id, "Failed to seal dial-back request: {error}"),
         }
     }
-    if sent == 0 || !requester.register(url, reply) {
+    if sent_verses.is_empty() || !requester.register_in_verses(url, sent_verses, reply) {
         tracing::debug!("Dial-back request not sent or the pending table is full");
     }
 }
