@@ -12,7 +12,7 @@ use crate::handlers::visibility_groups::authorize_edit;
 use crate::op_log::commit_operation_atomic;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
-use crate::{replicate_row_with_petal, BlobStoreHandle, ReplicationSender};
+use crate::{BlobStoreHandle, ReplicationSender};
 
 /// Upper clamp — mirrors the schema `ASSERT` and `fe-ui`'s `RENDER_DISTANCE_MAX`
 /// (`fe-ui/src/settings.rs`); the plan's "ceiling also binds the petal column"
@@ -95,17 +95,13 @@ pub(crate) async fn set_petal_render_distance_handler(
         .and_then(|v| v.as_f64())
         .map(|v| v as f32);
 
-    if let Ok(row_json) = serde_json::to_vec(&row) {
-        if let Ok(parts) = crate::scope::parse_scope(&scope) {
-            replicate_row_with_petal(
-                repl_tx,
-                blob_store,
-                &parts.verse_id,
-                "petal",
-                petal_id,
-                &row_json,
-                Some(petal_id.to_string()),
-            );
+    if let Ok(parts) = crate::scope::parse_scope(&scope) {
+        if let Err(error) = crate::field_clock::publish_clocked_row(
+            db, blob_store, repl_tx, local_did, &parts.verse_id, "petal", petal_id, true,
+        )
+        .await
+        {
+            tracing::warn!(petal_id, "committed petal render distance clocked publish failed: {error:#}");
         }
     }
     Ok(stored)

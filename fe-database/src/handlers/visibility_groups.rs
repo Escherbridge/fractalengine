@@ -217,6 +217,7 @@ pub(crate) async fn publish_registry(
     db: &Db,
     repl_tx: Option<&crate::ReplicationSender>,
     blob_store: &crate::BlobStoreHandle,
+    local_did: &str,
     petal_id: &str,
 ) {
     if repl_tx.is_none() {
@@ -227,26 +228,8 @@ pub(crate) async fn publish_registry(
             .await?
             .ok_or_else(|| anyhow::anyhow!("committed Petal ancestry is unavailable"))?;
         let verse = crate::parse_scope(&scope)?.verse_id;
-        let mut response = db
-            .query(
-                "SELECT petal_id, fractal_id, name, node_id, bounds, created_at, description, visibility, tags, \
-                 hexon_manifest, terrain, visibility_groups, render_distance \
-                 FROM petal WHERE petal_id = $pid LIMIT 2",
-            )
-            .bind(("pid", petal_id.to_string()))
-            .await?
-            .check()?;
-        let rows: Vec<serde_json::Value> = response.take(0)?;
-        anyhow::ensure!(rows.len() == 1, "committed Petal row is unavailable");
-        crate::replicate_row_with_petal(
-            repl_tx,
-            blob_store,
-            &verse,
-            "petal",
-            petal_id,
-            &serde_json::to_vec(&rows[0])?,
-            Some(petal_id.to_string()),
-        );
+        crate::field_clock::publish_clocked_row(db, blob_store, repl_tx, local_did, &verse, "petal", petal_id, true)
+            .await?;
         Ok::<_, anyhow::Error>(())
     };
     if let Err(error) = published.await {

@@ -186,7 +186,7 @@ async fn run_write(
     let changes = diff(&before, &after);
     bump_edit_seq(db, &changes, &mut after).await;
     append_node_logs(db, &request.actor_did, &changes, &after).await;
-    publish(db, sinks, &changes, &after).await;
+    publish(db, sinks, &request.actor_did, &changes, &after).await;
     Ok((data, changes.len()))
 }
 
@@ -384,6 +384,7 @@ async fn append_node_logs(
 async fn publish(
     db: &Db,
     sinks: &ElevatedSinks<'_>,
+    actor_did: &str,
     changes: &[Change],
     after: &HashMap<RowKey, serde_json::Value>,
 ) {
@@ -461,6 +462,24 @@ async fn publish(
             );
             continue;
         };
+        if matches!(*table, "fractal" | "petal") {
+            // Hierarchy rows go through the per-key clock seam; publish failure warns only.
+            if let Err(error) = crate::field_clock::publish_clocked_row(
+                db,
+                sinks.blob_store,
+                sinks.repl_tx,
+                actor_did,
+                &verse_id,
+                table,
+                record_id,
+                true,
+            )
+            .await
+            {
+                tracing::warn!(table, record_id, "elevated write: clocked publish failed: {error:#}");
+            }
+            continue;
+        }
         let mut payload = row.clone();
         if let Some(object) = payload.as_object_mut() {
             object.remove("id");

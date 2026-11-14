@@ -7,7 +7,7 @@ use crate::handlers::visibility_groups::authorize_edit;
 use crate::op_log::commit_operation_atomic;
 use crate::repo::Db;
 use crate::types::{NodeId, OpLogEntry, OpType};
-use crate::{replicate_row_with_petal, BlobStoreHandle, ReplicationSender};
+use crate::{BlobStoreHandle, ReplicationSender};
 
 /// Set or clear a petal's terrain config (None clears via `terrain = NONE`),
 /// op-logging the write before it mutates (§log-first-commit, campaign plan
@@ -35,17 +35,13 @@ pub(crate) async fn set_petal_terrain_handler(
 
     // Replicate the read-back row — best-effort: a verse/scope lookup failure
     // never fails the write itself (the DB mutation already committed).
-    if let Ok(row_json) = serde_json::to_vec(&row) {
-        if let Ok(parts) = crate::scope::parse_scope(&scope) {
-            replicate_row_with_petal(
-                repl_tx,
-                blob_store,
-                &parts.verse_id,
-                "petal",
-                petal_id,
-                &row_json,
-                Some(petal_id.to_string()),
-            );
+    if let Ok(parts) = crate::scope::parse_scope(&scope) {
+        if let Err(error) = crate::field_clock::publish_clocked_row(
+            db, blob_store, repl_tx, local_did, &parts.verse_id, "petal", petal_id, true,
+        )
+        .await
+        {
+            tracing::warn!(petal_id, "committed petal terrain clocked publish failed: {error:#}");
         }
     }
     Ok(stored)

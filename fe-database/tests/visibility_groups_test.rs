@@ -267,6 +267,10 @@ fn the_group_registry_is_editor_gated_round_trips_and_survives_a_restart() {
             Some(serde_json::to_value(registry()).unwrap()),
             "the committed registry is published to peers, not held until a verse reopen"
         );
+        assert!(
+            published.as_ref().is_some_and(|row| row.get("_fe_clock").is_some_and(|clock| !clock.is_null())),
+            "the published registry row carries the per-key clock, so the peer converges per key"
+        );
 
         // QA-0123: a peer that applies the owner's rows in publication order holds the
         // same registry — the registry row's other catalog columns never refuse it.

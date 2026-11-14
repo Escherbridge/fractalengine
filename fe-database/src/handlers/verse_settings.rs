@@ -5,7 +5,7 @@
 use fe_runtime::timeseries::VerseTimeseriesSettings;
 
 use crate::repo::Db;
-use crate::{replicate_row, BlobStoreHandle, ReplicationSender};
+use crate::{BlobStoreHandle, ReplicationSender};
 
 /// Set a verse's timeseries replication settings (mode / durability slider
 /// R / shard bucket width), then re-emit the verse manifest so the change
@@ -74,7 +74,7 @@ pub async fn set_verse_timeseries_settings_handler(
             persisted.bucket_width_ms
         );
     }
-    publish_manifest_row(repl_tx, blob_store, verse_id, &row)?;
+    publish_manifest_row(db, repl_tx, blob_store, caller_did, verse_id).await;
 
     tracing::info!(
         verse_id,
@@ -86,16 +86,21 @@ pub async fn set_verse_timeseries_settings_handler(
     Ok(persisted)
 }
 
-/// Re-emit a read-back verse row as the manifest (the one source the sync plane parses).
-fn publish_manifest_row(
+/// Re-emit the committed verse row as the clocked manifest; a failure warns, never fails the write.
+async fn publish_manifest_row(
+    db: &Db,
     repl_tx: Option<&ReplicationSender>,
     blob_store: &BlobStoreHandle,
+    local_did: &str,
     verse_id: &str,
-    row: &serde_json::Value,
-) -> anyhow::Result<()> {
-    let row_bytes = serde_json::to_vec(row)?;
-    replicate_row(repl_tx, blob_store, verse_id, "verse", verse_id, &row_bytes);
-    Ok(())
+) {
+    if let Err(error) = crate::field_clock::publish_clocked_row(
+        db, blob_store, repl_tx, local_did, verse_id, "verse", verse_id, true,
+    )
+    .await
+    {
+        tracing::warn!(verse_id, "committed verse manifest clocked publish failed: {error:#}");
+    }
 }
 
 /// Set a verse's `default_access` (Manager+ at the verse scope) and re-emit the manifest so
@@ -124,7 +129,8 @@ pub async fn set_verse_default_access_handler(
     {
         anyhow::bail!("default_access for verse '{verse_id}' did not persist");
     }
-    publish_manifest_row(repl_tx, blob_store, verse_id, &row)
+    publish_manifest_row(db, repl_tx, blob_store, caller_did, verse_id).await;
+    Ok(())
 }
 
 #[cfg(test)]
