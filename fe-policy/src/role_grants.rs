@@ -701,8 +701,8 @@ where
 /// [`materialize`] as of HLC `at`: each statement counts only from the time
 /// its continuity shows it applied ([`RoleStatement::granted_since`]), so a
 /// row stamped `at` is judged by the role its author held when it was
-/// written (QA-0131). Callers AND it with the current view —
-/// AGENTS.md §write-time-role.
+/// written (QA-0131). Clocked rows (QA-0165) use held_at alone; only the legacy
+/// fe-sync candidate path still ANDs it with the current view. See fe-policy/AGENTS.md Grant windows.
 pub fn materialize_at<'a, I>(owner_did: &str, statements: I, at: u64) -> EffectiveRoles
 where
     I: IntoIterator<Item = &'a RoleStatement>,

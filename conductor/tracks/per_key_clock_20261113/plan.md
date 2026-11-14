@@ -38,3 +38,17 @@ Tests run only when the user names the batches; nothing here runs them automatic
 - R8: `fe-sync` (clocked rows over real transport, QA-0166 restore).
 - Simulator: `python tools/qa/sim/run.py p2p-core`, only on the user's go.
 - Per-slice gate is `cargo check -p <touched crates>` at wave barriers; no clippy.
+
+## Round 5 (completion swarm)
+
+Review verdicts: `review-turn5/R5-CLOCK.md` (PASS-WITH-FIXES). Code only; no run.
+
+- [x] CLOCK5-02 Non-empty revoke frontier journey with real stores (tests/role_propagation_local_test.rs:347-429). Code done at HEAD; test run pending (user-gated). Its expected `until` changes with the F3 handed-off fix.
+- [x] CLOCK5-03 Track and doc drift close-out (spec 3.2 namespace_id, spec status, materialize_at doc comment, metadata hand-offs). Code done; no test.
+- [x] CLOCK5-04 Narrow the blanket allow(dead_code, unused_imports) in field_clock/mod.rs. Code done at HEAD; two dead functions handed off (R5-CLOCK F2).
+- [x] CLOCK5-05 Published-bytes clock assertions for render distance and verse manifest (petal_render_distance.rs:254-281, verse_settings.rs:278-283). Code done at HEAD; test run pending (user-gated).
+- [ ] CLOCK5-01 Node publisher: a pending local key still publishes after a remote merge raised the scene clock. Publisher and diagnostics done; acceptance test (op_log.rs:5944) and AGENTS.md text still open (R5-CLOCK F5, F9; I5-DB, I5-DOC-DB).
+
+Deferred triggers (C-CLOCK):
+- Render-distance and verse-manifest published-bytes assertions beyond CLOCK5-05 wait for a QA report of a stale published byte.
+- Snapshot-imported nodes lacking legacy-floor versions stay as-is until the next startup seed (trigger: a QA report of an imported node losing a key to a legacy row).

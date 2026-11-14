@@ -18,10 +18,7 @@
     "R-CLOCK-1 R6: editor_since/manager_since accepted from the wire (fe-policy/src/role_grants.rs:367); needs user decision",
     "R-CLOCK-1 R7: peers without a stored earlier key version refuse rows admitted from inside closed windows (fe-database/src/role_grants.rs:171); revisit on QA report"
   ],
-  "handed_off": [
-    "R-CLOCK-2 F5 (I-DB-2): take_removed_nodes has no caller; NodeDeleted not sent after re-judge removals",
-    "R-CLOCK-2 F6 (I-DB-2): three visibility_groups::publish_registry call sites in fe-database/src/lib.rs need &local_did; cargo check -p fe-database fails until applied"
-  ],
+  "handed_off": [],
   "qa_status_pending": "QA-0165 and QA-0126 still open in qa/findings.jsonl; QA-0156 and QA-0166 fixed_source_live_pending (I-CONDUCTOR to update)",
   "created_at": "2026-11-13T00:00:00Z",
   "priority": "P1",
@@ -40,7 +37,9 @@
   "progress": {
     "done": 12,
     "open": 0,
-    "run_pending": "all user-gated test runs and the p2p-core simulator run"
+    "run_pending": "all user-gated test runs and the p2p-core simulator run",
+    "note": "CLOCK-13 ledger rows pending I-CONDUCTOR",
+    "round5": "CLOCK5-02, CLOCK5-04, CLOCK5-05, CLOCK5-03 code done; CLOCK5-01 still open (see round5_handed_off)"
   },
   "partitions": {
     "computed_at": "2026-11-13",
@@ -200,7 +199,7 @@
       },
       {
         "id": "CLOCK-13",
-        "task": "Docs and findings close-out: fe-database AGENTS \u00a7write-time-role rewrite, field_clock AGENTS reconcile, QA rows, track plan ticks",
+        "task": "Docs and findings close-out: fe-database AGENTS §write-time-role rewrite, field_clock AGENTS reconcile, QA rows, track plan ticks",
         "model": "sonnet",
         "depends_on": [
           "CLOCK-02",
@@ -223,5 +222,12 @@
         ]
       }
     ]
-  }
+  },
+  "round5_handed_off": [
+    "R5-CLOCK F2 (field_clock/judge.rs:96, rejudge.rs:32): admissible and rejudge_authors have no callers; delete or #[allow(dead_code)] with reason",
+    "R5-CLOCK F3 (fe-database/src/role_grants.rs:622, fe-policy role_grants.rs:144/:180): revoke frontier off by one; window must end at frontier+1; role_propagation_local_test.rs:386-429 expects until write_hlc+1",
+    "R5-CLOCK F4 (handlers/scene_publication/inbound.rs:607-610): pending_local_keys must use publisher journal_covers rule; local edit lost after two remote merges before recover()",
+    "R5-CLOCK F5 (fe-database/src/op_log.rs:5944): CLOCK5-01 acceptance test missing (I5-DB)",
+    "R5-CLOCK F9 (handlers/scene_publication/AGENTS.md Wire and ordering): per-key clock text missing (I5-DOC-DB)"
+  ]
 }

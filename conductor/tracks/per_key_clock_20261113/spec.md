@@ -4,7 +4,7 @@ title: Per-key (HLC, author) clock and write-time role admission
 track: per_key_clock_20261113
 tags: [security, p2p, rbac, fe-policy, fe-database, fe-sync]
 created: 2026-11-13
-status: planned
+status: code-complete-run-pending
 resource: ./metadata.json
 plan: ./plan.md
 findings: [QA-0156, QA-0165, QA-0166, QA-0126]
@@ -57,7 +57,7 @@ _fe_clock = { "v": 1, "author": "<entry author DID>",
 
 | Table | Identity columns (insert-once, never clocked) | Clock keys |
 |---|---|---|
-| verse | verse_id, created_by, created_at | every other top-level column (name, description, default_access, ts_mode, ts_replication_factor, ts_bucket_width_ms, namespace_id, ...) |
+| verse | verse_id, created_by, created_at, namespace_id | every other top-level column (name, description, default_access, ts_mode, ts_replication_factor, ts_bucket_width_ms, ...). namespace_id is insert-once identity, filled by a verse Manager only while empty, never clocked. |
 | fractal | fractal_id, verse_id, owner_did, created_at | every other column |
 | petal | petal_id, fractal_id (and any parent id), created_at | every other column (bounds, terrain, render_distance, hexon_manifest, ...) |
 | node | node_id, petal_id, created_at | `transform` (position + elevation + rotation + scale + edit_seq as ONE object value), `properties/<k>` per top-level property key, `tombstone`, every other column |
@@ -66,7 +66,7 @@ Required level per key (the level the author must have held at the version's hlc
 
 | Scope | Keys | Level |
 |---|---|---|
-| verse | default_access, ts_mode, ts_replication_factor, ts_bucket_width_ms, namespace_id (`VERSE_GOVERNANCE_FIELDS`, `replicated_row.rs:579`) | Manager at verse scope |
+| verse | default_access, ts_mode, ts_replication_factor, ts_bucket_width_ms (`VERSE_GOVERNANCE_FIELDS`, `replicated_row.rs:579`) | Manager at verse scope |
 | petal | hexon_manifest (today's ManageScope rule, `confine_petal`) | Manager at petal scope |
 | any other key | all remaining keys | Editor at the row's deepest scope |
 
@@ -79,7 +79,7 @@ Required level per key (the level the author must have held at the version's hlc
 
 Both are written in the same transaction as the row, with a verify statement (SurrealDB 3
 `UPSERT ... WHERE` can silently skip; mirror `CLOCK_WRITE`/`CLOCK_VERIFY`,
-`scene_publication/mod.rs:233-237`).
+`scene_publication/mod.rs:62-65`).
 
 ### 3.4 Merge order
 
