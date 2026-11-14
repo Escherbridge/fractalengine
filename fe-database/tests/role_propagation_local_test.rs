@@ -14,7 +14,7 @@ use fe_database::repo::Db;
 use fe_database::role_grants::{self, Placement};
 use fe_database::role_manager::{self, RoleCommandError};
 use fe_database::{build_scope, BlobStoreHandle, ReplicationEvent, RoleLevel};
-use fe_policy::{GrantedRole, RoleStatement, RoleStatementPayload, StatementKey};
+use fe_policy::{GrantWindow, GrantedRole, RoleStatement, RoleStatementPayload, StatementKey};
 use fe_runtime::blob_store::mock::MockBlobStore;
 
 const OWNER: &str = "did:key:z6MkOwner";
@@ -342,6 +342,90 @@ async fn a_manager_grant_then_owner_revocation_of_the_manager_voids_the_grant_lo
     assert!(
         !held_at(before_revoke).await.expect("gap, after regrant"),
         "the regrant does not reopen the span the revoke cut"
+    );
+
+    // Second revoke round with a NON-empty frontier: this node now holds a write of M stamped just
+    // above the regrant, so the revoke closes the span at that write (not at the revoke clock).
+    let regrant = role_grants::load_admitted(&fx.db, VERSE)
+        .await
+        .expect("admitted after regrant")
+        .into_iter()
+        .find(|s| s.peer_did == m && s.grantor_did == OWNER && !s.revoked)
+        .expect("owner's regrant of M is admitted");
+    let write_hlc = regrant.hlc + 1;
+    query(
+        &fx.db,
+        &format!(
+            "CREATE row_field_version CONTENT {{ tbl: 'node', rid: 'node-written-by-m', \
+             verse_id: '{VERSE}', field_key: 'name', author: '{m}', hlc: {write_hlc}, \
+             value_json: '\"written\"', deleted: false }}"
+        ),
+    )
+    .await;
+    // Burn clock ticks so the revoke stamps well above the write, separating frontier from revoke clock.
+    for burner in ["did:key:z6MkBurnA", "did:key:z6MkBurnB", "did:key:z6MkBurnC"] {
+        fx.assign(m, burner, &petal_scope(PETAL_B), "editor")
+            .await
+            .expect("M assigns while still a Manager");
+    }
+    fx.drain();
+    fx.revoke(OWNER, m, &verse_scope())
+        .await
+        .expect("owner revokes M again");
+
+    let revocation = role_grants::load_admitted(&fx.db, VERSE)
+        .await
+        .expect("admitted after second revoke")
+        .into_iter()
+        .find(|s| s.peer_did == m && s.grantor_did == OWNER)
+        .expect("owner's second revocation of M is admitted");
+    assert!(revocation.revoked);
+    assert!(
+        revocation.hlc > write_hlc + 1,
+        "the revoke clock {} must sit above the write {write_hlc} for the frontier to be told apart",
+        revocation.hlc
+    );
+    let expected = vec![GrantWindow {
+        role: GrantedRole::Manager,
+        since: regrant.hlc,
+        until: write_hlc,
+    }];
+    assert_eq!(
+        revocation.windows, expected,
+        "the window closes at the revoker's frontier (M's last held write), not at the revoke clock"
+    );
+
+    let events = fx.drain();
+    let payload = events
+        .iter()
+        .rev()
+        .find_map(|(event, payload)| {
+            payload.as_ref().filter(|p| event.table == "role" && p.revoked && p.peer_did == m)
+        })
+        .expect("the second revoke is published");
+    assert_eq!(payload.windows, revocation.windows, "windows ride the wire as stored");
+
+    let mut stored = fx
+        .db
+        .query("SELECT VALUE windows FROM role_grant WHERE peer_did = $m AND grantor_did = $o")
+        .bind(("m", m))
+        .bind(("o", OWNER))
+        .await
+        .expect("windows column");
+    let stored: Vec<Option<String>> = stored.take(0).expect("windows rows");
+    let [Some(stored_json)] = stored.as_slice() else {
+        panic!("the closed window must be stored: {stored:?}");
+    };
+    let stored_windows: Vec<GrantWindow> = serde_json::from_str(stored_json).expect("windows json");
+    assert_eq!(stored_windows, expected);
+
+    assert!(
+        held_at(write_hlc - 1).await.expect("inside window"),
+        "a write of M stamped inside [grant, frontier) is admissible"
+    );
+    assert!(
+        !held_at(write_hlc + 1).await.expect("above frontier"),
+        "a write of M stamped above the revoker's frontier is not admissible"
     );
 }
 
