@@ -372,15 +372,20 @@ fn send_unqueued(
     full: FullChannel,
     now: Instant,
 ) -> GuiSend {
-    // A correlated write never overtakes a queued one; uncorrelated reads still bypass.
-    if let Some(correlation_id) = command_correlation_id(&command) {
-        if !lock(doors).waiting.is_empty() {
-            if full == FullChannel::Report {
-                return GuiSend::Busy;
+    // A correlated write never overtakes a queued one (any caller, like a gated write); uncorrelated reads still bypass.
+    {
+        let mut queue = lock(doors);
+        if !queue.waiting.is_empty() {
+            if let Some(correlation_id) = command_correlation_id(&command) {
+                source.correlation_id = Some(correlation_id);
+                queue.waiting.push_back(WaitingWrite {
+                    state: Queued::Admitted(command.clone(), SceneAugments::default()),
+                    origin: source.into_origin(command),
+                    attempts: 0,
+                    next_attempt: None,
+                });
+                return GuiSend::Waiting;
             }
-            source.correlation_id = Some(correlation_id);
-            let original = command.clone();
-            return queue_retry(doors, source, original, command, SceneAugments::default(), now);
         }
     }
     match send_plain(source.sender, command, blocking) {
@@ -1035,14 +1040,17 @@ mod tests {
             let b = submit_with(&doors, &door, &tx, property_write("order-b"), false, None, FullChannel::Retry, base);
             assert_eq!(b, GuiSend::Waiting, "a plain correlated write queues behind the backing-off head");
             assert!(write_in_door(&doors, "order-b"));
-            let busy = submit_with(&doors, &door, &tx, property_write("order-c"), false, None, FullChannel::Report, base);
-            assert_eq!(busy, GuiSend::Busy);
+            // A reporting caller queues too: it is behind a write, not facing a full channel, so never `Busy`.
+            let c = submit_with(&doors, &door, &tx, property_write("order-c"), false, None, FullChannel::Report, base);
+            assert_eq!(c, GuiSend::Waiting, "a reporting caller's correlated write keeps submit order");
             assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
             let settled = pump_scene_door_at(&doors, base + Duration::from_millis(60));
             assert!(matches!(settled.first(), Some(Settled::Sent(_))));
             assert_eq!(received_id(&rx).as_deref(), Some("order-a"));
             pump_scene_door_at(&doors, base + Duration::from_secs(10));
             assert_eq!(received_id(&rx).as_deref(), Some("order-b"));
+            pump_scene_door_at(&doors, base + Duration::from_secs(20));
+            assert_eq!(received_id(&rx).as_deref(), Some("order-c"));
             assert_eq!(door_counts(&doors), (0, 0));
         }
 

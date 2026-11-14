@@ -299,12 +299,19 @@ async fn search_download_verify_roundtrip() {
         let fetched = source.fetch_hexon_with_progress(&entry, &mut |received, total| events.push((received, total)));
         assert!(matches!(fetched, Ok(FetchedHexon::Content(_))), "progress download must still verify");
 
-        // One flipped byte on disk after indexing: the listed hash no longer matches, so verification fails.
+        // One flipped byte inside manifest.json's stored data, on disk after indexing: verification must fail.
         let morning = source.list(Some("morning-run")).unwrap().entries.into_iter().next().expect("morning-run listed");
         let path = fixture_dir.join("morning-run@0.1.0.hexon");
         let mut bytes = std::fs::read(&path).unwrap();
-        let middle = bytes.len() / 2;
-        bytes[middle] ^= 0xff;
+        // The first occurrence of the name is its local file header: 30 fixed bytes, then name, extra, data.
+        let name = fe_format::integrity::MANIFEST_PATH.as_bytes();
+        let name_at = bytes.windows(name.len()).position(|window| window == name).expect("manifest member");
+        let header_at = name_at - 30;
+        let field = |offset: usize| u16::from_le_bytes([bytes[header_at + offset], bytes[header_at + offset + 1]]) as usize;
+        let compressed = u32::from_le_bytes(bytes[header_at + 18..header_at + 22].try_into().unwrap()) as usize;
+        let data_at = name_at + field(26) + field(28);
+        assert!(compressed > 0, "manifest data length is in the local header");
+        bytes[data_at + compressed / 2] ^= 0xff;
         std::fs::write(&path, bytes).unwrap();
         let mut tamper_events: Vec<(u64, u64)> = Vec::new();
         let tampered = source.fetch_hexon_with_progress(&morning, &mut |received, total| tamper_events.push((received, total)));
@@ -328,7 +335,6 @@ async fn search_download_verify_roundtrip() {
         .download_capped_with_progress(&listed_url, cap, 0, &mut |received, total| capped_events.push((received, total)))
         .await;
     assert!(refused.is_err(), "a download larger than the cap is refused");
-    assert!(capped_events.iter().all(|(received, _)| *received <= cap && *received < listed_size));
     assert!(capped_events.is_empty(), "the Content-Length check refuses before any progress event: {capped_events:?}");
 
     // A registry that advertises no protocol is still refused before any listing (fail closed).

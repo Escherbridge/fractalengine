@@ -1156,9 +1156,10 @@ mod tests {
             assert!(app.world().resource::<crate::undo::UndoState>().is_pending());
             let mut settled = 0;
             let mut failures = Vec::new();
-            for _ in 0..=crate::actions::node::GUI_DOOR_RETRY_ATTEMPTS {
+            // Each pump lands past the previous one's backoff: a retry is scheduled from the pump's own instant.
+            for pump in 1..=u64::from(crate::actions::node::GUI_DOOR_RETRY_ATTEMPTS) + 1 {
                 let (count, failed) = crate::actions::node::pump_gui_door_outcome_after(
-                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_secs(10 * pump),
                 );
                 settled += count;
                 failures.extend(failed);
@@ -1167,6 +1168,12 @@ mod tests {
             assert_eq!(failures.len(), 1, "the owner learns of it through one RequestFailed");
             assert!(matches!(full_rx.try_recv(), Ok(DbCommand::Ping)));
             assert!(full_rx.try_recv().is_err(), "the undo never reached the channel");
+            let newest = crate::actions::node::dead_letters()
+                .pop()
+                .expect("the failed undo is listed under Unsaved edits");
+            assert_eq!(newest.label, "Move");
+            // Leave the process-wide list as it was for the next test that takes the door lock.
+            assert!(crate::actions::node::discard_dead_letter(newest.id));
             // Frame-never-blocks leg: the channel is still full when the failure lands, so reconcile
             // must return at once, keep the edit pending and send nothing until the retry sweep.
             full_tx.send(DbCommand::Ping).unwrap();
