@@ -91,21 +91,33 @@ impl EntityAccessState {
         self.bulk_revokes = self.below_manager_peers().into();
         self.bulk_active = !self.bulk_revokes.is_empty();
     }
-    /// Distinct peers (sorted) whose strongest live grant at this scope is viewer or editor.
+    /// Distinct peers (sorted) a Revoke here would demote: an Owner's revoke blocks the cell, so any
+    /// peer whose strongest live grant is viewer/editor; a Manager's revoke withdraws only its own statement.
     fn below_manager_peers(&self) -> Vec<String> {
         let Some(snapshot) = &self.snapshot else {
             return Vec::new();
         };
+        let local_is_owner = fe_database::RoleLevel::from(snapshot.local_role.as_str())
+            == fe_database::RoleLevel::Owner;
+        let effective_owner = |did: &str| {
+            snapshot
+                .roles
+                .iter()
+                .any(|(peer, role)| peer == did && role == "owner")
+        };
         let mut peers: Vec<String> = snapshot
             .grants
             .iter()
-            .filter(|grant| !grant.revoked)
+            .filter(|grant| !grant.revoked && matches!(grant.role.as_str(), "viewer" | "editor"))
+            .filter(|grant| local_is_owner || grant.grantor_did == snapshot.local_did)
             .map(|grant| grant.peer_did.clone())
+            .filter(|did| *did != snapshot.local_did && !effective_owner(did.as_str()))
             .filter(|did| {
-                matches!(
-                    strongest_live_grant(&snapshot.grants, did),
-                    Some("viewer" | "editor")
-                )
+                !local_is_owner
+                    || matches!(
+                        strongest_live_grant(&snapshot.grants, did),
+                        Some("viewer" | "editor")
+                    )
             })
             .collect();
         peers.sort();
@@ -398,9 +410,11 @@ pub(crate) fn preset_controls(
                 }
             }
         });
-        ui.add_enabled_ui(enabled && (verse_scope || revoke_count > 0), |ui| {
+        let sets_default = verse_scope && can_set_default;
+        ui.add_enabled_ui(enabled && (sets_default || revoke_count > 0), |ui| {
             let confirm_label = format!(
-                "Confirm: revoke {revoke_count} grant{}",
+                "Confirm: {}revoke {revoke_count} grant{}",
+                if sets_default { "default none, " } else { "" },
                 if revoke_count == 1 { "" } else { "s" }
             );
             if crate::panels::widgets::confirm_button(
@@ -917,7 +931,11 @@ pub(crate) fn api_controls(
                 .interactive(false),
         )
         .named(ui, "Generated entity API token");
-        ui.label(format!("Expires: {}", minted.expires_at));
+        ui.label(crate::panels::inspector::token_expiry_label(
+            &minted.expires_at,
+            chrono::Utc::now(),
+        ))
+        .on_hover_text(&minted.expires_at);
         if ui
             .button("Copy token")
             .named(ui, "Copy generated entity API token")
@@ -1260,4 +1278,36 @@ pub(crate) fn role_confirmation_refresh_journey(
         assert!(receiver.try_recv().is_err());
         apply(manager, target, &readback_id, &Ok(bulk.clone()));
     }
+
+    // A non-owner Manager's revoke withdraws only its own statement: another grantor's viewer grant is not queued.
+    let mut managed = bulk.clone();
+    managed.local_role = "manager".into();
+    managed.grants[0].grantor_did = "did:key:other-grantor".into();
+    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+        access.refresh();
+    }
+    service(manager, sender, None);
+    let DbCommand::EntityAccess { request_id, action: EntityAccessAction::Load { .. }, .. } =
+        receiver.try_recv().expect("Refresh queues a read")
+    else {
+        panic!("Refresh cannot mutate")
+    };
+    apply(manager, target, &request_id, &Ok(managed.clone()));
+    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+        access.start_managers_only();
+    }
+    service(manager, sender, None);
+    let DbCommand::EntityAccess { request_id: only_id, action: EntityAccessAction::Revoke { peer_did }, .. } =
+        receiver.try_recv().expect("The Manager's own below-manager grant is revoked")
+    else {
+        panic!("Managers only emits revokes only")
+    };
+    assert_eq!(peer_did, "did:key:viewer-b", "the other grantor's grant to viewer-a is not this Manager's to withdraw");
+    apply(manager, target, &only_id, &Ok(managed));
+    service(manager, sender, None);
+    let Ok(DbCommand::EntityAccess { request_id: final_read, action: EntityAccessAction::Load { .. }, .. }) = receiver.try_recv() else {
+        panic!("One revoke, then the normal read-back")
+    };
+    assert!(receiver.try_recv().is_err());
+    apply(manager, target, &final_read, &Ok(bulk));
 }

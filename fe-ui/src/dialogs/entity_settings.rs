@@ -384,15 +384,18 @@ pub fn render_entity_settings_dialog(
                             AccessPreset::MembersOnly => Some("none"),
                             AccessPreset::ManagersOnly => verse_scope.then_some("none"),
                         };
-                        if let Some(value) = stored_default.filter(|_| verse_scope) {
+                        let mut default_sent = true;
+                        if let Some(value) = stored_default.filter(|_| verse_scope && can_write) {
                             if db_tx.send(DbCommand::SetVerseDefaultAccess { verse_id: entity_id.clone(), default_access: value.to_string() }).is_err() {
                                 bevy::log::warn!("SetVerseDefaultAccess channel closed");
                                 send_failure = Some("Default access could not be sent. The database is unavailable.");
+                                default_sent = false;
                             } else if let Some(buffer) = default_access_buf.as_mut() {
                                 *buffer = value.to_string();
                             }
                         }
-                        if preset == AccessPreset::ManagersOnly {
+                        // A half-applied preset is worse than none: revoke only once the default part went out.
+                        if preset == AccessPreset::ManagersOnly && default_sent {
                             access.start_managers_only();
                         }
                     }
