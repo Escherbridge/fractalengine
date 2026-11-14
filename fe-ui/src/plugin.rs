@@ -952,6 +952,7 @@ impl Plugin for GardenerConsolePlugin {
         // S6: the Volume report's live selection/query + latest true-figures
         // answer. See `panels/volume_report_panel.rs`.
         app.init_resource::<crate::panels::volume_report_panel::VolumeReportState>();
+        app.init_resource::<crate::panels::section_profile_panel::SectionProfileState>();
         app.init_resource::<fe_renderer::scene_analysis::SceneAnalysisSnapshot>();
         app.init_resource::<crate::scene_analysis::SceneMaterialCache>();
         app.add_systems(
@@ -1049,6 +1050,10 @@ impl Plugin for GardenerConsolePlugin {
                 crate::panels::volume_report_panel::sync_volume_report_request,
                 crate::panels::volume_report_panel::drain_volume_report_result
                     .after(crate::panels::volume_report_panel::sync_volume_report_request),
+                crate::panels::section_profile_panel::sync_section_profile_request
+                    .after(crate::panels::volume_report_panel::sync_volume_report_request),
+                crate::panels::section_profile_panel::drain_section_profile_result
+                    .after(crate::panels::section_profile_panel::sync_section_profile_request),
             ).run_if(fe_runtime::maintenance::editor_running),
         );
         app.add_systems(EguiPrimaryContextPass, gardener_ui_system.in_set(GardenerUiSet::GeometryReady));
@@ -1214,6 +1219,8 @@ struct MiscUiParams<'w> {
     vis_state: ResMut<'w, crate::visibility::VisibilityState>,
     // hexon_scale FR-9: Measure tool anchors for the Options Measure arm.
     measure_state: ResMut<'w, crate::node_manager::measure::MeasureState>,
+    // Road tool chain + settings for the Options Road arm.
+    road_state: ResMut<'w, crate::node_manager::road_chain::RoadBuilderState>,
     // S4 (p2p_asset_streaming_20260718): active tileset downloads, read by
     // the Maps section (`terrain_map::drain_tileset_events` is the writer).
     downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
@@ -1323,6 +1330,7 @@ fn gardener_ui_system(
         &mut ui_shell.modal,
         &mut misc.vis_state,
         &mut misc.measure_state,
+        &mut misc.road_state,
         &misc.downloads,
         &mut misc.render_override,
         &mut misc.identity_banner,

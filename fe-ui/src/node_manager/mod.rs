@@ -36,6 +36,10 @@ pub(crate) mod ground_snap;
 pub(crate) mod road_snap;
 /// Road builder chain state machine; see AGENTS.md road-builder.
 pub(crate) mod road_chain;
+/// Road builder viewport interaction (clicks, hover); see AGENTS.md road-builder.
+pub(crate) mod road_interaction;
+/// Road builder ghost polyline and length readout; see AGENTS.md road-builder.
+pub(crate) mod road_overlay;
 /// FR-3 drag: gimbal-drag a selected path vertex/segment. See AGENTS.md §dispatch.
 mod path_gimbal_drag;
 /// FR-5 (pen_curve_tool_20260722): bezier-handle markers + drag. See AGENTS.md §pen-tool.
@@ -423,6 +427,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<brush_interaction::BrushGesture>();
         app.init_resource::<measure::MeasureState>();
         app.init_resource::<road_chain::RoadBuilderState>();
+        app.init_resource::<road_interaction::RoadHoverState>();
         // HS-P6-CALLOUT: pending-stash + node bookkeeping for persisted
         // dimension callouts (see `actions::dimension_callout`).
         app.init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>();
@@ -452,11 +457,13 @@ impl Plugin for NodeManagerPlugin {
                 router::resolve_pointer_frame.in_set(fe_renderer::scene_pointer::ScenePointerContextSet),
                 // This registration order is NORMATIVE for `ClickPriority` (D14-A):
                 // Brush claims 2nd, ahead of every other consumer, while active;
-                // Measure claims right after it (nested only to stay within Bevy's
-                // 20-element tuple limit — the inner `.chain()` keeps the order).
+                // Measure claims right after it and Road claims right after Measure
+                // (nested only to stay within Bevy's 20-element tuple limit — the
+                // inner `.chain()` keeps the order).
                 (
                     brush_interaction::handle_brush_interaction, // Brush owns viewport gestures while active
                     measure::handle_measure_interaction, // Measure places anchors while active
+                    road_interaction::handle_road_interaction, // Road places chain points while active
                 )
                     .chain(),
                 gimbal_interaction::update_hovered_axis, // hover detection (before interaction)
@@ -498,6 +505,8 @@ impl Plugin for NodeManagerPlugin {
                     .after(path_segment_interaction::handle_path_segment_interaction)
                     .before(inspector_sync::sync_manager_to_inspector),
                 measure::draw_measure_overlay.after(measure::handle_measure_interaction),
+                road_overlay::draw_road_overlay.after(road_interaction::handle_road_interaction),
+                road_overlay::draw_road_readout.after(road_interaction::handle_road_interaction),
             )
                 .in_set(UiSet::Selection),
         );

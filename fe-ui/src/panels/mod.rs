@@ -21,6 +21,7 @@ pub(crate) mod proposal_report_panel;
 pub(crate) mod query_tab;
 pub(crate) mod sidebar;
 pub(crate) mod status_bar;
+mod unsaved_edits;
 pub(crate) mod terrain_tools_panel;
 /// Pure per-tool helpers (descriptor/selection/anchor), consumed by the
 /// toolbar tooltip and the right-sidebar Tool section. No left panel anymore
@@ -39,6 +40,8 @@ pub(crate) mod tree_entry;
 /// hosted below `proposal_report_panel` in the same renamed section. See
 /// `panels/AGENTS.md` §volume-report.
 pub(crate) mod volume_report_panel;
+/// Existing-vs-proposed section profile inside the Volume report; see AGENTS.md §section-profile.
+pub mod section_profile_panel;
 
 mod annotation_card;
 mod asset_card;
@@ -142,6 +145,8 @@ pub fn gardener_console(
     vis_state: &mut crate::visibility::VisibilityState,
     // hexon_scale FR-9: Measure tool anchors, edited by the Options Measure arm.
     measure_state: &mut crate::node_manager::measure::MeasureState,
+    // Road tool chain + settings, edited by the Options Road arm.
+    road_state: &mut crate::node_manager::road_chain::RoadBuilderState,
     // S4 (p2p_asset_streaming_20260718): active tileset downloads — read by
     // the Maps section, written only by `terrain_map::drain_tileset_events`.
     downloads: &crate::terrain_map::TilesetDownloads,
@@ -258,6 +263,7 @@ pub fn gardener_console(
         ts_settings,
         tool,
         measure_state,
+        road_state,
         vis_state,
         downloads,
         render_override,
@@ -842,6 +848,7 @@ mod tests {
         let mut modal = crate::ui_shell::modal::ModalManagerState::default();
         let mut vis_state = crate::visibility::VisibilityState::default();
         let mut measure_state = crate::node_manager::measure::MeasureState::default();
+        let mut road_state = crate::node_manager::road_chain::RoadBuilderState::default();
         let downloads = crate::terrain_map::TilesetDownloads::default();
         let mut render_override = crate::settings::PetalRenderOverride::default();
         let mut identity_banner = crate::plugin::IdentityBanner::default();
@@ -892,6 +899,7 @@ mod tests {
                         &mut modal,
                         &mut vis_state,
                         &mut measure_state,
+                        &mut road_state,
                         &downloads,
                         &mut render_override,
                         &mut identity_banner,
