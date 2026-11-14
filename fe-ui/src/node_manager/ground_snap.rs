@@ -39,7 +39,8 @@ pub(crate) fn ground_point(
     let mut last_hit: Option<Vec3> = None;
     for iteration in 0..GROUND_SNAP_ITERATIONS {
         let Some(hit) = intersect_plane_y(ray, plane_y) else {
-            return last_hit.map(|point| [point.x, point.y, point.z]);
+            // Terrain above the ray's reach: keep the last XZ on the sampled surface, not under it.
+            return last_hit.map(|point| [point.x, plane_y, point.z]);
         };
         last_hit = Some(hit);
         let sampled = field.height_at(hit.x, hit.z).filter(|h| h.is_finite());
@@ -104,6 +105,13 @@ mod tests {
 
         let outside_hit = ground_point(&outside, Some(&flat)).unwrap();
         assert_eq!(outside_hit, [500.0, 0.0, 500.0]);
+
+        // A ray starting below a raised plateau never reaches its height: stay on the surface, not under it.
+        let plateau = field_with(vec![20.0; 4]);
+        let low = ray(Vec3::new(0.0, 10.0, 10.0), Vec3::new(1.0, -1.0, 0.0));
+        let low_hit = ground_point(&low, Some(&plateau)).unwrap();
+        assert!((low_hit[0] - 10.0).abs() < 1e-3 && (low_hit[2] - 10.0).abs() < 1e-3);
+        assert!((low_hit[1] - 20.0).abs() < 1e-3, "on the plateau surface, got {low_hit:?}");
 
         assert_eq!(ground_point(&down, None).unwrap(), [30.0, 0.0, 40.0]);
         assert!(ground_point(&parallel, Some(&flat)).is_none());

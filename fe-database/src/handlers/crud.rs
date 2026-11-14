@@ -183,9 +183,19 @@ pub(crate) async fn petal_world_scale(db: &Db, petal_id: &str) -> f64 {
     fe_format::scale::world_scale_from_terrain_json(terrain.as_ref())
 }
 
+/// Placement scale for a world scale, checked after the `f32` node-row cast (non-finite or `<= 0` => 1.0).
+fn placement_scale(world_scale: f64) -> f64 {
+    let narrowed = world_scale as f32;
+    if narrowed.is_finite() && narrowed > 0.0 {
+        world_scale
+    } else {
+        1.0
+    }
+}
+
 /// Initial placement scale vector for a world scale.
 fn placement_scale_vec(world_scale: f64) -> Vec<f64> {
-    vec![world_scale; 3]
+    vec![placement_scale(world_scale); 3]
 }
 
 /// Create a node at the petal map's world scale; returns (id, applied scale).
@@ -197,7 +207,7 @@ pub(crate) async fn create_node_as(
     position: [f32; 3],
     actor: &str,
 ) -> anyhow::Result<(String, [f32; 3])> {
-    let world_scale = petal_world_scale(db, petal_id).await;
+    let world_scale = placement_scale(petal_world_scale(db, petal_id).await);
     let (id, _) = super::node_history::create_object(
         db,
         petal_id,
@@ -1774,7 +1784,7 @@ mod delete_node_tests {
 
     #[tokio::test]
     async fn placement_scale_follows_the_petal_map() {
-        let cases: [(Option<serde_json::Value>, f64); 4] = [
+        let cases: [(Option<serde_json::Value>, f64); 7] = [
             (None, 1.0),
             (Some(serde_json::json!({ "world_scale": 1.0 })), 1.0),
             (Some(serde_json::json!({ "world_scale": 0.01 })), 0.01),
@@ -1782,6 +1792,10 @@ mod delete_node_tests {
                 Some(serde_json::json!({ "world_scale": 0.5, "scale_bounds": [0.001, 0.1] })),
                 0.1,
             ),
+            // A replicated out-of-range scale (seeded raw, as a peer row would land) places at human scale.
+            (Some(serde_json::json!({ "world_scale": 1e300 })), 1.0),
+            (Some(serde_json::json!({ "world_scale": 1e-300 })), 1.0),
+            (Some(serde_json::json!({ "world_scale": f64::MAX })), 1.0),
         ];
         for (terrain, expected) in cases {
             let db = setup_mem_db().await;
@@ -1806,6 +1820,10 @@ mod delete_node_tests {
             let meters = fe_format::scale::world_to_meters(f64::from(row_scale[0]), expected);
             assert!((meters - 1.0).abs() < 1e-6, "scale / world_scale = 1 m, got {meters}");
         }
+        // The f32 row cast is re-checked even if a caller bypasses the accessor's range.
+        assert_eq!(placement_scale_vec(1e300), vec![1.0; 3]);
+        assert_eq!(placement_scale_vec(1e-300), vec![1.0; 3]);
+        assert_eq!(placement_scale_vec(f64::MAX), vec![1.0; 3]);
     }
 
     #[tokio::test]

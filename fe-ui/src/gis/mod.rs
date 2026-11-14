@@ -557,6 +557,11 @@ impl PathEditorState {
     pub(crate) fn clear_pending_pen_create(&mut self) -> bool {
         self.pending_pen_create.take().is_some()
     }
+
+    /// Clear the pending pen/road create whose correlated `CreateNode` failed (`DbResult::RequestFailed`); true if it matched.
+    pub(crate) fn fail_pending_pen_create(&mut self, correlation_id: &str) -> bool {
+        self.take_pending_pen_create_if(correlation_id).is_some()
+    }
 }
 
 /// An in-flight Pen auto-create: the fe-ui-generated `correlation_id` the
@@ -989,6 +994,16 @@ mod tests {
             s.clear_pending_pen_create(),
             "pending → cleared, reports true"
         );
+        assert!(!s.has_pending_pen_create());
+        // A correlated create failure (RequestFailed) clears only its own road/pen create.
+        s.pending_pen_create = Some(PendingPenCreate {
+            correlation_id: "road-track:4".to_string(),
+            trailing_points: vec![[3.0, 0.0, 3.0]],
+            ..Default::default()
+        });
+        assert!(!s.fail_pending_pen_create("pen-track:4"), "a foreign failure leaves the road create");
+        assert!(s.has_pending_pen_create());
+        assert!(s.fail_pending_pen_create("road-track:4"), "its own failure clears it");
         assert!(!s.has_pending_pen_create());
     }
 

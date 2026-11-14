@@ -2,21 +2,37 @@
 
 use serde_json::Value;
 
-/// Sanitize a world scale: finite and `> 0`, else `1.0`.
+/// Smallest accepted world scale (1:1,000,000; below a zoom-0 tileset's native scale).
+pub const MIN_WORLD_SCALE: f64 = 1e-6;
+
+/// Largest accepted world scale (10,000 world units per real meter).
+pub const MAX_WORLD_SCALE: f64 = 10_000.0;
+
+/// Sanitize a world scale: inside `[MIN_WORLD_SCALE, MAX_WORLD_SCALE]`, else `1.0` (NaN and infinities included).
 pub fn sanitize_world_scale(scale: f64) -> f64 {
-    if scale.is_finite() && scale > 0.0 {
+    if is_world_scale_in_range(scale) {
         scale
     } else {
         1.0
     }
 }
 
-/// Sanitize, then clamp into valid `[min, max]` bounds; malformed bounds are ignored.
+/// Whether a world scale is inside the global range (write-side validation for terrain documents).
+pub fn is_world_scale_in_range(scale: f64) -> bool {
+    (MIN_WORLD_SCALE..=MAX_WORLD_SCALE).contains(&scale)
+}
+
+/// Sanitize, then clamp into valid `[min, max]` bounds narrowed to the global range; malformed bounds are ignored.
 pub fn clamp_world_scale_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
     let sanitized = sanitize_world_scale(scale);
     match bounds {
         Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
-            sanitized.clamp(min, max)
+            let (low, high) = (min.max(MIN_WORLD_SCALE), max.min(MAX_WORLD_SCALE));
+            if low <= high {
+                sanitized.clamp(low, high)
+            } else {
+                sanitized
+            }
         }
         _ => sanitized,
     }
@@ -58,6 +74,14 @@ mod tests {
         assert_eq!(sanitize_world_scale(-2.0), 1.0);
         assert_eq!(sanitize_world_scale(f64::NAN), 1.0);
         assert_eq!(sanitize_world_scale(f64::INFINITY), 1.0);
+        // Finite f64 values that overflow or vanish after the `as f32` placement cast.
+        assert_eq!(sanitize_world_scale(1e300), 1.0);
+        assert_eq!(sanitize_world_scale(1e-300), 1.0);
+        assert_eq!(sanitize_world_scale(f64::MAX), 1.0);
+        assert_eq!(sanitize_world_scale(MIN_WORLD_SCALE), MIN_WORLD_SCALE);
+        assert_eq!(sanitize_world_scale(MAX_WORLD_SCALE), MAX_WORLD_SCALE);
+        assert!(!is_world_scale_in_range(1e300));
+        assert!(is_world_scale_in_range(0.001));
     }
 
     #[test]
@@ -68,6 +92,12 @@ mod tests {
         assert_eq!(clamp_world_scale_to_bounds(0.5, None), 0.5);
         assert_eq!(clamp_world_scale_to_bounds(-1.0, None), 1.0);
         assert_eq!(clamp_world_scale_to_bounds(0.5, Some([0.5, 0.1])), 0.5);
+        assert_eq!(clamp_world_scale_to_bounds(1e300, Some([0.001, 0.1])), 0.1);
+        assert_eq!(clamp_world_scale_to_bounds(f64::MAX, None), 1.0);
+        assert_eq!(clamp_world_scale_to_bounds(1e-300, None), 1.0);
+        // Bounds narrow the global range, never widen it.
+        assert_eq!(clamp_world_scale_to_bounds(0.5, Some([1e-300, 1e300])), 0.5);
+        assert_eq!(clamp_world_scale_to_bounds(5_000.0, Some([20_000.0, 1e9])), 5_000.0);
     }
 
     #[test]
@@ -80,6 +110,9 @@ mod tests {
             (Some(json!({"world_scale": -2})), 1.0),
             (Some(json!({"world_scale": "x"})), 1.0),
             (Some(json!({"world_scale": 0.01})), 0.01),
+            (Some(json!({"world_scale": 1e300})), 1.0),
+            (Some(json!({"world_scale": 1e-300})), 1.0),
+            (Some(json!({"world_scale": f64::MAX})), 1.0),
             (Some(json!({"enabled": false, "world_scale": 0.01})), 0.01),
             (
                 Some(json!({"world_scale": 0.5, "scale_bounds": [0.001, 0.1]})),
