@@ -200,7 +200,7 @@ impl SpaceManager {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateRoomMeta,
-            payload: serde_json::json!({ "room_id": room_id.clone() }),
+            payload: serde_json::json!({ "room_id": room_id.clone(), "petal_id": target_petal_id.clone() }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
@@ -266,7 +266,7 @@ impl SpaceManager {
             lamport_clock: 0,
             node_id: NodeId(caller_node_id.to_string()),
             op_type: OpType::UpdateModelMeta,
-            payload: serde_json::json!({ "model_id": model_id.clone() }),
+            payload: serde_json::json!({ "model_id": model_id.clone(), "petal_id": target_petal_id.clone() }),
             sig: "00".repeat(64),
             hlc_timestamp: String::new(),
         };
@@ -336,6 +336,7 @@ impl SpaceManager {
             op_type: OpType::UpdateModelMeta,
             payload: serde_json::json!({
                 "model_id": model_id.clone(),
+                "petal_id": target_petal_id.clone(),
                 "metadata": metadata,
             }),
             sig: "00".repeat(64),

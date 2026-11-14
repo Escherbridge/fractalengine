@@ -6,6 +6,8 @@ use fe_database::handlers::petal_snapshot::{
     export_petal_snapshot, import_petal_snapshot, import_petal_snapshot_as, import_petal_snapshot_reply, ImportError,
 };
 use fe_database::op_log::commit_operation;
+use fe_database::space_manager::SpaceManager;
+use fe_database::{ModelMetadataUpdate, RoomMetadata};
 use fe_database::types::{NodeId, OpLogEntry, OpType};
 use fe_format::snapshot as archive_format;
 use fe_format::{AssetEntry, EntryKind, HexonManifest, HexonType};
@@ -287,13 +289,24 @@ async fn petal_snapshot_export_then_import_journey() {
     let db = setup_db().await;
     seed_two_petals(&db).await;
 
+    // Space-manager edits to the petal's room and model carry petal_id, so their history exports.
+    let record_id = |rows: Vec<Value>| rows[0].as_str().expect("record id as string").to_string();
+    let room_id = record_id(select(&db, "SELECT VALUE <string> id FROM room WHERE petal_id = 'petal-a'").await);
+    let model_id = record_id(select(&db, "SELECT VALUE <string> id FROM model WHERE petal_id = 'petal-a'").await);
+    SpaceManager::update_room_metadata(&db, "did:key:petal-editor", PETAL, room_id, RoomMetadata { description: Some("Lobby edit".into()), ..Default::default() })
+        .await
+        .expect("room metadata edit");
+    SpaceManager::update_model_metadata(&db, "did:key:petal-editor", PETAL, model_id, ModelMetadataUpdate { display_name: Some("Model edit".into()), ..Default::default() })
+        .await
+        .expect("model metadata edit");
+
     // Export leg.
     let snapshot = export_petal_snapshot(&db, PETAL).await.expect("export");
     assert_eq!(snapshot.petal["petal_id"], json!(PETAL));
     let counts = snapshot.table_row_counts();
     let expected = [
         ("petal", 1), ("nodes", 2), ("node_log", 1), ("field_defs", 1), ("rooms", 1),
-        ("models", 1), ("assets", 2), ("roles", 1), ("iot_readings", 1), ("oplog", 2),
+        ("models", 1), ("assets", 2), ("roles", 1), ("iot_readings", 1), ("oplog", 4),
     ];
     for (table, count) in expected {
         assert_eq!(counts[table], count, "{table} row count");
@@ -306,7 +319,11 @@ async fn petal_snapshot_export_then_import_journey() {
     let exported_lamports = lamports(&snapshot.oplog);
     assert!(exported_lamports.windows(2).all(|pair| pair[0] < pair[1]), "op-log strictly lamport-ascending: {exported_lamports:?}");
     let op_types: Vec<&str> = snapshot.oplog.iter().filter_map(|e| e["op_type"].as_str()).collect();
-    assert_eq!(op_types, ["CreatePetal", "TransformUpdate"], "role statements are not data operations and are never exported");
+    assert_eq!(
+        op_types,
+        ["CreatePetal", "TransformUpdate", "UpdateRoomMeta", "UpdateModelMeta"],
+        "room and model edits export through payload.petal_id; role statements are not data operations and never export"
+    );
 
     // The export is audited after collection: one ExportPetal entry, newer than every exported entry.
     let mut audit = db
