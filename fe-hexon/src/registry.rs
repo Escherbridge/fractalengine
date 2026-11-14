@@ -1,12 +1,16 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use fe_format::entitlement::{unix_now, EntitlementVerifier};
 use fe_format::split_hexon_uri;
 use fe_runtime::messages::DbCommand;
 use tracing::{info, warn};
 
+use crate::entitlement_client::Licensee;
+use crate::entitlement_gate::{archive_content_hash, EntitlementGate, GateRefusal, LicenseTerms};
 use crate::manifest::{AssetEntry, EntryKind, HexonManifest, HexonType, InstalledHexon};
-use crate::package::{hexon_uri, HexonPackageData};
+use crate::package::{hexon_uri, HexonPackage, HexonPackageData};
 use crate::signature;
 
 /// Overrides [`FsBlobStore::default_path`]'s `data/blobs` default — identical
@@ -39,6 +43,40 @@ pub enum RegistryError {
 
     #[error("package error: {0}")]
     Package(#[from] anyhow::Error),
+}
+
+/// Why [`HexonRegistry::load_entry`] returned no bytes.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadEntryError {
+    /// The petal holds no install of this build.
+    #[error("crate {0} is not installed in this petal")]
+    NotInstalled(String),
+    /// The gate was opened for other licence terms than this install's (fail closed).
+    #[error("entitlement gate does not belong to crate {0}")]
+    GateMismatch(String),
+    /// The entitlement gate refused the entry (unknown, missing, needs an entitlement, does not open).
+    #[error(transparent)]
+    Gate(#[from] GateRefusal),
+    /// The blob store failed to read the entry's blob.
+    #[error(transparent)]
+    Store(#[from] RegistryError),
+}
+
+impl LoadEntryError {
+    /// True when the entry needs an entitlement the caller does not hold (a state, not a fault).
+    pub fn is_entitlement_required(&self) -> bool {
+        matches!(self, Self::Gate(GateRefusal::EntitlementRequired { .. }) | Self::GateMismatch(_))
+    }
+}
+
+/// One install record plus what entitlement needs from install time (spec §4.5).
+#[derive(Debug, Clone)]
+struct InstallRecord {
+    hexon: InstalledHexon,
+    /// `license.json` terms, computed once at install.
+    terms: LicenseTerms,
+    /// The build's `content_hash` recomputed from its own archive; `None` when installed from parsed data only.
+    content_hash: Option<String>,
 }
 
 /// Content-addressed blob store for asset files, sharing the runtime store's
@@ -147,7 +185,7 @@ pub const PUBLISHED_BINDING: &str = "global";
 /// Can be used as a Bevy Resource; see `src/AGENTS.md` §authz for the petal-keyed install model.
 pub struct HexonRegistry {
     /// Install records keyed by petal id, then `{hexon_id}@{version}`.
-    installed: BTreeMap<String, BTreeMap<String, InstalledHexon>>,
+    installed: BTreeMap<String, BTreeMap<String, InstallRecord>>,
     /// Content-addressed blob storage.
     blob_store: FsBlobStore,
     /// DB command sender for persisting registry state.
@@ -174,11 +212,32 @@ impl HexonRegistry {
     // Install / Uninstall
     // -----------------------------------------------------------------------
 
+    /// Install `.hexon` archive bytes into `petal_id`, keeping the build's recomputed `content_hash` for entitlement.
+    pub fn install_archive(
+        &mut self,
+        archive: &[u8],
+        petal_id: &str,
+    ) -> Result<InstalledHexon, RegistryError> {
+        let package = HexonPackage::open(archive)?;
+        let content_hash = archive_content_hash(archive)?;
+        self.install_with_content_hash(package, petal_id, Some(content_hash))
+    }
+
     /// Install a verified package into `petal_id`: check every blob, store them, persist, run the type handler.
     pub fn install(
         &mut self,
         package: HexonPackageData,
         petal_id: &str,
+    ) -> Result<InstalledHexon, RegistryError> {
+        self.install_with_content_hash(package, petal_id, None)
+    }
+
+    /// [`install`](Self::install) recording the archive's `content_hash` (only ever recomputed from archive bytes).
+    fn install_with_content_hash(
+        &mut self,
+        package: HexonPackageData,
+        petal_id: &str,
+        content_hash: Option<String>,
     ) -> Result<InstalledHexon, RegistryError> {
         let uri = hexon_uri(&package.manifest);
         // `signature_verified` was established by open() over the stored bytes; re-serializing would differ.
@@ -242,8 +301,36 @@ impl HexonRegistry {
             Err(error) => warn!("Handler post-install failed for {}: {}", uri, error),
         }
 
-        self.insert_record(installed.clone());
+        let terms = package
+            .license
+            .as_ref()
+            .map_or_else(LicenseTerms::unlicensed, LicenseTerms::from_format_license);
+        self.insert_record(InstallRecord { hexon: installed.clone(), terms, content_hash });
         Ok(installed)
+    }
+
+    /// Bind the published record of `hexon_uri` to the `content_hash` recomputed from its archive bytes;
+    /// refuses an archive whose signed manifest (integrity root included) is not the recorded one.
+    pub fn bind_published_archive(&mut self, hexon_uri: &str, archive: &[u8]) -> Result<(), RegistryError> {
+        let opened = HexonPackage::open(archive)?;
+        let content_hash = archive_content_hash(archive)?;
+        let record = self
+            .installed
+            .get_mut(PUBLISHED_BINDING)
+            .and_then(|records| records.get_mut(hexon_uri))
+            .ok_or_else(|| RegistryError::NotFound(hexon_uri.to_string()))?;
+        let same_build = opened.signature_verified
+            && opened.hexon_uri() == hexon_uri
+            && serde_json::to_value(&opened.manifest).ok().is_some_and(|opened_manifest| {
+                serde_json::to_value(&record.hexon.manifest).ok() == Some(opened_manifest)
+            });
+        if !same_build {
+            return Err(RegistryError::PermissionDenied(format!(
+                "archive is not the published build {hexon_uri}"
+            )));
+        }
+        record.content_hash = Some(content_hash);
+        Ok(())
     }
 
     /// Associate an already-published hexon with `petal_id`; its blobs are reused, never re-stored.
@@ -262,13 +349,13 @@ impl HexonRegistry {
             return Err(RegistryError::NotFound(hexon_uri.to_string()));
         }
         let published = self
-            .get_published(hexon_uri)
+            .record(hexon_uri, PUBLISHED_BINDING)
             .ok_or_else(|| RegistryError::NotFound(hexon_uri.to_string()))?;
         if self.get_in_petal(hexon_uri, petal_id).is_some() {
             return Err(RegistryError::AlreadyInstalled(hexon_uri.to_string()));
         }
         // The publish install stored every blob; refuse if one has since gone missing.
-        for entry in &published.entries {
+        for entry in &published.hexon.entries {
             let sub_asset_hashes = entry.sub_assets.iter().flat_map(|sub_assets| sub_assets.values());
             for hash in std::iter::once(&entry.asset_hash).chain(sub_asset_hashes) {
                 if !self.blob_store.has(hash) {
@@ -280,13 +367,18 @@ impl HexonRegistry {
         let installed = InstalledHexon {
             installed_at: chrono::Utc::now().to_rfc3339(),
             petal_id: petal_id.to_string(),
-            ..published.clone()
+            ..published.hexon.clone()
+        };
+        let record = InstallRecord {
+            hexon: installed.clone(),
+            terms: published.terms.clone(),
+            content_hash: published.content_hash.clone(),
         };
         if let Some(tx) = &self.db_tx {
             persist_install_to_db(&installed.manifest, &installed.entries, petal_id, tx);
         }
         info!("Installed published hexon {} into petal {}", hexon_uri, petal_id);
-        self.insert_record(installed.clone());
+        self.insert_record(record);
         Ok(installed)
     }
 
@@ -330,11 +422,85 @@ impl HexonRegistry {
     }
 
     /// Insert or replace one install record under its own `(petal_id, hexon_uri)` key.
-    fn insert_record(&mut self, installed: InstalledHexon) {
+    fn insert_record(&mut self, record: InstallRecord) {
         self.installed
-            .entry(installed.petal_id.clone())
+            .entry(record.hexon.petal_id.clone())
             .or_default()
-            .insert(installed.hexon_uri.clone(), installed);
+            .insert(record.hexon.hexon_uri.clone(), record);
+    }
+
+    /// The full install record of `hexon_uri` in `petal_id`.
+    fn record(&self, hexon_uri: &str, petal_id: &str) -> Option<&InstallRecord> {
+        self.installed.get(petal_id)?.get(hexon_uri)
+    }
+
+    // -----------------------------------------------------------------------
+    // Entitlement (FR-6; see src/AGENTS.md §entitlement)
+    // -----------------------------------------------------------------------
+
+    /// Open the entitlement gate for one install with its stored terms and content hash; an unlicensed
+    /// or Free/Attribution build never reaches `verifier` (NFR-2: `EntitlementGate::open` is the only entry).
+    pub fn gate_for(
+        &self,
+        hexon_uri: &str,
+        petal_id: &str,
+        token: Option<&str>,
+        licensee: &Licensee<'_>,
+        verifier: &dyn EntitlementVerifier,
+    ) -> Result<EntitlementGate, RegistryError> {
+        let record = self
+            .record(hexon_uri, petal_id)
+            .ok_or_else(|| RegistryError::NotFound(hexon_uri.to_string()))?;
+        // Without an archive-recomputed hash no token can be checked for this build: preview only.
+        let (content_hash, token) = match &record.content_hash {
+            Some(content_hash) => (content_hash.as_str(), token),
+            None => ("", None),
+        };
+        Ok(EntitlementGate::open(
+            record.terms.clone(),
+            &record.hexon.manifest.hexon_id,
+            content_hash,
+            licensee,
+            token,
+            verifier,
+            unix_now(),
+        ))
+    }
+
+    /// Load one entry's blob through `gate`: plaintext of a sealed entry exists in memory only and is
+    /// never written back to the blob store (spec §4.5).
+    pub fn load_entry(
+        &self,
+        hexon_uri: &str,
+        petal_id: &str,
+        entry_id: &str,
+        gate: &EntitlementGate,
+    ) -> Result<Cow<'static, [u8]>, LoadEntryError> {
+        let record = self
+            .record(hexon_uri, petal_id)
+            .ok_or_else(|| LoadEntryError::NotInstalled(hexon_uri.to_string()))?;
+        if gate.terms() != &record.terms {
+            return Err(LoadEntryError::GateMismatch(hexon_uri.to_string()));
+        }
+        let entry = record
+            .hexon
+            .entries
+            .iter()
+            .find(|entry| entry.entry_id == entry_id)
+            .ok_or_else(|| GateRefusal::UnknownEntry(entry_id.to_owned()))?;
+        let stored = match self.blob_store.load(&entry.asset_hash) {
+            Ok(stored) => stored,
+            Err(RegistryError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(GateRefusal::MissingContent(entry_id.to_owned()).into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // A pass-through borrows `stored`; hand the buffer itself back rather than copying it.
+        let plaintext = match gate.load(entry_id, &stored)? {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(plaintext) => Some(plaintext),
+        };
+        Ok(Cow::Owned(plaintext.unwrap_or(stored)))
     }
 
     // -----------------------------------------------------------------------
@@ -407,7 +573,7 @@ impl HexonRegistry {
 
     /// The install record of `hexon_uri` in `petal_id`, if that petal holds it.
     pub fn get_in_petal(&self, hexon_uri: &str, petal_id: &str) -> Option<&InstalledHexon> {
-        self.installed.get(petal_id)?.get(hexon_uri)
+        self.record(hexon_uri, petal_id).map(|record| &record.hexon)
     }
 
     /// The published (registry-level) record of `hexon_uri`.
@@ -421,7 +587,7 @@ impl HexonRegistry {
         hexon_id: &str,
         publisher_did: &str,
     ) -> Option<&InstalledHexon> {
-        self.installed.get(PUBLISHED_BINDING)?.values().find(|record| {
+        self.installed.get(PUBLISHED_BINDING)?.values().map(|record| &record.hexon).find(|record| {
             record.manifest.hexon_id == hexon_id && record.manifest.publisher_did != publisher_did
         })
     }
@@ -444,7 +610,7 @@ impl HexonRegistry {
         self.installed
             .iter()
             .filter(move |(petal, _)| petal_id.is_none_or(|wanted| petal.as_str() == wanted))
-            .flat_map(|(_, petal_records)| petal_records.values())
+            .flat_map(|(_, petal_records)| petal_records.values().map(|record| &record.hexon))
     }
 }
 
@@ -498,11 +664,19 @@ fn entry_kind_name(kind: &EntryKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entitlement_gate::{GateStatus, PreviewReason};
     use crate::manifest::{License, LicenseType};
     use crate::package::{hexon_uri, HexonPackage};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use ed25519_dalek::SigningKey;
+    use fe_format::entitlement::{seal_paid_entry, ContentKey, IssuerKeyring, KeyringVerifier, LocalIssuer, MintRequest};
     use rand::rngs::OsRng;
     use std::collections::HashMap;
+
+    const PAID_PACKAGE: &str = "test-paid-pack";
+    const SEALED_PLAINTEXT: &[u8] = b"full-resolution model";
+    const PREVIEW_BYTES: &[u8] = b"low-resolution preview";
 
     /// `FE_BLOB_DIR` is process-global; serialize tests that touch it.
     static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -599,6 +773,53 @@ mod tests {
         HexonPackage::open(&zip_bytes).expect("open should succeed")
     }
 
+    /// A placeable model entry whose blob is `data`.
+    fn model_entry(entry_id: &str, data: &[u8]) -> AssetEntry {
+        AssetEntry {
+            entry_id: entry_id.to_string(),
+            kind: EntryKind::Model,
+            asset_hash: crate::signature::asset_hash(data),
+            format: "gltf".to_string(),
+            label: entry_id.to_string(),
+            tags: vec![],
+            description: None,
+            is_placeable: true,
+            is_private: false,
+            auto_scale: false,
+            preview_image: None,
+            center: None,
+            extents: None,
+            sub_assets: None,
+            address: None,
+            metadata: None,
+        }
+    }
+
+    /// A Paid archive: `preview_1` free, `terrain_full` sealed under `content_key`, key wrapped to `issuer`.
+    fn paid_archive(keypair: &SigningKey, content_key: &ContentKey, issuer: &LocalIssuer) -> (Vec<u8>, String) {
+        let sealed = seal_paid_entry(content_key, PAID_PACKAGE, "terrain_full", SEALED_PLAINTEXT).unwrap();
+        let sealed_hash = crate::signature::asset_hash(&sealed);
+        let manifest = HexonManifest {
+            hexon_id: PAID_PACKAGE.to_string(),
+            name: "Paid Pack".to_string(),
+            ..test_manifest(keypair)
+        };
+        let license = License {
+            license_type: LicenseType::Paid,
+            free_entries: vec!["preview_1".to_string()],
+            encrypted_key: Some(issuer.encrypted_key_for(content_key, PAID_PACKAGE).unwrap()),
+            ..License::default()
+        };
+        let entries = vec![model_entry("preview_1", PREVIEW_BYTES), model_entry("terrain_full", &sealed)];
+        let assets = HashMap::from([
+            (crate::signature::asset_hash(PREVIEW_BYTES), PREVIEW_BYTES.to_vec()),
+            (sealed_hash.clone(), sealed),
+        ]);
+        let archive = HexonPackage::build(manifest, entries, Some(license), assets, None, HashMap::new(), None, None, keypair)
+            .expect("paid build");
+        (archive, sealed_hash)
+    }
+
     /// Install records are keyed by (hexon_uri, petal_id): one build lives in two petals and the
     /// published record, each persisted with fe-format names, and uninstalling one leaves the rest.
     #[test]
@@ -685,6 +906,76 @@ mod tests {
             );
         }
         assert!(registry.list_installed(Some("petal-d")).is_empty());
+
+        // FR-6 wiring (AC-1, AC-2, AC-4): entitlement is decided per install through gate_for/load_entry.
+        let identity = test_signing_key();
+        let mut device_secret = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut OsRng, &mut device_secret);
+        let licensee = Licensee { identity: &identity, device_secret: &device_secret };
+        let issuer = LocalIssuer::generate("issuer-1").unwrap();
+        let mut keyring = IssuerKeyring::new();
+        keyring.pin(issuer.kid(), issuer.verifying_key()).unwrap();
+        let verifier = KeyringVerifier::new(keyring);
+
+        // A Free build never consults the verifier: even a junk token leaves it NotRequired, bytes verbatim.
+        let free_gate = registry.gate_for(&uri, "petal-c", Some("junk"), &licensee, &verifier).unwrap();
+        assert_eq!(free_gate.status(), GateStatus::NotRequired);
+        assert_eq!(registry.load_entry(&uri, "petal-c", "model_001", &free_gate).unwrap().as_ref(), b"fake model data");
+
+        // A Paid build installs from its archive; with no token only `preview_1` loads.
+        let content_key = ContentKey::generate().unwrap();
+        let (archive, sealed_hash) = paid_archive(&keypair, &content_key, &issuer);
+        let paid = registry.install_archive(&archive, "petal-paid").expect("a paid build installs");
+        let paid_uri = paid.hexon_uri.clone();
+        let preview_gate = registry.gate_for(&paid_uri, "petal-paid", None, &licensee, &verifier).unwrap();
+        assert_eq!(preview_gate.status_label_at(unix_now()), "installed-preview");
+        let preview = registry.load_entry(&paid_uri, "petal-paid", "preview_1", &preview_gate).unwrap();
+        assert_eq!(preview.as_ref(), PREVIEW_BYTES);
+        let refused = registry.load_entry(&paid_uri, "petal-paid", "terrain_full", &preview_gate).unwrap_err();
+        assert!(refused.is_entitlement_required(), "no token: {refused:?}");
+        // A gate opened for another build's terms never unlocks this one.
+        let borrowed = registry.load_entry(&paid_uri, "petal-paid", "terrain_full", &free_gate).unwrap_err();
+        assert!(matches!(borrowed, LoadEntryError::GateMismatch(_)), "{borrowed:?}");
+
+        // A LocalIssuer token for this licensee, device and build opens the sealed entry to its plaintext.
+        let content_hash = archive_content_hash(&archive).unwrap();
+        let encrypted_key = paid.license.as_ref().and_then(|license| license.encrypted_key.clone()).unwrap();
+        let (licensee_did, device_did) = (licensee.did(), licensee.device_did());
+        let mint = MintRequest {
+            licensee_did: &licensee_did,
+            device_x25519_did: &device_did,
+            package_id: PAID_PACKAGE,
+            content_hash: &content_hash,
+            encrypted_key: &encrypted_key,
+            ttl_secs: 3600,
+            jti: None,
+        };
+        let token = issuer.mint(&mint, unix_now()).unwrap();
+        let entitled = registry.gate_for(&paid_uri, "petal-paid", Some(&token), &licensee, &verifier).unwrap();
+        assert_eq!(entitled.status_label_at(unix_now()), "entitled");
+        let opened = registry.load_entry(&paid_uri, "petal-paid", "terrain_full", &entitled).unwrap();
+        assert_eq!(opened.as_ref(), SEALED_PLAINTEXT);
+        // Plaintext lives in memory only: the stored blob is still the sealed bytes.
+        assert_ne!(FsBlobStore::new(temp_dir.clone()).load(&sealed_hash).unwrap(), SEALED_PLAINTEXT);
+
+        // One flipped signature byte: refused at open, the sealed entry never yields plaintext.
+        let (signed_part, signature) = token.rsplit_once('.').unwrap();
+        let mut signature_bytes = URL_SAFE_NO_PAD.decode(signature).unwrap();
+        signature_bytes[0] ^= 0x01;
+        let forged = format!("{signed_part}.{}", URL_SAFE_NO_PAD.encode(&signature_bytes));
+        let forged_gate = registry.gate_for(&paid_uri, "petal-paid", Some(&forged), &licensee, &verifier).unwrap();
+        assert!(matches!(forged_gate.status(), GateStatus::Preview(PreviewReason::Refused(_))));
+        let forged_load = registry.load_entry(&paid_uri, "petal-paid", "terrain_full", &forged_gate).unwrap_err();
+        assert!(forged_load.is_entitlement_required(), "forged token: {forged_load:?}");
+
+        // A build published from parsed data has no content hash until its own archive is bound.
+        registry.install(HexonPackage::open(&archive).unwrap(), PUBLISHED_BINDING).expect("publish the paid build");
+        let unbound = registry.gate_for(&paid_uri, PUBLISHED_BINDING, Some(&token), &licensee, &verifier).unwrap();
+        assert_eq!(unbound.status(), GateStatus::Preview(PreviewReason::NoToken));
+        assert!(matches!(registry.bind_published_archive(&uri, &archive), Err(RegistryError::PermissionDenied(_))));
+        registry.bind_published_archive(&paid_uri, &archive).expect("bind the published archive");
+        let bound = registry.gate_for(&paid_uri, PUBLISHED_BINDING, Some(&token), &licensee, &verifier).unwrap();
+        assert_eq!(bound.status_label_at(unix_now()), "entitled");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

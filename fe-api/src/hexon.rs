@@ -1,12 +1,20 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use axum_extra::extract::Multipart;
+use ed25519_dalek::SigningKey;
+use fe_format::entitlement::{unix_now, IssuerKeyring, KeyringVerifier};
 use fe_format::{AssetEntry, HexonManifest, HexonType};
+use fe_hexon::entitlement_client::Licensee;
+use fe_hexon::entitlement_gate::EntitlementGate;
 use fe_hexon::manifest::InstalledHexon;
 use fe_hexon::package::HexonPackage;
+use fe_hexon::registry::{HexonRegistry, LoadEntryError, RegistryError};
 use fe_identity::api_token::ApiClaims;
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -106,6 +114,43 @@ struct InstalledCrateDto {
     signature_valid: bool,
     entry_count: usize,
     hexon_id: String,
+    /// `installed`, `installed-preview`, `entitlement-required` or `entitled`, as seen by a tokenless REST caller.
+    entitlement: &'static str,
+}
+
+/// Envelope code of a licensed non-free entry refused to a caller without an entitlement.
+const ENTITLEMENT_REQUIRED_CODE: &str = "entitlement_required";
+
+/// The REST surface holds no licensee token: gates open tokenless against an empty keyring (see `src/AGENTS.md` §hexon-entitlement).
+struct TokenlessEntitlement {
+    identity: SigningKey,
+    device_secret: [u8; 32],
+    verifier: KeyringVerifier,
+}
+
+impl TokenlessEntitlement {
+    fn new() -> Self {
+        // Never consulted: with no token the gate decides from the licence terms alone.
+        Self {
+            identity: SigningKey::from_bytes(&[0u8; 32]),
+            device_secret: [0u8; 32],
+            verifier: KeyringVerifier::new(IssuerKeyring::new()),
+        }
+    }
+
+    /// The gate a tokenless caller gets for one install.
+    fn gate(&self, registry: &HexonRegistry, hexon_uri: &str, petal_id: &str) -> Result<EntitlementGate, RegistryError> {
+        let licensee = Licensee { identity: &self.identity, device_secret: &self.device_secret };
+        registry.gate_for(hexon_uri, petal_id, None, &licensee, &self.verifier)
+    }
+
+    /// Hexon Manager label of one install for a tokenless caller.
+    fn label(&self, registry: &HexonRegistry, installed: &InstalledHexon) -> &'static str {
+        match self.gate(registry, &installed.hexon_uri, &installed.petal_id) {
+            Ok(gate) => gate.status_label_at(unix_now()),
+            Err(_) => "entitlement-required",
+        }
+    }
 }
 
 fn to_manifest_dto(m: &HexonManifest) -> CrateManifestDto {
@@ -146,8 +191,9 @@ fn to_entry_dto(e: &AssetEntry) -> CrateEntryDto {
     }
 }
 
-fn to_installed_dto(ic: &InstalledHexon) -> InstalledCrateDto {
+fn to_installed_dto(entitlement: &TokenlessEntitlement, registry: &HexonRegistry, ic: &InstalledHexon) -> InstalledCrateDto {
     InstalledCrateDto {
+        entitlement: entitlement.label(registry, ic),
         hexon_uri: ic.hexon_uri.clone(),
         name: ic.manifest.name.clone(),
         version: ic.manifest.version.clone(),
@@ -243,9 +289,14 @@ pub async fn publish_crate(
     let mut reg = registry.lock().unwrap();
     let subject = crate::auth::api_token_context(&claims);
     match reg.publish_as(&subject, package) {
-        Ok(_) => ok(manifest_dto),
         // Already published: return the manifest anyway.
-        Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => ok(manifest_dto),
+        Ok(_) | Err(RegistryError::AlreadyInstalled(_)) => {
+            // Entitlement checks need the content hash recomputed from these exact archive bytes.
+            if let Err(error) = reg.bind_published_archive(&uri, &crate_bytes) {
+                warn!("Published {} without an entitlement content hash: {}", uri, error);
+            }
+            ok(manifest_dto)
+        }
         Err(fe_hexon::registry::RegistryError::PermissionDenied(_)) => {
             err("insufficient permissions")
         }
@@ -279,15 +330,16 @@ pub async fn install_crate(
     };
 
     let mut reg = registry.lock().unwrap();
+    let entitlement = TokenlessEntitlement::new();
     match reg.install_published_as(&subject, &hexon_uri, &query.petal_id) {
         Ok(installed) => {
             info!("Installed {} into petal {}", hexon_uri, query.petal_id);
-            ok(to_installed_dto(&installed))
+            ok(to_installed_dto(&entitlement, &reg, &installed))
         }
         // Idempotent: a repeat install returns the existing record.
         Err(fe_hexon::registry::RegistryError::AlreadyInstalled(_)) => {
             match reg.get_in_petal(&hexon_uri, &query.petal_id) {
-                Some(existing) => ok(to_installed_dto(existing)),
+                Some(existing) => ok(to_installed_dto(&entitlement, &reg, existing)),
                 None => err(&format!("crate {} not found", hexon_uri)),
             }
         }
@@ -412,7 +464,11 @@ pub async fn list_installed(
         Err(error) => return err(&format!("list denied: {error}")),
     };
 
-    let dtos: Vec<InstalledCrateDto> = installed.iter().map(to_installed_dto).collect();
+    let entitlement = TokenlessEntitlement::new();
+    let dtos: Vec<InstalledCrateDto> = installed
+        .iter()
+        .map(|installed| to_installed_dto(&entitlement, &reg, installed))
+        .collect();
     ok(dtos)
 }
 
@@ -475,54 +531,87 @@ pub async fn get_crate_entries(
     }
 }
 
-/// GET /api/v1/crates/:uri/entries/:id/asset — Fetch asset blob by entry id.
-/// Requires Viewer+ role.
+/// GET /api/v1/crates/:uri/entries/:id/asset — Serve an entry's bytes through its entitlement gate.
+/// Requires Viewer+ role; a licensed non-free entry is HTTP 403 `entitlement_required` (no REST token yet).
 pub async fn get_crate_asset(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path((hexon_uri, entry_id)): Path<(String, String)>,
     Query(query): Query<InstallQuery>,
-) -> JsonResult {
+) -> Response {
     let subject =
         match require_hexon_petal_access(&state, &claims, &query.petal_id, "viewer", Action::Read)
             .await
         {
             Ok(subject) => subject,
-            Err(message) => return err(message),
+            Err(message) => return err(message).into_response(),
         };
 
     let Some(registry) = get_registry(&state) else {
-        return err("hexon registry not configured");
+        return err("hexon registry not configured").into_response();
     };
 
-    let reg = registry.lock().unwrap();
-    let installed = match reg.get_installed_as(&subject, &hexon_uri, &query.petal_id) {
-        Ok(Some(installed)) => installed,
-        Ok(None) => return err(&format!("crate {} not found", hexon_uri)),
-        Err(error) => return err(&format!("read denied: {error}")),
-    };
+    // Blob reads hit the disk: run them off the async workers.
+    let petal_id = query.petal_id;
+    let loaded = tokio::task::spawn_blocking(move || {
+        let reg = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match reg.get_installed_as(&subject, &hexon_uri, &petal_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(err(&format!("crate {} not found", hexon_uri)).into_response()),
+            Err(error) => return Err(err(&format!("read denied: {error}")).into_response()),
+        }
+        let gate = TokenlessEntitlement::new()
+            .gate(&reg, &hexon_uri, &petal_id)
+            .map_err(|_| err(&format!("crate {} not found", hexon_uri)).into_response())?;
+        reg.load_entry(&hexon_uri, &petal_id, &entry_id, &gate)
+            .map(std::borrow::Cow::into_owned)
+            .map_err(|error| asset_refusal(&hexon_uri, &entry_id, error))
+    })
+    .await;
 
-    let Some(entry) = installed.entries.iter().find(|e| e.entry_id == entry_id) else {
-        return err(&format!(
-            "entry {} not found in crate {}",
-            entry_id, hexon_uri
-        ));
-    };
-
-    // Check if blob exists in store
-    match reg.get_blob_path(&entry.asset_hash) {
-        Some(path) => ok(serde_json::json!({
-            "entry_id": entry_id,
-            "asset_hash": entry.asset_hash,
-            "format": entry.format,
-            "blob_path": path.to_string_lossy(),
-            "available": true
-        })),
-        None => err(&format!(
-            "asset blob {} not available in store",
-            entry.asset_hash
-        )),
+    match loaded {
+        Ok(Ok(bytes)) => (
+            StatusCode::OK,
+            [(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(refusal)) => refusal,
+        Err(error) => {
+            warn!("crate asset read task failed: {error}");
+            err("asset read failed").into_response()
+        }
     }
+}
+
+/// Response for an entry the registry did not serve; only an entitlement refusal changes the HTTP status.
+fn asset_refusal(hexon_uri: &str, entry_id: &str, error: LoadEntryError) -> Response {
+    use fe_hexon::entitlement_gate::GateRefusal;
+    if error.is_entitlement_required() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "ok": false,
+                "code": ENTITLEMENT_REQUIRED_CODE,
+                "error": format!("entry {entry_id} needs an entitlement"),
+            })),
+        )
+            .into_response();
+    }
+    let message = match error {
+        LoadEntryError::NotInstalled(_) => format!("crate {hexon_uri} not found"),
+        LoadEntryError::Gate(GateRefusal::UnknownEntry(_)) => {
+            format!("entry {entry_id} not found in crate {hexon_uri}")
+        }
+        LoadEntryError::Gate(GateRefusal::MissingContent(_)) => {
+            format!("asset of entry {entry_id} not available in store")
+        }
+        other => {
+            warn!("Crate asset {} / {} refused: {}", hexon_uri, entry_id, other);
+            format!("entry {entry_id} could not be loaded")
+        }
+    };
+    err(&message).into_response()
 }
 
 // ---------------------------------------------------------------------------
