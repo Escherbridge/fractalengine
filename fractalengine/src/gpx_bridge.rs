@@ -26,6 +26,8 @@ use fe_ui::verse_manager::{
 
 /// Reserved flat property key marking a node as GPX-derived (`"track"` or `"waypoint"`).
 const GPX_TYPE_KEY: &str = "gpx_type";
+/// Provenance property: `"designed"` (authored in-app) or `"recorded"` (GPX import); absent means recorded.
+const PATH_KIND_KEY: &str = "path_kind";
 /// Approximates a "child of track" relation — see AGENTS.md §gpx (no `parent_node_id` column exists).
 const GPX_TRACK_ID_KEY: &str = "gpx_track_id";
 /// Reserved annotation key shared with `fe-database/src/AGENTS.md` §gis.
@@ -159,6 +161,16 @@ fn resolve_projection(
     )
 }
 
+/// Initial properties written to an authored (designed) track node.
+fn authored_track_properties(name: &str) -> [(&'static str, serde_json::Value); 4] {
+    [
+        (GPX_TYPE_KEY, serde_json::json!("track")),
+        (PATH_KIND_KEY, serde_json::json!("designed")),
+        (GPX_POINTS_KEY, serde_json::json!([])),
+        (TRACK_NAME_KEY, serde_json::json!(name)),
+    ]
+}
+
 /// Build the single merged track node draft, positioned at the first
 /// trackpoint in document order. Returns `None` when the file has no
 /// trackpoints at all (waypoint-only GPX files are handled as standalone).
@@ -194,6 +206,7 @@ fn build_track_draft(
         position: [local[0] as f32, local[1] as f32, local[2] as f32],
         properties: vec![
             (GPX_TYPE_KEY.to_string(), serde_json::json!("track")),
+            (PATH_KIND_KEY.to_string(), serde_json::json!("recorded")),
             (TRACK_NAME_KEY.to_string(), serde_json::json!(name)),
             (
                 "total_distance_m".to_string(),
@@ -2338,7 +2351,7 @@ pub fn advance_path_edits(
                 if pending.creates.get(request_id).is_some_and(|owner| !owner.retired && owner.payload.petal_id == *petal_id && owner.payload.name == *name && owner.payload.position == *position) {
                     pending.creates.remove(request_id);
                     let mut confirmations = PendingPropertyConfirms::new();
-                    for (key, value) in [(GPX_TYPE_KEY, serde_json::json!("track")), (GPX_POINTS_KEY, serde_json::json!([])), (TRACK_NAME_KEY, serde_json::json!(name))] {
+                    for (key, value) in authored_track_properties(name) {
                         match pending.property_outcomes.submit(&db_tx, id, key, value) {
                             Ok(request) => { confirmations.insert(request); }
                             Err(error) => {
@@ -4084,6 +4097,7 @@ mod tests {
         let draft = build_track_draft(&data, &projection, &stats).unwrap();
 
         assert_eq!(prop(&draft, "gpx_type"), &serde_json::json!("track"));
+        assert_eq!(prop(&draft, "path_kind"), &serde_json::json!("recorded"));
         for key in [
             "total_distance_m",
             "elevation_gain_m",
@@ -4101,6 +4115,16 @@ mod tests {
         }
         let bbox = prop(&draft, "bounding_box");
         assert_eq!(bbox["min_lat"], serde_json::json!(45.0));
+    }
+
+    #[test]
+    fn authored_track_properties_are_designed() {
+        let properties = authored_track_properties("Main Road");
+        let find = |key: &str| &properties.iter().find(|(k, _)| *k == key).unwrap().1;
+        assert_eq!(find("gpx_type"), &serde_json::json!("track"));
+        assert_eq!(find("path_kind"), &serde_json::json!("designed"));
+        assert_eq!(find("gis.track.name"), &serde_json::json!("Main Road"));
+        assert_eq!(find("gpx_points"), &serde_json::json!([]));
     }
 
     #[test]
