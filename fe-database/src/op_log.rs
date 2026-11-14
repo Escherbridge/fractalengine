@@ -67,6 +67,27 @@ pub fn init_hlc(max_persisted: u64) {
     );
 }
 
+/// Raises the HLC to at least `lamport` (packed wall<<16|counter); never lowers it.
+/// A clock outside the scene bound (five-minute future) is ignored with a warning.
+pub fn advance_hlc_past(lamport: u64) {
+    if let Err(error) = admit_scene_hlc(lamport) {
+        tracing::warn!(lamport, "HLC advance refused: {error:#}");
+        return;
+    }
+    let (mut wall_ms, mut counter) = (lamport >> 16, (lamport & 0xFFFF) + 1);
+    if counter > 0xFFFF {
+        wall_ms += 1;
+        counter = 0;
+    }
+    let mut guard = HLC_STATE.lock().unwrap_or_else(|error| error.into_inner());
+    let current = guard
+        .as_ref()
+        .map(|state| (state.wall_ms, state.counter))
+        .unwrap_or((wall_now_ms(), 0));
+    let (wall_ms, counter) = current.max((wall_ms, counter));
+    *guard = Some(HlcState { wall_ms, counter });
+}
+
 /// Opaque copy of the process HLC state (packed `wall<<16 | counter`; `None`
 /// = uninitialised) — sim lab only, see [`snapshot_hlc`] / [`restore_hlc`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5194,6 +5215,12 @@ mod tests {
                 original_fact["hlc_timestamp"].as_u64().unwrap().to_string()
             );
             assert_eq!(first["_fe_scene"]["publisher"], "did:qa");
+            // Per-key clock: a fresh node's first publication stamps every key at its commit HLC.
+            let first_hlc = first["_fe_scene"]["hlc"].clone();
+            assert_eq!(first["_fe_clock"]["author"], "did:qa");
+            assert_eq!(first["_fe_clock"]["own"]["transform"]["hlc"], first_hlc);
+            assert_eq!(first["_fe_clock"]["own"]["properties/nested"]["hlc"], first_hlc);
+            assert_eq!(first["_fe_clock"]["own"]["properties/nested"]["value"], properties["nested"]);
             assert_eq!(first["properties"], properties);
             assert!(first.get("asset_id").is_none());
             assert!(first.get("id").is_none());
@@ -5380,6 +5407,22 @@ mod tests {
             )
             .await
             .unwrap();
+            scene::prepare(&source, &id, "did:qa")
+                .await
+                .unwrap()
+                .emit(&source, &blobs, &tx)
+                .await
+                .unwrap();
+            let property_event = rx.try_recv().unwrap();
+            let property_row: serde_json::Value =
+                serde_json::from_slice(&concrete.bytes_for(&property_event.content_hash).unwrap())
+                    .unwrap();
+            let property_hlc = property_row["_fe_scene"]["hlc"].clone();
+            assert_ne!(property_hlc, first_hlc);
+            assert_eq!(
+                property_row["_fe_clock"]["own"]["transform"]["hlc"], first_hlc,
+                "an unchanged key keeps its version"
+            );
             crate::handlers::transform::update_node_transform_as(
                 &source,
                 &id,
@@ -5398,6 +5441,17 @@ mod tests {
                 .unwrap();
             let second = rx.try_recv().unwrap();
             let second_bytes = concrete.bytes_for(&second.content_hash).unwrap();
+            let second_row: serde_json::Value = serde_json::from_slice(&second_bytes).unwrap();
+            let own = &second_row["_fe_clock"]["own"];
+            assert_eq!(own["transform"]["hlc"], second_row["_fe_scene"]["hlc"]);
+            assert_ne!(own["transform"]["hlc"], property_hlc);
+            assert_eq!(own["properties/explicit_null"], json!({"hlc": property_hlc.clone(), "value": null}));
+            assert_eq!(
+                own["properties/remove_me"],
+                json!({"hlc": property_hlc.clone(), "deleted": true}),
+                "a removed property travels as a deleted own version"
+            );
+            assert_eq!(own["properties/nested"]["hlc"], first_hlc);
             peer.query("CREATE field_def CONTENT {field_def_id:'scene-known-schema',scope:$scope,entity_type:'node',key:'explicit_null',value_type:'json',created_by:'did:qa',created_at:'2026-11-02',enforced_schema:{version:1,schema:{type:'string'}}}").bind(("scope",scope)).await.unwrap().check().unwrap();
             assert_eq!(
                 apply_replicated_row_handler(
@@ -5729,6 +5783,30 @@ mod tests {
                     .unwrap()["source_did"],
                 "did:client"
             );
+            // A refused publication rolls its field versions back with the row fences.
+            let doomed = scene::prepare(&source, &delegated, "did:qa").await.unwrap();
+            source
+                .query("UPDATE verse SET created_by='did:other' WHERE verse_id='scene-v'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert!(doomed.emit(&source, &blobs, &tx).await.is_err());
+            source
+                .query("UPDATE verse SET created_by='did:qa' WHERE verse_id='scene-v'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let delegated_versions = "SELECT VALUE author FROM row_field_version WHERE tbl='node' AND rid=$node";
+            let rolled_back: Vec<String> = source
+                .query(delegated_versions)
+                .bind(("node", delegated.clone()))
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert!(rolled_back.is_empty(), "{rolled_back:?}");
             scene::prepare(&source, &delegated, "did:qa")
                 .await
                 .unwrap()
@@ -5736,6 +5814,17 @@ mod tests {
                 .await
                 .unwrap();
             rx.try_recv().unwrap();
+            let stamped_authors: Vec<String> = source
+                .query(delegated_versions)
+                .bind(("node", delegated.clone()))
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert!(
+                !stamped_authors.is_empty() && stamped_authors.iter().all(|author| author == "did:qa"),
+                "the publishing node stamps its own versions: {stamped_authors:?}"
+            );
 
             // Local tombstones retain their original operation HLC and dominate stale live rows.
             crate::handlers::crud::tombstone_node_handler(&source, &id, "did:qa")
@@ -5756,6 +5845,11 @@ mod tests {
                     .as_u64()
                     .unwrap()
                     .to_string()
+            );
+            assert_eq!(
+                deleted_value["_fe_clock"]["own"]["tombstone"]["hlc"],
+                deleted_value["_fe_scene"]["hlc"],
+                "the tombstone is a version of the tombstone key at the tombstone HLC"
             );
             assert_eq!(
                 apply_replicated_row_handler(&peer, "scene-v", "node", &id, &deleted, "did:qa", None)
@@ -5810,6 +5904,8 @@ mod tests {
             let mut winner: serde_json::Value =
                 serde_json::from_slice(&concrete.bytes_for(&local.content_hash).unwrap()).unwrap();
             winner["_fe_scene"]["publisher"] = json!("did:ra");
+            // A forged peer row cannot carry the local author's per-key clock; it travels as v1.
+            winner.as_object_mut().unwrap().remove("_fe_clock");
             winner["properties"]["peer_winner"] = json!(true);
             source
                 .query("CREATE role CONTENT {peer_did:'did:ra',scope:$scope,role:'editor'}")
@@ -5872,6 +5968,7 @@ mod tests {
             let owner_hlc: u64 = revoked["_fe_scene"]["hlc"].as_str().unwrap().parse().unwrap();
             revoked["_fe_scene"]["hlc"] = json!((owner_hlc + 1).to_string());
             revoked["_fe_scene"]["publisher"] = json!("did:rb");
+            revoked.as_object_mut().unwrap().remove("_fe_clock");
             revoked["properties"]["revoked_wrote"] = json!(1);
             let mut orphan = revoked.clone();
             orphan["node_id"] = json!("judged-orphan");

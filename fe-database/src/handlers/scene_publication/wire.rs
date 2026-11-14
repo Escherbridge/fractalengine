@@ -64,7 +64,7 @@ pub(crate) fn live_snapshot_of(bytes: &[u8], author: &str) -> Option<(SceneClock
     (clock.publisher == author).then_some((clock, petal))
 }
 
-/// Normalize only nullable node columns; property JSON is kept recursively intact.
+/// Normalize only nullable node columns; property JSON and `_fe_clock` are kept intact.
 pub(crate) fn normalize_optional_columns(row: &mut Value) {
     if let Some(object) = row.as_object_mut() {
         object.remove("id");
@@ -99,6 +99,7 @@ pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
         "properties",
         "tombstone",
         MARKER,
+        crate::field_clock::CLOCK_COLUMN,
     ];
     anyhow::ensure!(
         object.keys().all(|key| FIELDS.contains(&key.as_str())),
@@ -153,6 +154,8 @@ pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
     }
     let clock =
         SceneClock::from_marker(row)?.ok_or_else(|| anyhow::anyhow!("scene marker missing"))?;
+    // Optional per-key clock: strictest reader, authored by the snapshot publisher.
+    crate::field_clock::parse_own("node", row, &clock.publisher)?;
     if let Some(marker) = row.get("tombstone").filter(|value| !value.is_null()) {
         anyhow::ensure!(
             marker["hlc"].as_u64() == Some(clock.hlc)

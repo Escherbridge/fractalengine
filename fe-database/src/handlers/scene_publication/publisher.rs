@@ -5,8 +5,12 @@ use super::{
     wire::{self, SceneClock},
     CLOCK_FENCE, CLOCK_VERIFY, CLOCK_WRITE,
 };
+use crate::field_clock::{
+    self, merge::canonical_value, store::stored_hlc, FieldVersion,
+};
 use crate::{repo::Db, BlobStoreHandle, ReplicationEvent, ReplicationSender};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 const RECOVERY_LIMIT: usize = 1024;
 const RECOVERY_BYTES: usize = 8 * 1024 * 1024;
@@ -135,12 +139,14 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
             .is_none_or(|known| *known <= clock),
         "local snapshot was superseded by a known scene version"
     );
+    let stamped = stamp_own_versions(db, id, &verse, actor, hlc, &row).await?;
     let mut without_position = row.clone();
     without_position.as_object_mut().unwrap().remove("position");
     statements.extend([
         "IF (SELECT * OMIT id, position FROM node WHERE node_id=$scene_id) != [$scene_without_position] { THROW 'committed scene row changed'; }".into(),
         "IF array::len((SELECT VALUE node_id FROM node WHERE node_id=$scene_id AND petal_id=$scene_petal AND position=<geometry<point>> [$scene_x,$scene_z])) != 1 { THROW 'committed scene ancestry or point changed'; }".into(),
         proof.into(),CLOCK_FENCE.into(),CLOCK_WRITE.into(),CLOCK_VERIFY.into(),
+        FIELD_CLOCK_FENCE.into(),OWN_VERSIONS_FENCE.into(),
     ]);
     guard_labels.extend([
         "node_projection",
@@ -149,7 +155,18 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         "scene_clock",
         "clock_write",
         "clock_write",
+        "field_clock",
+        "field_clock",
     ]);
+    bindings.extend([
+        ("scene_field_clock_before".into(), stamped.clock_before),
+        ("scene_own_before".into(), stamped.own_before),
+    ]);
+    for (fragment_statements, fragment_bindings) in stamped.writes {
+        guard_labels.extend(vec!["field_clock_write"; fragment_statements.len()]);
+        statements.extend(fragment_statements);
+        bindings.extend(fragment_bindings);
+    }
     bindings.extend([
         ("scene_id".into(), json!(id)),
         ("scene_petal".into(), json!(petal)),
@@ -166,6 +183,7 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
     guard_labels.resize(statements.len(), "asset_metadata");
     wire::normalize_optional_columns(&mut row);
     row[wire::MARKER] = clock.marker();
+    row[field_clock::CLOCK_COLUMN] = field_clock::encode_own(actor, &stamped.own);
     wire::validate_complete(&row)?;
     Ok(PreparedSceneRow {
         node_id: id.into(),
@@ -177,6 +195,123 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         bindings,
         dependencies,
         deferred_dependencies,
+    })
+}
+
+/// The node's cached per-key winners must be the ones the stamp was computed from (order-independent).
+const FIELD_CLOCK_FENCE: &str = "IF array::sort((SELECT VALUE [field_key, hlc, author] FROM row_field_clock WHERE tbl='node' AND rid=$scene_id)) != array::sort($scene_field_clock_before) { THROW 'field clock changed'; }";
+/// The publisher's own stored versions must be the ones the stamp was folded against.
+const OWN_VERSIONS_FENCE: &str = "IF array::sort((SELECT VALUE [field_key, hlc] FROM row_field_version WHERE tbl='node' AND rid=$scene_id AND author=$scene_publisher)) != array::sort($scene_own_before) { THROW 'own field versions changed'; }";
+
+/// The publisher's per-key own versions for one committed node row, plus the in-transaction writes.
+struct StampedOwnVersions {
+    /// Every own version after stamping (losing and deleted ones included), sorted by key.
+    own: Vec<FieldVersion>,
+    clock_before: Value,
+    own_before: Value,
+    writes: Vec<field_clock::store::SqlFragment>,
+}
+
+/// Stamp every key whose committed value is not its cached winner as `actor`'s version at `hlc`;
+/// unchanged keys keep their versions (never restamped). See AGENTS.md §Wire and ordering "Per-key clock".
+async fn stamp_own_versions(
+    db: &Db,
+    id: &str,
+    verse: &str,
+    actor: &str,
+    hlc: u64,
+    row: &Value,
+) -> anyhow::Result<StampedOwnVersions> {
+    let versions = field_clock::load_versions(db, "node", id).await?;
+    let mut response = db
+        .query("SELECT field_key, hlc, author FROM row_field_clock WHERE tbl='node' AND rid=$scene_id TIMEOUT 5s")
+        .bind(("scene_id", id.to_owned()))
+        .await?
+        .check()?;
+    let cached: Vec<Value> = response.take(0)?;
+    let mut winners: BTreeMap<String, FieldVersion> = BTreeMap::new();
+    for entry in &cached {
+        let (Some(field), Some(author), Some(winner_hlc)) = (
+            entry["field_key"].as_str(),
+            entry["author"].as_str(),
+            entry["hlc"].as_u64(),
+        ) else {
+            anyhow::bail!("stored field clock row is invalid");
+        };
+        // A cached winner without its version is stale; the stamp below treats the key as unwon.
+        if let Some(version) = versions.iter().find(|version| {
+            version.field == field && version.author == author && version.hlc == winner_hlc
+        }) {
+            winners.insert(field.to_owned(), version.clone());
+        }
+    }
+    let mut own: BTreeMap<String, FieldVersion> = versions
+        .iter()
+        .filter(|version| version.author == actor)
+        .map(|version| (version.field.clone(), version.clone()))
+        .collect();
+    let own_before = own
+        .values()
+        .map(|version| -> anyhow::Result<Value> { Ok(json!([version.field, stored_hlc(version.hlc)?])) })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let committed: BTreeMap<String, Value> = field_clock::keys_of("node", row).into_iter().collect();
+    let stamp = |field: &str, value: Option<Value>| FieldVersion {
+        field: field.to_owned(),
+        author: actor.to_owned(),
+        hlc,
+        deleted: value.is_none(),
+        value,
+    };
+    let mut candidates = Vec::new();
+    for (field, value) in &committed {
+        // The legacy floor never travels on the wire, so a locally proven state claims it.
+        let unchanged = winners.get(field).is_some_and(|winner| {
+            !winner.is_legacy_floor()
+                && !winner.deleted
+                && winner.value.as_ref().map(canonical_value) == Some(canonical_value(value))
+        });
+        if !unchanged {
+            // Canonical so a retry re-reading the stored version emits identical bytes.
+            candidates.push(stamp(field.as_str(), Some(canonical_value(value))));
+        }
+    }
+    for (field, winner) in &winners {
+        if !winner.deleted && !committed.contains_key(field) {
+            candidates.push(stamp(field.as_str(), None));
+        }
+    }
+    let mut written = Vec::new();
+    for candidate in candidates {
+        if let Some(kept) = field_clock::upsert_own(own.get(&candidate.field), candidate) {
+            own.insert(kept.field.clone(), kept.clone());
+            written.push(kept);
+        }
+    }
+    let mut writes = Vec::new();
+    if !written.is_empty() {
+        for version in &written {
+            let pair = match winners.get(&version.field) {
+                Some(current) => vec![current.clone(), version.clone()],
+                None => vec![version.clone()],
+            };
+            if field_clock::winner(&pair, |_| true) == pair.last() {
+                winners.insert(version.field.clone(), version.clone());
+            }
+        }
+        let winner_refs: Vec<&FieldVersion> = winners.values().collect();
+        writes.push(field_clock::versions_write_sql("node", id, verse, &written)?);
+        writes.push(field_clock::clock_write_sql("node", id, &winner_refs)?);
+    }
+    Ok(StampedOwnVersions {
+        own: own.into_values().collect(),
+        clock_before: Value::Array(
+            cached
+                .iter()
+                .map(|entry| json!([entry["field_key"], entry["hlc"], entry["author"]]))
+                .collect(),
+        ),
+        own_before: Value::Array(own_before),
+        writes,
     })
 }
 
@@ -504,7 +639,8 @@ pub(crate) async fn publish_deferred(
     tracing::debug!(count, elapsed_ms = started.elapsed().as_millis() as u64, "deferred scene publications sent");
 }
 
-/// Recover every row stamped by this exact committed delete, including direct waypoint cascades.
+/// Recover every row stamped by this exact committed delete, including direct waypoint cascades;
+/// each row's `tombstone` key becomes an own version at the tombstone HLC.
 pub(crate) async fn publish_tombstones_after_commit(
     db: &Db,
     blobs: &BlobStoreHandle,
@@ -556,6 +692,7 @@ pub(crate) async fn publish_tombstones_after_commit(
 }
 
 /// Refuse over-limit recovery before emitting any prefix; never infer local provenance from author names.
+/// Existing own versions are re-emitted as stored (never restamped); only uncommitted gaps are stamped.
 pub(crate) async fn recover(
     db: &Db,
     blobs: &BlobStoreHandle,
