@@ -149,7 +149,7 @@ pub(crate) fn is_admissible_transform(position: [f64; 3], rotation: &[f64], scal
     position.iter().all(|v| v.is_finite() && (*v as f32).is_finite())
         && matches!(rotation.len(), 3 | 4)
         && scale.len() == 3
-        && rotation.iter().all(|v| v.is_finite())
+        && fe_runtime::node_history::stored_rotation_quaternion(rotation).is_some()
         && scale.iter().all(|v| v.is_finite() && *v > 0.0 && (*v as f32).is_finite() && (*v as f32) > 0.0)
 }
 

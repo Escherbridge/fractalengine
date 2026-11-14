@@ -514,6 +514,8 @@ async fn petal_snapshot_export_then_import_journey() {
     let huge_elevation = with_node_a2("elevation", json!(1e300));
     let zero_scale = with_node_a2("scale", json!([1.0, 0.0, 1.0]));
     let huge_scale = with_node_a2("scale", json!([1e300, 1.0, 1.0]));
+    let zero_rotation = with_node_a2("rotation", json!([0.0, 0.0, 0.0, 0.0]));
+    let huge_rotation = with_node_a2("rotation", json!([1e300, 0.0, 0.0, 1.0]));
     let mut missing_fractal = snapshot.clone();
     missing_fractal.petal["fractal_id"] = json!("fractal-gone");
     for (case, rows) in [
@@ -530,6 +532,8 @@ async fn petal_snapshot_export_then_import_journey() {
         ("elevation outside f32", huge_elevation),
         ("zero scale component", zero_scale),
         ("scale outside f32", huge_scale),
+        ("zero-length rotation", zero_rotation),
+        ("rotation outside f32", huge_rotation),
         ("parent fractal absent", missing_fractal),
     ] {
         let outcome = import_petal_snapshot(&refused_db, rows).await;
@@ -557,4 +561,18 @@ async fn petal_snapshot_export_then_import_journey() {
     assert!(select(&collision_db, "SELECT * FROM petal").await.is_empty(), "nothing restored");
     let owners = select(&collision_db, "SELECT VALUE petal_id FROM node WHERE node_id = 'node-a1'").await;
     assert_eq!(owners, [json!("petal-elsewhere")], "the existing node keeps its petal");
+
+    // History leg: node_log survives a hard petal delete, so a stray row for an imported id refuses the import.
+    let history_db = fresh_db().await;
+    seed_fractal(&history_db).await;
+    run(&history_db, "CREATE node_log CONTENT { log_id: 'stray-log', node_id: 'node-a2', hlc_timestamp: 1, op: 'baseline', payload: {}, row_version: 1, created_at: '2026-11-13T00:00:00Z' }", json!({})).await;
+    let reply = import_petal_snapshot_reply(&history_db, snapshot.clone(), Some("history-1".into())).await;
+    assert!(
+        matches!(&reply, DbResult::PetalSnapshotImportRefused { correlation_id: Some(id), .. } if id == "history-1"),
+        "an id with surviving node_log history is refused: {reply:?}"
+    );
+    for sql in ["SELECT * FROM petal", "SELECT * FROM node", "SELECT * FROM asset", "SELECT * FROM op_log"] {
+        assert!(select(&history_db, sql).await.is_empty(), "{sql}: nothing written");
+    }
+    assert_eq!(select(&history_db, "SELECT * FROM node_log").await.len(), 1, "only the stray history row exists");
 }

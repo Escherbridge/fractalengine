@@ -35,10 +35,10 @@ pub const MAX_SNAPSHOT_ARCHIVE_BYTES: usize = crate::upload::MAX_ASSET_BYTES;
 pub const SNAPSHOT_ROUTE_BODY_LIMIT: usize = MAX_SNAPSHOT_ARCHIVE_BYTES + 1024 * 1024;
 /// Multipart field carrying the archive.
 const ARCHIVE_FIELD: &str = "archive";
-/// Prefix of the DB refusal reason for a malformed or out-of-petal snapshot (`ImportError::Invalid`).
 /// Error code when a bound scene hook admits an import only with augments, which an import cannot apply.
 pub const HOOK_AUGMENT_UNSUPPORTED: &str = "hook-augment-unsupported";
 
+/// Prefix of the DB refusal reason for a malformed or out-of-petal snapshot (`ImportError::Invalid`).
 const INVALID_SNAPSHOT_REASON: &str = "invalid petal snapshot";
 
 /// The one existence-safe denial: missing, out of scope, or under-privileged look the same.

@@ -600,6 +600,8 @@ impl RestorePlan {
         // snapshot can never take over or shadow another scope's rows. Op-log markers need no guard: quarantined.
         let mut node_identities = node_ids;
         node_identities.extend(dangling_node_ids);
+        // node_log outlives a hard petal delete, so an id with surviving history is as taken as a live node.
+        plan.collision_guard(|set| format!("SELECT VALUE id FROM node_log WHERE node_id IN ${set}"), node_identities.clone());
         plan.collision_guard(|set| format!("SELECT VALUE id FROM node WHERE node_id IN ${set}"), node_identities);
         plan.collision_guard(|set| format!("SELECT VALUE id FROM iot_reading WHERE reading_id IN ${set}"), reading_ids);
 

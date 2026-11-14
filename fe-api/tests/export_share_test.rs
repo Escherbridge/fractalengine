@@ -1779,9 +1779,6 @@ async fn query_channel_fallback_with_dead_db_bridge_is_an_honest_error() {
 // HEXON-12 — petal snapshot export/import routes (Manager+)
 // ---------------------------------------------------------------------------
 
-/// Manager+ snapshot export and import: Editor and out-of-fractal callers are denied, a Manager's
-/// export opens with its op-log lamport-ascending, and re-importing onto the source node refuses (409).
-
 /// What the process-wide test hook does at one petal.
 #[derive(Debug, Clone, Copy)]
 enum GateMode {
@@ -1854,6 +1851,8 @@ fn snapshot_gate_backend() -> Arc<SnapshotGateBackend> {
         .clone()
 }
 
+/// Manager+ snapshot export and import: Editor and out-of-fractal callers are denied, a Manager's
+/// export opens with its op-log lamport-ascending, and re-importing onto the source node refuses (409).
 #[tokio::test]
 async fn petal_snapshot_export_import_authz_journey() {
     use axum::extract::FromRequest;
