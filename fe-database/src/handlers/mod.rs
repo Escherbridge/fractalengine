@@ -76,6 +76,31 @@ pub(crate) fn send_removed_nodes(
     }
 }
 
+/// After a full transform on a stamp, fan out the `stamp.override.*` properties the write mirrored (the renderer reads those).
+pub(crate) fn send_stamp_override_changes(
+    entity_change_tx: &replicated_row::SceneChangeSender,
+    receipt: &fe_runtime::node_history::NodeMutationReceipt,
+) {
+    let properties = &receipt.state.properties;
+    if properties.get("node_kind").and_then(serde_json::Value::as_str) != Some("stamp") {
+        return;
+    }
+    for key in [stamp_transform::STAMP_SCALE_KEY, stamp_transform::STAMP_ROTATION_KEY] {
+        let Some(value) = properties.get(key) else {
+            continue;
+        };
+        let change = fe_runtime::messages::SceneChange::PropertyChanged {
+            node_id: receipt.node_id.clone(),
+            petal_id: receipt.state.petal_id.clone(),
+            key: key.into(),
+            value: value.clone(),
+        };
+        if entity_change_tx.send(change).is_err() {
+            tracing::warn!(node_id = receipt.node_id, "stamp override scene receiver closed");
+        }
+    }
+}
+
 /// A failed command's reply: `RequestFailed` echoing a correlated (API)
 /// caller's id, the legacy wildcard `Error` for an uncorrelated (GUI) one.
 /// See fe-runtime src/AGENTS.md §api-reply-correlation.

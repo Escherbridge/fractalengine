@@ -1085,8 +1085,12 @@ pub fn spawn_db_thread_shared(
                                         Ok(None) => tracing::warn!(node_id, "omitting transform scene change without petal scope"),
                                         Err(e) => tracing::warn!(node_id, "omitting transform scene change after petal lookup failure: {e}"),
                                     }
+                                    // R-DATA-1 D4: a stamp's transform also rewrote its overrides.
+                                    match handlers::node_history::receipt(&db, &node_id).await {
+                                        Ok(receipt) => handlers::send_stamp_override_changes(ect, &receipt),
+                                        Err(e) => tracing::warn!(node_id, "omitting stamp override scene change after receipt read failure: {e:#}"),
+                                    }
                                 }
-
                             }
                             Err(e) => {
                                 tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
@@ -2152,6 +2156,7 @@ pub fn spawn_db_thread_shared(
                         match outcome {
                             Ok(()) => {
                                 handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                let receipt = handlers::node_history::receipt(&db, &node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     if let Ok(Some(petal_id)) = handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         let change = match &mutation {
@@ -2161,8 +2166,12 @@ pub fn spawn_db_thread_shared(
                                         };
                                         if ect.send(change).is_err() { tracing::warn!(node_id, "committed node scene-change receiver closed"); }
                                     }
+                                    // R-DATA-1 D4: a stamp's transform also rewrote its overrides.
+                                    if let (NodeMutation::FullTransform { .. }, Ok(receipt)) = (&mutation, &receipt) {
+                                        handlers::send_stamp_override_changes(ect, receipt);
+                                    }
                                 }
-                                let reply = match handlers::node_history::receipt(&db, &node_id).await {
+                                let reply = match receipt {
                                     Ok(receipt) => DbResult::NodeMutationCommitted { receipt, correlation_id },
                                     Err(error) => handlers::correlated_failure(&correlation_id, format!("Mutation committed; receipt read failed: {error}")),
                                 };
