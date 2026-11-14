@@ -159,7 +159,7 @@ mod harness {
     use http::{Request, Response, StatusCode};
     use serde_json::json;
     use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, COREWEBVIEW2_PERMISSION_KIND};
-    use webview2_com::{FrameNavigationStartingEventHandler, PermissionRequestedEventHandler, WebMessageReceivedEventHandler};
+    use webview2_com::{NavigationStartingEventHandler, PermissionRequestedEventHandler, WebMessageReceivedEventHandler};
     use windows::core::{HSTRING, PWSTR};
     use winit::application::ApplicationHandler;
     use winit::dpi::LogicalSize;
@@ -566,7 +566,7 @@ mod harness {
             let native = webview.webview();
             *hook.native.borrow_mut() = Some(native.clone());
             let frame_log = frame_navigations.clone();
-            let frame_handler = FrameNavigationStartingEventHandler::create(Box::new(move |_, args| {
+            let frame_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
                 if let Some(args) = args {
                     let mut raw = PWSTR::null();
                     // SAFETY: on success WebView2 hands over a CoTaskMem string that `take_pwstr` frees.
