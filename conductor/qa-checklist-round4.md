@@ -1,7 +1,7 @@
 ---
 type: checklist
 title: Round 4 QA checklist (public tracks)
-updated: 2026-11-13
+updated: 2026-11-14
 ---
 
 Compiled from 210 of 210 slices (round-4 swarm, now complete; nothing below has been run yet).
@@ -758,3 +758,98 @@ Work that is not code: in-app looks, simulator runs, sweeps and decisions the pl
 - **R1** named by 4 slices (CLOCK-08, CLOCK-09, DATA-04, R-DATA-1).
 - **R2** named by 7 slices (I-UI-1, NEW-01, NEW-04, R-CITY-2, R-INT-1, R-INT-3, R-NEW-1).
 
+### Round 5 batch ids
+- **R1** CITY5-01 `verse_manager::db_results::tests` (request_failed_clears_the_matching_road_create); DATA5-01 `handlers::stamp_transform::`.
+- **R2** `actions::node::` and `node_manager::tests::` (NEW5-03, NEW5-05 door and undo legs), `node_manager::viewport_pick` (NEW5-04), `handlers::editor_batch::` (INT5-15).
+- **R3** UI5-02 `hierarchy_info` scope row and the token-revoke journey.
+- **R4** (`--features render`) UI5-03 `proposal_layer_mirror`, UI5-04 `section_responder::tests`, HEXON5-07 `entitlement` / `composite` / `registry`.
+- **R5** CITY5-02/03/05 `road_chain`, `road_overlay`, `curve`, `road_interaction`, `gpx_bridge::`.
+- **R6** NET5-08 / INT5-06 `settings::`, UI5-01 `dialogs::entity_access`, `dialogs::tests::` (DATA5-02, INT5-15), UI5-03 `ui_shell::`.
+- **R7** UI5-05 `role_propagation_durable_test`, CLOCK5-02 `role_propagation_local_test`, `role_grants` windows (fe-policy).
+- **R8** NET5-01 `relay_advertise::`, NET5-03/04 `relay_server` and `peer_relay_e2e_test`, NET5-06/07 `sync_thread` legs, NET5-02 `reachability`.
+- **R9** NET5-05 `network::`, INT5-02 `mcp_integration`, INT5-14 `api_integration`, HEXON5-03/04/05 `export_share_test`, fe-runtime `app::` correlation.
+- **R10** `node_lifecycle_test` (CLOCK5-01, DATA5-01, CITY5-04), `petal_snapshot_test` (HEXON5-03/08, INT5-13), `handlers::crate_registry::` (HEXON5-01), `field_clock::` (CLOCK5-04/05), `space_manager` (HEXON5-08).
+- **R11 / R11-STORE** fe-format `signature` (HEXON5-06) and `snapshot` (HEXON5-09); `fe-hexon --features remote --test remote_registry_test` (NEW5-07); registry uninstall leg (HEXON5-01).
+- **Portal QA lane** `fe-webview --test portal_ipc_journey` (EXT5-02), `run.py validate portal-core` (EXT5-03). **Simulator** (on your go): `fleet-terrain` (EXT5-06), `p2p-core` (CLOCK).
+- The filters above come from `.omc/plans/turn5-plan.md` section 8; I5-BATCH registers the exact strings in `conductor/test-batches.md`, so check them there before running.
+
+## Round 5
+
+Added by the round-5 scribe from the T5 slice reports and the scoper entries. Nothing below has been run. Same line format and kinds as round 4; `(derived)` = the slice left no QA line.
+
+### per_key_clock_20261113
+- [ ] CLOCK-03 · batch · Run `tools\qa\test_batches.ps1 -Batches R10` (reaches fe-database `--lib field_clock::`, incl. `merge::tests::fold_is_order_independent`) -> `fold_is_order_independent` passes: the per-key winner is identical for every permutation of versions, including inadmissible newer ones.
+- [ ] CLOCK-02 · batch · (derived) `cargo test -p fe-policy -- role_grants` (batch R7) -> grant-window tests pass: cap 8 drops the oldest, the frontier clamp, `as_of` / `held_at`, a Manager break closes the earlier Editor span.
+- [ ] CLOCK-12 · sim · `p2p-core` steps 14p, then 13a/13b together: two editors write different keys of one node, then one is revoked -> both keys survive on every peer after the revoke and after a peer restart; the revoked author's later write is refused.
+
+### relay_operability_20261031
+- [ ] NET-02 · app · Start the GUI with `FE_LOG_FORMAT=json` and again unset, piping stdout of each run to a file; repeat for `fractalengine-relay` -> every line of the json run parses as a JSON object; the unset run keeps the plain text format.
+- [ ] NET5-01 · batch · `cargo test -p fe-sync relay_advertise::tests::relay_advertisement_book_journey` (R8) -> a Manager's withdrawal that arrives before the row it withdraws still leaves the row unadmitted; a later re-advertisement is admitted.
+
+### peer_networking_support_20261031
+- [ ] NET5-02 · app · Open Settings > Network on the default build and wait about one minute -> the reason line changes from 'Waiting for the reachability check.' to a verdict-based message; on a publicly reachable host the 'Serve as a relay for my verses' box becomes enabled.
+- [ ] NET5-08 · app · On a relay-server build, tick 'Serve as a relay for my verses' as the owner of two verses -> the consent text lists both verse names and Confirm is enabled; with no owned verse it says nothing would be served and Confirm is disabled. After a restart and a passing dial-back the log line lists the same served set.
+- [ ] NET5-03/04 · batch · `cargo test -p fe-sync --features relay-server -- relay_server`, then `--test peer_relay_e2e_test` (R8) -> a snapshot pushed before `install_gate` still admits members; a revoke through the production reconciler disconnects within 5 s and a reconnect is denied by name.
+- [ ] NET5-05 · api · MCP `tools/list` with a Viewer token, then `tools/call get_network_diagnostics` -> the tool is listed; peers and hazard verses are limited to readable verses; no raw IPs unless `FE_API_NETWORK_DETAIL=1` with an Owner token; with the bridge gone it answers 'network diagnostics unavailable' at once.
+- [ ] NET5-06 · sim · A verse member advertises a DialOnly relay whose DNS answers a private address, then lists peers -> the relay never appears in the peer-address allowlist; one warn names the URL and reason; a public relay is allowlisted.
+- [ ] INT5-04 · sim · Revoke a peer while relay admission is buffering its snapshot -> the peer stays out of relay admission (fail closed).
+
+### hexon_unification_20260716
+- [ ] HEXON5-03 · api · Import a snapshot as Manager, re-export the imported petal (`GET /api/v1/petals/{id}/snapshot.hexon`), compare `snapshot/oplog.jsonl` with the original, and count live `op_log` rows before and after -> every original history entry is present in the same lamport order; the live `op_log` gains only this node's own ImportPetal and ExportPetal entries (history stays in `op_log_imported`).
+- [ ] HEXON-12 · api · Bind a scene hook that admits node creation WITH an augment, then `POST /api/v1/petals/import-snapshot` as Manager; then bind one that denies creation and repeat -> 409 'hook-augment-unsupported' for the first, the shared hook refusal for the second; no petal row and no new blob files in either case.
+- [ ] HEXON-05 · batch · R11 `cargo test -p fe-hexon -- --skip entitlement_client::tests:: --skip entitlement_gate::tests::` -> it reaches `handlers::tests` (Script and PetalSnapshot give the explicit 'no install handler' error) and `p2p::announce::tests` / `p2p::discover::tests` (hexon_id URIs, `Option<HexonType>` kind filter); all pass.
+- [ ] HEXON5-04 · api · After HEXON5-03/04 land: import a snapshot as a Manager token, then `GET /api/v1/petals/{id}/imported-history`; repeat as an Editor -> the Manager sees entries ascending by lamport with `imported_by` = that token's DID and one shared `import_id`; the Editor gets 404.
+- [ ] INT5-14 · batch · Run the `api_integration` journey with the hexon-registry seam (R9) -> the imported-history leg answers tokenless 401, editor 403 or 404, owner 200.
+- [ ] INT5-13 · api · As Manager `POST /api/v1/petals/import-snapshot` with an archive whose petal already exists, then with one a bound scene hook denies -> the existing petal gives 409; the hook denial gives the scene-denied status, never a 504; no blob is written in either case.
+
+### extension_platform_20261107
+- [ ] EXT5-03 · sim · `python tools/qa/sim/run.py validate portal-core` -> no errors; each `portal_ipc_post` pin names the bundle open at that step (dashboard for r_unsigned, Actions for r_frame..r_control); then `portal-core` step 2 gives no 409 `portal_fixture_mount_mismatch`.
+- [ ] EXT5-04 · app · Open entity settings of a seeded local-only verse, Access tab -> 'This verse is local only. Create a new verse to share with peers.' shows and Generate invite is disabled with that hover text; a verse with a replica namespace shows neither.
+- [ ] EXT5-06 · sim · `python tools/qa/sim/run.py validate fleet-terrain`, then step 1 `upload_gpx` for gpx_a/b/c -> no errors, the scenario uses `upload_gpx` on `tools/qa/sim/assets/roads/*.gpx` with no inline base64, and `lookup_node` finds Road A, Road B and Road C.
+
+### portal_surface_20261107
+- [ ] EXT5-02 · app · Hide and re-show a portal via the `qa_rows` hidden row (R6 journey) -> the portal returns to its prior visibility and `is_visible` reports the state the sender expects.
+
+### road_builder_ux_20260716
+- [ ] CITY5-01 · app · Road tool (L) with the create refused (role downgraded to Viewer after arming, or a read-only DB): click once and watch the toast; then switch to a writable petal and click again -> the failed create shows an error and the Road/Pen tool is free (no stuck first point); the next click creates 'Road 1'.
+- [ ] CITY5-02 · app · 1:100 petal, Road tool, Freeform, spacing 2 m in Options, drag a 40 m stroke, End road, open the track's points -> about 20 points roughly 2 m apart; the ghost during the drag has the same density as the committed line.
+- [ ] CITY5-05 · batch · R1 (`verse_manager::db_results::tests`) and R5 (`road_chain`, `road_overlay`, `curve`, `gpx_bridge::`) -> green, including `request_failed_clears_the_matching_road_create` and the 1:100 freeform rows; a create correlated `road-track:1` yields `path_kind = "designed"`.
+
+### map_scale_authority_20260716
+- [ ] CITY5-04 · app · 1:100 petal: Add node from the toolbar on an empty petal, then select it at once without reloading -> the Inspector shows scale 0.01 / 0.01 / 0.01 immediately (the I-DB-1 line covers placement, this covers the UI echo).
+- [ ] CITY5-04 · api · `PUT /api/v1/petals/{p}/terrain` with `world_scale` 1e300, then 1e-300, then 0.01 -> the first two are refused as InvalidConfig; 0.01 is accepted (SEC-2 covers read-side sanitising, this the write refusal).
+
+### inspector_settings_20260419
+- [ ] UI5-02 · app · Select a node and open the Inspector Entity section -> the first line reads 'Node: <name>' above the Node ID row.
+- [ ] UI5-02 · app · With a petal active, re-click the verse row to open the verse card -> no 'Your role' line (the active scope is the petal; the petal card shows it); the verse card reads '<n> online of <m> peers'.
+- [ ] UI5-02 · app · With the DB thread unavailable, click Revoke twice on an API token -> a visible error line appears in Active Tokens; the token row is not silently left unrevoked.
+- [ ] UI5-01 · app · Entity Settings > Access on the seeded Genesis Verse -> the local-only reason shows and Generate invite is disabled with a tooltip; a verse with a replica namespace has it enabled.
+- [ ] INT5-08 · app · Select the verse card in the Inspector while a petal is active and your only grant is on the petal -> Settings is disabled with a reason.
+- [ ] INT5-09 · app · Open Settings > Access on a verse created without a replica namespace -> the local-only note appears.
+- [ ] INT5-12 · app · Demote yourself to Viewer while a node property draft is open in the Inspector -> Save is disabled for the draft; the values stay visible.
+
+### terrain_proposal_delta_viz_20261025
+- [ ] UI5-03 · app · With at least one proposal, hide the Proposal overlay layer in Maps, then open Terrain tools -> 'Cut/fill colors' is replaced by 'Proposal layer is hidden'; showing the layer again restores the checkbox with its previous state.
+- [ ] UI5-03 · batch · R4 `cargo test -p fe-terrain --features render` and R6 `cargo test -p fe-ui --lib -- ui_shell::` -> the proposal-layer mirror rows (none/visible/hidden/shown) and the checkbox visibility rule pass; removing the mirror system turns a row red.
+- [ ] UI5-04 · batch · R4 `cargo test -p fe-terrain --features render -- section_responder::tests` -> the section profile and the volume report agree on the proposed surface for the same footprint.
+- [ ] UI5-05 · batch · R7 `cargo test -p fe-database --test role_propagation_durable_test` -> Access Load returns 256 grants for a scope seeded with 300; the three numerically newest hlc strings ('1000'..'1002') are present.
+
+### endpoint_api_surface_20260725
+- [ ] DATA5-01 · app · Open a petal with a promoted stamp; via REST (or MCP `update_transform`) send the stamp's own position with rotation [0,1,0] and scale [2,2,2] while the viewport is open, then switch petals and back -> the stamp rotates and scales live and keeps that pose after the respawn.
+- [ ] DATA5-01 · api · REST transform on a promoted stamp with scale 20000, then 0.001, at its own position -> both refused (range 0.01..=10000 in `handlers/stamp_transform.rs`), nothing written to the row or properties; a plain node accepts the same values.
+- [ ] DATA5-01 · batch · `cargo test -p fe-database --lib -- handlers::stamp_transform::` and `cargo test -p fe-ui --lib -- dialogs::tests::` -> the `euler_to_quat_xyzw` table and the TreeAppearance layout leg both run (non-zero test count) and pass.
+- [ ] INT5-02 · api · MCP `get_network_diagnostics` as Viewer, then anonymous -> the tool is listed and redacted for the Viewer; unknown tool for anonymous.
+
+### project_completion_20261104
+- [ ] NEW5-05 · app · (derived) Stall the DB thread, edit one node, then a second before the first save resumes -> the saves reach the DB in the order made.
+- [ ] NEW5-07 · api · (derived) Install from a registry whose download response has no Content-Length -> the Downloads row count grows, the total fills in, and it ends N/N before the map is listed as Installed.
+- [ ] INT5-06 · sim · Demote a peer's Editor grant on a petal holding that peer's nodes, then watch the GUI -> the removed nodes disappear via NodeDeleted without a reload.
+- [ ] DATA-04 · sim · Move a stamp node with the gizmo and read its `stamp.override.scale` and `stamp.override.rotation` properties -> both change with the transform and replicate.
+
+### release_ci_20260429
+- [ ] REL5-01 · api · Dispatch the Release workflow manually from a tag ref in a fork (Actions UI, Run workflow, pick the tag) -> builds run, the publish and GHCR jobs are skipped; a real tag push still publishes.
+
+### oss_release_20260717
+- [ ] REL-03 · app · Open `docs/diagrams/01-system-overview.md`, `06-network-topology.md` and `09-sync-and-caching.md` in the GitHub preview -> all three mermaid diagrams render (subgraphs T1-T7, iroh inside T4, no mDNS or cache-tier nodes).
+- [ ] REL5-04 · batch · `git grep -c '"00".repeat(64)' -- 'fe-*' 'fractalengine*' tools extensions`, sum the counts -> equals the totals in `conductor/tracks/oss_release_20260717/spec.md` FR-2 and `SECURITY.md` (51 at the time of writing).
+- [ ] REL-02 · api · Read the README 'Test / Lint / Format' block as a new contributor and run only what it lists -> no command requires clippy; the CI scoped-sweep sentence is present.
