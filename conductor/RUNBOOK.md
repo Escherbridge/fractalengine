@@ -111,7 +111,25 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-14 00:05 MST — ROUND 4 SWARM DONE; REFINE (compile) PASS RUNNING; `main` CI GREEN on `2b289db1`.**
+- **2026-11-14 01:20 MST — REFINE PASS GREEN; SECURITY FIXES RUNNING.** Refine `wf_00887a68-005`: all twelve
+  steps green at the first attempt, 73 errors fixed (10 fe-hexon, 3 fe-database tests, 4 fe-sync, 2 fe-api
+  tests, 1 fe-webview example, 8 fe-ui, 19 private foundry, 26 doc links), 12 sonnet agents, 1.07M tokens,
+  57 min; `cargo check --all-targets` is green on every public crate, the three private service crates and
+  `foundry/`. Two behaviour-visible wiring fixes in `fe-ui/src/ui_shell/right_sidebar.rs` (the Section profile
+  block and the road-builder state were never passed to the sidebar). **Watch:** the private step hand-edited
+  one `wmi` entry in `foundry/Cargo.lock` (windows 0.61.3 -> 0.62.2) against the "never hand-edit a lockfile"
+  rule; regenerate it properly (`cargo update -p wmi --manifest-path foundry/Cargo.toml`) before relying on it.
+  `fe-database/src/handlers/scene_publication/inbound.rs` shows as modified but has an empty diff (line-ending
+  phantom): never stage it. **Running:** `wf_638c1519-f8d` (task `wiz1aag43`): three sonnet executors on the
+  audit's clusters (fe-database 2/6/8-gap, fe-sync 7/13/14/15, fe-api 9/2), then one builder (cargo check on the
+  touched crates, three commits), then an opus read-only verifier that tries to defeat each fix and answers
+  whether anything authorizes from op_log rows. Resume: `Workflow({scriptPath: "<session dir>/workflows/scripts/
+  round4-security-fixes-wf_638c1519-f8d.js", resumeFromRunId: "wf_638c1519-f8d"})`. **After it:** if the
+  verifier reports every entry FIXED, the swarm code may be pushed (`git push -4 origin main`; about 215 commits;
+  CI then runs the three-crate sweep with `--no-fail-fast` for the first time on this code: expect test
+  failures and read every `test result:` line); then round 5 from the 32 partials + critics' gaps; §7 step 3
+  whole-surface review; tests when the user names batches.
+- **2026-11-14 00:05 MST — ROUND 4 SWARM DONE; REFINE (compile) PASS (finished 01:15, see above); `main` CI GREEN on `2b289db1`.**
   Swarm `wf_004b3e4d-8b4`: 210 slices = **178 done / 32 partial / 0 failed, blocked or skipped**; 421 agents,
   48.8M subagent tokens, 2 h 51 min; about 200 commits public, 24 private, all LOCAL and **never compiled**. Nine
   commits were held (five leak-scan hits, all false positives or reworded: `stripe` matches egui's `.striped`;
