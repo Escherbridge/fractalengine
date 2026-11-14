@@ -14,17 +14,19 @@ held the key's required level at the version's hlc (QA-0165, role at write time)
 Normative design: `conductor/tracks/per_key_clock_20261113/spec.md`. This file says how the module
 implements it and where each rule lives.
 
-| File | Owns | Filled by |
-|---|---|---|
-| `wire.rs` | `_fe_clock` parse/encode, row <-> key split | CLOCK-03 |
-| `merge.rs` | pure fold: `winner`, `upsert_own`, canonical bytes | CLOCK-03 |
-| `store.rs` | LOCAL table reads, in-transaction write fragments | CLOCK-03 |
-| `migrate.rs` | `seed_legacy_floor` | CLOCK-03 |
-| `judge.rs` | `VerseView`, `admissible` | CLOCK-05 (stub until then) |
-| `publish.rs` | `publish_clocked_row` | CLOCK-08 (stub until then) |
-| `rejudge.rs` | `rejudge_authors` | CLOCK-10 (stub until then) |
+| File | Owns |
+|---|---|
+| `wire.rs` | `_fe_clock` parse/encode, row <-> key split |
+| `merge.rs` | pure fold: `winner`, `upsert_own`, canonical bytes |
+| `store.rs` | LOCAL table reads, in-transaction write fragments, `author_frontier` |
+| `migrate.rs` | `seed_legacy_floor` (run at DB startup, `lib.rs`) |
+| `judge.rs` | `VerseView`, `admissible`, `required_level` |
+| `publish.rs` | `publish_clocked_row` / `publish_clocked_value` (outbound stamping) |
+| `rejudge.rs` | `rejudge_authors[_detailed]`, `rejudge_local` + `take_local` outbox |
 
-`mod.rs` carries `#![allow(dead_code)]` while the seams are unwired; CLOCK-13 removes it.
+Inbound clocked verse/fractal/petal rows are applied (and re-materialized) by `handlers/clocked_row.rs`;
+inbound clocked node rows by `handlers/scene_publication/inbound.rs`. `mod.rs` still carries
+`#![allow(dead_code, unused_imports)]` (not yet removed; some re-exports are unused outside tests).
 
 ## §wire
 
@@ -86,7 +88,7 @@ _fe_clock = { "v": 1, "author": "<entry author DID>",
 
 ## §storage
 
-LOCAL tables, never replicated (DDL lands in `schema.rs` through I-DB-1):
+LOCAL tables, never replicated:
 
 | Table | Columns | Rule |
 |---|---|---|
@@ -113,26 +115,46 @@ LOCAL tables, never replicated (DDL lands in `schema.rs` through I-DB-1):
   `author_frontier(db, verse_id, did)` = max positive hlc over the author's `row_field_version` rows in
   the verse and the `node_scene_clock` rows it published on that verse's nodes (spec §3.7).
 
-Required indexes (I-DB-1): UNIQUE `(tbl, rid, field_key, author)` on `row_field_version`, plus
+Required indexes: UNIQUE `(tbl, rid, field_key, author)` on `row_field_version`, plus
 `(verse_id, author)` for re-judge and the frontier; UNIQUE `(tbl, rid, field_key)` on `row_field_clock`,
 plus `(tbl, rid)`.
 
 ## §admission
 
-`judge::admissible` (CLOCK-05) is true when the author is the verse owner, the version is the legacy
-floor (`FieldVersion::is_legacy_floor`), or `fe_policy` `held_at(owner, admitted, author, scope,
-level(key), hlc)` holds. There is no conjunction with the author's current role. `VerseView` holds the
-owner and admitted statements so a row's keys are judged against one snapshot. Inbound admission of a
-clocked row is only a membership floor; past it every version is stored and an inadmissible one simply
-never wins. Levels: verse governance keys (`default_access`, `ts_*`) need Manager at verse scope, petal
-`hexon_manifest` needs Manager at petal scope, every other key Editor at the row's deepest scope.
+`judge::admissible` is true when the author is the verse owner, the version is the legacy floor
+(`FieldVersion::is_legacy_floor`), or `fe_policy::held_at` (through `role_grants::held_at_write_in`) holds for
+(owner, admitted statements, author, row scope, `required_level`, hlc). An anonymous author, or a verse whose
+owner is not known yet, is never admissible (`VerseView::settled`). There is no conjunction with the
+author's current role. A row whose scope cannot be resolved locally, or sits in another verse, admits
+nothing but the owner and the floor. `VerseView` holds the owner and admitted statements so a row's keys are
+judged against one snapshot (`admits_at` is the sync form). Inbound clocked rows are parsed by the strictest
+reader (`parse_clocked_row`); every version is stored and an inadmissible one simply never wins.
+Levels (`required_level`): verse `namespace_id` and `VERSE_GOVERNANCE_FIELDS` and petal `hexon_manifest`
+need Manager; every other key Editor; the scope is always the row's deepest.
+
+## §publish
+
+`publish_clocked_row(db, blobs, sender, local_did, verse_id, table, rid, restamp)` reads the committed row
+and calls `publish_clocked_value`. With `restamp` it stamps each key whose value differs from its stored
+winner as a new local own version (`stamp_changed_keys`), then writes `_fe_clock` (own versions only,
+`encode_own`, at most `MAX_OWN_KEYS`) into the replicated row bytes. No sender is a no-op; an empty local
+DID is refused. Petal rows go out with the petal hint (`replicate_row_with_petal`).
 
 ## §rejudge
 
-`rejudge::rejudge_authors` (CLOCK-10) recomputes winners of every row `load_rows_by_authors` returns
-(cap 4096 rows per call, the remainder warned and handled by a later call) and rewrites the row and its
-`row_field_clock` cache in one verified transaction. It is a pure function of stored versions and
-admitted statements, so it converges on every peer. Triggers are listed in spec §3.8.
+`rejudge::rejudge_authors_detailed` recomputes winners of every row `load_rows_by_authors` returns for the
+given authors. Nodes go through `scene_publication::rejudge` (a node with stored versions is recomputed from
+them; a legacy node without versions keeps the candidate path); verse/fractal/petal go through
+`clocked_row::rematerialize`, which rewrites the row and its `row_field_clock` cache in one fenced,
+verified transaction and never strips a required column's last value. It is a pure function of stored
+versions and admitted statements, so it converges on every peer. Rows are judged in full: above
+`REJUDGE_ROW_CAP` (4096) the call warns and yields to the runtime between chunks, it never skips a tail
+(a skipped tail would stay unjudged, fail-open). A verse with no known owner is skipped with a warning
+(nothing is admissible yet, demoting would erase every key). One row's failure is warned and does not block
+the others. Local role statements call `rejudge_local`, which holds the result in a bounded outbox
+(`LOCAL_OUTBOX_CAP`) until `inbound_admissions` drains it with `take_local` on the next author-role retry.
+Inbound role statements trigger it from `replicated_row.rs`. The revoke frontier a local revoke uses is
+`store::author_frontier` (called from `role_grants.rs`). Triggers: spec §3.8.
 
 ## §legacy-migration
 

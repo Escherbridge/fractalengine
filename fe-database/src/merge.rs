@@ -48,8 +48,7 @@ fn transform_key(edit_seq: i64, position: Option<(f64, f64)>, row: &serde_json::
     (edit_seq, values)
 }
 
-/// Whether `incoming` beats `local`: higher `edit_seq`, else the larger value
-/// vector under `f64::total_cmp`. Every peer evaluates the same pair the same way.
+/// Legacy markerless-row transform register (QA-0126: clocked rows merge per key in `field_clock`).
 fn incoming_transform_wins(incoming: &(i64, Vec<f64>), local: &(i64, Vec<f64>)) -> bool {
     match incoming.0.cmp(&local.0) {
         std::cmp::Ordering::Equal => {
