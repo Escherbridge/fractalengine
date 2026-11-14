@@ -7,7 +7,9 @@ use std::{
 
 use bevy_egui::egui;
 use fe_runtime::{
-    entity_access::{EntityAccessAction, EntityAccessSnapshot, EntityAccessTarget},
+    entity_access::{
+        EntityAccessAction, EntityAccessSnapshot, EntityAccessTarget, EntityGrantRecord,
+    },
     messages::DbCommand,
 };
 
@@ -306,15 +308,29 @@ pub(crate) fn role_controls(
     let owner =
         fe_database::RoleLevel::from(snapshot.local_role.as_str()) == fe_database::RoleLevel::Owner;
     let enabled = !state.waiting() && !state.read_required && !state.invitation.busy();
-    ui.label("Effective roles include inherited access and grants from other managers.");
-    for (did, role) in &snapshot.roles {
+    let inherited = inherited_label(state.target.as_ref().map(|target| target.entity_type));
+    let mut order: Vec<usize> = (0..snapshot.roles.len()).collect();
+    order.sort_by_cached_key(|&index| {
+        let (did, role) = &snapshot.roles[index];
+        (role_rank(role), peer_label(peers, did))
+    });
+    for (did, role) in order.into_iter().map(|index| &snapshot.roles[index]) {
         ui.push_id(did,|ui|{
             ui.separator();
-            let peer=peers.and_then(|registry|registry.get(did));
-            let name=peer.and_then(|p|p.display_name.as_deref()).unwrap_or(did);
-            ui.add(egui::Label::new(name).truncate()).on_hover_text(did);
+            let online=peers.and_then(|registry|registry.get(did)).is_some_and(|p|p.is_online);
+            ui.horizontal(|ui|{
+                online_dot(ui,online);
+                ui.add(egui::Label::new(peer_label(peers,did)).truncate()).on_hover_text(did);
+                if role=="owner" {ui.strong("Owner");}
+            });
             ui.label(format!("Effective role: {role}"));
             if role=="owner" {ui.label("Ownership is managed separately.");return;}
+            match strongest_live_grant(&snapshot.grants,did) {
+                Some("none") => {ui.label("Blocked here");}
+                Some(granted) => {ui.label(format!("Granted here: {granted}"));}
+                None if role!="none" => {ui.colored_label(theme::TEXT_DIM,inherited);}
+                None => {}
+            }
             ui.add_enabled_ui(enabled,|ui|{
                 let draft=state.role_drafts.entry(did.clone()).or_insert_with(||role.clone());
                 egui::ComboBox::from_id_salt("role_draft").selected_text(draft.as_str()).show_ui(ui,|ui|{
@@ -335,7 +351,109 @@ pub(crate) fn role_controls(
             });
         });
     }
+    ui.separator();
+    grant_record(ui, snapshot, peers);
     action
+}
+
+/// Where an effective role without a grant at this scope comes from, by target depth.
+fn inherited_label(entity_type: Option<fe_runtime::messages::EntityType>) -> &'static str {
+    use fe_runtime::messages::EntityType;
+    match entity_type {
+        Some(EntityType::Verse) => "Inherited from verse default access",
+        Some(EntityType::Fractal) => "Inherited from verse",
+        Some(EntityType::Petal) | None => "Inherited from fractal or verse",
+    }
+}
+
+/// Privilege order for listing: owner first, none last.
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "owner" => 0,
+        "manager" => 1,
+        "editor" => 2,
+        "viewer" => 3,
+        _ => 4,
+    }
+}
+
+/// Strongest unrevoked role any grantor states for `did` at exactly this scope.
+fn strongest_live_grant<'a>(grants: &'a [EntityGrantRecord], did: &str) -> Option<&'a str> {
+    grants
+        .iter()
+        .filter(|grant| !grant.revoked && grant.peer_did == did)
+        .map(|grant| grant.role.as_str())
+        .min_by_key(|role| role_rank(role))
+}
+
+/// Registry display name, else a char-safe shortened DID (stored DIDs may be non-ASCII).
+fn peer_label(peers: Option<&fe_runtime::PeerRegistry>, did: &str) -> String {
+    if let Some(name) = peers
+        .and_then(|registry| registry.get(did))
+        .and_then(|entry| entry.display_name.as_deref())
+    {
+        return name.to_owned();
+    }
+    let count = did.chars().count();
+    if count <= 12 {
+        return did.to_owned();
+    }
+    let head: String = did.chars().take(8).collect();
+    let tail: String = did.chars().skip(count - 4).collect();
+    format!("{head}...{tail}")
+}
+
+/// Presence dot: filled when online, hollow when offline or unknown.
+fn online_dot(ui: &mut egui::Ui, online: bool) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    if online {
+        ui.painter()
+            .circle_filled(rect.center(), 4.0, theme::STATUS_ONLINE_DOT);
+    } else {
+        ui.painter().circle_stroke(
+            rect.center(),
+            3.5,
+            egui::Stroke::new(1.0, theme::STATUS_OFFLINE_DOT),
+        );
+    }
+    response.on_hover_text(if online { "Online" } else { "Offline" });
+}
+
+/// Collapsible list of the latest statement per (peer, grantor) at this scope.
+fn grant_record(
+    ui: &mut egui::Ui,
+    snapshot: &EntityAccessSnapshot,
+    peers: Option<&fe_runtime::PeerRegistry>,
+) {
+    egui::CollapsingHeader::new(format!("Grant record ({})", snapshot.grants.len()))
+        .id_salt("entity_grant_record")
+        .default_open(false)
+        .show(ui, |ui| {
+            if snapshot.grants.is_empty() {
+                ui.label("No grants stated at this scope.");
+                return;
+            }
+            ui.label("Latest statement per grantor, newest first.");
+            for grant in &snapshot.grants {
+                let status = if grant.revoked { "revoked" } else { grant.role.as_str() };
+                let grantor = if grant.grantor_did == snapshot.local_did {
+                    "you".to_owned()
+                } else {
+                    peer_label(peers, &grant.grantor_did)
+                };
+                ui.add(
+                    egui::Label::new(format!(
+                        "{}: {status}, granted by {grantor}",
+                        peer_label(peers, &grant.peer_did)
+                    ))
+                    .truncate(),
+                )
+                .on_hover_text(format!(
+                    "{} by {} (clock {})",
+                    grant.peer_did, grant.grantor_did, grant.hlc
+                ));
+            }
+        });
 }
 
 pub(crate) fn token_controls(
@@ -380,7 +498,11 @@ pub(crate) fn token_controls(
                 .on_hover_text(&token.scope);
             ui.add(egui::Label::new(format!("Issuer: {}", token.sub)).truncate())
                 .on_hover_text(&token.sub);
-            ui.label(format!("Expires: {}", token.expires_at));
+            ui.label(crate::panels::inspector::token_expiry_label(
+                &token.expires_at,
+                chrono::Utc::now(),
+            ))
+            .on_hover_text(&token.expires_at);
             ui.add_enabled_ui(enabled, |ui| {
                 if crate::panels::widgets::confirm_button(
                     ui,
@@ -732,6 +854,13 @@ pub(crate) fn role_confirmation_refresh_journey(
         }
         texts
     };
+    frame(manager, vec![]);
+    let first = frame(manager, vec![]);
+    assert!(
+        first.iter().any(|(text, _)| text.starts_with("Inherited"))
+            && first.iter().all(|(text, _)| !text.starts_with("Granted here")),
+        "An effective role with no grant at this scope reads as inherited"
+    );
     for (label, confirm) in [
         ("Save role...", "Confirm role change"),
         ("Block access here...", "Confirm revoke"),
@@ -807,4 +936,51 @@ pub(crate) fn role_confirmation_refresh_journey(
             "Rearming after refresh emits no mutation"
         );
     }
+    if let ActiveDialog::EntitySettings { access, .. } = &mut manager.active_dialog {
+        access.refresh();
+    }
+    service(manager, sender, None);
+    let DbCommand::EntityAccess {
+        request_id,
+        action: EntityAccessAction::Load { .. },
+        ..
+    } = receiver.try_recv().expect("Refresh queues a read")
+    else {
+        panic!("Refresh cannot mutate")
+    };
+    let mut granted = snapshot.clone();
+    let (peer, role) = granted
+        .roles
+        .iter_mut()
+        .find(|(_, role)| role != "owner")
+        .expect("Fixture lists a non-owner peer");
+    *role = "editor".into();
+    let peer = peer.clone();
+    granted.grants = vec![
+        EntityGrantRecord {
+            peer_did: peer.clone(),
+            grantor_did: granted.local_did.clone(),
+            role: "editor".into(),
+            revoked: false,
+            hlc: 2,
+        },
+        EntityGrantRecord {
+            peer_did: peer,
+            grantor_did: "did:key:former-manager".into(),
+            role: "manager".into(),
+            revoked: true,
+            hlc: 1,
+        },
+    ];
+    apply(manager, target, &request_id, &Ok(granted));
+    let labels = frame(manager, vec![]);
+    assert!(
+        labels.iter().any(|(text, _)| text == "Granted here: editor")
+            && labels.iter().all(|(text, _)| !text.starts_with("Inherited")),
+        "A live grant at this scope wins over a revoked one and is not labelled inherited"
+    );
+    assert!(
+        labels.iter().any(|(text, _)| text == "Grant record (2)"),
+        "The grant record lists every current statement at this scope"
+    );
 }

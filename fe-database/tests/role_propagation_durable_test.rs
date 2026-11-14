@@ -290,8 +290,15 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     assert_eq!(initial.local_role,"owner");assert!(initial.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"));
     let assigned=access("access-assign",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("checked assignment");
     assert!(assigned.roles.iter().any(|(did,role)|did==PEER&&role=="editor"));
+    let peer_grants=|snapshot:&fe_runtime::entity_access::EntityAccessSnapshot|snapshot.grants.iter().filter(|g|g.peer_did==PEER).cloned().collect::<Vec<_>>();
+    let granted=peer_grants(&assigned);
+    assert_eq!(granted.len(),1,"one statement per (scope, peer, grantor) at exactly this petal: {granted:?}");
+    assert_eq!((granted[0].grantor_did.as_str(),granted[0].role.as_str(),granted[0].revoked),(local_did().as_str(),"editor",false));
     let revoked=access("access-revoke",Access::Revoke {peer_did:PEER.into()}).expect("checked revoke");
     assert!(revoked.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"),"an owner revoke blocks the cell: the peer keeps only the verse default, never the revoked grant");
+    let after_revoke=peer_grants(&revoked);
+    assert_eq!(after_revoke.len(),1,"the revoke replaces the same key's statement: {after_revoke:?}");
+    assert!(after_revoke[0].revoked&&after_revoke[0].grantor_did==local_did()&&after_revoke[0].hlc>granted[0].hlc,"the grant record shows the revoke while the effective role stays inherited");
     let reopened=access("access-reopen",Access::Load {peer_dids:vec![]}).expect("reopened Access tab");
     assert!(reopened.roles.iter().any(|(did,role)|did==PEER&&role=="viewer"),"QA-0162: a revoked member absent from the peer registry stays listed so it can be re-granted");
     let regranted=access("access-regrant",Access::Assign {peer_did:PEER.into(),role:"editor".into()}).expect("re-grant after revoke");

@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use fe_runtime::entity_access::{EntityAccessAction, EntityAccessSnapshot, EntityAccessTarget};
+use fe_runtime::entity_access::{
+    EntityAccessAction, EntityAccessSnapshot, EntityAccessTarget, EntityGrantRecord,
+};
 use serde_json::{json, Value};
 
 use crate::{repo::Db, BlobStoreHandle, ReplicationSender};
@@ -169,6 +171,7 @@ pub(crate) async fn load(
     records.retain(|record| scope_contains(&parts, &record.scope));
     let mut tokens = super::api_token::records_to_info(records);
     tokens.truncate(MAX_TOKENS);
+    let grants = grant_record(db, &target.scope).await?;
     Ok(EntityAccessSnapshot {
         local_did: local_did.into(),
         local_role,
@@ -178,7 +181,33 @@ pub(crate) async fn load(
         notice: None,
         invite_link: None,
         minted: None,
+        grants,
     })
+}
+
+/// Admitted statements at exactly `scope`, newest first, bounded to [`MAX_PEERS`].
+async fn grant_record(db: &Db, scope: &str) -> anyhow::Result<Vec<EntityGrantRecord>> {
+    let mut statements = crate::role_grants::load_scope_statements(db, scope).await?;
+    statements.retain(|stmt| {
+        stmt.scope == scope && bounded_identity(&stmt.peer_did) && bounded_identity(&stmt.grantor_did)
+    });
+    statements.sort_by(|a, b| {
+        b.hlc
+            .cmp(&a.hlc)
+            .then_with(|| a.peer_did.cmp(&b.peer_did))
+            .then_with(|| a.grantor_did.cmp(&b.grantor_did))
+    });
+    statements.truncate(MAX_PEERS);
+    Ok(statements
+        .into_iter()
+        .map(|stmt| EntityGrantRecord {
+            role: stmt.role.as_str().to_owned(),
+            peer_did: stmt.peer_did,
+            grantor_did: stmt.grantor_did,
+            revoked: stmt.revoked,
+            hlc: stmt.hlc,
+        })
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)] // one entity-access transaction input set

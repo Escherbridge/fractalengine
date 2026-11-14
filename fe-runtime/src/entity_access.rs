@@ -47,6 +47,18 @@ pub struct EntityAccessSnapshot {
     pub notice: Option<String>,
     pub invite_link: Option<String>,
     pub minted: Option<EntityMintedToken>,
+    /// Admitted role statements at exactly this scope, newest first, at most 256.
+    pub grants: Vec<EntityGrantRecord>,
+}
+
+/// One current (latest) role statement per `(scope, peer, grantor)` key; not a full op log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityGrantRecord {
+    pub peer_did: String,
+    pub grantor_did: String,
+    pub role: String,
+    pub revoked: bool,
+    pub hlc: u64,
 }
 
 #[derive(Clone)]
@@ -77,6 +89,7 @@ impl std::fmt::Debug for EntityAccessSnapshot {
                 &self.invite_link.as_ref().map(|_| "[redacted]"),
             )
             .field("minted", &self.minted)
+            .field("grant_count", &self.grants.len())
             .finish_non_exhaustive()
     }
 }
