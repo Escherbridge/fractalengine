@@ -46,8 +46,9 @@ pub fn search_announcements(
         .into_iter()
         .filter(|ann| {
             // Kind filter
+            // Parsed, so legacy peers' kind spellings ("gpx", "TerrainTileset") still match.
             if let Some(ref kind) = query.kind {
-                if ann.hexon_type != kind.to_string() {
+                if ann.hexon_type.parse::<HexonType>().ok().as_ref() != Some(kind) {
                     return false;
                 }
             }
@@ -217,6 +218,23 @@ mod tests {
         assert_eq!(results[0].manifest.hexon_id, "forest-terrain");
         // Two peers host it
         assert_eq!(results[0].hosting_peers.len(), 2);
+
+        // A legacy peer's kind spelling ("gpx") still matches the unified type filter.
+        let mut store = store;
+        store.record(crate::p2p::announce::HexonAnnouncement {
+            hexon_uri: "morning-run@0.1.0".to_string(),
+            manifest_hash: "h".to_string(),
+            version: "0.1.0".to_string(),
+            hexon_type: "gpx".to_string(),
+            tags: vec![],
+            hosting_peer_did: "did:key:legacy".to_string(),
+            approx_size_bytes: 1,
+            announced_at: "2026-01-01T00:00:00Z".to_string(),
+        });
+        let gpx = SearchQuery { kind: Some(HexonType::GpxCollection), ..Default::default() };
+        let results = search_announcements(&store, &gpx);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].manifest.hexon_type, HexonType::GpxCollection);
     }
 
     #[test]

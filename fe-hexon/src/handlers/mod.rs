@@ -34,12 +34,23 @@ pub struct InstallResult {
     pub extras: InstallExtras,
 }
 
+/// Refuse types with their own install path (Script, PetalSnapshot, Plugin); call before any blob or row write.
+pub fn check_content_installable(hexon_type: &HexonType) -> Result<(), anyhow::Error> {
+    match hexon_type {
+        HexonType::Script | HexonType::PetalSnapshot | HexonType::Plugin => Err(anyhow::anyhow!(
+            "hexon type {hexon_type} is not installed as content"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Dispatch handler based on the hexon type.
 pub fn handle_install(
     package: &HexonPackageData,
     petal_id: &str,
     blob_store: &FsBlobStore,
 ) -> Result<InstallResult, anyhow::Error> {
+    check_content_installable(&package.manifest.hexon_type)?;
     match &package.manifest.hexon_type {
         HexonType::Model => model::handle_model_install(package, petal_id, blob_store),
         HexonType::Material => material::handle_material_install(package, petal_id, blob_store),
@@ -49,11 +60,6 @@ pub fn handle_install(
             gpx_collection::handle_gpx_install(package, petal_id, blob_store)
         }
         HexonType::Sound => sound::handle_sound_install(package, petal_id, blob_store),
-        // Script and PetalSnapshot have their own install paths; this dispatcher refuses them.
-        HexonType::Script | HexonType::PetalSnapshot => Err(anyhow::anyhow!(
-            "hexon type {} has no install handler here",
-            package.manifest.hexon_type
-        )),
         _ => {
             // Theme, Scene, Bundle, ... — no special handling yet
             Ok(InstallResult {

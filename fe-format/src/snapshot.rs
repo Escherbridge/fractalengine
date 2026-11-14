@@ -181,7 +181,8 @@ pub fn export_petal_snapshot(
     }
 
     let manifest_json = canonical_json_bytes(&manifest).context("canonicalising manifest.json")?;
-    let entries_json = serde_json::to_vec(&EntryCatalog { entries }).context("entries.json")?;
+    // Canonical (sorted keys): `sub_assets` is a HashMap, so plain serde output is not byte-stable.
+    let entries_json = canonical_json_bytes(&EntryCatalog { entries }).context("entries.json")?;
     let meta_json = serde_json::to_vec(meta).context("snapshot meta")?;
     let petal_json = if data.petal.is_null() {
         b"{}".to_vec()
@@ -235,6 +236,10 @@ fn read_required(
 
 /// Read a petal snapshot hexon, verifying blob hashes and op-log order.
 pub fn import_petal_snapshot(bytes: &[u8]) -> Result<ImportedPetalSnapshot> {
+    // An archive that claims a seal must verify (fail closed); an unsealed one reads as before.
+    crate::integrity::verify_archive(bytes, &crate::integrity::IntegrityPolicy::VerifyIfSealed)
+        .map_err(anyhow::Error::from)
+        .context("petal snapshot integrity check")?;
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).context("failed to open ZIP archive")?;
     limits::check_entry_count(archive.len())?;
@@ -322,6 +327,7 @@ pub fn import_petal_snapshot(bytes: &[u8]) -> Result<ImportedPetalSnapshot> {
         }
     }
     blob_names.sort();
+    blob_names.dedup();
     let mut blobs = Vec::with_capacity(blob_names.len());
     for name in blob_names {
         let body = read_required(&mut archive, &name, binary_cap, &mut budget)?;
@@ -479,6 +485,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bytes, again);
+
+        // Sealed: the snapshot survives a seal, and a sealed copy with an edited state table is refused.
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let sealed = crate::integrity::seal(&bytes, &key).expect("seal");
+        assert_eq!(import_petal_snapshot(&sealed).expect("sealed import").data, data);
+        let rooms = "snapshot/state/rooms.json";
+        let mut source = zip::ZipArchive::new(Cursor::new(&sealed[..])).unwrap();
+        let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..source.len() {
+            let raw = source.by_index_raw(index).unwrap();
+            if raw.name() == rooms {
+                drop(raw);
+                out.start_file(rooms, zip::write::SimpleFileOptions::default()).unwrap();
+                out.write_all(b"[]").unwrap();
+            } else {
+                out.raw_copy_file(raw).unwrap();
+            }
+        }
+        let edited = out.finish().unwrap().into_inner();
+        assert!(import_petal_snapshot(&edited).is_err(), "edited table in a sealed snapshot");
     }
 
     #[test]

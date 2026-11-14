@@ -36,7 +36,8 @@ pub enum HexonType {
     PetalSnapshot,
 }
 
-/// Every `HexonType` variant with its snake_case wire name.
+/// Every `HexonType` variant with its snake_case wire name (test table).
+#[cfg(test)]
 const HEXON_TYPE_NAMES: [(HexonType, &str); 16] = [
     (HexonType::Scene, "scene"),
     (HexonType::Model, "model"),
@@ -68,25 +69,44 @@ impl std::fmt::Display for UnknownHexonType {
 
 impl std::error::Error for UnknownHexonType {}
 
+impl HexonType {
+    /// The snake_case wire name (exhaustive, so a new variant cannot render as an unknown name).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HexonType::Scene => "scene",
+            HexonType::Model => "model",
+            HexonType::Material => "material",
+            HexonType::Skybox => "skybox",
+            HexonType::Terrain => "terrain",
+            HexonType::TerrainTileset => "terrain_tileset",
+            HexonType::GpxCollection => "gpx_collection",
+            HexonType::Surface => "surface",
+            HexonType::Sound => "sound",
+            HexonType::VisualLayer => "visual_layer",
+            HexonType::Theme => "theme",
+            HexonType::Bundle => "bundle",
+            HexonType::ObservationBatch => "observation_batch",
+            HexonType::Plugin => "plugin",
+            HexonType::Script => "script",
+            HexonType::PetalSnapshot => "petal_snapshot",
+        }
+    }
+}
+
 impl std::fmt::Display for HexonType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = HEXON_TYPE_NAMES
-            .iter()
-            .find(|(variant, _)| variant == self)
-            .map(|(_, name)| *name)
-            .unwrap_or("unknown");
-        f.write_str(name)
+        f.write_str(self.as_str())
     }
 }
 
 impl std::str::FromStr for HexonType {
     type Err = UnknownHexonType;
 
-    /// Case-insensitive; accepts snake_case names plus legacy fe-hexon kind spellings.
+    /// Case-insensitive; accepts snake_case names (via serde, so every variant) plus legacy fe-hexon kind spellings.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let lowered = text.to_ascii_lowercase();
-        if let Some((variant, _)) = HEXON_TYPE_NAMES.iter().find(|(_, name)| *name == lowered) {
-            return Ok(variant.clone());
+        if let Ok(variant) = serde_json::from_value::<HexonType>(serde_json::Value::String(lowered.clone())) {
+            return Ok(variant);
         }
         match lowered.as_str() {
             "gpx" | "gpxcollection" => Ok(HexonType::GpxCollection),

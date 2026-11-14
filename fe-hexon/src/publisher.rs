@@ -442,7 +442,7 @@ impl PluginHexonBuilder {
         };
 
         let options =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut members: Vec<(&str, Vec<u8>)> = vec![
             (
                 fe_format::integrity::MANIFEST_PATH,
