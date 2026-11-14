@@ -220,7 +220,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_dialog_default_is_none() {
+    fn active_dialog_starts_empty_and_tree_appearance_actions_stay_visible() {
         assert!(matches!(ActiveDialog::default(), ActiveDialog::None));
+
+        // QA-0112: Save/Cancel/Reset sit inside the window and the screen at small screens.
+        use crate::panels::tree_appearance::{render, AppearanceDraft, EntryKind};
+        use crate::ui_shell::layout_policy;
+        use bevy_egui::egui;
+        let settings_default = crate::settings::AppSettings::default();
+        for (width, height, scale) in [(1280.0_f32, 720.0_f32, 1.0_f32), (1024.0, 640.0, 2.0)] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            ctx.enable_accesskit();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width / scale, height / scale));
+            let mut ui_mgr = crate::actions::UiManager::default();
+            let mut settings = settings_default.clone();
+            ui_mgr.open_dialog(ActiveDialog::TreeAppearance {
+                draft: AppearanceDraft::new(EntryKind::Petal, "petal-1", "Survey petal", &settings),
+            });
+            let hierarchy = crate::verse_manager::VerseManager::default();
+            // Frame 1 is egui's window sizing pass; frame 2 is the first visible layout.
+            let mut output = None;
+            for _ in 0..2 {
+                layout_policy::begin_frame(&ctx, true);
+                output = Some(ctx.run(
+                    egui::RawInput { screen_rect: Some(screen), ..Default::default() },
+                    |ctx| {
+                        layout_policy::begin_ui_pass(ctx);
+                        layout_policy::apply_style(ctx);
+                        render(ctx, &mut ui_mgr, &mut settings, &hierarchy);
+                    },
+                ));
+            }
+            let output = output.unwrap();
+            let observed = layout_policy::observations(&ctx);
+            let tree = &output.platform_output.accesskit_update.as_ref().unwrap().nodes;
+            for label in [
+                "Save tree appearance",
+                "Cancel tree appearance",
+                "Reset tree appearance draft to default",
+            ] {
+                let id = tree
+                    .iter()
+                    .find_map(|(id, node)| (node.label() == Some(label)).then_some(id.0))
+                    .unwrap_or_else(|| panic!("{label} missing at {width}x{height} scale {scale}"));
+                let control = observed
+                    .controls
+                    .iter()
+                    .find(|control| control.id == id)
+                    .unwrap_or_else(|| panic!("{label} has no observed rect"));
+                assert!(
+                    control.clip.contains_rect(control.rect),
+                    "{label} {:?} must lie inside the window clip {:?} at {width}x{height} scale {scale}",
+                    control.rect,
+                    control.clip
+                );
+                assert!(
+                    screen.contains_rect(control.rect),
+                    "{label} {:?} must lie on screen {screen:?}",
+                    control.rect
+                );
+            }
+            assert!(
+                matches!(ui_mgr.active_dialog, ActiveDialog::TreeAppearance { .. }),
+                "rendering alone never closes the dialog"
+            );
+        }
     }
 }

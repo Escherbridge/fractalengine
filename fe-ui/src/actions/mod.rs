@@ -2684,11 +2684,13 @@ mod tests {
         crate::dialogs::entity_access::service(&mut mgr,&tx,Some(&peers));
         let DbCommand::EntityAccess {target,request_id:read_id,action:Access::Load {peer_dids}}=rx.try_recv().unwrap() else{panic!("Expected target-bound known-peer read")};
         assert_eq!(peer_dids,vec!["did:key:known-peer"]);
-        let snapshot=EntityAccessSnapshot {local_did:"did:key:owner".into(),local_role:"owner".into(),roles:vec![("did:key:known-peer".into(),"viewer".into())],tokens:vec![],tokens_truncated:false,notice:None,invite_link:None,minted:None};
+        let snapshot=EntityAccessSnapshot {local_did:"did:key:owner".into(),local_role:"owner".into(),roles:vec![("did:key:known-peer".into(),"viewer".into())],tokens:vec![],tokens_truncated:false,notice:None,invite_link:None,minted:None,grants:vec![]};
         crate::dialogs::entity_access::apply(&mut mgr,&target,"foreign-nonce",&Ok(snapshot.clone()));
         if let ActiveDialog::EntitySettings {access,..}=&mgr.active_dialog {assert!(access.snapshot.is_none()&&access.waiting());}
         crate::dialogs::entity_access::apply(&mut mgr,&target,&read_id,&Ok(snapshot.clone()));
         assert!(!mgr.target_access_pending());
+        // No grant at this scope: the known peer reads "Inherited"; the helper then asserts
+        // "Granted here", the grant record and the sequential Managers-only preset (UI-07/UI-08).
         crate::dialogs::entity_access::role_confirmation_refresh_journey(&mut mgr,&tx,&rx,&target,&snapshot);
         {
             let issuer = fe_identity::NodeKeypair::generate().to_did_key();

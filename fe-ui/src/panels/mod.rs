@@ -10,6 +10,8 @@
 //! (`tool_options`). See `fe-ui/src/panels/AGENTS.md`.
 
 pub(crate) mod gis_panel;
+/// FR-3 verse/fractal/petal info card for the Inspector; see AGENTS.md hierarchy info.
+pub mod hierarchy_info;
 pub(crate) mod inspector;
 /// Capability-consent modal for plugin installs; see `fe-ui/src/AGENTS.md` §plugin-consent.
 pub mod plugin_install_panel;
@@ -914,6 +916,7 @@ mod tests {
                 Tool::Pen,
                 Tool::Brush,
                 Tool::Measure,
+                Tool::Road,
             ] {
                 render(Some(RightSidebarSection::Options), t);
             }

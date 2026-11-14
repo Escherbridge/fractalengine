@@ -316,6 +316,8 @@ pub struct InspectorFormState {
     pub field_def_add_type_buf: String,
     pub field_def_add_desc_buf: String,
     pub field_def_add_required: bool,
+    /// FR-3 hierarchy card inputs, refreshed each frame by `gardener_ui_system`.
+    pub(crate) hierarchy_card: crate::panels::inspector::HierarchyCardInputs,
 }
 
 impl InspectorFormState {
@@ -377,6 +379,7 @@ impl Default for InspectorFormState {
             field_def_add_type_buf: "string".into(),
             field_def_add_desc_buf: String::new(),
             field_def_add_required: false,
+            hierarchy_card: Default::default(),
         }
     }
 }
@@ -418,7 +421,7 @@ pub struct CameraFocusTarget {
 // Viewport cursor world position (camera ray → Y=0 plane intersection)
 // ---------------------------------------------------------------------------
 
-/// Tracks the current cursor's world-space position projected onto Y=0.
+/// Tracks the cursor's world-space ground point (terrain surface, else Y=0; D-38).
 /// Updated every frame by `update_viewport_cursor_world`.
 /// Used by the context menu to place imported GLB models at the correct spot.
 #[derive(Resource, Default)]
@@ -694,6 +697,7 @@ mod tests {
             Tool::Pen,
             Tool::Brush,
             Tool::Measure,
+            Tool::Road,
         ] {
             tool.activate(t, &mut right);
             assert_eq!(tool.active_tool, t, "{t:?} should activate");
@@ -727,6 +731,7 @@ mod tests {
             Tool::Pen,
             Tool::Brush,
             Tool::Measure,
+            Tool::Road,
         ] {
             let (mut tool, mut right) = (ToolState::default(), RightSidebarState::default());
             tool.activate(t, &mut right);
@@ -899,6 +904,7 @@ impl Plugin for GardenerConsolePlugin {
         app.init_resource::<crate::native_accessibility::navigation_ui::NavigationReads>();
         app.init_resource::<ToolState>();
         app.init_resource::<InspectorFormState>();
+        app.init_resource::<crate::panels::hierarchy_info::InspectedOverride>();
         app.init_resource::<fe_runtime::app::RuntimeApiEndpoint>();
         app.init_resource::<LocalUserRole>();
         // Startup identity-degradation banner (src/AGENTS.md §identity-tiers).
@@ -1086,7 +1092,11 @@ impl Plugin for GardenerConsolePlugin {
         // that system writes (no one-frame lag in the panel-edge gating).
         app.add_systems(
             EguiPrimaryContextPass,
-            crate::viewport_labels::draw_viewport_point_labels.after(gardener_ui_system),
+            (
+                crate::viewport_labels::draw_viewport_point_labels.after(gardener_ui_system),
+                // HEXON-19: saved callout readouts, same egui pass and panel-edge gating.
+                crate::actions::dimension_callout::draw_dimension_callout_labels.after(gardener_ui_system),
+            ),
         );
         app.configure_sets(
             Update,
@@ -1168,6 +1178,8 @@ struct P2pDialogParams<'w> {
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
     node_identity: Option<Res<'w, fe_identity::NodeIdentity>>,
     known_peers: Option<Res<'w,fe_runtime::PeerRegistry>>,
+    /// FR-3 sidebar re-click override for the Inspector hierarchy card.
+    inspected_override: ResMut<'w, crate::panels::hierarchy_info::InspectedOverride>,
 }
 
 /// Small bundle for miscellaneous read/write-once resources that don't fit an
@@ -1269,6 +1281,14 @@ fn gardener_ui_system(
     if inspector.api_endpoint != ui_shell.api_endpoint.0 {
         inspector.api_endpoint = ui_shell.api_endpoint.0;
     }
+    crate::panels::inspector::refresh_hierarchy_card(
+        &mut inspector,
+        ectx,
+        &mut p2p.inspected_override,
+        &nav,
+        &p2p.node_mgr,
+        p2p.known_peers.as_ref().map(|peers| (&**peers, peers.is_changed())),
+    );
 
     let rect = panels::gardener_console(
         ectx,
@@ -1473,13 +1493,14 @@ fn plugin_install_dialog_system(
     crate::panels::plugin_install_panel::render(ectx, &mut state);
 }
 
-/// Projects the cursor position onto the Y=0 world plane each frame.
+/// Projects the cursor onto the terrain surface (else the Y=0 plane) each frame.
 fn update_viewport_cursor_world(
     windows: Query<(Entity, &Window)>,
     cameras: Query<(&Camera, &GlobalTransform), With<fe_renderer::camera::OrbitCameraController>>,
     mut cursor_world: ResMut<ViewportCursorWorld>,
     mut egui_ctx: EguiContexts,
     region: Res<fe_renderer::camera::CameraPointerRegion>,
+    height_field: Option<Res<fe_renderer::terrain_height::TerrainHeightField>>,
 ) {
     // World-cursor previews share current-point scene/chrome admission.
     let Ok(ectx) = egui_ctx.ctx_mut() else {
@@ -1510,16 +1531,7 @@ fn update_viewport_cursor_world(
         cursor_world.pos = None;
         return;
     };
-    // Intersect the ray with the infinite Y=0 plane.
-    let ground_origin = Vec3::ZERO;
-    let ground_normal = Dir3::Y;
-    if let Some(point) =
-        ray.plane_intersection_point(ground_origin, InfinitePlane3d::new(ground_normal))
-    {
-        cursor_world.pos = Some([point.x, 0.0, point.z]);
-    } else {
-        cursor_world.pos = None;
-    }
+    cursor_world.pos = crate::node_manager::ground_snap::ground_point(&ray, height_field.as_deref());
 }
 
 /// Sends ResolveLocalRole when the navigation scope changes.

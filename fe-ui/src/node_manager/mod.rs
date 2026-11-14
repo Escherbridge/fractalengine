@@ -30,6 +30,12 @@ mod group_gimbal;
 mod inspector_sync;
 /// hexon_scale FR-9 Measure tool: Tape/Area reducer + viewport anchors. See AGENTS.md §measure-tool.
 pub mod measure;
+/// D-38 terrain-aware ground point; see AGENTS.md ground-snap.
+pub(crate) mod ground_snap;
+/// Road builder snap math; see AGENTS.md road-builder.
+pub(crate) mod road_snap;
+/// Road builder chain state machine; see AGENTS.md road-builder.
+pub(crate) mod road_chain;
 /// FR-3 drag: gimbal-drag a selected path vertex/segment. See AGENTS.md §dispatch.
 mod path_gimbal_drag;
 /// FR-5 (pen_curve_tool_20260722): bezier-handle markers + drag. See AGENTS.md §pen-tool.
@@ -173,7 +179,7 @@ impl DragRestore {
 }
 
 /// How many independent in-flight gestures [`GestureParams`] aggregates.
-const GESTURE_COUNT: usize = 6;
+const GESTURE_COUNT: usize = 7;
 
 /// Pure aggregate for [`GestureParams::any_active`] — "a gesture is live" is
 /// one OR over [`GESTURE_COUNT`] independent sources, unit-testable without a
@@ -183,7 +189,7 @@ fn any_gesture_active(flags: [bool; GESTURE_COUNT]) -> bool {
     flags.iter().any(|live| *live)
 }
 
-/// Aggregate over the six in-flight viewport gestures — one place to ask "is a
+/// Aggregate over the seven in-flight viewport gestures (road chain included) — one place to ask "is a
 /// gesture live?" and to drop them all. Rung 0 of the staged-Escape ladder and
 /// the gesture half of the one-right-click rule read this; it is the reason no
 /// tool needs its own private Escape handler. Every downstream Release handler
@@ -204,6 +210,8 @@ struct GestureParams<'w, 's> {
     pen_handle: ResMut<'w, path_point_interaction::PenHandleDrag>,
     path_handle: ResMut<'w, path_handle_interaction::PathHandleDrag>,
     path_gimbal: ResMut<'w, path_gimbal_drag::PathGimbalDrag>,
+    /// Road builder: an open chain or in-flight segment; Escape drops one stage.
+    road: ResMut<'w, road_chain::RoadBuilderState>,
     /// Also the shortcuts system's handle on selection state (see type docs).
     node_mgr: ResMut<'w, NodeManager>,
     /// Restores the pre-drag `Transform` when a rung-0 cancel drops an
@@ -220,6 +228,7 @@ impl GestureParams<'_, '_> {
             self.pen_handle.active.is_some(),
             self.path_handle.active.is_some(),
             self.path_gimbal.active.is_some(),
+            self.road.is_active(),
             // The entity gimbal's Move/Rotate/Scale `AxisDrag` (finding F5).
             self.node_mgr.is_dragging(),
         ])
@@ -242,6 +251,8 @@ impl GestureParams<'_, '_> {
         self.pen_handle.active = None;
         self.path_handle.active = None;
         self.path_gimbal.active = None;
+        // Two-stage: pending segment first, the open chain on the next press.
+        self.road.cancel_stage();
         if let Some((entity, restore)) = self.node_mgr.cancel_axis_drag() {
             if let Ok(mut transform) = self.transforms.get_mut(entity) {
                 restore.apply(&mut transform);
@@ -411,6 +422,7 @@ impl Plugin for NodeManagerPlugin {
         app.init_resource::<router::ClickArbiter>();
         app.init_resource::<brush_interaction::BrushGesture>();
         app.init_resource::<measure::MeasureState>();
+        app.init_resource::<road_chain::RoadBuilderState>();
         // HS-P6-CALLOUT: pending-stash + node bookkeeping for persisted
         // dimension callouts (see `actions::dimension_callout`).
         app.init_resource::<crate::actions::dimension_callout::DimensionCalloutMap>();
@@ -762,9 +774,9 @@ mod tests {
     }
 
     #[test]
-    fn any_gesture_active_is_armed_by_each_of_the_six_sources() {
-        // The aggregate is one OR over six independent gestures — a bundle
-        // that forgets one (F5's entity AxisDrag) fails this arity check.
+    fn any_gesture_active_is_armed_by_each_of_the_seven_sources() {
+        // The aggregate is one OR over seven independent gestures (the road
+        // chain is the seventh) — a bundle that forgets one fails this arity check.
         assert!(!any_gesture_active([false; GESTURE_COUNT]));
         for i in 0..GESTURE_COUNT {
             let mut flags = [false; GESTURE_COUNT];
@@ -776,11 +788,12 @@ mod tests {
 
     #[test]
     fn axis_drag_counts_as_a_live_gesture_for_the_aggregate() {
-        // `any_active` feeds `is_dragging()` in as its sixth flag, so an
+        // `any_active` feeds `is_dragging()` in as its last flag, so an
         // entity transform drag pins Escape at rung 0 and suppresses the
         // right-click object menu like every other gesture.
         let mut mgr = NodeManager::default();
         assert!(!any_gesture_active([
+            false,
             false,
             false,
             false,
@@ -791,6 +804,7 @@ mod tests {
         mgr.select(entity(1), "node-1");
         begin_axis_drag(&mut mgr);
         assert!(any_gesture_active([
+            false,
             false,
             false,
             false,

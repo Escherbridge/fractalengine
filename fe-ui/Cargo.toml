@@ -18,6 +18,8 @@ fe-sync = { path = "../fe-sync" }
 fe-webview = { path = "../fe-webview" }
 fe-sdk = { path = "../fe-sdk" }
 fe-hexon = { path = "../fe-hexon" }
+# Shared world-scale sanitize/clamp/convert (map_scale_authority CITY-03).
+fe-format = { path = "../fe-format", default-features = false }
 # Client-DID validation for the API-token GUI (W6-7b) — real dependency, not
 # test-only; see fe-ui/src/AGENTS.md §app-settings / TOKEN-CLIENT-CLAIM.
 fe-identity = { path = "../fe-identity" }

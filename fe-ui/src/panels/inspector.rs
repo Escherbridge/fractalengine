@@ -95,6 +95,20 @@ pub(crate) fn right_inspector(
                     if node_mgr.selection_count() <= 1 || inspector.active_tab() != InspectorTab::Properties {
                         crate::editor_batch::ui::pending_controls(ui, ui_mgr);
                     }
+                    // FR-3 / I-01 empty state: no node selected, describe the active hierarchy level.
+                    if node_mgr.primary().is_none() {
+                        if let Some(entity) = inspector.hierarchy_card.inspected.as_ref() {
+                            super::hierarchy_info::render_hierarchy_info(
+                                ui,
+                                entity,
+                                hierarchy,
+                                local_role,
+                                &inspector.hierarchy_card.peers,
+                                ui_mgr,
+                            );
+                            ui.separator();
+                        }
+                    }
                     inspector_tab_body(
                         ui,
                         inspector,
@@ -110,6 +124,52 @@ pub(crate) fn right_inspector(
                 });
         },
     );
+}
+
+/// FR-3 hierarchy card inputs carried on `InspectorFormState` (right_inspector's existing param).
+#[derive(Default)]
+pub(crate) struct HierarchyCardInputs {
+    /// Verse/fractal/petal the card describes; `None` while a node is selected.
+    pub(crate) inspected: Option<super::hierarchy_info::InspectedEntity>,
+    /// Change-driven copy of the peer registry for the verse card's known-peer count.
+    pub(crate) peers: fe_runtime::PeerRegistry,
+}
+
+/// Once per frame before the console: sync the override, resolve the card target, refresh peers.
+pub(crate) fn refresh_hierarchy_card(
+    inspector: &mut InspectorFormState,
+    ctx: &egui::Context,
+    inspected_override: &mut super::hierarchy_info::InspectedOverride,
+    nav: &NavigationManager,
+    node_mgr: &NodeManager,
+    known_peers: Option<(&fe_runtime::PeerRegistry, bool)>,
+) {
+    use super::hierarchy_info::{inspected_entity, InspectedEntity};
+    inspected_override.sync(ctx, nav, node_mgr);
+    let entity = inspected_entity(nav, node_mgr, inspected_override.level)
+        .filter(|entity| !matches!(entity, InspectedEntity::Node { .. }));
+    // Task 3.7: a kind change resets only per-tab secrets; the active tab persists by design.
+    if inspected_override.kind_changed(entity.as_ref()) {
+        inspector.generated_api_token = None;
+        inspector.generated_api_token_client = None;
+        inspector.api_token_request.cancel();
+    }
+    if inspector.hierarchy_card.inspected != entity {
+        inspector.hierarchy_card.inspected = entity;
+    }
+    match known_peers {
+        Some((registry, changed)) if changed || registry.len() != inspector.hierarchy_card.peers.len() => {
+            let mut mirror = fe_runtime::PeerRegistry::default();
+            for (_, entry) in registry.iter() {
+                mirror.insert(entry.clone());
+            }
+            inspector.hierarchy_card.peers = mirror;
+        }
+        None if !inspector.hierarchy_card.peers.is_empty() => {
+            inspector.hierarchy_card.peers = fe_runtime::PeerRegistry::default();
+        }
+        _ => {}
+    }
 }
 
 fn inspector_navigation(
@@ -325,7 +385,7 @@ fn inspector_tab_body(
                     ui.label(ui_mgr.earthwork_volumes.status(&primary.node_id));
                 }
             }
-            inspector_properties_section(ui, inspector, node_mgr, ui_mgr);
+            inspector_properties_section(ui, inspector, node_mgr, ui_mgr, local_role);
             ui.add_space(2.0);
             if !inspector.node_properties_loading {
                 crate::extensions::draw_inspector_slot(ui, &inspector.node_properties);
@@ -1037,7 +1097,7 @@ fn node_properties_curl(
     ))
 }
 
-fn token_expiry_label(raw: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn token_expiry_label(raw: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let Ok(expiry) = chrono::DateTime::parse_from_rfc3339(raw) else {
         return "Expiry unavailable".into();
     };
@@ -1710,9 +1770,10 @@ fn submit_new_property(
                 .to_owned(),
         )
     } else {
-        PropertyValueKind::from_selection(&inspector.prop_add_type_buf)
-            .ok_or_else(|| "Choose a supported property type.".to_owned())
-            .and_then(|kind| kind.parse(&inspector.prop_add_value_buf))
+        super::property_value::parse_selected(
+            &inspector.prop_add_type_buf,
+            &inspector.prop_add_value_buf,
+        )
     };
     match result {
         Err(error) => inspector.property_editor.add_error = Some(error),
@@ -1810,6 +1871,7 @@ fn render_property_table(
     node_id: &str,
     ui_mgr: &mut UiManager,
     now: f64,
+    can_edit: bool,
 ) -> PropertyTableActions {
     use super::property_grid::Columns;
 
@@ -1863,6 +1925,7 @@ fn render_property_table(
                         value,
                         &mut inspector.property_editor,
                         inspector.node_properties_loading,
+                        can_edit,
                         ui_mgr,
                         now,
                         &mut actions,
@@ -1884,6 +1947,7 @@ fn render_property_row(
     value: &serde_json::Value,
     editor: &mut PropertyEditorState,
     loading: bool,
+    can_edit: bool,
     ui_mgr: &mut UiManager,
     now: f64,
     actions: &mut PropertyTableActions,
@@ -1911,7 +1975,7 @@ fn render_property_row(
         columns.action(ui, 0, |ui| {
             if ui
                 .add_enabled(
-                    !loading && !editing,
+                    can_edit && !loading && !editing,
                     egui::Button::new("Edit").wrap().min_size(egui::Vec2::splat(columns.height)),
                 )
                 .named(ui, format_args!("Edit property {key}"))
@@ -1934,7 +1998,7 @@ fn render_property_row(
             }
         });
         columns.action(ui, 2, |ui| {
-            ui.add_enabled_ui(!loading && !pending, |ui| {
+            ui.add_enabled_ui(can_edit && !loading && !pending, |ui| {
                 if super::widgets::confirm_button(
                     ui,
                     ("delete-property", node_id, key),
@@ -2104,11 +2168,15 @@ fn render_property_draft(
     });
 }
 
+/// Reason line shown once when the local role cannot change custom properties (QA-0091).
+pub(crate) const PROPERTY_EDIT_DENIED: &str = "Editor access to this petal is required.";
+
 fn inspector_properties_section(
     ui: &mut egui::Ui,
     inspector: &mut InspectorFormState,
     node_mgr: &crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
+    local_role: &LocalUserRole,
 ) {
     crate::ui_shell::layout_policy::section_header(ui,
         egui::RichText::new("Custom Properties")
@@ -2132,6 +2200,11 @@ fn inspector_properties_section(
                 node_id: node_id.clone(),
             });
         }
+        // UI honesty only; the DB write gate stays authoritative.
+        let can_edit = local_role.can_edit();
+        if !can_edit {
+            ui.label(egui::RichText::new(PROPERTY_EDIT_DENIED).small().color(theme::TEXT_DIM));
+        }
         let loading = inspector.node_properties_loading;
         if loading {
             ui.label(
@@ -2153,14 +2226,14 @@ fn inspector_properties_section(
                 return;
             }
         }
-        let actions = render_property_table(ui, inspector, node_id, ui_mgr, now);
+        let actions = render_property_table(ui, inspector, node_id, ui_mgr, now, can_edit);
         if let Some(key) = actions.cancel {
             inspector.property_editor.drafts.remove(&key);
         }
-        if let Some(key) = actions.save {
+        if let Some(key) = actions.save.filter(|_| can_edit) {
             submit_property_edit(inspector, node_id, &key, ui_mgr, now);
         }
-        if let Some(key) = actions.delete {
+        if let Some(key) = actions.delete.filter(|_| can_edit) {
             ui_mgr.push_action(UiAction::DeleteNodeProperty {
                 node_id: node_id.clone(),
                 key,
@@ -2173,7 +2246,7 @@ fn inspector_properties_section(
                 .color(theme::TEXT_SECTION),
         );
         let pending = inspector.property_editor.pending_add.is_some();
-        ui.add_enabled_ui(!pending, |ui| {
+        ui.add_enabled_ui(can_edit && !pending, |ui| {
             let key_label = ui.label("New property key");
             let mut changed = ui
                 .add(
@@ -2224,7 +2297,8 @@ fn inspector_properties_section(
         if pending {
             ui.label("Waiting for added property...");
         }
-        let can_add = !loading && !pending && !inspector.prop_add_key_buf.trim().is_empty();
+        let can_add =
+            can_edit && !loading && !pending && !inspector.prop_add_key_buf.trim().is_empty();
         if ui
             .add_enabled(can_add, egui::Button::new("Add").fill(theme::BG_SAVE))
             .named(ui, "Add property")
@@ -2709,12 +2783,23 @@ mod tests {
                 r#"[1,{"nested":[true,null,"text"]}]"#,
                 json!([1,{"nested":[true,null,"text"]}]),
             ),
+            // QA-0106 semantic types: validated, stored with their structural JSON type.
+            ("address-label", "address", " exact address ", json!("exact address")),
+            ("observed-at", "datetime", " 2026-11-13T09:30:00Z ", json!("2026-11-13T09:30:00Z")),
             (
-                "address-label",
-                "address",
-                " exact address ",
-                json!(" exact address "),
+                "survey-point",
+                "geometry_point",
+                r#"{"type":"Point","coordinates":[12.5,-3.0]}"#,
+                json!({"type":"Point","coordinates":[12.5,-3.0]}),
             ),
+            (
+                "survey-area",
+                "geometry_polygon",
+                r#"{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,3],[0,0]]]}"#,
+                json!({"type":"Polygon","coordinates":[[[0,0],[4,0],[4,3],[0,0]]]}),
+            ),
+            ("scan-blob", "blob_ref", "blob://abc123.glb", json!("blob://abc123.glb")),
+            ("source-hexon", "hexon_ref", "hexon://city/blocks@1", json!("hexon://city/blocks@1")),
         ] {
             inspector.prop_add_key_buf = format!("  {key}  ");
             inspector.prop_add_type_buf = selected_type.into();
@@ -2800,6 +2885,13 @@ mod tests {
             ("array", "{}"),
             ("array", "[1,"),
             ("unknown", "value"),
+            ("datetime", "13/11/2026"),
+            ("geometry_point", r#""12.5,-3.0""#),
+            ("geometry_point", r#"{"type":"Point","coordinates":[1]}"#),
+            ("geometry_polygon", r#"{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,3]]]}"#),
+            ("address", "   "),
+            ("blob_ref", "blob ref with spaces"),
+            ("hexon_ref", ""),
         ] {
             inspector.prop_add_key_buf = "invalid".into();
             inspector.prop_add_type_buf = kind.into();
@@ -2814,6 +2906,49 @@ mod tests {
             assert_eq!(inspector.prop_add_value_buf, invalid);
             assert!(inspector.property_editor.add_error.is_some());
             assert_eq!(nodes.primary().unwrap().node_id, "node-1");
+        }
+        // QA-0091 Viewer leg: one reason line; Add/Edit/Delete disabled, Copy stays enabled.
+        {
+            let viewer_ctx = egui::Context::default();
+            viewer_ctx.enable_accesskit();
+            let viewer = LocalUserRole { role: Some(fe_database::RoleLevel::Viewer) };
+            inspector.prop_add_key_buf = "viewer-key".into();
+            inspector.prop_add_type_buf = "string".into();
+            inspector.prop_add_value_buf = "refused".into();
+            layout_policy::begin_frame(&viewer_ctx, true);
+            let output = viewer_ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 1600.0))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    layout_policy::begin_ui_pass(ctx);
+                    layout_policy::apply_style(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        inspector_properties_section(ui, &mut inspector, &nodes, &mut ui_mgr, &viewer);
+                    });
+                },
+            );
+            let tree = &output.platform_output.accesskit_update.as_ref().unwrap().nodes;
+            let enabled = |label: &str| {
+                tree.iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .map(|(_, node)| !node.is_disabled())
+                    .unwrap_or_else(|| panic!("{label} must still render for a Viewer"))
+            };
+            assert!(!enabled("Add property"), "a Viewer cannot start an add");
+            assert!(!enabled("Edit property note"), "a Viewer cannot start an edit");
+            assert!(!enabled("Delete property note"), "a Viewer cannot start a delete");
+            assert!(enabled("Copy property note"), "Copy is read-only and stays enabled");
+            let reasons = tree
+                .iter()
+                .filter(|(_, node)| {
+                    node.label() == Some(PROPERTY_EDIT_DENIED) || node.value() == Some(PROPERTY_EDIT_DENIED)
+                })
+                .count();
+            assert_eq!(reasons, 1, "exactly one reason line, not one per control");
+            assert!(ui_mgr.drain_actions().is_empty(), "rendering for a Viewer queues nothing");
+            assert_eq!(inspector.node_properties, stored);
         }
         inspector.prop_add_key_buf = "config".into();
         inspector.prop_add_type_buf = "string".into();
@@ -3016,7 +3151,7 @@ mod tests {
                         assert!(columns.widths[2] >= value_minimum);
                         assert_eq!(columns.compact(), width <= 320.0);
                         assert!(columns.height * ctx.pixels_per_point() >= 20.0);
-                        actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time);
+                        actions = render_property_table(ui, inspector, "node-1", ui_mgr, *time, true);
                     });
                 },
             );
@@ -5271,6 +5406,64 @@ mod tests {
                 assert!(matches!(batch_rx.try_recv().unwrap(), DbCommand::ReadEditorBatch { .. }));
                 assert!(batch_rx.try_recv().is_err());
                 assert!(waiting.editor_batch.capture(&nav, &single).is_none(), "refresh does not fabricate a capture");
+            }
+            {
+                // QA-0111: per-group controls show before any manual refresh; the read goes out once.
+                let mut visibility = crate::visibility::VisibilityState::default();
+                visibility.replace_groups(vec![crate::visibility::Group {
+                    id: "g-roads".into(),
+                    name: "Roads".into(),
+                    visible: true,
+                }]);
+                let editor = LocalUserRole { role: Some(fe_database::RoleLevel::Editor) };
+                let mut opened = UiManager::default();
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                let draw = |opened: &mut UiManager| {
+                    crate::ui_shell::layout_policy::begin_frame(&ctx, true);
+                    ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 900.0))),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                crate::editor_batch::ui::group_controls(ui, &selected, &nav, opened, &visibility, &editor);
+                            });
+                        },
+                    )
+                };
+                let enabled = |output: &egui::FullOutput, label: &str| {
+                    output.platform_output.accesskit_update.as_ref().unwrap().nodes.iter()
+                        .find(|(_, node)| node.label() == Some(label))
+                        .map(|(_, node)| !node.is_disabled())
+                        .unwrap_or_else(|| panic!("{label} must render before any refresh"))
+                };
+                let reading = |output: &egui::FullOutput| {
+                    output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::epaint::Shape::Text(text) if text.galley.text().contains("Reading selected objects")))
+                };
+                let first = draw(&mut opened);
+                assert!(!enabled(&first, "Add all selected Roads"), "disabled until the capture lands");
+                assert!(!enabled(&first, "Remove all selected Roads"));
+                assert!(reading(&first), "the disabled buttons say why");
+                opened.editor_batch.maintain(&nav, &selected, &hierarchy, &batch_tx);
+                opened.editor_batch.maintain(&nav, &selected, &hierarchy, &batch_tx);
+                let DbCommand::ReadEditorBatch { correlation_id, .. } = batch_rx.try_recv().unwrap() else {
+                    panic!("opening the section with a selection reads it without Refresh")
+                };
+                assert!(batch_rx.try_recv().is_err(), "exactly one automatic read per selection");
+                let mut grouped = capture.clone();
+                grouped.groups = crate::visibility::groups::dtos_from_groups(visibility.groups());
+                opened.editor_batch.route(
+                    &DbResult::EditorBatchLoaded { capture: grouped, correlation_id },
+                    &nav, |_| Ok(()), |_| Ok(()), &batch_tx,
+                ).unwrap();
+                let loaded = draw(&mut opened);
+                assert!(enabled(&loaded, "Add all selected Roads"), "the reply enables the buttons");
+                assert!(enabled(&loaded, "Remove all selected Roads"));
+                assert!(!reading(&loaded));
+                assert!(opened.drain_actions().is_empty(), "rendering never submits a membership edit");
             }
             {
                 let points = json!([[0.0, 0.0, 0.0, 17.25], [2.0, 0.0, 0.0, 18.5]]);
