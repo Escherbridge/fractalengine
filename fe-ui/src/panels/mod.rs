@@ -162,6 +162,8 @@ pub fn gardener_console(
     // report_request`/`drain_volume_report_result` (plugin.rs, PostUpdate)
     // are its sole writers.
     volume_report: &crate::panels::volume_report_panel::VolumeReportState,
+    // UI-05: Section block state under the Volume report (angle + latest profile).
+    section_profile: &mut crate::panels::section_profile_panel::SectionProfileState,
     settings_session: &mut crate::settings::SettingsSession,
 ) -> egui::Rect {
     crate::native_accessibility::begin_pass(ctx, crate::native_accessibility::product_guard(
@@ -268,6 +270,7 @@ pub fn gardener_console(
         downloads,
         render_override,
         volume_report,
+        section_profile,
         modal,
         settings_session,
         topbar_state,
@@ -853,6 +856,7 @@ mod tests {
         let mut render_override = crate::settings::PetalRenderOverride::default();
         let mut identity_banner = crate::plugin::IdentityBanner::default();
         let volume_report = crate::panels::volume_report_panel::VolumeReportState::default();
+        let mut section_profile = crate::panels::section_profile_panel::SectionProfileState::default();
 
         {
             let mut render = |section: Option<RightSidebarSection>, active_tool: Tool| {
@@ -906,6 +910,7 @@ mod tests {
                         None,
                         None,
                         &volume_report,
+                        &mut section_profile,
                         &mut crate::settings::SettingsSession::default(),
                     );
                 });

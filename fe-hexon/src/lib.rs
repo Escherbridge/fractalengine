@@ -1,4 +1,4 @@
-// dead_code kept per module (see fe-hexon/src/AGENTS.md §lint-scope); the compile sweep prunes.
+// dead_code allowed per module (UI-09) until a compile sweep lists the true leftovers; see AGENTS.md §lint-scope.
 #[allow(dead_code)]
 pub mod authz;
 #[allow(dead_code)]

@@ -505,8 +505,8 @@ impl Plugin for NodeManagerPlugin {
                     .after(path_segment_interaction::handle_path_segment_interaction)
                     .before(inspector_sync::sync_manager_to_inspector),
                 measure::draw_measure_overlay.after(measure::handle_measure_interaction),
+                // The road readout is egui, registered in EguiPrimaryContextPass by plugin.rs.
                 road_overlay::draw_road_overlay.after(road_interaction::handle_road_interaction),
-                road_overlay::draw_road_readout.after(road_interaction::handle_road_interaction),
             )
                 .in_set(UiSet::Selection),
         );

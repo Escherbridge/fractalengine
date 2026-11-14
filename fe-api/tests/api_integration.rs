@@ -988,4 +988,28 @@ async fn hexon_crates_publish_install_search_entries_asset_journey() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(refusal["code"], "entitlement_required", "{refusal}");
     assert!(!bytes.windows(FULL_BYTES.len()).any(|window| window == FULL_BYTES));
+
+    // Snapshot routes are mounted behind auth with a Manager floor: tokenless is 401, and an editor gets the
+    // handler's existence-safe denial body (an unmounted route would answer an empty 404).
+    let denial = (StatusCode::NOT_FOUND, fe_api::rest::NOT_FOUND_OR_DENIED.as_bytes().to_vec());
+    let export_path = format!("/api/v1/petals/{petal}/snapshot.hexon");
+    let tokenless = Request::builder()
+        .method("GET")
+        .uri(export_path.clone())
+        .body(Body::empty())
+        .expect("tokenless export request");
+    let (status, _, _) = send_on(&router, tokenless).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, bytes) = send_on(&router, authed("GET", export_path, &editor)).await;
+    assert_eq!((status, bytes), denial);
+    let (content_type, body) = multipart_file("petal.snapshot.hexon", b"not an archive");
+    let import = Request::builder()
+        .method("POST")
+        .uri("/api/v1/petals/import-snapshot")
+        .header("authorization", format!("Bearer {editor}"))
+        .header("content-type", content_type)
+        .body(Body::from(body))
+        .expect("editor import request");
+    let (status, _, bytes) = send_on(&router, import).await;
+    assert_eq!((status, bytes), denial);
 }

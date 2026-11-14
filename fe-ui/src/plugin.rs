@@ -1044,6 +1044,9 @@ impl Plugin for GardenerConsolePlugin {
         // idempotent (same pattern as `EarthworkVolumeReport` above).
         app.add_message::<fe_renderer::terrain_overlay::VolumeReportRequest>();
         app.add_message::<fe_renderer::terrain_overlay::VolumeReportResult>();
+        // Section profile seam (UI-04/UI-05): same idempotent double registration as the volume pair.
+        app.add_message::<fe_renderer::section_profile::SectionProfileRequest>();
+        app.add_message::<fe_renderer::section_profile::SectionProfileResult>();
         app.add_systems(
             PostUpdate,
             (
@@ -1101,6 +1104,8 @@ impl Plugin for GardenerConsolePlugin {
                 crate::viewport_labels::draw_viewport_point_labels.after(gardener_ui_system),
                 // HEXON-19: saved callout readouts, same egui pass and panel-edge gating.
                 crate::actions::dimension_callout::draw_dimension_callout_labels.after(gardener_ui_system),
+                // CITY-12: the road length readout is an egui Area, so it draws in the egui pass too.
+                crate::node_manager::road_overlay::draw_road_readout.after(gardener_ui_system),
             ),
         );
         app.configure_sets(
@@ -1239,6 +1244,8 @@ struct MiscUiParams<'w> {
     // volume_report_request`/`drain_volume_report_result` (PostUpdate above),
     // read by the Volume report section.
     volume_report: Res<'w, crate::panels::volume_report_panel::VolumeReportState>,
+    // UI-05: the Volume report's Section block (angle input + latest profile).
+    section_profile: ResMut<'w, crate::panels::section_profile_panel::SectionProfileState>,
 }
 
 /// ui_shell_architecture_20260724 (FR-4/5/6): the area-manager state resources,
@@ -1337,6 +1344,7 @@ fn gardener_ui_system(
         p2p.node_identity.as_deref(),
         p2p.known_peers.as_deref(),
         &misc.volume_report,
+        &mut misc.section_profile,
         &mut ui_shell.settings_session,
     );
     // Pointer routing excludes the resize bands: a press that starts a window
