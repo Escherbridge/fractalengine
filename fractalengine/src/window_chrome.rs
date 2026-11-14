@@ -2,7 +2,7 @@
 //! title bar's brand mark) — see src/AGENTS.md §window-chrome.
 
 use bevy::ecs::system::NonSendMarker;
-use bevy::prelude::{Entity, Local, Query, With};
+use bevy::prelude::{DetectChanges, Entity, Local, Query, Res, With};
 use bevy::window::{PrimaryWindow, Window, WindowResizeConstraints};
 
 /// The app icon, embedded so a packaged build needs no asset lookup.
@@ -80,9 +80,97 @@ pub fn set_window_icon(
     });
 }
 
+const APP_TITLE: &str = "FractalEngine";
+const PEER_LABEL_MAX_CHARS: usize = 32;
+
+/// Peer label from `FE_PEER_LABEL`, read once: trimmed, control chars dropped, at most 32 chars.
+fn peer_label() -> Option<&'static str> {
+    static LABEL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    LABEL
+        .get_or_init(|| {
+            let raw = std::env::var("FE_PEER_LABEL").ok()?;
+            let cleaned: String = raw
+                .chars()
+                .filter(|character| !character.is_control())
+                .collect();
+            let label: String = cleaned
+                .trim()
+                .chars()
+                .take(PEER_LABEL_MAX_CHARS)
+                .collect();
+            let label = label.trim().to_string();
+            (!label.is_empty()).then_some(label)
+        })
+        .as_deref()
+}
+
+/// Window title: "[label] petal · verse — FractalEngine", degrading to verse-only or the app name.
+pub fn window_title(
+    peer_label: Option<&str>,
+    verse: Option<&str>,
+    petal: Option<&str>,
+) -> String {
+    let verse = verse.filter(|name| !name.is_empty());
+    let petal = petal.filter(|name| !name.is_empty());
+    let base = match (verse, petal) {
+        (Some(verse), Some(petal)) => format!("{petal} · {verse} — {APP_TITLE}"),
+        (Some(verse), None) => format!("{verse} — {APP_TITLE}"),
+        _ => APP_TITLE.to_string(),
+    };
+    match peer_label.filter(|label| !label.is_empty()) {
+        Some(label) => format!("[{label}] {base}"),
+        None => base,
+    }
+}
+
+/// Bevy system: title the primary window after the active petal and verse; writes only on change.
+pub fn sync_window_title(
+    nav: Res<fe_ui::navigation_manager::NavigationManager>,
+    verses: Res<fe_ui::verse_manager::VerseManager>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut last: Local<String>,
+) {
+    if !last.is_empty() && !nav.is_changed() && !verses.is_changed() {
+        return;
+    }
+    let petal_name = nav
+        .active_petal_id
+        .as_deref()
+        .and_then(|petal_id| verses.find_petal(petal_id))
+        .map(|petal| petal.name.as_str());
+    let verse_name = nav
+        .active_verse_id
+        .as_ref()
+        .map(|_| nav.active_verse_name.as_str());
+    let title = window_title(peer_label(), verse_name, petal_name);
+    if *last == title {
+        return;
+    }
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    window.title.clone_from(&title);
+    *last = title;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_title_table() {
+        let rows: [(Option<&str>, Option<&str>, Option<&str>, &str); 6] = [
+            (None, None, None, "FractalEngine"),
+            (None, Some("Verse"), None, "Verse — FractalEngine"),
+            (None, Some("Verse"), Some("Petal"), "Petal · Verse — FractalEngine"),
+            (None, None, Some("Petal"), "FractalEngine"),
+            (Some("A"), None, None, "[A] FractalEngine"),
+            (Some("A"), Some("V"), Some("P"), "[A] P · V — FractalEngine"),
+        ];
+        for (label, verse, petal, expected) in rows {
+            assert_eq!(window_title(label, verse, petal), expected);
+        }
+    }
 
     #[test]
     fn embedded_icon_decodes_to_a_square_rgba_mark() {
