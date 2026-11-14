@@ -3,7 +3,10 @@
 use serde_json::{json, Value};
 
 pub(crate) const MARKER: &str = "_fe_scene";
-pub(crate) const MAX_ROW_BYTES: usize = 96 * 1024;
+/// Row bound derived from the node write limit: a full-size node plus its own values again in `_fe_clock` (AGENTS.md §row-bound).
+pub(crate) const MAX_ROW_BYTES: usize = 2 * fe_sdk::property_schema::MAX_PROPERTY_BYTES + 16 * 1024;
+/// Marker recovery uses to count a row that can never be published at its current size.
+pub(crate) const ROW_TOO_LARGE: &str = "scene snapshot exceeds the row bound";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SceneClock {
@@ -79,7 +82,7 @@ pub(crate) fn normalize_optional_columns(row: &mut Value) {
 pub(crate) fn validate_complete(row: &Value) -> anyhow::Result<()> {
     anyhow::ensure!(
         serde_json::to_vec(row)?.len() <= MAX_ROW_BYTES,
-        "scene snapshot exceeds 96 KiB"
+        "{ROW_TOO_LARGE} of {MAX_ROW_BYTES} bytes"
     );
     let object = row
         .as_object()

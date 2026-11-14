@@ -107,7 +107,7 @@ fn parse_clocked_row(
     author_did: &str,
 ) -> Result<ClockedRow, String> {
     if row_bytes.len() > super::scene_publication::wire::MAX_ROW_BYTES {
-        return Err("row exceeds the 96 KiB bound".into());
+        return Err("row exceeds the row bound".into());
     }
     let row: Value = match serde_json::from_slice(row_bytes) {
         Ok(row @ Value::Object(_)) => row,

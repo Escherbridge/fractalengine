@@ -22,6 +22,8 @@ pub(crate) struct RecoveryReport {
     pub examined: usize,
     pub enqueued: usize,
     pub deferred: usize,
+    /// Deferred rows that are over the row bound: they stay unpublished until the node shrinks.
+    pub oversized: usize,
     pub dependency_deferred: usize,
     /// Proven scene uploads no node references yet (QA-0158).
     pub uploads_enqueued: usize,
@@ -818,7 +820,12 @@ pub(crate) async fn recover(
             }
             Err(error) => {
                 report.deferred += 1;
-                tracing::debug!(node_id = id, "scene recovery row deferred: {error:#}");
+                if format!("{error:#}").contains(wire::ROW_TOO_LARGE) {
+                    report.oversized += 1;
+                    tracing::warn!(node_id = id, "scene row is over the row bound and cannot be published");
+                } else {
+                    tracing::debug!(node_id = id, "scene recovery row deferred: {error:#}");
+                }
             }
         }
     }

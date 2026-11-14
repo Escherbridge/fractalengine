@@ -84,7 +84,21 @@ applicable definitions, fences those exact definitions at write time, and refuse
 or incompatible values. This is enforcement of known local rules, not schema replication.
 Tombstones remain deletion-dominant rather than requiring old data to satisfy later live
 schemas. Final assembled receive SQL/bindings cap at 4 MiB before execution. Complete snapshot
-validation caps rows at 96 KiB and checks the renderer's rotation/finite transform contract.
+validation caps rows at the row bound (§row-bound) and checks the renderer's rotation/finite transform contract.
+
+### §row-bound
+
+`wire::MAX_ROW_BYTES = 2 * fe_sdk::property_schema::MAX_PROPERTY_BYTES + 16 KiB` (144 KiB today). It is
+derived, not a literal, because the two limits must move together: the write paths accept a node snapshot
+up to `MAX_PROPERTY_BYTES` (64 KiB, `node_history::check_snapshot_size`), and a published row carries the
+node plus every value its publisher authored a second time in `_fe_clock.own`. With the earlier 96 KiB
+literal, a node between about 48 KB and 64 KiB was accepted locally and then deferred by recovery forever
+(found 2026-11-14, when `c301dd3e` added the own-version stamps). The same constant bounds clocked verse,
+fractal and petal rows and the inbound check, so every peer must run a build with the same value: a peer
+on the old 96 KiB build refuses a larger row. `RecoveryReport.oversized` counts deferred rows that failed
+this bound (matched on `wire::ROW_TOO_LARGE`), so a permanent failure is no longer indistinguishable from a
+transient one. Data that does not fit one node belongs in blob storage behind a reference, not in a larger
+row.
 
 Legacy markerless partial node rows retain their existing merge path while no complete
 version is known. After a complete version is known, an unversioned live row cannot prove it

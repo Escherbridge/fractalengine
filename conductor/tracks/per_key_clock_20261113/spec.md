@@ -175,7 +175,7 @@ whose author is no longer admissible (a revoke window ends below its hlc) stops 
 
 | Bound | Value |
 |---|---|
-| serialized row including `_fe_clock` | <= 96 KiB |
+| serialized row including `_fe_clock` | <= 144 KiB (twice the 64 KiB node write limit plus 16 KiB; was 96 KiB until 2026-11-14) |
 | keys in one `own` map | <= 512 |
 | grant windows per statement | <= 8 |
 | HLC future bound | 5 minutes (`op_log::admit_scene_hlc`, `fe-database/src/op_log.rs:108`) |

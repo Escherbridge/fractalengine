@@ -47,7 +47,7 @@ pub(crate) async fn read_current_and_need(
     let raw = rows[0].clone();
     anyhow::ensure!(
         serde_json::to_vec(&raw)?.len() <= super::wire::MAX_ROW_BYTES,
-        "replica current row exceeds 96 KiB"
+        "replica current row exceeds the row bound"
     );
     let petal = raw["petal_id"]
         .as_str()

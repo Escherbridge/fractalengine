@@ -132,9 +132,12 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   the SurrealKV lock for the process (dependency's commit-coordinator thread); drop every clone BEFORE
   `Shutdown`, then join (`fe-database/src/AGENTS.md` §shared-handle, §repo corrected). One assertion removed
   in `shared_handle_test.rs` (reader held across a terminal reset errors), see RF-OPEN-14. New QA checks
-  RF-TS-1..4 and open items RF-OPEN-12..16 in `conductor/qa-checklist-round4.md`; the one that needs a
-  decision is RF-OPEN-12 (a node with more than about 48 KB of properties can no longer be published, because
-  `_fe_clock` carries every value twice against the 96 KiB row cap). Not run: batches R1-R6 and R11. Logs:
+  RF-TS-1..4 and open items RF-OPEN-12..16 in `conductor/qa-checklist-round4.md`; RF-OPEN-12 was decided the same
+  day: the row bound is now derived from the node write limit (`scene_publication/wire.rs` `MAX_ROW_BYTES =
+  2 * MAX_PROPERTY_BYTES + 16 KiB`, 144 KiB; `scene_publication/AGENTS.md` §row-bound) and recovery counts
+  `oversized` rows; a wire limit, so peers upgrade together. User direction for a follow-up track (not yet
+  created): schema-declared data blocks as child rows, large values in blob storage behind a reference id,
+  a verse-configurable row cap, and possibly a larger node write limit than 64 KiB. Not run: batches R1-R6 and R11. Logs:
   `.omc/logs/tests/{20261114-084030,rerun-20261114,fullpicture-20261114,rerun2-20261114,rerun3-20261114,rerun4-20261114}`.
   Working rule that paid off: agents fix blind in parallel, one builder runs; for a long journey whose later
   legs never ran, let ONE agent run its single test binary to green instead of a sweep per failure point.

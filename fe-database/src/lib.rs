@@ -2476,7 +2476,7 @@ pub fn spawn_db_thread_shared(
                         }
                         match handlers::scene_publication::recover(&db,&blob_store,repl_tx.as_ref(),&local_did,&verse_id).await {
                             Ok(report) if report.deferred==0 && report.dependency_deferred==0 => tracing::info!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,"stored scene recovery enqueued; peer delivery is not certified"),
-                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,deferred=report.deferred,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies or locally unproven rows remain deferred"),
+                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,deferred=report.deferred,oversized=report.oversized,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies, oversized or locally unproven rows remain deferred"),
                             Err(error) => tracing::warn!(verse_id,"stored scene recovery refused or incomplete: {error:#}"),
                         }
                     }
