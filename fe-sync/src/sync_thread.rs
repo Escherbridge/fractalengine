@@ -962,7 +962,7 @@ pub fn spawn_sync_thread_with_sources(
             let relay_advertise_policy =
                 RelayAdvertisePolicy::from_env().effective_for(&relay_config);
             let mut relay_reconciler = RelayReconciler::new(configured_urls(&relay_config));
-            let mut relay_reconcile_open_verses: usize = 0;
+            let mut relay_reconcile_open_verses: BTreeSet<String> = BTreeSet::new();
 
             // M2/F6: the local peer's shard-hosting declaration, applied to
             // every open verse's fabric (published as `__peers/{local_did}`).
@@ -1682,19 +1682,21 @@ fn fold_relay_health(
 async fn reconcile_advertised_relays(
     fabrics: &mut HashMap<String, VerseFabric>,
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
-    open_verses_seen: &mut usize,
+    open_verses_seen: &mut BTreeSet<String>,
     reconciler: &mut RelayReconciler,
     policy: &RelayAdvertisePolicy,
     endpoint: Option<&SyncEndpoint>,
 ) {
-    let mut changed = replicas.len() != *open_verses_seen;
+    // Compared as a set: a close and an open in one pass leave the count unchanged.
+    let mut changed = replicas.len() != open_verses_seen.len()
+        || replicas.keys().any(|verse_id| !open_verses_seen.contains(verse_id));
     for fabric in fabrics.values_mut() {
         changed |= !fabric.drain_relay_advert_changes().is_empty();
     }
     if !changed {
         return;
     }
-    *open_verses_seen = replicas.len();
+    *open_verses_seen = replicas.keys().cloned().collect();
 
     // Only verses this node still has open count toward a relay's refcount.
     let mut advertised: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -1716,6 +1718,11 @@ async fn reconcile_advertised_relays(
                     reconciler.forget_insert(&raw);
                     continue;
                 };
+                if let Err(reason) = advertised_relay_insertable(&raw).await {
+                    tracing::warn!(relay = %raw, "pinned advertised relay not inserted: {reason}");
+                    reconciler.forget_insert(&raw);
+                    continue;
+                }
                 let url = match raw.parse::<iroh::RelayUrl>() {
                     Ok(url) => url,
                     Err(error) => {
@@ -1726,13 +1733,15 @@ async fn reconcile_advertised_relays(
                 };
                 let entry = advertised_relay_entry(url.clone());
                 if let Some(replaced) = endpoint.inner().insert_relay(url.clone(), entry).await {
-                    // Tripwire (OD-10): never shadow an entry that carried a token; put it back.
-                    if replaced.auth_token.is_some() {
-                        tracing::error!(relay = %url, "advertised relay collided with a token-bearing relay entry; restoring it");
-                        endpoint.inner().insert_relay(url, replaced).await;
-                        reconciler.forget_insert(&raw);
-                        continue;
-                    }
+                    // Never own an entry someone else put in the map (OD-10: it may carry a token); put it back.
+                    tracing::error!(
+                        relay = %url,
+                        token_bearing = replaced.auth_token.is_some(),
+                        "advertised relay collided with an existing relay entry; restoring it"
+                    );
+                    endpoint.inner().insert_relay(url, replaced).await;
+                    reconciler.forget_insert(&raw);
+                    continue;
                 }
                 tracing::info!(relay = %raw, "inserted pinned advertised relay into the relay map");
             }
@@ -1757,6 +1766,49 @@ async fn reconcile_advertised_relays(
         inserted = reconciler.inserted().len(),
         "advertised relays reconciled"
     );
+}
+
+/// Budget for resolving a pinned advertised relay's host before it enters the relay map.
+const ADVERTISED_RELAY_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A pinned advert may enter the relay map (and so become home) only as a public https relay whose every resolved address is public.
+async fn advertised_relay_insertable(raw: &str) -> Result<(), String> {
+    use fe_runtime::relay_advertisement::{
+        check_resolved_relay_address, validate_advertised_relay_url, AdvertisedRelayPolicy,
+        RelayReach,
+    };
+    let advertised = validate_advertised_relay_url(raw).map_err(|error| error.to_string())?;
+    if !advertised.home_eligible() {
+        return Err("only a public https relay may enter the relay map".to_string());
+    }
+    // IP-literal hosts were classified by the validator; a domain is checked at resolution.
+    let Some(domain) = advertised.url().domain() else {
+        return Ok(());
+    };
+    let port = advertised.url().port_or_known_default().unwrap_or(443);
+    let resolved = tokio::time::timeout(
+        ADVERTISED_RELAY_RESOLVE_TIMEOUT,
+        tokio::net::lookup_host((domain, port)),
+    )
+    .await
+    .map_err(|_| "host resolution timed out".to_string())?
+    .map_err(|error| format!("host resolution failed: {error}"))?;
+    let mut any = false;
+    for address in resolved {
+        any = true;
+        match check_resolved_relay_address(address.ip(), AdvertisedRelayPolicy::process()) {
+            Ok(RelayReach::Public) => {}
+            Ok(RelayReach::Private) => {
+                return Err(format!("host resolves to non-public address {}", address.ip()))
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    if any {
+        Ok(())
+    } else {
+        Err("host resolved to no address".to_string())
+    }
 }
 
 /// Bridge-thread helper: forward one command into the tokio channel.
@@ -2154,7 +2206,7 @@ async fn drain_reread_queues(
         let mut done = Vec::with_capacity(dids.len());
         for did in dids {
             match replicator
-                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "verse/", "petal/"])
+                .entries_by_author(&did, &["role/", "__shards/", "__holders/", "__relays/", "verse/", "petal/"])
                 .await
             {
                 Ok(entries) => {

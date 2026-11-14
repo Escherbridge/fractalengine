@@ -12,6 +12,9 @@ pub use fe_runtime::relay_advertisement::{
 /// Bound on quarantined advertisements across all verses (same posture as `__shards`).
 pub const RELAY_QUARANTINE_CAP: usize = 1024;
 
+/// Bound on quarantined advertisements one author holds in one verse.
+pub const RELAY_QUARANTINE_PER_AUTHOR_CAP: usize = 8;
+
 /// Minimum verse-scope role an advertiser must hold when the row is read.
 pub const RELAY_ADVERTISER_FLOOR: RoleLevel = RoleLevel::Manager;
 
@@ -46,14 +49,20 @@ struct QuarantinedAdvert {
     author_did: String,
     url: String,
     row: RelayAdvertisementRow,
+    /// Arrival order, for oldest-first eviction across authors.
+    arrival: u64,
 }
 
-/// Per-verse admitted advertisements keyed by record id, plus a bounded quarantine.
+/// Per-verse admitted advertisements keyed by record id, plus a per-author bounded quarantine.
 #[derive(Debug, Default)]
 pub struct RelayAdvertisementBook {
     admitted: BTreeMap<String, BTreeMap<String, AdmittedAdvert>>,
-    quarantine: VecDeque<QuarantinedAdvert>,
+    /// verse id → author DID → pending adverts, oldest first, one per record id.
+    quarantine: BTreeMap<String, BTreeMap<String, VecDeque<QuarantinedAdvert>>>,
+    quarantine_len: usize,
+    quarantine_arrivals: u64,
     quarantine_evicted: u64,
+    quarantine_author_evicted: u64,
 }
 
 /// Outcome of the structural checks every row passes before the role gate.
@@ -86,11 +95,7 @@ impl RelayAdvertisementBook {
         }
 
         // The author's own earlier pending row for this record is superseded by this one.
-        self.drop_quarantined(|entry| {
-            entry.verse_id == verse_id
-                && entry.record_id == record_id
-                && entry.author_did == author_did
-        });
+        self.remove_pending(verse_id, author_did, record_id);
 
         let (url, row) = match judge_structure(verse_id, record_id, author_did, data) {
             Structural::Valid { url, row } => (url, row),
@@ -121,6 +126,7 @@ impl RelayAdvertisementBook {
                 author_did: author_did.to_string(),
                 url,
                 row,
+                arrival: 0,
             });
         }
         changes
@@ -155,26 +161,42 @@ impl RelayAdvertisementBook {
                     author_did: advert.author_did,
                     url: advert.url,
                     row: advert.row,
+                    arrival: 0,
                 });
             }
         }
 
-        let pending: Vec<QuarantinedAdvert> = self.quarantine.drain(..).collect();
-        for entry in pending {
-            let promoted = role_of(&entry.author_did, &verse_scope(&entry.verse_id))
-                .is_at_least(RELAY_ADVERTISER_FLOOR);
-            if promoted {
+        // Only `did`'s own pending adverts can change verdict when `did`'s role moves.
+        let promoted_in: Vec<String> = self
+            .quarantine
+            .iter()
+            .filter(|(_, authors)| authors.contains_key(did))
+            .map(|(verse_id, _)| verse_id.clone())
+            .filter(|verse_id| {
+                role_of(did, &verse_scope(verse_id)).is_at_least(RELAY_ADVERTISER_FLOOR)
+            })
+            .collect();
+        for verse_id in promoted_in {
+            let Some(authors) = self.quarantine.get_mut(&verse_id) else {
+                continue;
+            };
+            let Some(pending) = authors.remove(did) else {
+                continue;
+            };
+            if authors.is_empty() {
+                self.quarantine.remove(&verse_id);
+            }
+            self.quarantine_len -= pending.len();
+            for entry in pending {
                 let QuarantinedAdvert {
                     verse_id,
                     record_id,
                     author_did,
                     url,
                     row,
+                    ..
                 } = entry;
                 self.admit(&verse_id, &record_id, &author_did, url, row, &mut changes);
-            } else {
-                // Re-queue without the cap check: draining cannot grow the queue.
-                self.quarantine.push_back(entry);
             }
         }
         changes
@@ -182,7 +204,9 @@ impl RelayAdvertisementBook {
 
     /// Withdraw every admission and quarantined row of a verse whose replica closed.
     pub fn close_verse(&mut self, verse_id: &str) -> Vec<AdvertChange> {
-        self.drop_quarantined(|entry| entry.verse_id == verse_id);
+        if let Some(authors) = self.quarantine.remove(verse_id) {
+            self.quarantine_len -= authors.values().map(VecDeque::len).sum::<usize>();
+        }
         let Some(records) = self.admitted.remove(verse_id) else {
             return Vec::new();
         };
@@ -217,12 +241,17 @@ impl RelayAdvertisementBook {
 
     /// How many advertisements are waiting on their author's role (diagnostics/tests).
     pub fn quarantine_len(&self) -> usize {
-        self.quarantine.len()
+        self.quarantine_len
     }
 
-    /// How many quarantined advertisements were evicted under the cap (diagnostics/tests).
+    /// How many quarantined advertisements were evicted under either cap (diagnostics/tests).
     pub fn quarantine_evicted(&self) -> u64 {
         self.quarantine_evicted
+    }
+
+    /// How many of those evictions hit the per-author cap (diagnostics/tests).
+    pub fn quarantine_author_evicted(&self) -> u64 {
+        self.quarantine_author_evicted
     }
 
     fn observe_withdrawal(
@@ -235,11 +264,11 @@ impl RelayAdvertisementBook {
         changes: &mut Vec<AdvertChange>,
     ) {
         let author_is_manager = role_of(author_did, scope).is_at_least(RELAY_ADVERTISER_FLOOR);
-        self.drop_quarantined(|entry| {
-            entry.verse_id == verse_id
-                && entry.record_id == record_id
-                && (author_is_manager || entry.author_did == author_did)
-        });
+        if author_is_manager {
+            self.drop_quarantined_record(verse_id, record_id);
+        } else {
+            self.remove_pending(verse_id, author_did, record_id);
+        }
         let may_withdraw = self
             .admitted_author(verse_id, record_id)
             .map(|admitted_by| admitted_by == author_did || author_is_manager);
@@ -323,16 +352,106 @@ impl RelayAdvertisementBook {
             .map(|advert| advert.author_did.as_str())
     }
 
-    fn quarantine(&mut self, entry: QuarantinedAdvert) {
-        if self.quarantine.len() >= RELAY_QUARANTINE_CAP {
-            self.quarantine.pop_front();
+    /// Hold `entry` under both caps; evictions are counted, never logged per row (a flood is not a log flood).
+    fn quarantine(&mut self, mut entry: QuarantinedAdvert) {
+        self.remove_pending(&entry.verse_id, &entry.author_did, &entry.record_id);
+        let held = self
+            .quarantine
+            .get(&entry.verse_id)
+            .and_then(|authors| authors.get(&entry.author_did))
+            .map_or(0, VecDeque::len);
+        if held >= RELAY_QUARANTINE_PER_AUTHOR_CAP {
+            // At its own cap an author only ever displaces its own oldest row.
+            self.pop_oldest(&entry.verse_id, &entry.author_did);
+            self.quarantine_author_evicted += 1;
             self.quarantine_evicted += 1;
+        } else if self.quarantine_len >= RELAY_QUARANTINE_CAP {
+            self.evict_from_largest_holder();
         }
-        self.quarantine.push_back(entry);
+        entry.arrival = self.quarantine_arrivals;
+        self.quarantine_arrivals += 1;
+        self.quarantine
+            .entry(entry.verse_id.clone())
+            .or_default()
+            .entry(entry.author_did.clone())
+            .or_default()
+            .push_back(entry);
+        self.quarantine_len += 1;
     }
 
-    fn drop_quarantined(&mut self, matches: impl Fn(&QuarantinedAdvert) -> bool) {
-        self.quarantine.retain(|entry| !matches(entry));
+    /// Global cap: evict the oldest row of the (verse, author) holding the most rows (ties: oldest row).
+    fn evict_from_largest_holder(&mut self) {
+        let victim = self
+            .quarantine
+            .iter()
+            .flat_map(|(verse_id, authors)| {
+                authors.iter().filter_map(move |(author_did, pending)| {
+                    pending.front().map(|oldest| {
+                        (pending.len(), std::cmp::Reverse(oldest.arrival), verse_id, author_did)
+                    })
+                })
+            })
+            .max()
+            .map(|(_, _, verse_id, author_did)| (verse_id.clone(), author_did.clone()));
+        if let Some((verse_id, author_did)) = victim {
+            self.pop_oldest(&verse_id, &author_did);
+            self.quarantine_evicted += 1;
+        }
+    }
+
+    fn pop_oldest(&mut self, verse_id: &str, author_did: &str) {
+        let Some(authors) = self.quarantine.get_mut(verse_id) else {
+            return;
+        };
+        let Some(pending) = authors.get_mut(author_did) else {
+            return;
+        };
+        if pending.pop_front().is_some() {
+            self.quarantine_len -= 1;
+        }
+        if pending.is_empty() {
+            authors.remove(author_did);
+        }
+        if authors.is_empty() {
+            self.quarantine.remove(verse_id);
+        }
+    }
+
+    /// Drop `author_did`'s pending row for `record_id` in `verse_id`, if any.
+    fn remove_pending(&mut self, verse_id: &str, author_did: &str, record_id: &str) {
+        let Some(authors) = self.quarantine.get_mut(verse_id) else {
+            return;
+        };
+        let Some(pending) = authors.get_mut(author_did) else {
+            return;
+        };
+        let before = pending.len();
+        pending.retain(|entry| entry.record_id != record_id);
+        self.quarantine_len -= before - pending.len();
+        if pending.is_empty() {
+            authors.remove(author_did);
+        }
+        if authors.is_empty() {
+            self.quarantine.remove(verse_id);
+        }
+    }
+
+    /// Drop every author's pending row for `record_id` in `verse_id` (a Manager+ withdrawal).
+    fn drop_quarantined_record(&mut self, verse_id: &str, record_id: &str) {
+        let Some(authors) = self.quarantine.get_mut(verse_id) else {
+            return;
+        };
+        let mut removed = 0;
+        authors.retain(|_, pending| {
+            let before = pending.len();
+            pending.retain(|entry| entry.record_id != record_id);
+            removed += before - pending.len();
+            !pending.is_empty()
+        });
+        if authors.is_empty() {
+            self.quarantine.remove(verse_id);
+        }
+        self.quarantine_len -= removed;
     }
 }
 
@@ -499,6 +618,30 @@ mod tests {
         assert_eq!(book.close_verse(VERSE).len(), 2);
         assert!(book.urls_by_verse().is_empty());
         assert_eq!(book.quarantine_len(), 0);
+
+        // Flood: a Manager's advert that arrived before its role statement survives non-Manager authors
+        // flooding past both caps, and is admitted once the role arrives (delivery-order independence).
+        const LATE: &str = "did:key:late-manager";
+        for _ in 0..2 {
+            let resent = book.observe(VERSE, "r-late", LATE, &row("https://late.example", LATE), false, roles.role_of());
+            assert!(resent.is_empty());
+        }
+        assert_eq!(book.quarantine_len(), 1, "a re-sent row replaces its pending copy");
+        let flooders = RELAY_QUARANTINE_CAP / RELAY_QUARANTINE_PER_AUTHOR_CAP + 2;
+        for author in 0..flooders {
+            let flooder = format!("did:key:flooder-{author}");
+            for index in 0..=RELAY_QUARANTINE_PER_AUTHOR_CAP {
+                let url = format!("https://flood-{author}-{index}.example");
+                let changes = book.observe(VERSE, &format!("r-flood-{index}"), &flooder, &row(&url, &flooder), false, roles.role_of());
+                assert!(changes.is_empty());
+            }
+        }
+        assert_eq!(book.quarantine_len(), RELAY_QUARANTINE_CAP);
+        assert_eq!(book.quarantine_author_evicted(), flooders as u64);
+        assert!(book.quarantine_evicted() > book.quarantine_author_evicted(), "the global cap evicted too");
+        roles.set(LATE, RoleLevel::Manager);
+        assert_eq!(book.rejudge(LATE, roles.role_of()), vec![admitted("r-late", "https://late.example/")]);
+        assert_eq!(book.quarantine_len(), RELAY_QUARANTINE_CAP - 1);
     }
 
     #[test]
