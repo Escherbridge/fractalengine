@@ -111,7 +111,32 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-14 01:45 MST — SECURITY FIX ROUND 1 DONE (partly); ROUND 2 RUNNING.** Round 1 (`wf_638c1519-f8d`,
+- **2026-11-14 02:25 MST — ROUND 4 CODE PUSHED (about 220 commits); FIRST CI TEST SWEEP ON IT IS RUNNING.**
+  Security round 2 (`wf_0763b288-447`: `da703e7c` fe-database, `6d687807` fe-sync, `5af2f0bf` fe-api) and a
+  one-agent round 3 (`6ea479cb`): the opus re-verify returned **no push blockers**; FIXED: imported history is
+  quarantined in `op_log_imported` (no proof or marker lookup reads it; export merges it back so
+  export-import-export is stable), the relay breaker is fed only by denials no single endpoint can produce
+  (a noisy endpoint is throttled alone, per-source state bounded), the REST snapshot import refuses hook
+  augments it cannot apply and has gate tests, the `node_id` rows are mutation-sensitive, creation and import
+  share ONE transform rule including rotation (`object_creation.rs::is_admissible_transform` calls
+  `stored_rotation_quaternion`), and an import is refused when `node_log` already holds history for one of its
+  node ids. Every gate was `cargo check --all-targets`; **no test has run on any round-4 code**. Pre-push gate
+  by the orchestrator: leak and secret grep over the whole range `2b289db1..HEAD` (405 files, +41.7k lines)
+  clean. **Private repo NOT pushed** (36 local commits including the gis-tile-etl history import): the user
+  approved the migration as a local step; ask before pushing it.
+  **Now:** watch CI on the pushed tip (`gh run list --branch main --limit 2`; about 1 h 35 min; Linux sweep is
+  `cargo test --release --no-fail-fast -p fe-ui -p fe-terrain -p fractalengine`). Expect failures: capture
+  `gh run view <id> --log-failed` to `.omc/research/`, list every `test result:` and `FAILED` line, hand the
+  failing tests to sonnet agents grouped by file (the pattern of 2026-11-13: most were stale test setup, decide
+  product vs test per case), one `cargo check` at the end, push the fix.
+  **Open, for round 5 (plan it from these):** the 32 partial slices (`python -I .omc/plans/turn4-result.py
+  <journal> .omc/state/turn4-args.json partial`; nine gave no "left" text and need a look), the ten
+  `completeness-turn4.md` files' partial/missing rows, the 32 worker questions (`… questions`), `imported_by` on
+  quarantined rows (needs `actor` on `DbCommand::ImportPetalSnapshot`), the relay consent dialog listing served
+  verses, a real regeneration of `foundry/Cargo.lock`, the harness README, and the 46 defaulted decisions
+  (`.omc/plans/turn4-plan.md` §9; also section 5 of `conductor/qa-checklist-round4.md`). Then §7 step 3
+  (whole-surface review) and tests when the user names batches (`conductor/qa-checklist-round4.md` section 6).
+- **2026-11-14 01:45 MST — SECURITY FIX ROUND 1 DONE (partly); ROUND 2 (finished 02:10, see above).** Round 1 (`wf_638c1519-f8d`,
   commits `11a2b0f8` fe-database, `1e83a398` fe-sync, `1c24fd41` fe-api, cargo check green, no tests run). The
   opus verifier's verdict: **FIXED** 8-gap, 9, 13, 14; **PARTLY** 2 (snapshot import is a second creation path
   with no numeric bounds), 6 (op_log rows are used as PROOF by local features — group deletion, group restore,
@@ -151,7 +176,7 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 - **2026-11-14 00:05 MST — ROUND 4 SWARM DONE; REFINE (compile) PASS (finished 01:15, see above); `main` CI GREEN on `2b289db1`.**
   Swarm `wf_004b3e4d-8b4`: 210 slices = **178 done / 32 partial / 0 failed, blocked or skipped**; 421 agents,
   48.8M subagent tokens, 2 h 51 min; about 200 commits public, 24 private, all LOCAL and **never compiled**. Nine
-  commits were held (five leak-scan hits, all false positives or reworded: `stripe` matches egui's `.striped`;
+  commits were held (five leak-scan hits, all false positives or reworded: the scan's payment-processor word matches egui's `.striped` as a substring;
   one git-ignored `qa/` output; three commit commands refused by the permission classifier) and were committed
   by the orchestrator (`ce5be456`..`720b7f1f`, private `696cd56`). Result reader:
   `python -I .omc/plans/turn4-result.py <journal.jsonl> .omc/state/turn4-args.json summary|holds|partial|
