@@ -31,21 +31,21 @@ Goal: one Bevy-free home for sanitize/clamp/convert + the terrain-JSON accessor;
 fe-terrain delegates with zero behavior change.
 
 Tasks:
-- [ ] Task: Create `fe-format/src/scale.rs` with `sanitize_world_scale`,
+- [x] Task: Create `fe-format/src/scale.rs` with `sanitize_world_scale`,
   `clamp_world_scale_to_bounds`, `meters_to_world`, `world_to_meters`, and
   `world_scale_from_terrain_json(Option<&serde_json::Value>) -> f64` (default 1.0 on
   None/null/missing/invalid; sanitize + clamp to `scale_bounds` when present).
   (TDD: port fe-terrain's scale test vectors verbatim + new JSON-accessor cases:
   null, missing key, NaN/∞/0/negative, in-bounds, clamped-out-of-bounds, malformed
   bounds; then implement.)
-- [ ] Task: Rewire `fe-terrain/src/scale.rs` to delegate/re-export from
+- [x] Task: Rewire `fe-terrain/src/scale.rs` to delegate/re-export from
   `fe_format::scale`, keeping its public API identical. (TDD: fe-terrain's existing
   scale + config `effective_world_scale` tests must pass UNCHANGED — that is the
   parity proof; no test edits allowed in this task.)
-- [ ] Task: Docs — new `fe-format/src/AGENTS.md` §scale (canonical-home rationale,
+- [ ] Task: Docs — new `fe-format/src/AGENTS.md` §scale (NOT DONE at HEAD: no §scale section; I-DOC-CORE / CITY-14 pending) (canonical-home rationale,
   rejected fe-database alternative, the one formula); update `fe-terrain/src/AGENTS.md`
   §scale with the delegation note.
-- [ ] Verification: `cargo test -p fe-format -p fe-terrain` green; confirm no public
+- [ ] Verification (code done, run pending; user-gated sweep): `cargo test -p fe-format -p fe-terrain` green; confirm no public
   API change in fe-terrain scale (callers unmodified). [checkpoint marker]
 
 ## Phase 2: Map-authoritative placement (fe-database)
@@ -54,13 +54,13 @@ Goal: imported/created nodes default to `scale = [world_scale; 3]` read from the
 petal's terrain JSON; echoes carry the true value; existing nodes untouched.
 
 Tasks:
-- [ ] Task: Add fe-format dep to fe-database; implement
+- [ ] Task: Add fe-format dep to fe-database (NOT DONE: fe-database/Cargo.toml lacks fe-format, I-DB-1 pending); implement
   `petal_world_scale(db, petal_id) -> f64` in `handlers/` (SELECT terrain FROM petal,
   `world_scale_from_terrain_json`; missing petal/terrain → 1.0), reachable by
   fe-api-facing handler code (mcp_scene_primitives seam). (TDD: handler test with
   in-memory DB — petal with terrain `world_scale: 0.01`, petal with null terrain,
   nonexistent petal; then implement.)
-- [ ] Task: `import_gltf_handler` + `create_node_handler` write
+- [ ] Task (partial: `handlers/crud.rs` placement_scale done at :179-202; echo in lib.rs:888 pending I-DB-1): `import_gltf_handler` + `create_node_handler` write
   `scale: [ws, ws, ws]` and return the applied scale; update `lib.rs` dispatch so
   `SceneChange::NodeAdded` + `DbResult::NodeCreated`/`GltfImported` echoes carry it
   (kill the hardcoded `[1,1,1]` at lib.rs:368/:397). (TDD: red test asserting the
@@ -71,7 +71,7 @@ Tasks:
   expectations; verify the fe-ui spawn path (`verse_manager/db_results/nodes.rs`)
   applies `NodeDto.scale` to the spawned transform. (TDD: adjust/extend scenario
   assertions first where they encode `[1,1,1]`.)
-- [ ] Verification: `cargo test -p fe-database -p fractalengine-test-harness` green;
+- [ ] Verification (code done, run pending; user-gated sweep): `cargo test -p fe-database -p fractalengine-test-harness` green;
   manual: same glb placed on 1:1 and 1:100 petals shows correct relative size to
   terrain (acceptance 1 — user-gated in-app check noted for Phase 5).
   [checkpoint marker]
@@ -117,12 +117,12 @@ Goal: in-app placement lands models on the terrain surface at (x,z); terrain-les
 petals keep today's y=0 behavior.
 
 Tasks:
-- [ ] Task: Resolve OQ-2 and implement the ground-height sampler in fe-terrain —
+- [x] Task (OQ-2 resolved: height field, read via `fe_renderer::terrain_height::TerrainHeightField` in `fe-ui/src/node_manager/ground_snap.rs::ground_point`): Resolve OQ-2 and implement the ground-height sampler in fe-terrain —
   either `elevation_at_world_xz` (inverse projection → elevation tile decode →
   bilinear sample → `(ele − origin_ele) × world_scale`) or a `TerrainChunk`-mesh
   raycast helper. (TDD: pure math first — sampling/interpolation or ray-mesh helper
   unit tests against a synthetic heightfield; then the terrain-facing wrapper.)
-- [ ] Task: Ground-height seam: extend `ViewportCursorWorld` (or add a sibling
+- [x] Task (wired: `fe-ui/src/plugin.rs:1556` `update_viewport_cursor_world` calls `ground_point`; no bridge needed, see CITY obsolete note): Ground-height seam: extend `ViewportCursorWorld` (or add a sibling
   resource) in fe-ui; bridge system in the main binary (pattern:
   `fractalengine/src/gpx_bridge.rs`) samples at placement time (context-menu open),
   not per-frame; fallback y=0 when no terrain/no sample. (TDD: bridge system test in
@@ -144,7 +144,7 @@ Goal: scripted end-to-end proof of the unit contract, the acceptance checklist, 
 the track's single full workspace sweep.
 
 Tasks:
-- [ ] Task: Scripted round-trip integration test (FR-6): `SetPetalTerrain` with
+- [ ] Task (obsolete per CITY note; DB-level round trip lives in `handlers/crud.rs` `placement_scale_follows_the_petal_map`): Scripted round-trip integration test (FR-6): `SetPetalTerrain` with
   `world_scale = 0.01` → `ImportGltf` → read the node transform back through the
   API/handler read surface → `world_to_meters` matches expected meters; repeat for
   1.0 and terrain-less petal. Home: fe-test-harness scenario (preferred — exercises
@@ -158,6 +158,6 @@ Tasks:
   `cargo clippy -- -D warnings`, `cargo test` (workspace) — the ONE sweep for the
   track; fix fallout; confirm >80% coverage on new modules
   (`cargo tarpaulin` per workflow.md).
-- [ ] Verification: sweep green; acceptance criteria 1-3 evidenced (tests + manual
+- [ ] Verification (sweep and manual plan: run pending, user-gated): sweep green; acceptance criteria 1-3 evidenced (tests + manual
   plan executed); AGENTS.md docs in place (fe-format §scale, fe-terrain §scale,
   fe-database placement, fe-api §units, fe-ui §units). [checkpoint marker]
