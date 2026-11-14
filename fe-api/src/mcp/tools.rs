@@ -1898,3 +1898,28 @@ pub(super) mod schema {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Network diagnostics
+// ---------------------------------------------------------------------------
+
+/// `get_network_diagnostics`: read-only peer snapshot, same gate, confinement and redaction as the REST route.
+pub(super) fn get_network_diagnostics(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        if let Err(refusal) = crate::network::NETWORK_DETAIL_GATE
+            .check_rate(call.state, call.claims)
+            .await
+        {
+            return Err(refusal.message().to_string());
+        }
+        let snapshot = crate::network::collect_scoped_diagnostics(
+            call.hosts.network_diagnostics.as_ref(),
+            call.claims,
+            crate::network::detail_enabled_from_env(),
+            crate::network::REPLY_TIMEOUT,
+        )
+        .await
+        .map_err(|error| error.message().to_string())?;
+        serde_json::to_value(snapshot).map_err(|_| "network diagnostics unavailable".to_string())
+    })
+}

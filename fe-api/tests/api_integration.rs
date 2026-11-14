@@ -1013,3 +1013,144 @@ async fn hexon_crates_publish_install_search_entries_asset_journey() {
     let (status, _, bytes) = send_on(&router, import).await;
     assert_eq!((status, bytes), denial);
 }
+
+// ---------------------------------------------------------------------------
+// (y) relay advertisement + network diagnostics over the full router
+// ---------------------------------------------------------------------------
+
+/// Harness router with a replication receiver and `NetworkOps` layered like `run_server` does.
+fn router_with_network_ops(
+    h: &ApiHarness,
+    ops: fe_api::network_ops::NetworkOps,
+) -> (axum::Router, crossbeam::channel::Receiver<fe_database::ReplicationEvent>) {
+    use std::sync::Arc;
+    let (replication_tx, replication_rx) = crossbeam::channel::bounded(8);
+    let state = fe_api::server::ApiState {
+        api_cmd_tx: h.state.api_cmd_tx.clone(),
+        transform_broadcast_tx: h.state.transform_broadcast_tx.clone(),
+        entity_change_tx: h.state.entity_change_tx.clone(),
+        verifying_key: h.state.verifying_key,
+        revoked_jtis: h.state.revoked_jtis.clone(),
+        blob_store: h.state.blob_store.clone(),
+        cors_origins: h.state.cors_origins.clone(),
+        db_reader: h.state.db_reader.clone(),
+        terrain_capture: Default::default(),
+        query_rate_limiter: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        entity_store: None,
+        tileset_registry: None,
+        hexon_registry: None,
+        announcement_store: None,
+        replication_tx: Some(replication_tx),
+        distributed_tx: None,
+        sim_control_tx: None,
+        share_signer: h.state.share_signer.clone(),
+        elevated_query_allowed: false,
+        upload_quota_bytes: h.state.upload_quota_bytes,
+        screenshot: fe_api::screenshot::ScreenshotSurface::disabled(),
+        input: fe_api::input::InputSurface::disabled(),
+    };
+    let router = fe_api::server::build_router(Arc::new(state)).layer(axum::Extension(ops));
+    (router, replication_rx)
+}
+
+/// An authenticated JSON request with an optional body.
+fn authed_json(method: &str, path: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.map(|value| value.to_string()).unwrap_or_default()))
+        .expect("build request")
+}
+
+/// Relay legs: Manager-gated signed advert, withdraw tombstone, then the diagnostics route's 503/200 seam.
+#[tokio::test]
+async fn relay_advertise_and_network_diagnostics_journey() {
+    let h = ApiHarness::spawn().await.expect("spawn harness");
+    let hier = h.seed_hierarchy().await.expect("seed hierarchy");
+    let relays_path = format!("/api/v1/verses/{}/relays", hier.verse_id);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    let advert = json!({ "url": "https://relay.example.org", "expires_at_ms": now_ms + 3_600_000 });
+
+    // Without a configured signer the route refuses before writing anything.
+    let (no_signer_router, no_signer_events) = router_with_network_ops(&h, Default::default());
+    let owner = h.mint_token(&hier.verse_scope(), "owner");
+    let (status, _, _) = send_on(&no_signer_router, authed_json("POST", &relays_path, &owner, Some(advert.clone()))).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(no_signer_events.try_recv().is_err(), "a refused advert emits no replication event");
+
+    let (sender, call_receiver) = crossbeam::channel::unbounded::<fe_runtime::net_diagnostics::NetworkDiagnosticsCall>();
+    let ops = fe_api::network_ops::NetworkOps {
+        advertisement_signer: Some(h.keypair.clone()),
+        network_diagnostics: Some(sender),
+        ..Default::default()
+    };
+    let (router, events) = router_with_network_ops(&h, ops);
+
+    // Viewer and Editor are refused with no event.
+    for role in ["viewer", "editor"] {
+        let token = h.mint_token(&hier.verse_scope(), role);
+        let (status, _, _) = send_on(&router, authed_json("POST", &relays_path, &token, Some(advert.clone()))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{role} must not advertise");
+    }
+    assert!(events.try_recv().is_err(), "refused callers emit no replication event");
+
+    // Invalid rows: past expiry, plain http and a missing expiry are all 400.
+    for bad in [
+        json!({ "url": "https://relay.example.org", "expires_at_ms": now_ms - 1000 }),
+        json!({ "url": "http://relay.example.org", "expires_at_ms": now_ms + 3_600_000 }),
+        json!({ "url": "https://relay.example.org" }),
+    ] {
+        let (status, _, _) = send_on(&router, authed_json("POST", &relays_path, &owner, Some(bad))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    assert!(events.try_recv().is_err(), "rejected rows emit no replication event");
+
+    // A valid advert is stored as a signed v1 row and announced once on the `__relays` table.
+    let (status, body, _) = send_on(&router, authed_json("POST", &relays_path, &owner, Some(advert))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let relay_id = body["relay_id"].as_str().expect("relay_id").to_string();
+    let event = events.try_recv().expect("replication event for the advert");
+    assert_eq!(event.table, "__relays");
+    assert_eq!(event.record_id, relay_id);
+    assert_eq!(event.verse_id, hier.verse_id);
+    let blob_store = h.state.blob_store.as_ref().expect("blob store");
+    let stored = blob_store.get_blob_path(&event.content_hash).expect("stored row");
+    let bytes = std::fs::read(stored).expect("read stored row");
+    let fe_runtime::relay_advertisement::RowParse::Row(row) = fe_runtime::relay_advertisement::parse_row(&bytes) else {
+        panic!("stored blob is not a v1 row");
+    };
+    fe_runtime::relay_advertisement::verify_row_at(&row, &h.keypair.verifying_key(), now_ms, Some(&hier.verse_id))
+        .expect("stored row verifies against the signer");
+
+    // Withdraw writes an empty-data tombstone for the same record.
+    let withdraw_path = format!("{relays_path}/{relay_id}");
+    let (status, _, _) = send_on(&router, authed_json("DELETE", &withdraw_path, &owner, None)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let tombstone = events.try_recv().expect("tombstone event");
+    assert_eq!(tombstone.record_id, relay_id);
+    let tombstone_path = blob_store.get_blob_path(&tombstone.content_hash).expect("tombstone blob");
+    assert!(std::fs::read(tombstone_path).expect("read tombstone").is_empty());
+
+    // Diagnostics: the route sits behind auth and answers through the sync bridge (a fake sync thread replies).
+    let anonymous = Request::builder().uri("/api/v1/network/diagnostics").body(Body::empty()).expect("request");
+    let (status, _, _) = send_on(&router, anonymous).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let responder = std::thread::spawn(move || {
+        let call = call_receiver.recv().expect("diagnostics call");
+        let detail = call.detail;
+        call.reply.send(fe_runtime::net_diagnostics::NetworkDiagnostics::default()).expect("reply");
+        detail
+    });
+    let viewer = h.mint_token(&hier.verse_scope(), "viewer");
+    let (status, body, _) = send_on(&router, authed_json("GET", "/api/v1/network/diagnostics", &viewer, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("node").is_some() && body["peers"].as_array().is_some_and(|peers| peers.is_empty()));
+    assert!(!responder.join().expect("responder"), "a viewer is never granted address detail");
+    let (status, _, _) = send_on(&no_signer_router, authed_json("GET", "/api/v1/network/diagnostics", &viewer, None)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "no bridge wired answers 503");
+}

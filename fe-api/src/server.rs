@@ -92,6 +92,8 @@ pub struct ApiState {
 pub struct ApiHosts {
     pub extension: Option<Arc<dyn crate::extensions::ExtensionHost>>,
     pub binding: Option<Arc<dyn crate::bindings::BindingHost>>,
+    /// Sync-thread diagnostics seam for the MCP `get_network_diagnostics` tool; `None` answers unavailable.
+    pub network_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnosticsCallSender>,
 }
 
 /// Build the complete axum [`Router`] with no extension or binding host (route inventory: fe-api/AGENTS.md §routes).
@@ -524,6 +526,8 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
         // 32 KiB: two ≤2 KiB URLs (even fully JSON-escaped), a ≤256-byte note and one dial-back signature.
         .route("/api/v1/verses/{verse_id}/relays", post(crate::relay_advertise::post_relay).layer(DefaultBodyLimit::max(32 * 1024)))
         .route("/api/v1/verses/{verse_id}/relays/{relay_id}", delete(crate::relay_advertise::delete_relay))
+        // Peer-network diagnostics (Viewer+, peers confined to the token's verses; addresses redacted by default)
+        .route("/api/v1/network/diagnostics", get(crate::network::get_network_diagnostics))
         // MCP: 16 MiB body cap for every method + bounded concurrency
         // (DEC-C21; large GLBs use REST multipart — §asset-ingest).
         .route(

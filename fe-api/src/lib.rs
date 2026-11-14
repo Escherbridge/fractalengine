@@ -30,6 +30,7 @@ pub mod iot;
 pub mod limits;
 pub mod mcp;
 pub mod metrics;
+pub mod network;
 pub mod network_ops;
 pub mod node_history;
 pub mod operator_gate;
@@ -258,7 +259,11 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
 
     let router = server::build_router_with_hosts(
         state,
-        server::ApiHosts { extension: config.extension_host, binding: config.binding_host },
+        server::ApiHosts {
+            extension: config.extension_host,
+            binding: config.binding_host,
+            network_diagnostics: config.network_ops.network_diagnostics.clone(),
+        },
     );
     let router = match config.import_hooks {
         Some(handle) => router.layer(axum::Extension(handle)),
