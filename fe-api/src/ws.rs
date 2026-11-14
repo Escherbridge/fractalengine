@@ -615,7 +615,18 @@ async fn credential_still_current(socket: &mut WebSocket, state: &ApiState, clai
     if crate::auth::require_current_credential(state, claims).await.is_ok() { return true; }
     send_msg(socket, &WsServerMsg::AuthInvalid { message: "credential is no longer valid".into() }).await;
     let _ = socket.send(Message::Close(None)).await;
+    drain_until_peer_close(socket).await;
     false
+}
+
+/// Read and discard inbound frames until the peer's Close, EOF or a short bound (see AGENTS.md §ws-close-drain).
+async fn drain_until_peer_close(socket: &mut WebSocket) {
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        while let Some(Ok(frame)) = socket.recv().await {
+            if matches!(frame, Message::Close(_)) { break; }
+        }
+    })
+    .await;
 }
 
 async fn send_protected(socket: &mut WebSocket, state: &ApiState, claims: &ApiClaims, message: &WsServerMsg) {

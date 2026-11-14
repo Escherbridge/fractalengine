@@ -2523,3 +2523,6 @@ self relay cannot be advertised over REST; fix needs a NetworkOps dialback seam.
 - Bridge: the handler `try_send`s on a bounded crossbeam channel (`network.rs:151`). Full maps to `Unavailable` (503) with one warn per 10 s; Disconnected maps to `Unavailable` with one warn per request. A stalled sync thread can neither block the request nor flood the log.
 - Startup opt-in: `announce_detail_opt_in` (`network.rs:134`) runs once from `spawn_api_service_inner` (`lib.rs:206`) and logs the detail warning at boot. Per-request reads stay silent.
 - MCP: `get_network_diagnostics` is a `TOOLS` row with `min_role: Viewer`, `scope_rule: Global` and `requires: ToolSeam::NetworkDiagnostics` (`mcp/mod.rs:311-320`), so it is hidden without the bridge.
+
+## §ws-close-drain
+After a revoked-credential `auth_invalid` + Close, `ws.rs::drain_until_peer_close` reads inbound frames until the peer's Close/EOF or 300 ms. Dropping with unread inbound bytes is a TCP RST on Windows, which discards the `auth_invalid`/Close the client has not yet read.

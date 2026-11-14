@@ -143,6 +143,16 @@ async fn ws_handshake_auth_subscribe_and_scene_broadcast_end_to_end() {
     .await
     .unwrap();
     assert_eq!(next_json(&mut idle).await["type"], "auth_ok");
+    // Seeded before revocation; the write below must not race the server closing the socket.
+    let forbidden_node = h
+        .seed_node(
+            &chain.petal_id,
+            "revoked write target",
+            [0.0, 0.0, 0.0],
+            None,
+        )
+        .await
+        .unwrap();
     let claims = fe_identity::verify_api_token(&token, &h.keypair.verifying_key()).unwrap();
     let record = fe_database::api_token_store::ApiTokenRecord {
         jti: claims.jti.clone(),
@@ -163,24 +173,7 @@ async fn ws_handshake_auth_subscribe_and_scene_broadcast_end_to_end() {
             .await
             .unwrap()
     );
-    assert!(
-        h.state.revoked_jtis.read().await.is_empty(),
-        "WS validity must not depend on receiving a hint"
-    );
-    assert_eq!(
-        next_json(&mut idle).await["type"],
-        "auth_invalid",
-        "An idle upgraded socket is invalidated without an incoming frame or broadcast"
-    );
-    let forbidden_node = h
-        .seed_node(
-            &chain.petal_id,
-            "revoked write target",
-            [0.0, 0.0, 0.0],
-            None,
-        )
-        .await
-        .unwrap();
+    // Send before the 200 ms validity tick can close the socket, else the late write resets it and eats the close.
     let _=ws.send(WsMessage::Text(json!({"type":"transform_update","node_id":forbidden_node,"position":[9.0,9.0,9.0],"rotation":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0]}).to_string().into())).await;
     let _ = h
         .state
@@ -194,6 +187,15 @@ async fn ws_handshake_auth_subscribe_and_scene_broadcast_end_to_end() {
             timestamp_ms: 1,
             source_did: h.did(),
         });
+    assert!(
+        h.state.revoked_jtis.read().await.is_empty(),
+        "WS validity must not depend on receiving a hint"
+    );
+    assert_eq!(
+        next_json(&mut idle).await["type"],
+        "auth_invalid",
+        "An idle upgraded socket is invalidated without an incoming frame or broadcast"
+    );
     let invalid = next_json(&mut ws).await;
     assert_eq!(
         invalid["type"], "auth_invalid",

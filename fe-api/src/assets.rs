@@ -243,6 +243,8 @@ pub async fn get_asset(
         "cache-control",
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
+    // Raw blobs are never rendered inline, whatever they hold.
+    headers.insert(CONTENT_DISPOSITION, disposition_header_value(&canonical));
     insert_nosniff(&mut headers);
     (StatusCode::OK, headers, data).into_response()
 }
