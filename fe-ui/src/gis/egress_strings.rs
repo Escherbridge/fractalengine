@@ -23,6 +23,8 @@ pub(crate) enum EgressSource {
     Petal,
     Node,
     Bbox,
+    /// iot_reading rows of the petal, pinned to a snapshot time.
+    Readings,
 }
 
 /// Export download format (plan Phase 2 routes).
@@ -57,6 +59,8 @@ pub(crate) struct EgressCardState {
     /// Node id for `EgressSource::Node`, filled by an explicit user action.
     pub node_id_buf: String,
     pub ttl_buf: String,
+    /// Snapshot cutoff (epoch ms) for `EgressSource::Readings`; set when Readings is chosen or refreshed.
+    pub readings_as_of_ms: Option<i64>,
 }
 
 impl Default for EgressCardState {
@@ -66,6 +70,7 @@ impl Default for EgressCardState {
             base_url_buf: DEFAULT_API_BASE.to_string(),
             node_id_buf: String::new(),
             ttl_buf: DEFAULT_SHARE_TTL_SECS.to_string(),
+            readings_as_of_ms: None,
         }
     }
 }
@@ -122,6 +127,28 @@ pub(crate) fn bbox_sql(petal_id: &str, min: [f32; 2], max: [f32; 2]) -> String {
          AND position.coordinates[1] >= {min_z} AND position.coordinates[1] <= {max_z} \
          AND tombstone = NONE",
         escape_sql_str(petal_id),
+    )
+}
+
+/// Snapshot-pinned, deterministically ordered reading SELECT (the export sorts the same way).
+pub(crate) fn readings_sql(petal_id: &str, as_of_ms: i64) -> String {
+    format!(
+        "SELECT * FROM iot_reading WHERE petal_id = '{}' AND recorded_at_ms <= {as_of_ms} \
+         ORDER BY recorded_at_ms, reading_id",
+        escape_sql_str(petal_id),
+    )
+}
+
+/// Readings export URL: the plain export URL plus `&as_of_ms=<n>` so the body (and ETag) stays fixed.
+pub(crate) fn readings_export_url(
+    base: &str,
+    petal_id: &str,
+    as_of_ms: i64,
+    format: ExportFormat,
+) -> String {
+    format!(
+        "{}&as_of_ms={as_of_ms}",
+        export_url(base, petal_id, &readings_sql(petal_id, as_of_ms), format)
     )
 }
 
@@ -325,6 +352,19 @@ mod tests {
         assert_eq!(
             duckdb_snippet("http://h/api/v1/petals/p/export.parquet?query=x"),
             "SELECT * FROM read_parquet('http://h/api/v1/petals/p/export.parquet?query=x');",
+        );
+        // Readings leg: SQL and export URL pin the snapshot.
+        assert_eq!(
+            readings_sql("p'1", 1700),
+            "SELECT * FROM iot_reading WHERE petal_id = 'p\\'1' AND recorded_at_ms <= 1700 \
+             ORDER BY recorded_at_ms, reading_id",
+        );
+        let url = readings_export_url(DEFAULT_API_BASE, "p1", 1700, ExportFormat::Parquet);
+        assert!(url.contains("/petals/p1/export.parquet?query=SELECT%20%2A%20FROM%20iot_reading"));
+        assert!(url.ends_with("&as_of_ms=1700"), "got {url}");
+        assert_eq!(
+            duckdb_snippet(&url),
+            format!("SELECT * FROM read_parquet('{url}');"),
         );
     }
 

@@ -27,6 +27,8 @@ pub struct ExportParams {
     pub query: Option<String>,
     /// `local` (default, petal-local meters) or `latlon` (WGS84 via the petal origin).
     pub coords: Option<String>,
+    /// iot_reading exports only: drop readings recorded after this epoch-ms so the body is a stable snapshot.
+    pub as_of_ms: Option<i64>,
 }
 
 /// Output coordinate frame for an export.
@@ -142,6 +144,38 @@ pub(crate) async fn prepare_export(
     sql: &str,
     coords: Coords,
 ) -> Result<ExportOutput, Response> {
+    prepare_export_as_of(state, rate_key, petal_id, sql, coords, None).await
+}
+
+/// Sort readings by (recorded_at_ms, reading_id) and drop rows after `as_of_ms`; identical data gives identical order.
+pub(crate) fn order_and_cut_readings(
+    mut rows: Vec<serde_json::Value>,
+    as_of_ms: Option<i64>,
+) -> Vec<serde_json::Value> {
+    if let Some(cutoff) = as_of_ms {
+        rows.retain(|r| r["recorded_at_ms"].as_i64().unwrap_or(0) <= cutoff);
+    }
+    rows.sort_by(|a, b| {
+        let key = |r: &serde_json::Value| {
+            (
+                r["recorded_at_ms"].as_i64().unwrap_or(0),
+                r["reading_id"].as_str().unwrap_or_default().to_string(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    rows
+}
+
+/// `prepare_export` with the optional readings snapshot cutoff (`as_of_ms`; refused for node exports).
+pub(crate) async fn prepare_export_as_of(
+    state: &ApiState,
+    rate_key: &str,
+    petal_id: &str,
+    sql: &str,
+    coords: Coords,
+    as_of_ms: Option<i64>,
+) -> Result<ExportOutput, Response> {
     if let Err(e) = query_guard::check_rate_limit(
         state,
         rate_key,
@@ -162,6 +196,12 @@ pub(crate) async fn prepare_export(
     // Exports map rows onto the node/EntitySnapshot or reading/ReadingSnapshot
     // shape — every other table is /query territory.
     let shape = classify_export_table(&prepared.tables)?;
+    if as_of_ms.is_some() && matches!(shape, ExportShape::Node) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "as_of_ms applies to iot_reading exports",
+        ));
+    }
     let guarded = query_guard::GuardedQuery { sql: prepared.sql };
 
     let vars = std::collections::HashMap::new();
@@ -200,6 +240,11 @@ pub(crate) async fn prepare_export(
             };
             (Some(proj), CRS_EPSG_4326.to_string())
         }
+    };
+
+    let rows = match shape {
+        ExportShape::IotReading => order_and_cut_readings(rows, as_of_ms),
+        ExportShape::Node => rows,
     };
 
     let export_rows = match shape {
@@ -299,7 +344,9 @@ pub async fn export_parquet(
         format!("SELECT * FROM node WHERE petal_id = '{petal_id}' AND tombstone = NONE")
     });
     let rate_key = format!("export:{}", claims.sub);
-    let out = match prepare_export(&state, &rate_key, &petal_id, &sql, coords).await {
+    let out = match prepare_export_as_of(&state, &rate_key, &petal_id, &sql, coords, params.as_of_ms)
+        .await
+    {
         Ok(o) => o,
         Err(resp) => return resp,
     };
@@ -325,7 +372,9 @@ pub async fn export_csv(
         format!("SELECT * FROM node WHERE petal_id = '{petal_id}' AND tombstone = NONE")
     });
     let rate_key = format!("export:{}", claims.sub);
-    let out = match prepare_export(&state, &rate_key, &petal_id, &sql, coords).await {
+    let out = match prepare_export_as_of(&state, &rate_key, &petal_id, &sql, coords, params.as_of_ms)
+        .await
+    {
         Ok(o) => o,
         Err(resp) => return resp,
     };
@@ -938,6 +987,20 @@ mod tests {
         for r in [&full, &ranged] {
             assert_eq!(r.headers()[header::CACHE_CONTROL], "private, no-store");
         }
+    }
+
+    /// Pinned snapshot: same cutoff + newly arrived readings in any order give identical row order, hence identical ETag.
+    #[test]
+    fn readings_snapshot_is_ordered_and_cut_at_as_of() {
+        let row = |id: &str, ms: i64| serde_json::json!({ "reading_id": id, "recorded_at_ms": ms });
+        let before = vec![row("b", 20), row("a", 20), row("c", 10)];
+        let mut later = vec![row("d", 99), row("c", 10), row("a", 20), row("b", 20)];
+        let first = order_and_cut_readings(before, Some(50));
+        let second = order_and_cut_readings(std::mem::take(&mut later), Some(50));
+        assert_eq!(first, second, "late arrivals past as_of_ms do not change the snapshot");
+        let ids: Vec<&str> = first.iter().map(|r| r["reading_id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["c", "a", "b"]);
+        assert_eq!(order_and_cut_readings(vec![row("d", 99)], None).len(), 1);
     }
 
     /// If-Range: matching ETag → the range is served (206); a stale ETag or

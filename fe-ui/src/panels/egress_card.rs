@@ -77,8 +77,19 @@ pub(crate) fn egress_section(
     // The compiled-in connector descriptors (R33) always render first; bound package answers follow, each named
     // `binding:egress.snippet:<key>` and labelled with its package (BND-10c).
     let inputs = SnippetInputs { base: &base, petal_id, sql: &sql };
-    for row in snippet_rows(&inputs, &[]) {
-        copy_row(ui, ui_mgr, &row.label, &row.text);
+    if let (EgressSource::Readings, Some(as_of_ms)) =
+        (gis_state.egress.source, gis_state.egress.readings_as_of_ms)
+    {
+        // Pinned snapshot rows replace the generic ones, whose URLs carry no as_of_ms.
+        let parquet = es::readings_export_url(&base, petal_id, as_of_ms, ExportFormat::Parquet);
+        let csv = es::readings_export_url(&base, petal_id, as_of_ms, ExportFormat::Csv);
+        copy_row(ui, ui_mgr, "Readings Parquet URL", &parquet);
+        copy_row(ui, ui_mgr, "Readings CSV URL", &csv);
+        copy_row(ui, ui_mgr, "DuckDB readings", &es::duckdb_snippet(&parquet));
+    } else {
+        for row in snippet_rows(&inputs, &[]) {
+            copy_row(ui, ui_mgr, &row.label, &row.text);
+        }
     }
     for (name, row) in crate::extensions::bound_snippet_rows(ui.ctx(), &inputs) {
         ui.scope(|ui| copy_row(ui, ui_mgr, &row.label, &row.text)).response.named(ui, name);
@@ -100,16 +111,37 @@ fn render_source_selector(
             (EgressSource::Petal, "Petal"),
             (EgressSource::Node, "Node"),
             (EgressSource::Bbox, "Bbox"),
+            (EgressSource::Readings, "Readings"),
         ] {
             let active = gis_state.egress.source == source;
             let btn = egui::Button::new(label).fill(theme::tab_fill(active));
             if ui.add(btn).observed(ui).clicked() {
                 gis_state.egress.source = source;
+                if source == EgressSource::Readings && gis_state.egress.readings_as_of_ms.is_none() {
+                    gis_state.egress.readings_as_of_ms = Some(now_epoch_ms());
+                }
             }
         }
     });
     match gis_state.egress.source {
         EgressSource::Petal => {}
+        EgressSource::Readings => {
+            ui.horizontal(|ui| {
+                if let Some(as_of) = gis_state.egress.readings_as_of_ms {
+                    ui.label(
+                        egui::RichText::new(format!("Snapshot as of {as_of} ms"))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
+                if crate::ui_shell::layout_policy::small_button(ui, "Refresh snapshot")
+                    .observed(ui)
+                    .clicked()
+                {
+                    gis_state.egress.readings_as_of_ms = Some(now_epoch_ms());
+                }
+            });
+        }
         // The node id is panel-local state, filled by an EXPLICIT button click
         // — never read implicitly from `NodeManager.selected` per project
         // memory: track-selection-two-concepts.
@@ -155,6 +187,10 @@ fn build_sql(gis_state: &GisPanelState, petal_id: &str, world_scale: f64) -> Opt
             let node_id = gis_state.egress.node_id_buf.trim();
             (!node_id.is_empty()).then(|| es::node_selection_sql(petal_id, node_id))
         }
+        EgressSource::Readings => gis_state
+            .egress
+            .readings_as_of_ms
+            .map(|as_of_ms| es::readings_sql(petal_id, as_of_ms)),
         EgressSource::Bbox => {
             let min = crate::gis::parse_bbox_fields(&gis_state.bbox_min)?
                 .map(|m| meters_to_world(m, world_scale));
@@ -165,8 +201,17 @@ fn build_sql(gis_state: &GisPanelState, petal_id: &str, world_scale: f64) -> Opt
     }
 }
 
+/// Current wall-clock epoch milliseconds (0 if the clock is before the epoch).
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn source_error(source: EgressSource) -> &'static str {
     match source {
+        EgressSource::Readings => "Choose Refresh snapshot to pin a readings snapshot.",
         EgressSource::Node => "Enter a node id (or click Use viewport selection).",
         EgressSource::Bbox => "Bbox fields must be numbers (see the Query tab).",
         EgressSource::Petal => "No petal context.",
@@ -213,6 +258,11 @@ fn render_share_section(
     }
     ui.label(
         egui::RichText::new("Run with your API token; the response contains the signed URL.")
+            .small()
+            .color(theme::TEXT_MUTED),
+    );
+    ui.label(
+        egui::RichText::new("Parquet/CSV links need a petal-scoped token.")
             .small()
             .color(theme::TEXT_MUTED),
     );

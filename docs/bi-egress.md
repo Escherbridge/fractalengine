@@ -168,6 +168,17 @@ Range requests work: DuckDB's httpfs issues ranged GETs and the relay answers 20
 - **CRS (Coordinate Reference System):** Exports include an `x-fe-crs` header and CSV `# crs=` comment line. Local meters are labeled `PETAL-LOCAL:meters`. Use `coords=latlon` (e.g. `<share url>?coords=latlon`) to convert to WGS84 lon/lat/elevation; it answers 400 when the petal has no terrain origin.
 - **Readings geometry:** Each reading row includes its anchor node's position. Anchors that were hard-deleted (or are missing) export a **null** geometry cell / empty CSV anchor cells—never a fabricated `0,0,0`. REST delete tombstones nodes; tombstoned anchors currently still export their last position. Readings' `value` column is always Float64 for bit-exact sensor data.
 
+## Readings snapshots and petal-scoped share links
+
+- **Stable snapshot (`as_of_ms`):** add `&as_of_ms=<epoch ms>` to an `iot_reading` export URL and readings recorded after that instant are dropped. Reading rows are always sorted by `(recorded_at_ms, reading_id)`, so identical data gives identical bytes and the same strong `ETag`, even while new readings arrive. DuckDB's `read_parquet` checks the ETag between range reads; a live, unpinned export changes in between and the check fails, a pinned one holds. `as_of_ms` on a `node` export is refused with 400 (`as_of_ms applies to iot_reading exports`).
+- **In the app:** Export tab, Copy for BI, source **Readings** pins the snapshot to the moment you chose it; **Refresh snapshot** moves it to now. It copies the Parquet URL, CSV URL and a DuckDB snippet:
+
+```sql
+SELECT * FROM read_parquet('http://localhost:8765/api/v1/petals/<petal id>/export.parquet?query=SELECT%20%2A%20FROM%20iot_reading%20WHERE%20petal_id%20%3D%20%27<petal id>%27%20AND%20recorded_at_ms%20%3C%3D%20<as_of_ms>%20ORDER%20BY%20recorded_at_ms%2C%20reading_id&as_of_ms=<as_of_ms>');
+```
+
+- **Petal-scoped token for share links:** `POST /api/v1/query/share` refuses parquet/csv links unless the caller's token is scoped to a single petal. Mint one with `Mint-Token "VERSE#$verseId-FRACTAL#$fractalId-PETAL#$petalId" 'owner' 'petal1'` (the `$petalToken` of section 4), then POST the share body with that token as the bearer. The in-app card cannot mint it (the editor has no HTTP client to the API), so it shows a curl to run with your token.
+
 ## Troubleshooting
 
 **401 Unauthorized**
