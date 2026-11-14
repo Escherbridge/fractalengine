@@ -240,9 +240,20 @@ pub(crate) fn render(
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .vscroll(false)
         .default_width(460.0)
         .show_with_targets(ctx, |ui| {
             ui.spacing_mut().interact_size.y = crate::ui_shell::layout_policy::target_size(ctx);
+            let target = crate::ui_shell::layout_policy::target_size(ctx);
+            ui.spacing_mut().interact_size.y = target;
+            // Action row stays outside the scroll area so it is always inside the window.
+            let footer_height = target.max(28.0) + ui.spacing().item_spacing.y * 3.0 + 6.0;
+            let body_height = (ui.available_height() - footer_height).max(target);
+            egui::ScrollArea::vertical()
+                .id_salt("tree_appearance_body")
+                .auto_shrink([false, true])
+                .max_height(body_height)
+                .show(ui, |ui| {
             ui.label("Display preference on this device");
             ui.horizontal(|ui| {
                 let (rect, _) =
@@ -336,6 +347,8 @@ pub(crate) fn render(
                     "This entry no longer exists. Close this editor.",
                 );
             }
+            });
+            ui.separator();
             ui.horizontal_wrapped(|ui| {
                 save = ui
                     .add_enabled(
