@@ -11,6 +11,8 @@ use crate::gis::PathEditorState;
 use crate::node_manager::measure::{
     readout, readout_rows, MeasureEvent, MeasureMode, MeasureState,
 };
+use crate::node_manager::road_chain::{reduce, RoadBuilderState, RoadEvent, RoadMode, RoadSettings};
+use crate::node_manager::road_overlay::{chain_total_world, format_readout};
 use crate::node_manager::SelectionKind;
 use crate::panels::tool_inspector::panel_descriptor;
 use crate::panels::tool_panel::ToolPanelState;
@@ -79,6 +81,7 @@ pub(crate) fn render(
     active_petal_id: Option<&str>,
     measure: &mut MeasureState,
     measure_world_scale: f64,
+    road: &mut RoadBuilderState,
     snap: &mut crate::node_manager::ToolSnapSettings,
     authoring: &mut crate::node_manager::TerrainAuthoringState,
     nav: &crate::navigation_manager::NavigationManager,
@@ -118,8 +121,7 @@ pub(crate) fn render(
         ToolOptionsArm::Measure => {
             render_measure_options(ui, measure, measure_world_scale, ui_mgr, active_petal_id)
         }
-        // Stub: the road builder options body lands with CITY-13.
-        ToolOptionsArm::Road => {}
+        ToolOptionsArm::Road => render_road_options(ui, road, path_state, measure_world_scale),
     }
     // Never-blank (`ui_ux.md §7`): an arm without live controls falls back to
     // the descriptor's calm "(soon)" lines — one table, no duplicated copy.
@@ -622,6 +624,206 @@ fn render_measure_options(
     }
 }
 
+/// One edit to the road builder settings, applied through the reducer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RoadSettingEdit {
+    AngleSnap(bool),
+    AngleIncrementDeg(f32),
+    SnapToPaths(bool),
+    Guidelines(bool),
+    SnapRadiusM(f32),
+    CurveSamples(usize),
+    FreeformSpacingM(f32),
+}
+
+/// Allowed snap radius range, metres.
+pub(crate) const ROAD_SNAP_RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.5..=50.0;
+/// Allowed curve samples per segment.
+pub(crate) const ROAD_CURVE_SAMPLES_RANGE: std::ops::RangeInclusive<usize> = 4..=64;
+/// Allowed freeform sample spacing, metres.
+pub(crate) const ROAD_FREEFORM_SPACING_RANGE: std::ops::RangeInclusive<f32> = 0.5..=20.0;
+
+fn clamp_finite(value: f32, range: &std::ops::RangeInclusive<f32>, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(*range.start(), *range.end())
+    } else {
+        fallback
+    }
+}
+
+/// Apply one clamped settings edit via `RoadEvent::SetSettings`; angle increment snaps to 45 or 90.
+pub(crate) fn apply_road_setting(state: &mut RoadBuilderState, edit: RoadSettingEdit) {
+    let mut settings: RoadSettings = state.settings;
+    match edit {
+        RoadSettingEdit::AngleSnap(on) => settings.angle_snap = on,
+        RoadSettingEdit::AngleIncrementDeg(deg) => {
+            settings.angle_increment_deg = if deg >= 90.0 { 90.0 } else { 45.0 };
+        }
+        RoadSettingEdit::SnapToPaths(on) => settings.snap_to_paths = on,
+        RoadSettingEdit::Guidelines(on) => settings.guidelines = on,
+        RoadSettingEdit::SnapRadiusM(value) => {
+            settings.snap_radius_m =
+                clamp_finite(value, &ROAD_SNAP_RADIUS_RANGE, settings.snap_radius_m);
+        }
+        RoadSettingEdit::CurveSamples(value) => {
+            settings.curve_samples = value.clamp(
+                *ROAD_CURVE_SAMPLES_RANGE.start(),
+                *ROAD_CURVE_SAMPLES_RANGE.end(),
+            );
+        }
+        RoadSettingEdit::FreeformSpacingM(value) => {
+            settings.freeform_spacing_m = clamp_finite(
+                value,
+                &ROAD_FREEFORM_SPACING_RANGE,
+                settings.freeform_spacing_m,
+            );
+        }
+    }
+    reduce(state, RoadEvent::SetSettings(settings));
+}
+
+/// Undo segment is meaningful once a segment is committed.
+pub(crate) fn road_can_undo(state: &RoadBuilderState) -> bool {
+    !state.log.is_empty()
+}
+
+/// End road is meaningful while a segment is in flight or a chain is open.
+pub(crate) fn road_can_end(state: &RoadBuilderState) -> bool {
+    state.is_active() || !state.log.is_empty()
+}
+
+/// Road arm: mode picker, snap toggles, numeric tolerances, chain length, Undo / End.
+/// Every change goes through `road_chain::reduce`, like viewport input.
+fn render_road_options(
+    ui: &mut egui::Ui,
+    road: &mut RoadBuilderState,
+    path_state: &PathEditorState,
+    world_scale: f64,
+) {
+    ui.horizontal(|ui| {
+        for mode in RoadMode::ALL {
+            if ui
+                .selectable_label(road.settings.mode == mode, mode.label())
+                .named(ui, format_args!("Road mode {}", mode.label()))
+                .clicked()
+            {
+                reduce(road, RoadEvent::SetMode(mode));
+            }
+        }
+    });
+    ui.add_space(4.0);
+
+    let mut edit: Option<RoadSettingEdit> = None;
+    let settings = road.settings;
+    let mut angle_snap = settings.angle_snap;
+    ui.horizontal(|ui| {
+        if ui
+            .checkbox(&mut angle_snap, "Angle snap")
+            .named(ui, "Road angle snap")
+            .changed()
+        {
+            edit = Some(RoadSettingEdit::AngleSnap(angle_snap));
+        }
+        ui.add_enabled_ui(settings.angle_snap, |ui| {
+            for degrees in [45.0_f32, 90.0] {
+                if ui
+                    .selectable_label(
+                        settings.angle_increment_deg == degrees,
+                        format!("{degrees:.0}\u{b0}"),
+                    )
+                    .named(ui, format_args!("Angle snap increment {degrees:.0} degrees"))
+                    .clicked()
+                {
+                    edit = Some(RoadSettingEdit::AngleIncrementDeg(degrees));
+                }
+            }
+        });
+    });
+    let mut snap_to_paths = settings.snap_to_paths;
+    if ui
+        .checkbox(&mut snap_to_paths, "Snap to paths")
+        .named(ui, "Road snap to paths")
+        .changed()
+    {
+        edit = Some(RoadSettingEdit::SnapToPaths(snap_to_paths));
+    }
+    let mut guidelines = settings.guidelines;
+    if ui
+        .checkbox(&mut guidelines, "Guidelines")
+        .named(ui, "Road guidelines")
+        .changed()
+    {
+        edit = Some(RoadSettingEdit::Guidelines(guidelines));
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Snap radius (m)");
+        let mut radius = settings.snap_radius_m;
+        if ui
+            .add(egui::DragValue::new(&mut radius).range(ROAD_SNAP_RADIUS_RANGE).speed(0.1))
+            .named(ui, "Road snap radius in meters")
+            .changed()
+        {
+            edit = Some(RoadSettingEdit::SnapRadiusM(radius));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Curve samples");
+        let mut samples = settings.curve_samples;
+        if ui
+            .add(egui::DragValue::new(&mut samples).range(ROAD_CURVE_SAMPLES_RANGE).speed(0.25))
+            .named(ui, "Road curve samples per segment")
+            .changed()
+        {
+            edit = Some(RoadSettingEdit::CurveSamples(samples));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Freeform spacing (m)");
+        let mut spacing = settings.freeform_spacing_m;
+        if ui
+            .add(egui::DragValue::new(&mut spacing).range(ROAD_FREEFORM_SPACING_RANGE).speed(0.1))
+            .named(ui, "Road freeform sample spacing in meters")
+            .changed()
+        {
+            edit = Some(RoadSettingEdit::FreeformSpacingM(spacing));
+        }
+    });
+    if let Some(edit) = edit {
+        apply_road_setting(road, edit);
+    }
+
+    ui.add_space(4.0);
+    let session_open =
+        road.session_track.is_some() && road.session_track == path_state.editing_track_id;
+    let total_world = if session_open {
+        chain_total_world(path_state.points.iter().map(|row| row.position))
+    } else {
+        0.0
+    };
+    ui.horizontal(|ui| {
+        ui.label("Chain length");
+        ui.label(format_readout(total_world, 0.0, world_scale));
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(road_can_undo(road), egui::Button::new("Undo segment"))
+            .named(ui, "Undo last road segment")
+            .clicked()
+        {
+            reduce(road, RoadEvent::Backspace);
+        }
+        if ui
+            .add_enabled(road_can_end(road), egui::Button::new("End road"))
+            .named(ui, "End road")
+            .clicked()
+        {
+            reduce(road, RoadEvent::Escape);
+        }
+    });
+}
+
 /// Build a `RevealSection` action from a section, so call sites cannot mistype
 /// a slug literal. Pure.
 pub(crate) fn reveal(section: RightSidebarSection) -> UiAction {
@@ -657,6 +859,20 @@ mod tests {
         assert_eq!(options_arm(Tool::Brush), ToolOptionsArm::Brush);
         assert_eq!(options_arm(Tool::Measure), ToolOptionsArm::Measure);
         assert_eq!(options_arm(Tool::Road), ToolOptionsArm::Road);
+
+        // Road settings edits clamp, snap the increment, and gate Undo/End on state.
+        let mut road = RoadBuilderState::default();
+        assert!(!road_can_undo(&road) && !road_can_end(&road));
+        apply_road_setting(&mut road, RoadSettingEdit::SnapRadiusM(999.0));
+        apply_road_setting(&mut road, RoadSettingEdit::CurveSamples(1));
+        apply_road_setting(&mut road, RoadSettingEdit::FreeformSpacingM(f32::NAN));
+        apply_road_setting(&mut road, RoadSettingEdit::AngleIncrementDeg(60.0));
+        assert_eq!(road.settings.snap_radius_m, 50.0);
+        assert_eq!(road.settings.curve_samples, 4);
+        assert_eq!(road.settings.freeform_spacing_m, RoadSettings::default().freeform_spacing_m);
+        assert_eq!(road.settings.angle_increment_deg, 45.0);
+        reduce(&mut road, RoadEvent::Click([0.0, 0.0, 0.0]));
+        assert!(road_can_end(&road));
     }
 
     #[test]
