@@ -446,7 +446,7 @@ fn main() {
 
     // NET-30: desktop relay-capable mode; consent, feature, self-test and dial-back are checked off the main thread.
     if app_settings.serve_relay {
-        spawn_desktop_relay_gate(app_settings.clone(), sync_cmd_tx.clone(), shared_db.clone());
+        spawn_desktop_relay_gate(app_settings.clone(), sync_cmd_tx.clone(), shared_db.clone(), node_kp.to_did_key());
     }
 
     // M2/F7 (A17): API→sync distributed-query bridge. The API thread's
@@ -1132,6 +1132,7 @@ fn spawn_desktop_relay_gate(
     settings: fe_ui::settings::AppSettings,
     sync_command_sender: fe_sync::SyncCommandSender,
     db: fe_database::repo::Db,
+    local_did: String,
 ) {
     let spawned = std::thread::Builder::new().name("desktop-relay-gate".into()).spawn(move || {
         // Multi-thread: the relay's listener and reconciler tasks must keep running after `maybe_start` returns.
@@ -1149,7 +1150,7 @@ fn spawn_desktop_relay_gate(
         };
         let feature_built = cfg!(feature = "relay-server");
         let verdict = if feature_built { wait_for_self_test_verdict(&sync_command_sender) } else { None };
-        let hosted_verses = runtime.block_on(load_hosted_verse_ids(&db));
+        let hosted_verses = runtime.block_on(load_owned_verse_ids(&db, local_did));
         // The dial-back probes the listening relay, so it can only run after a provisional start; a failed
         // confirmation stops the relay again (the pure gate still refuses everything before that point).
         let provisional = verdict.as_deref() == Some("public");
@@ -1202,10 +1203,14 @@ fn wait_for_self_test_verdict(sync_command_sender: &fe_sync::SyncCommandSender) 
     None
 }
 
-/// Verse ids in the local store: the hosted set the embedded relay may serve (empty on a read error).
-async fn load_hosted_verse_ids(db: &fe_database::repo::Db) -> std::collections::BTreeSet<String> {
+/// Verses this node created (owner DID = `local_did`): the only set a desktop relay may serve; joined verses are excluded (empty on a read error).
+async fn load_owned_verse_ids(db: &fe_database::repo::Db, local_did: String) -> std::collections::BTreeSet<String> {
     let read = async {
-        let mut response = db.query("SELECT VALUE verse_id FROM verse").await?.check()?;
+        let mut response = db
+            .query("SELECT VALUE verse_id FROM verse WHERE created_by = $did")
+            .bind(("did", local_did))
+            .await?
+            .check()?;
         anyhow::Ok(response.take::<Vec<String>>(0)?)
     };
     match read.await {
