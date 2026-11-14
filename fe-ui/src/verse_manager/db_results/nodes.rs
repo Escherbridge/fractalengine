@@ -124,6 +124,12 @@ pub(super) fn handle_node_created(
                     position: pen.first_point,
                 });
             }
+            // Road first-commit: the rest of the first segment, applied to the track just opened for editing.
+            if !pen.trailing_points.is_empty() {
+                ui_mgr.push_action(crate::actions::UiAction::PathAppendShape {
+                    points: pen.trailing_points.clone(),
+                });
+            }
         }
     }
     // FR-3: any node create in the active petal may be a track —

@@ -577,6 +577,8 @@ pub struct PendingPenCreate {
     pub handle_out: Option<[f32; 3]>,
     pub corner: CornerKind,
     pub smoothness: f32,
+    /// Road first-commit: points of the first segment AFTER `first_point`, flushed as one `PathAppendShape`.
+    pub trailing_points: Vec<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +635,13 @@ pub(crate) fn next_pen_correlation_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!("pen-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Process-unique correlation id for a road-builder track create; `road-track:` keeps it disjoint from pen ids.
+pub(crate) fn next_road_correlation_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!("road-track:{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 #[cfg(test)]
@@ -864,6 +873,10 @@ mod tests {
         let b = next_pen_correlation_id();
         assert!(a.starts_with("pen-track:"), "got {a}");
         assert_ne!(a, b, "each call yields a distinct id");
+        let (r1, r2) = (next_road_correlation_id(), next_road_correlation_id());
+        assert!(r1.starts_with("road-track:"), "got {r1}");
+        assert_ne!(r1, r2, "road ids are distinct");
+        assert!(!r1.starts_with("pen-track:"), "id spaces stay disjoint");
     }
 
     #[test]
