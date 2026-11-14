@@ -104,6 +104,8 @@ pub fn gardener_console(
     camera_focus: &mut CameraFocusTarget,
     cursor_world: &ViewportCursorWorld,
     sync_status: Option<&fe_sync::SyncStatus>,
+    network_diagnostics: Option<&fe_sync::status::NetworkDiagnosticsState>,
+    sync_sender: Option<&fe_sync::SyncCommandSenderRes>,
     node_mgr: &mut crate::node_manager::NodeManager,
     ui_mgr: &mut UiManager,
     local_role: &LocalUserRole,
@@ -389,7 +391,7 @@ pub fn gardener_console(
                     crate::dialogs::render_join_dialog(ctx, ui_mgr, db_tx)
                 });
                 let _ = guarded(modal, "dialog_peer_debug", || {
-                    crate::dialogs::render_peer_debug_panel(ctx, ui_mgr, sync_status)
+                    crate::dialogs::render_peer_debug_panel(ctx, ui_mgr, sync_status, network_diagnostics, sync_sender)
                 });
                 let _ = guarded(modal, "dialog_tree_appearance", || {
                     tree_appearance::render(ctx, ui_mgr, app_settings, hierarchy)
@@ -881,6 +883,8 @@ mod tests {
                         &db_tx,
                         &mut camera_focus,
                         &cursor,
+                        None,
+                        None,
                         None,
                         &mut node_mgr,
                         &mut ui_mgr,

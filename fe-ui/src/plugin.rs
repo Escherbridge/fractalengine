@@ -886,6 +886,8 @@ impl Plugin for GardenerConsolePlugin {
         // UI-only resources (form buffers, dialog flags, etc.)
         app.init_resource::<MeshInstanceBudget>();
         app.init_resource::<crate::invitations::ReplicaHandoff>();
+        // Peer Debug snapshot holder; idempotent next to fe-sync's own registration.
+        app.init_resource::<fe_sync::status::NetworkDiagnosticsState>();
         // Mesh-instance watchdog runs in Last so its gate lands before the
         // next frame's spawners (see AGENTS.md §mesh-budget).
         app.add_systems(Last, mesh_instance_watchdog.run_if(fe_runtime::maintenance::editor_running));
@@ -1183,6 +1185,8 @@ impl Plugin for GardenerConsolePlugin {
 #[derive(bevy::ecs::system::SystemParam)]
 struct P2pDialogParams<'w> {
     sync_status: Option<Res<'w, fe_sync::SyncStatus>>,
+    network_diagnostics: Option<Res<'w, fe_sync::status::NetworkDiagnosticsState>>,
+    sync_sender: Option<Res<'w, fe_sync::SyncCommandSenderRes>>,
     node_mgr: ResMut<'w, crate::node_manager::NodeManager>,
     ui_mgr: ResMut<'w, UiManager>,
     portal_rect: ResMut<'w, fe_webview::plugin::PortalPanelRect>,
@@ -1316,6 +1320,8 @@ fn gardener_ui_system(
         &mut camera_focus,
         &cursor_world,
         p2p.sync_status.as_deref(),
+        p2p.network_diagnostics.as_deref(),
+        p2p.sync_sender.as_deref(),
         &mut p2p.node_mgr,
         &mut p2p.ui_mgr,
         &local_role,
