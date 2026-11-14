@@ -464,7 +464,13 @@ async fn apply_row_mode(
                 );
                 return Ok(ReplicatedRowOutcome::NotApplicable);
             }
-            apply_static_row(db, table, record_id, row_bytes).await
+            // Per-key clock: a clocked row is judged key by key; an unclocked one only fills legacy-floor keys.
+            if super::clocked_row::carries_field_clock(row_bytes) {
+                super::clocked_row::apply_clocked_static_row(db, verse_id, table, record_id, row_bytes, author_did)
+                    .await
+            } else {
+                apply_static_row(db, verse_id, table, record_id, row_bytes).await
+            }
         }
         "node" => apply_node_row(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await,
         // R5 (CDL-SPEC10 A3): insert-if-absent, never overwrite, anchored
@@ -576,7 +582,7 @@ fn parent(table: &str, id: &str) -> DeferralReason {
 /// Verse fields a replicated manifest may never change (T9).
 const VERSE_IDENTITY_FIELDS: [&str; 4] = ["verse_id", "created_by", "created_at", "namespace_id"];
 /// Verse fields whose change needs Manager+ at the verse scope (RP-4 step 2).
-const VERSE_GOVERNANCE_FIELDS: [&str; 4] = [
+pub(crate) const VERSE_GOVERNANCE_FIELDS: [&str; 4] = [
     "default_access",
     "ts_mode",
     "ts_replication_factor",
@@ -719,7 +725,62 @@ async fn admit_inbound_row(
         }
         Confined::Stop(other) => return Ok(other),
     };
+    if matches!(table, "verse" | "fractal" | "petal") && super::clocked_row::carries_field_clock(row_bytes) {
+        // Filling a missing namespace_id picks the replica this node opens next: still a verse Manager's call.
+        if table == "verse" && fills_namespace_id(db, verse_id, row_bytes).await? {
+            let verse_scope = vec![crate::scope::build_scope(verse_id, None, None)];
+            let gate = role_gate(db, verse_id, table, record_id, author_did, &verse_scope, Floor::ManageVerse).await?;
+            if !matches!(gate, Admission::Allow) {
+                return Ok(gate);
+            }
+        }
+        // Per-key clock: only a membership floor; each version is judged at write time when merged.
+        return clocked_membership_floor(db, verse_id, author_did).await;
+    }
     role_gate(db, verse_id, table, record_id, author_did, &scopes, floor).await
+}
+
+/// Whether a verse row carries a `namespace_id` the local verse row does not have yet.
+async fn fills_namespace_id(db: &Db, verse_id: &str, row_bytes: &[u8]) -> anyhow::Result<bool> {
+    let incoming = serde_json::from_slice::<serde_json::Value>(row_bytes)
+        .ok()
+        .is_some_and(|row| present(&row, "namespace_id").is_some());
+    if !incoming {
+        return Ok(false);
+    }
+    Ok(lookup_row(db, "verse", "verse_id", verse_id, "namespace_id")
+        .await?
+        .is_some_and(|stored| present(&stored, "namespace_id").is_none()))
+}
+
+/// Membership floor of a clocked hierarchy row (spec §3.5): the owner, or a peer some admitted
+/// or held statement in this verse names; anyone else is `Defer(AuthorRole)` as before.
+async fn clocked_membership_floor(db: &Db, verse_id: &str, author_did: &str) -> anyhow::Result<Admission> {
+    if crate::role_grants::verse_owner(db, verse_id).await?.as_deref() == Some(author_did)
+        || is_named_in_verse_statement(db, verse_id, author_did).await?
+    {
+        return Ok(Admission::Allow);
+    }
+    Ok(Admission::Defer(DeferralReason::AuthorRole {
+        did: author_did.to_string(),
+    }))
+}
+
+/// Whether any admitted (`role_grant`) or held (`role_statement_pending`) statement of the verse names `did`.
+async fn is_named_in_verse_statement(db: &Db, verse_id: &str, did: &str) -> anyhow::Result<bool> {
+    let mut response = db
+        .query(
+            "SELECT VALUE peer_did FROM role_grant WHERE verse_id = $v AND peer_did = $d LIMIT 1;
+             SELECT VALUE peer_did FROM role_statement_pending WHERE verse_id = $v AND peer_did = $d LIMIT 1;",
+        )
+        .bind(("v", verse_id.to_string()))
+        .bind(("d", did.to_string()))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("role statement membership lookup failed: {e}"))?;
+    let admitted: Vec<String> = response.take(0)?;
+    let held: Vec<String> = response.take(1)?;
+    Ok(!admitted.is_empty() || !held.is_empty())
 }
 
 /// The role gate (RP-4 step 6): the author's role, resolved from the local
@@ -1286,7 +1347,7 @@ fn is_scope_safe_id(id: &str) -> bool {
 /// `fields` of the row keyed `id_field = id` in `table`, or `None` when no
 /// such row exists locally. `table`/`id_field`/`fields` are static names;
 /// tolerates an absent table like [`row_exists`].
-async fn lookup_row(
+pub(super) async fn lookup_row(
     db: &Db,
     table: &str,
     id_field: &str,
@@ -1315,13 +1376,13 @@ fn str_field<'a>(row: &'a serde_json::Value, field: &str) -> Option<&'a str> {
 }
 
 /// A field that is present and not null (absence and `null` both mean `NONE`).
-fn present<'a>(row: &'a serde_json::Value, field: &str) -> Option<&'a serde_json::Value> {
+pub(super) fn present<'a>(row: &'a serde_json::Value, field: &str) -> Option<&'a serde_json::Value> {
     row.get(field).filter(|v| !v.is_null())
 }
 
 /// JSON equality that treats numerically equal numbers as equal (a stored
 /// `int` and a wire `2.0` are the same setting).
-fn json_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+pub(super) fn json_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     match (a.as_f64(), b.as_f64()) {
         (Some(x), Some(y)) if a.is_number() && b.is_number() => x == y,
         _ => a == b,
@@ -1332,12 +1393,52 @@ fn json_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 // Static hierarchy tables (verse / fractal / petal)
 // ---------------------------------------------------------------------------
 
-/// Insert-or-merge one replicated row into a static hierarchy table.
+/// Strictest-reader check of one inbound static-row column value (the local writers apply
+/// the same rules); `Some(reason)` denies the whole row. Shared by the legacy and clocked paths.
+pub(super) fn static_field_violation(
+    table: &str,
+    field: &str,
+    value: &serde_json::Value,
+) -> Option<&'static str> {
+    match (table, field) {
+        // F20 fold-in (A3 deny-by-default): `resolve_role` falls back to `default_access`, so a
+        // manifest may only carry what the local writers allow.
+        ("verse", "default_access") => (!value
+            .as_str()
+            .is_some_and(|access| access == "viewer" || access == "none"))
+        .then_some("a forbidden default_access"),
+        ("petal", "hexon_manifest") => {
+            fe_runtime::petal_requirements::PetalRequirements::from_document(Some(value))
+                .is_err()
+                .then_some("malformed requirements")
+        }
+        // p2p_asset_streaming_20260718 S6: a writer of a shared petal column satisfies the strictest reader.
+        ("petal", "render_distance") => {
+            (!is_valid_inbound_render_distance(value)).then_some("an out-of-range render_distance")
+        }
+        ("petal", "visibility_groups") => (!value.is_null()
+            && !super::visibility_groups::is_valid_inbound_registry(value))
+        .then_some("a malformed visibility group registry"),
+        ("petal", "terrain") => (!value.is_null() && !is_valid_inbound_petal_terrain(value))
+            .then_some("a malformed terrain config"),
+        ("petal", "bounds") => value
+            .get("coordinates")
+            .and_then(render_polygon_rings)
+            .is_none()
+            .then_some("bounds that are not numeric polygon rings"),
+        _ => None,
+    }
+}
+
+/// Insert-or-merge one UNCLOCKED replicated row into a static hierarchy table (QA-0166 legacy
+/// path): only keys whose cached winner is absent or the legacy floor are merged, and each is
+/// recorded as a legacy-floor version in the same transaction (field_clock/AGENTS.md §legacy-migration).
 ///
 /// Geometry columns are extracted first (never bound through CONTENT/MERGE —
-/// §geometry-inserts) and cast-written once the row exists.
+/// §geometry-inserts) and cast-written in the same transaction.
 async fn apply_static_row(
     db: &Db,
+    verse_id: &str,
     table: &str,
     record_id: &str,
     row_bytes: &[u8],
@@ -1354,17 +1455,10 @@ async fn apply_static_row(
     // QA-0123: a projected catalog row carries NONE columns as null — absent, not
     // malformed — so nulls go before any per-field check.
     strip_toplevel_nulls(&mut row);
-    if table == "petal" {
-        if let Some(document) = row.get("hexon_manifest") {
-            if let Err(reason) =
-                fe_runtime::petal_requirements::PetalRequirements::from_document(Some(document))
-            {
-                tracing::warn!(
-                    table,
-                    record_id,
-                    reason,
-                    "Inbound petal row carries malformed requirements — denied"
-                );
+    if let Some(object) = row.as_object() {
+        for (field, value) in object {
+            if let Some(reason) = static_field_violation(table, field, value) {
+                tracing::warn!(table, record_id, field = %field, reason, "Inbound static row carries an invalid value — denied");
                 return Ok(ReplicatedRowOutcome::Denied);
             }
         }
@@ -1375,77 +1469,6 @@ async fn apply_static_row(
     if let Some(object) = row.as_object_mut() {
         object.remove("id");
     }
-
-    // A3 deny-by-default (F20 fold-in): an inbound verse manifest is the
-    // only writer that could hand an unknown peer a write role — `resolve_role`
-    // falls back to `default_access` for peers with no explicit row, and the
-    // schema only DEFAULTs the column (no ASSERT). The local writers are
-    // pinned ("viewer" at creation, `set_default_access` rejects anything
-    // else), so the replicated path validates the same set here: a manifest
-    // carrying anything outside {"viewer", "none"} is denied outright, never
-    // applied.
-    if table == "verse" {
-        if let Some(access) = row.get("default_access") {
-            let valid = access
-                .as_str()
-                .is_some_and(|v| v == "viewer" || v == "none");
-            if !valid {
-                tracing::warn!(
-                    verse_id = record_id,
-                    default_access = ?access,
-                    "Inbound verse manifest carries a forbidden default_access — denied"
-                );
-                return Ok(ReplicatedRowOutcome::Denied);
-            }
-        }
-    }
-
-    // p2p_asset_streaming_20260718 S6 (critic step 8 + "strictest reader" rule,
-    // RUNBOOK §5): a writer of a shared petal column must satisfy the
-    // strictest reader. The admission gate (A3 Editor+) already ran; this is
-    // the per-field shape/range check an admitted-but-malicious or buggy
-    // writer could otherwise slip past (`apply_static_row` MERGEs the whole
-    // row — see campaign plan §3 S6 step 4/8).
-    if table == "petal" {
-        if let Some(rd) = row.get("render_distance") {
-            if !is_valid_inbound_render_distance(rd) {
-                tracing::warn!(
-                    table,
-                    record_id,
-                    render_distance = ?rd,
-                    "Inbound petal row carries an out-of-range render_distance — denied"
-                );
-                return Ok(ReplicatedRowOutcome::Denied);
-            }
-        }
-        if let Some(groups) = row.get("visibility_groups") {
-            if !groups.is_null() && !super::visibility_groups::is_valid_inbound_registry(groups) {
-                tracing::warn!(
-                    table,
-                    record_id,
-                    "Inbound petal row carries a malformed visibility group registry — denied"
-                );
-                return Ok(ReplicatedRowOutcome::Denied);
-            }
-        }
-        if let Some(terrain) = row.get("terrain") {
-            if !terrain.is_null() && !is_valid_inbound_petal_terrain(terrain) {
-                tracing::warn!(
-                    table,
-                    record_id,
-                    "Inbound petal row carries a malformed terrain config — denied"
-                );
-                return Ok(ReplicatedRowOutcome::Denied);
-            }
-        }
-    }
-
-    // Extract the geometry column now, write it with an explicit cast after
-    // the row exists (a raw GeoJSON bind against a SCHEMAFULL table fails).
-    let geometry_value = match geometry_field {
-        None => None,
-        Some(field) => row.as_object_mut().and_then(|o| o.remove(field)),
-    };
 
     // Prefer the payload's own id field; fall back to the wire record id.
     let row_id = row
@@ -1462,52 +1485,86 @@ async fn apply_static_row(
         );
     }
 
-    if row_exists(db, table, id_field, &row_id).await? {
-        db.query(format!("UPDATE {table} MERGE $row WHERE {id_field} = $rid").as_str())
-            .bind(("row", row.clone()))
-            .bind(("rid", row_id.clone()))
-            .await?
-            .check()
-            .map_err(|e| anyhow::anyhow!("replicated {table} merge failed: {e}"))?;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match write_legacy_static_row(db, verse_id, table, id_field, geometry_field, &row_id, row.clone()).await {
+            Err(error)
+                if attempt < super::clocked_row::FENCE_ATTEMPTS
+                    && super::clocked_row::is_fence_error(&error) =>
+            {
+                tracing::debug!(table, row_id = %row_id, attempt, "field clock moved under a legacy row; re-reading");
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// One fenced pass of [`apply_static_row`]: drop clocked keys, MERGE the rest, record them as the floor.
+async fn write_legacy_static_row(
+    db: &Db,
+    verse_id: &str,
+    table: &str,
+    id_field: &str,
+    geometry_field: Option<&str>,
+    row_id: &str,
+    mut row: serde_json::Value,
+) -> anyhow::Result<ReplicatedRowOutcome> {
+    use crate::field_clock::wire::{keys_of, FieldVersion};
+    let cached = super::clocked_row::cached_winners(db, table, row_id).await?;
+    // A key some clocked version already won is never overwritten by an unclocked row.
+    if let Some(object) = row.as_object_mut() {
+        object.retain(|column, _| {
+            !cached
+                .iter()
+                .any(|winner| winner.field == *column && !winner.is_legacy_floor())
+        });
+    }
+    let floor: Vec<FieldVersion> = keys_of(table, &row)
+        .into_iter()
+        .map(|(field, value)| FieldVersion::legacy_floor(field, value))
+        .collect();
+
+    // Extract the geometry column now, write it with an explicit cast in the same
+    // transaction (a raw GeoJSON bind against a SCHEMAFULL table fails).
+    let geometry_value = match geometry_field {
+        None => None,
+        Some(field) => row.as_object_mut().and_then(|o| o.remove(field)),
+    };
+
+    let (mut statements, mut bindings) = super::clocked_row::clock_fence(table, row_id, &cached)?;
+    if row_exists(db, table, id_field, row_id).await? {
+        statements.push(format!("UPDATE {table} MERGE $fe_legacy_row WHERE {id_field} = $fe_row_rid"));
     } else {
-        db.query(format!("CREATE {table} CONTENT $row").as_str())
-            .bind(("row", row.clone()))
-            .await?
-            .check()
-            .map_err(|e| anyhow::anyhow!("replicated {table} create failed: {e}"))?;
+        statements.push(format!("CREATE {table} CONTENT $fe_legacy_row"));
     }
-
-    if let Some(geometry) = geometry_value {
-        let field = geometry_field.expect("geometry_value implies a geometry field");
-        // §geometry-inserts, strictest form: a cast around a BOUND GeoJSON
-        // object — or even around an object literal with a bound rings
-        // parameter — is rejected by the schema check ("could not cast into
-        // `geometry`"). The only form this SurrealDB line casts is the inline
-        // numeric literal the local petal paths use (crud.rs, seed.rs). So:
-        // extract the payload's coordinate rings and render them inline.
-        // Only validated finite floats are formatted — no injection surface.
-        let rings = geometry.get("coordinates").cloned().ok_or_else(|| {
-            anyhow::anyhow!("replicated {table} row {row_id}: bounds lacks coordinates rings")
-        })?;
-        let literal = render_polygon_rings(&rings).ok_or_else(|| {
-            anyhow::anyhow!(
-                "replicated {table} row {row_id}: bounds coordinates are not numeric rings"
-            )
-        })?;
-        db.query(
-            format!(
-                "UPDATE {table} SET {field} = \
-                 <geometry<polygon>> {{ type: 'Polygon', coordinates: {literal} }} \
-                 WHERE {id_field} = $rid"
-            )
-            .as_str(),
-        )
-        .bind(("rid", row_id))
-        .await?
-        .check()
-        .map_err(|e| anyhow::anyhow!("replicated {table} geometry cast failed: {e}"))?;
+    bindings.push(("fe_legacy_row".into(), row));
+    if let (Some(field), Some(geometry)) = (geometry_field, &geometry_value) {
+        // §geometry-inserts, strictest form: the only form this SurrealDB line casts is the
+        // inline numeric literal (validated finite floats only — no injection surface).
+        statements.push(
+            super::clocked_row::geometry_statement(table, id_field, field, "fe_row_rid", geometry)
+                .map_err(|e| anyhow::anyhow!("replicated {table} row {row_id}: {e}"))?,
+        );
     }
-
+    if !floor.is_empty() {
+        let (version_statements, version_bindings) =
+            crate::field_clock::store::versions_write_sql(table, row_id, verse_id, &floor)?;
+        statements.extend(version_statements);
+        bindings.extend(version_bindings);
+        let mut winners: Vec<&FieldVersion> = cached
+            .iter()
+            .filter(|winner| !floor.iter().any(|filled| filled.field == winner.field))
+            .collect();
+        winners.extend(floor.iter());
+        let (clock_statements, clock_bindings) =
+            crate::field_clock::store::clock_write_sql(table, row_id, &winners)?;
+        statements.extend(clock_statements);
+        bindings.extend(clock_bindings);
+    }
+    super::clocked_row::commit(db, statements, bindings)
+        .await
+        .map_err(|e| anyhow::anyhow!("replicated {table} legacy write failed: {e:#}"))?;
     Ok(ReplicatedRowOutcome::Applied)
 }
 
@@ -1875,7 +1932,7 @@ fn is_valid_inbound_publisher_pins(
 /// accepts under a `<geometry<polygon>>` cast (see apply_static_row). Every
 /// rendered token comes from a validated finite f64, so the interpolation
 /// carries no injection surface; `None` on any non-numeric shape.
-fn render_polygon_rings(coords: &serde_json::Value) -> Option<String> {
+pub(super) fn render_polygon_rings(coords: &serde_json::Value) -> Option<String> {
     let mut out = String::from("[");
     for (ri, ring) in coords.as_array()?.iter().enumerate() {
         if ri > 0 {
@@ -2149,6 +2206,54 @@ mod tests {
         res.take::<Vec<serde_json::Value>>(0).unwrap()
     }
 
+    /// A clocked row: `identity` columns plus `author`'s own versions `(key, hlc, value)`.
+    fn clocked(
+        identity: serde_json::Value,
+        author: &str,
+        own: &[(&str, u64, serde_json::Value)],
+    ) -> Vec<u8> {
+        use crate::field_clock::wire::{encode_own, FieldVersion, CLOCK_COLUMN};
+        let versions: Vec<FieldVersion> = own
+            .iter()
+            .map(|(field, hlc, value)| FieldVersion {
+                field: (*field).to_string(),
+                author: author.to_string(),
+                hlc: *hlc,
+                value: Some(value.clone()),
+                deleted: false,
+            })
+            .collect();
+        let mut row = identity;
+        row[CLOCK_COLUMN] = encode_own(author, &versions);
+        serde_json::to_vec(&row).unwrap()
+    }
+
+    /// Place one role statement `grantor` grants `peer` at `scope`, as the replicated path does.
+    async fn place_statement(
+        db: &Db,
+        verse_id: &str,
+        scope: &str,
+        peer: &str,
+        grantor: &str,
+        role: fe_policy::GrantedRole,
+        hlc: u64,
+    ) -> crate::role_grants::Placement {
+        let statement = fe_policy::RoleStatement {
+            scope: scope.to_string(),
+            peer_did: peer.to_string(),
+            grantor_did: grantor.to_string(),
+            role,
+            revoked: false,
+            hlc,
+            editor_since: None,
+            manager_since: None,
+            windows: Vec::new(),
+        };
+        crate::role_grants::place_statement(db, verse_id, &statement)
+            .await
+            .expect("place role statement")
+    }
+
     #[tokio::test]
     async fn verse_row_applies_and_reads_back() {
         let db = schema_db().await;
@@ -2282,6 +2387,52 @@ mod tests {
         assert_eq!(
             rows[0]["created_by"], "did:key:a",
             "MERGE preserves untouched fields"
+        );
+
+        // Per-key clock: the owner's and an Editor's clocked `name` versions, applied in both
+        // arrival orders on two fresh stores, converge to max (hlc, author): equal hlc, so the
+        // larger author DID wins on both.
+        let identity = serde_json::json!({
+            "verse_id": "v1", "created_by": "did:key:a", "created_at": "2026-10-07T00:00:00Z",
+        });
+        let versions = [
+            (
+                clocked(identity.clone(), "did:key:a", &[("name", 300, serde_json::json!("Owner's name"))]),
+                "did:key:a",
+            ),
+            (
+                clocked(identity, "did:key:b", &[("name", 300, serde_json::json!("Editor's name"))]),
+                "did:key:b",
+            ),
+        ];
+        let mut converged = Vec::new();
+        for order in [[0usize, 1], [1, 0]] {
+            let db = schema_db().await;
+            apply_replicated_row_handler(&db, "v1", "verse", "v1", &first, "did:key:a", None)
+                .await
+                .unwrap();
+            assert_eq!(
+                place_statement(&db, "v1", "VERSE#v1", "did:key:b", "did:key:a", fe_policy::GrantedRole::Editor, 100).await,
+                crate::role_grants::Placement::Admitted
+            );
+            for index in order {
+                let (row, author) = &versions[index];
+                let outcome = apply_replicated_row_handler(&db, "v1", "verse", "v1", row, author, None)
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(outcome, ReplicatedRowOutcome::Applied | ReplicatedRowOutcome::NotApplicable),
+                    "{author}: {outcome:?}"
+                );
+            }
+            converged.push(
+                select_json(&db, "SELECT name FROM verse WHERE verse_id = 'v1'").await[0]["name"].clone(),
+            );
+        }
+        assert_eq!(
+            converged,
+            vec![serde_json::json!("Editor's name"); 2],
+            "both arrival orders converge on the (hlc, author) maximum"
         );
     }
 
@@ -2788,6 +2939,40 @@ mod tests {
             1,
             "replayed row is durable after the role landed"
         );
+
+        // Per-key clock: dave's Editor grant is only HELD (its grantor is not a Manager yet), so
+        // his clocked petal rename passes the membership floor and is STORED, not materialized.
+        assert_eq!(
+            place_statement(&db, "v1", "VERSE#v1", "did:key:dave", "did:key:mgr", fe_policy::GrantedRole::Editor, 100).await,
+            crate::role_grants::Placement::Held
+        );
+        let rename = clocked(
+            serde_json::json!({
+                "petal_id": "petal-1", "fractal_id": "fractal-1",
+                "node_id": "did:key:owner-a", "created_at": "2026-10-07T00:00:00Z",
+            }),
+            "did:key:dave",
+            &[("name", 200, serde_json::json!("Dave's petal"))],
+        );
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "petal", "petal-1", &rename, "did:key:dave", None)
+                .await
+                .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable, "stored, not materialized");
+        assert_eq!(
+            select_json(&db, "SELECT name FROM petal WHERE petal_id = 'petal-1'").await[0]["name"],
+            "P"
+        );
+        assert_eq!(
+            select_json(
+                &db,
+                "SELECT VALUE author FROM row_field_version WHERE tbl = 'petal' AND rid = 'petal-1' AND field_key = 'name'"
+            )
+            .await,
+            vec![serde_json::json!("did:key:dave")],
+            "the held author's version is kept for a later re-judge"
+        );
+        // TODO(CLOCK-10): admit did:key:mgr's Manager grant, run rejudge_authors, then assert the name is "Dave's petal".
     }
 
     /// Re-delivery of an already-applied row is idempotent-harmless (the
@@ -3168,6 +3353,60 @@ mod tests {
         assert_eq!(outcome, ReplicatedRowOutcome::Applied);
         assert_eq!(verse_field(&db, "ts_mode").await, "sharded");
         assert_eq!(verse_field(&db, "default_access").await, "none");
+
+        // Per-key clock: the same rule through clocked rows, judged from statements at write
+        // time. The Editor's and petal Manager's later governance versions are stored but never
+        // win; the verse Manager's lower-clocked version does.
+        use fe_policy::GrantedRole;
+        for (peer, scope, role) in [
+            ("did:key:editor", "VERSE#v1", GrantedRole::Editor),
+            ("did:key:petal-manager", "VERSE#v1-FRACTAL#fractal-1-PETAL#petal-1", GrantedRole::Manager),
+            ("did:key:verse-manager", "VERSE#v1", GrantedRole::Manager),
+        ] {
+            assert_eq!(
+                place_statement(&db, "v1", scope, peer, "did:key:owner-a", role, 100).await,
+                crate::role_grants::Placement::Admitted,
+                "{peer}"
+            );
+        }
+        let identity = serde_json::json!({
+            "verse_id": "v1", "created_by": "did:key:owner-a", "created_at": "2026-10-07T00:00:00Z",
+        });
+        for (author, key, value) in [
+            ("did:key:editor", "ts_mode", serde_json::json!("mirror")),
+            ("did:key:petal-manager", "default_access", serde_json::json!("viewer")),
+        ] {
+            let row = clocked(identity.clone(), author, &[(key, 500, value)]);
+            let outcome = apply_replicated_row_handler(&db, "v1", "verse", "v1", &row, author, None)
+                .await
+                .unwrap();
+            assert_eq!(outcome, ReplicatedRowOutcome::NotApplicable, "{author} {key}: stored, never the winner");
+        }
+        assert_eq!(verse_field(&db, "ts_mode").await, "sharded");
+        assert_eq!(verse_field(&db, "default_access").await, "none");
+
+        let row = clocked(identity, "did:key:verse-manager", &[("ts_mode", 400, serde_json::json!("mirror"))]);
+        let outcome =
+            apply_replicated_row_handler(&db, "v1", "verse", "v1", &row, "did:key:verse-manager", None)
+                .await
+                .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(verse_field(&db, "ts_mode").await, "mirror", "the admissible version wins");
+
+        // QA-0166 legacy path: an unclocked manifest no longer overwrites a key a clocked version won.
+        let outcome = apply_replicated_row_handler(
+            &db,
+            "v1",
+            "verse",
+            "v1",
+            &manifest(serde_json::json!({ "ts_mode": "sharded" })),
+            "did:key:verse-manager",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, ReplicatedRowOutcome::Applied);
+        assert_eq!(verse_field(&db, "ts_mode").await, "mirror");
     }
 
     /// Seed a second verse `v2` with `fractal-2` → `petal-2` → `node-foreign`.
