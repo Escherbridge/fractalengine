@@ -7,9 +7,9 @@ use fe_renderer::terrain_overlay::VolumeUnavailable;
 
 use crate::petal_binding::ActivePetalTerrain;
 use crate::profile::{sample_profile, PROFILE_MAX_SAMPLES};
-use crate::sculpt::{composite_proposed_height, prepare_composite};
+use crate::sculpt::prepare_composite;
 use crate::terrain_plugin::config_earthwork_regions;
-use crate::terrain_proposal::{apply_proposal_over_base, point_in_polygon};
+use crate::volume_report::combined_height;
 
 /// Latest servable request, re-answered under the same id when the terrain changes.
 #[derive(Default)]
@@ -74,22 +74,7 @@ fn section_reply(
     let regions = config_earthwork_regions(config);
     let composite = prepare_composite(&regions, &base);
     // Same combined surface as the volume report: palette proposals, then earthwork regions.
-    let proposed = |x: f32, z: f32| {
-        let mut height = base(x, z)?;
-        for proposal in &proposals {
-            if point_in_polygon([x, z], &proposal.footprint) {
-                let current = height;
-                if let Some(next) = apply_proposal_over_base(&|_, _| Some(current), proposal, &[[x, z]])
-                    .into_iter()
-                    .next()
-                    .flatten()
-                {
-                    height = next;
-                }
-            }
-        }
-        Some(composite_proposed_height(&composite, height, x, z))
-    };
+    let proposed = |x: f32, z: f32| combined_height(&base, &proposals, &composite, x, z);
     let world_length = (request.b[0] - request.a[0]).hypot(request.b[1] - request.a[1]);
     match sample_profile(
         &base,
@@ -228,6 +213,24 @@ mod tests {
                 result.fill_area
             );
             assert!(result.cut_area.abs() < 1e-6, "a pure raise has no cut");
+            // The section integrates the same surface the volume report uses (combined_height).
+            let flat = |_: f32, _: f32| Some(0.0_f32);
+            let composite = prepare_composite(&[], &flat);
+            let proposals = [raise.clone()];
+            assert_eq!(combined_height(&flat, &proposals, &composite, 5.0, 5.0), Some(2.0));
+            assert_eq!(combined_height(&flat, &proposals, &composite, 12.0, 5.0), Some(0.0));
+            let integrated: f32 = (0..200)
+                .map(|index| {
+                    let x = -5.0 + (index as f32 + 0.5) * 0.1;
+                    combined_height(&flat, &proposals, &composite, x, 5.0).unwrap_or(0.0).max(0.0) * 0.1
+                })
+                .sum();
+            assert!(
+                (result.fill_area - integrated).abs() < 1.0,
+                "section fill {} must match the shared surface integral {}",
+                result.fill_area,
+                integrated
+            );
         }
 
         app.world_mut().write_message(request("corr-wrong", "other"));

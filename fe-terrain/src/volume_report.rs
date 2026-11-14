@@ -82,7 +82,8 @@ pub fn changed_space_overlaps(
     }
 }
 
-fn combined_height(
+/// Palace proposals then earthwork regions over the base: the one proposed surface shared with the section responder.
+pub(crate) fn combined_height(
     base: &impl Fn(f32, f32) -> Option<f32>,
     proposals: &[TerrainProposal],
     regions: &[crate::sculpt::CompositeRegion],
