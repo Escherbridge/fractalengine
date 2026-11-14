@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The kind of asset an entry represents within a `.hexon` archive.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     Model,
