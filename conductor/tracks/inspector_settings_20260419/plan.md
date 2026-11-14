@@ -92,40 +92,40 @@ Goal: Allow inspecting petals, fractals, and verses from the sidebar, each with 
 
 Tasks:
 
-- [ ] Task 3.1: Define InspectedEntity enum (TDD Red)
+- [x] Task 3.1: Define InspectedEntity enum (TDD Red) — verified `fe-ui/src/panels/hierarchy_info.rs:28`
   - Write tests for `InspectedEntity` enum with variants: `Node { id }`, `Petal { id }`, `Fractal { id }`, `Verse { id }`.
   - Write tests: setting `InspectedEntity::Petal` should make the inspector render petal-specific content.
   - Confirm tests fail.
 
-- [ ] Task 3.2: Implement InspectedEntity and selection routing (TDD Green)
+- [x] Task 3.2: Implement InspectedEntity and selection routing (TDD Green) — routing at `fe-ui/src/panels/hierarchy_info.rs:52-58`
   - Create `InspectedEntity` enum.
   - Add `inspected: Option<InspectedEntity>` to `UiManager` or `InspectorFormState`.
   - Modify sidebar click handlers to set `InspectedEntity` when a petal/fractal/verse name is clicked.
   - Node selection (existing `NodeManager.selected`) continues to set `InspectedEntity::Node`.
   - Run tests, confirm green.
 
-- [ ] Task 3.3: Implement petal inspection Info tab (TDD Red -> Green)
+- [x] Task 3.3: Implement petal inspection Info tab (TDD Red -> Green) — re-scoped: creation date dropped (default taken, awaiting ratification); card keeps name, ID, node count
   - Write tests: when `InspectedEntity::Petal` is active, Info tab shows petal name, ID, node count.
   - Implement `render_petal_info_tab()` function.
   - Pull petal data from `VerseManager` (which already tracks the hierarchy).
   - Run tests.
 
-- [ ] Task 3.4: Implement fractal inspection Info tab (TDD Red -> Green)
+- [x] Task 3.4: Implement fractal inspection Info tab (TDD Red -> Green) — `fe-ui/src/panels/hierarchy_info.rs`
   - Write tests: when `InspectedEntity::Fractal` is active, Info tab shows fractal name, ID, petal count.
   - Implement `render_fractal_info_tab()` function.
   - Run tests.
 
-- [ ] Task 3.5: Implement verse inspection Info tab (TDD Red -> Green)
+- [x] Task 3.5: Implement verse inspection Info tab (TDD Red -> Green) — online-of-known count at `fe-ui/src/panels/hierarchy_info.rs:157` (UI5-02)
   - Write tests: when `InspectedEntity::Verse` is active, Info tab shows verse name, ID, fractal count, peer count.
   - Implement `render_verse_info_tab()` function.
   - Run tests.
 
-- [ ] Task 3.6: Update inspector header to show entity type
+- [x] Task 3.6: Update inspector header to show entity type — `Node: <name>` header at `fe-ui/src/panels/inspector.rs:440` (UI5-02)
   - Modify the inspector panel header to display the entity type and name (e.g., "Node: MyModel", "Petal: MainWorld").
   - Derive the display name from the `InspectedEntity` variant.
   - Run tests.
 
-- [ ] Task 3.7: Refactor and polish
+- [x] Task 3.7: Refactor and polish — tab-state reset on level change via `kind_changed` at `fe-ui/src/panels/hierarchy_info.rs:113`
   - Ensure Settings and Access tabs show appropriate placeholder text per hierarchy level.
   - Ensure tab state resets when switching between hierarchy levels.
   - Run `cargo clippy` and `cargo fmt --check`.
@@ -149,7 +149,7 @@ Goal: Build dedicated peer management surfaces at every hierarchy level with hie
 
 Tasks:
 
-- [ ] Task 4.1: Define AccessTabState with hierarchy awareness (TDD Red)
+- [ ] Task 4.1: Define AccessTabState with hierarchy awareness (TDD Red) — NOT BUILT AS NAMED: no `AccessTabState` at HEAD; Access home is the Entity Settings dialog (`fe-ui/src/dialogs/entity_settings.rs:112-124`). Left open, see round-5 bookkeeping note
   - Write tests for:
     - `AccessTabState` that derives its view from `RoleManager::get_scope_members(scope)` and `PeerRegistry`.
     - Each peer entry shows: `peer_did`, `display_name` (from PeerRegistry), `explicit_role` (at current scope), `effective_role` (resolved via cascade), `is_online`.
@@ -157,14 +157,14 @@ Tasks:
     - `AccessTabState` tracks the current scope (built via `build_scope` from the `InspectedEntity`).
   - Confirm tests fail.
 
-- [ ] Task 4.2: Implement AccessTabState (TDD Green)
+- [ ] Task 4.2: Implement AccessTabState (TDD Green) — NOT BUILT AS NAMED (see 4.1)
   - Implement `AccessTabState` that reads from `RoleManager` and `PeerRegistry`.
   - Build the scope string from the current `InspectedEntity` (verse/fractal/petal).
   - Resolve both explicit and effective roles for each peer.
   - Admin determination uses `LocalUserRole` resource (hierarchical resolution).
   - Run tests, confirm green.
 
-- [ ] Task 4.3: Render verse-level Access tab (TDD: implement + visual test)
+- [x] Task 4.3: Render verse-level Access tab — SUPERSEDED: built as the Access tab of the Entity Settings dialog (`fe-ui/src/dialogs/entity_settings.rs:112-124`, `:377-404`); no `InspectorTab::Access`
   - Full member list with verse-level roles and online indicators.
   - Owner controls: role dropdowns (manager/editor/viewer), revoke button, invite generation.
   - Default access toggle: "New members can view everything" / "New members need explicit grants".
@@ -173,7 +173,7 @@ Tasks:
   - Role changes go through `RoleManager::assign_role` with scope `VERSE#<id>`.
   - Run tests.
 
-- [ ] Task 4.4: Render fractal-level Access tab (TDD: implement + visual test)
+- [x] Task 4.4: Render fractal-level Access tab — SUPERSEDED: same Entity Settings Access tab (`fe-ui/src/dialogs/entity_settings.rs:112-124`, `:377-404`)
   - Peer list showing "Explicit Role" and "Effective Role" columns.
   - Inherited verse roles shown dimmed with "(inherited from verse)" label.
   - Manager/owner controls: role dropdowns (manager/editor/viewer/none), invite generation.
@@ -182,7 +182,7 @@ Tasks:
   - Role changes go through `RoleManager::assign_role` with scope `VERSE#<id>-FRACTAL#<id>`.
   - Run tests.
 
-- [ ] Task 4.5: Render petal-level Access tab (TDD: implement + visual test)
+- [x] Task 4.5: Render petal-level Access tab — SUPERSEDED: same Entity Settings Access tab (`fe-ui/src/dialogs/entity_settings.rs:112-124`, `:377-404`)
   - Peer list showing "Explicit Role" and "Effective Role" columns.
   - Inherited roles shown dimmed with "(inherited from fractal)" or "(inherited from verse)" label.
   - Manager/owner controls: role dropdowns (manager/editor/viewer/none), invite generation.
@@ -196,19 +196,19 @@ Tasks:
   - Invite scope is built from current `InspectedEntity` via `build_scope`.
   - Run tests.
 
-- [ ] Task 4.7: Implement permission presets (TDD Red -> Green)
+- [x] Task 4.7: Implement permission presets (TDD Red -> Green) — `preset_controls` at `fe-ui/src/dialogs/entity_access.rs:394` (Public / Members only / Managers only)
   - Write tests: clicking "Public" preset calls `RoleManager::assign_role` for all peers with viewer role.
   - Implement three preset buttons: "Public", "Members Only", "Admin Only".
   - Each preset modifies role assignments at the current scope via `RoleManager`.
   - Run tests.
 
-- [ ] Task 4.8: Write role change audit trail (TDD Red -> Green)
+- [x] Task 4.8: Write role change audit trail (TDD Red -> Green) — as re-scoped: grant record replaces op_log History (`fe-ui/src/dialogs/entity_access.rs:596`)
   - Write tests: changing a peer's role writes an OpType::AssignRole entry to the op_log with scope in payload.
   - Implement: `RoleManager::assign_role` already writes to op_log — verify the scope string is included.
   - Add "History" link to Access tab that queries recent op_log entries for the current scope.
   - Run tests.
 
-- [ ] Task 4.9: Refactor and polish — code done via R-UI-3 fixes (5389b01f); polish pass not separately verified
+- [x] Task 4.9: Refactor and polish — default taken (awaiting ratification): ticked on R-UI-3 review; see `conductor/tracks/inspector_settings_20260419/review-turn5/R5-UI.md`
   - Add loading state indicator while peer roles are being fetched.
   - Add error handling for failed role changes.
   - Ensure Access tab updates reactively when roles change (not requiring manual refresh).

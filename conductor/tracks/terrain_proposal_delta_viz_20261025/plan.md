@@ -132,10 +132,10 @@ Each name is the test to write. Each asserts an observable outcome.
 
 ### Phase 3 (deferable, OD-12)
 - [x] S9 profile sampler
-- [ ] S10 section tool + profile panel
+- [x] S10 section tool + profile panel — mounted at `fe-ui/src/ui_shell/right_sidebar.rs:801`, registered `fe-ui/src/plugin.rs:966,1059-1070` (round-5 T5-UI check)
 
 ### Phase 4 (future)
-- [ ] Spin out a utility-node-contract track; reserve only (`VolumeReportRequest.elevation_band`, kind-extensible items)
+- [x] Spin out a utility-node-contract track; reserve only (track `conductor/tracks/utility_node_contract_20261113/`; reserve field `fe-renderer/src/terrain_overlay.rs:308`) (`VolumeReportRequest.elevation_band`, kind-extensible items)
 
 ## 5. Tripwires
 
