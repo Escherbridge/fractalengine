@@ -75,7 +75,7 @@ pub struct RowOutcome {
 /// `named_build` (hex content hash) is the `unsigned`/`unadmitted` sender's build, which need not be open; other rows
 /// ignore it. `None` when the row needs a live mount (admitted, for the document rows) and there is none, or the
 /// named build is not a valid hash; nothing is posted then.
-/// The `hidden` row leaves the surface visible afterwards: the fixture only runs it on an open, shown portal.
+/// The `hidden` row restores the surface's prior visibility afterwards.
 pub fn post_row(
     bridge: &PortalBridge,
     mounts: &PortalMounts,
@@ -121,9 +121,10 @@ pub fn post_row(
     };
     let before = bridge.stats().total.dropped_origin;
     let ingress = if row == IpcPostRow::Hidden {
+        let was_visible = bridge.is_visible();
         bridge.set_visible(false);
         let ingress = bridge.ingress(mounts, &source, &body, now);
-        bridge.set_visible(true);
+        bridge.set_visible(was_visible);
         ingress
     } else {
         bridge.ingress(mounts, &source, &body, now)

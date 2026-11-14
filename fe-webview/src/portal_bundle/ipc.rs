@@ -378,6 +378,11 @@ impl PortalBridge {
         self.lock().visible = visible;
     }
 
+    /// Whether the portal surface is currently shown.
+    pub fn is_visible(&self) -> bool {
+        self.lock().visible
+    }
+
     /// The viewer's token ceiling (`Owner` for the in-app local viewer); a change rebinds the client on the next pump.
     pub fn set_viewer_ceiling(&self, ceiling: RoleLevel) {
         self.lock().viewer_ceiling = ceiling;
