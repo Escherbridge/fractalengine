@@ -611,14 +611,18 @@ full-channel write with bounded backoff, so the answer is `Waiting`, never `Busy
 `RETRY_ATTEMPTS` = 8 after the first send, delay doubling from `FIRST_RETRY_DELAY` (50 ms) up to
 `MAX_RETRY_DELAY` (2 s), about 7.2 s in total. A write that exhausts them is dead-lettered
 (`Settled::DeadLettered`) and its owner gets `RequestFailed` on its correlation id. Dead letters
-are session-only and capped at `DEAD_LETTER_CAP` (32); the oldest is dropped with a warning.
+are session-only and capped at `DEAD_LETTER_CAP` (32); the oldest is dropped, counted in
+`evicted_edit_count()` and shown in the panel as "N older edits could not be kept". The door holds at most
+`WAITING_CAP` (64) writes; a new write past that is answered `Busy` (nothing queued, queued writes kept).
 Gate refusals are final and never dead-lettered. The "Unsaved edits" list reads
 `dead_letters()`; `retry_dead_letter` re-gates the stored command. Undo and stamp promotion
 opt in (`undo.rs:560`, `undo.rs:875`, `stamp_selection.rs:593`). Other callers keep the non-retrying doors.
 
 Retry and discard (`node.rs:612-619`): `retry_dead_letter` re-gates the stored command through
 `retry_dead_letter_in` (`node.rs:659`), re-enters the queue with a fresh retry budget and keeps its
-correlation id; `discard_dead_letter` drops it for good. A retried dead letter has no owner: the dead
+correlation id; `discard_dead_letter` drops it for good. Retry submits non-blocking
+(`FullChannel::Report`): the letter leaves the list only on `Sent` or `Waiting`; `Busy`, `Closed` and
+`Refused` keep it listed with the reason, and the panel words `Busy` ("database is busy") apart from `Closed`. A retried dead letter has no owner: the dead
 letter already fired `RequestFailed` on its id, which `undo.rs` (`DbResult::RequestFailed` arm, `p.request_id ==
 *correlation_id`) reconciled and cleared, so the retry's later receipt matches no `undo.pending` and records no history.
 The unsaved-edits panel only toasts the retry (`panels/unsaved_edits.rs:116`).

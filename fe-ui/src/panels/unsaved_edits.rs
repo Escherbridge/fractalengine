@@ -62,6 +62,14 @@ pub(crate) fn unsaved_edits_segment(
             // Up to 32 letters: scroll inside the viewport like the other footer popups.
             super::status_bar::bounded_details(ui, |ui| {
                 ui.heading("Unsaved edits");
+                let evicted = crate::actions::node::evicted_edit_count();
+                if evicted > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("{evicted} older edits could not be kept"))
+                            .small()
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
                 for letter in crate::actions::node::dead_letters() {
                     ui.horizontal_wrapped(|ui| {
                         ui.vertical(|ui| {
@@ -117,10 +125,15 @@ pub(crate) fn apply_unsaved_edit_action(
                 GuiSend::Sent | GuiSend::Waiting => {
                     ui_mgr.show_toast(format!("Retrying {label}"), now_secs)
                 }
-                GuiSend::Closed | GuiSend::Busy => ui_mgr.show_error(
+                GuiSend::Busy => ui_mgr.show_error(
+                    format!("{label} was not saved: the database is busy. It stays under Unsaved edits; try again."),
+                    now_secs,
+                ),
+                GuiSend::Closed => ui_mgr.show_error(
                     format!("{label} was not saved: Database connection closed. It stays under Unsaved edits."),
                     now_secs,
                 ),
+                // The door queued the advisory; the edit stays listed with its reason.
                 GuiSend::Refused(_) => {}
             }
         }

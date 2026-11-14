@@ -25,8 +25,10 @@ const RETRY_ATTEMPTS: u32 = 8;
 const FIRST_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Longest wait between two retries (total budget about 7.2 s, below undo's save timeout).
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(2);
-/// Dead letters kept for the session; past this the oldest is dropped with a warning.
+/// Dead letters kept for the session; past this the oldest is dropped and counted.
 const DEAD_LETTER_CAP: usize = 32;
+/// Writes the door holds at once; past this a new write is answered `Busy` and nothing is queued.
+const WAITING_CAP: usize = 64;
 /// Reason shown when the DB channel stayed full through every retry.
 const STAYED_BUSY: &str = "Database stayed busy";
 /// Reason shown when the DB channel closed under a queued write.
@@ -133,6 +135,8 @@ pub struct DeadLetterView {
 struct DeadLetters {
     letters: VecDeque<DeadLetter>,
     next_id: u64,
+    /// Oldest edits pushed out at the cap; the panel shows this so no edit leaves unseen.
+    evicted: u64,
 }
 
 impl DeadLetters {
@@ -145,6 +149,7 @@ impl DeadLetters {
         };
         if self.letters.len() >= DEAD_LETTER_CAP {
             if let Some(dropped) = self.letters.pop_front() {
+                self.evicted += 1;
                 bevy::log::warn!(
                     "unsaved edit list is full; dropped the oldest ({}: {})",
                     dropped.origin.label,
@@ -194,6 +199,7 @@ impl GuiDoorQueue {
             dead: DeadLetters {
                 letters: VecDeque::new(),
                 next_id: 0,
+                evicted: 0,
             },
         }
     }
@@ -319,6 +325,9 @@ fn submit_with(
         petal: Some(petal),
         correlation_id: write.correlation_id().map(str::to_owned),
     };
+    if lock(doors).waiting.len() >= WAITING_CAP {
+        return GuiSend::Busy;
+    }
     let ticket = door.submit(SceneCallerKind::Ui, write);
     let mut queue = lock(doors);
     // Behind a queued write this one queues too, even when it settles at once (send order).
@@ -377,6 +386,9 @@ fn send_unqueued(
         let mut queue = lock(doors);
         if !queue.waiting.is_empty() {
             if let Some(correlation_id) = command_correlation_id(&command) {
+                if queue.waiting.len() >= WAITING_CAP {
+                    return GuiSend::Busy;
+                }
                 source.correlation_id = Some(correlation_id);
                 queue.waiting.push_back(WaitingWrite {
                     state: Queued::Admitted(command.clone(), SceneAugments::default()),
@@ -442,7 +454,11 @@ fn queue_retry(
     augments: SceneAugments,
     now: Instant,
 ) -> GuiSend {
-    lock(doors).waiting.push_back(WaitingWrite {
+    let mut queue = lock(doors);
+    if queue.waiting.len() >= WAITING_CAP {
+        return GuiSend::Busy;
+    }
+    queue.waiting.push_back(WaitingWrite {
         state: Queued::Admitted(command, augments),
         origin: source.into_origin(original),
         attempts: 1,
@@ -602,13 +618,19 @@ pub fn scene_door_counts() -> (usize, usize) {
     door_counts(&GUI_DOOR)
 }
 
+/// Unsaved edits pushed out of the list at its cap this session; allocation-free.
+pub fn evicted_edit_count() -> u64 {
+    lock(&GUI_DOOR).dead.evicted
+}
+
 /// The "Unsaved edits" list, oldest first; call only while it is shown.
 pub fn dead_letters() -> Vec<DeadLetterView> {
     dead_letter_views(&GUI_DOOR)
 }
 
 /// Re-submit a dead letter's original command (re-gated, fresh retry budget, same correlation id).
-/// An unknown id is `Refused`; a closed channel keeps the letter listed.
+/// An unknown id is `Refused`; the letter leaves the list only when the door accepts it (`Sent` or
+/// `Waiting`). `Refused`, `Busy` and `Closed` keep it listed with the reason.
 pub fn retry_dead_letter(id: u64) -> GuiSend {
     retry_dead_letter_in(&GUI_DOOR, id, Instant::now())
 }
@@ -673,12 +695,18 @@ fn retry_dead_letter_in(doors: &Mutex<GuiDoorQueue>, id: u64, now: Instant) -> G
         origin.original.clone(),
         false,
         origin.petal.as_deref(),
-        FullChannel::Retry,
+        FullChannel::Report,
         now,
     );
-    if sent == GuiSend::Closed {
+    let kept_reason = match &sent {
+        GuiSend::Sent | GuiSend::Waiting => None,
+        GuiSend::Closed => Some(CONNECTION_CLOSED.to_owned()),
+        GuiSend::Busy => Some(STAYED_BUSY.to_owned()),
+        GuiSend::Refused(message) => Some(message.clone()),
+    };
+    if let Some(reason) = kept_reason {
         // Nothing took the write: keep it listed where it was.
-        letter.reason = CONNECTION_CLOSED.to_owned();
+        letter.reason = reason;
         let mut queue = lock(doors);
         let index = index.min(queue.dead.letters.len());
         queue.dead.letters.insert(index, letter);
@@ -1006,6 +1034,53 @@ mod tests {
         assert_eq!(retried, GuiSend::Sent);
         assert_eq!(received_id(&rx).as_deref(), Some("second"));
         assert_eq!(door_counts(&doors), (0, 0));
+
+        // Retry on a full channel answers Busy and keeps the letter; once room opens it is Sent and gone.
+        tx.send(DbCommand::Ping).unwrap();
+        let kept = submit_with(&doors, &door, &tx, property_write("kept"), false, petal, FullChannel::Retry, second_at);
+        assert_eq!(kept, GuiSend::Waiting);
+        for step in 1..=RETRY_ATTEMPTS {
+            pump_scene_door_at(&doors, second_at + Duration::from_secs(10 * u64::from(step)));
+        }
+        let kept_id = dead_letter_views(&doors)[0].id;
+        assert_eq!(retry_dead_letter_in(&doors, kept_id, second_at + Duration::from_secs(100)), GuiSend::Busy);
+        let still = dead_letter_views(&doors);
+        assert_eq!((still.len(), still[0].id, still[0].reason.as_str()), (1, kept_id, STAYED_BUSY));
+        assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
+        assert_eq!(retry_dead_letter_in(&doors, kept_id, second_at + Duration::from_secs(101)), GuiSend::Sent);
+        assert_eq!(received_id(&rx).as_deref(), Some("kept"));
+        assert!(dead_letter_views(&doors).is_empty(), "an accepted retry leaves the list");
+
+        // Waiting at its cap answers Busy and keeps what is queued.
+        {
+            let (full_tx, _full_rx) = crossbeam::channel::bounded(1);
+            full_tx.send(DbCommand::Ping).unwrap();
+            let cap_at = start + Duration::from_secs(300);
+            for index in 0..WAITING_CAP {
+                let id = format!("cap-{index}");
+                let sent = submit_with(&doors, &door, &full_tx, property_write(&id), false, petal, FullChannel::Retry, cap_at);
+                assert_eq!(sent, GuiSend::Waiting);
+            }
+            let over = submit_with(&doors, &door, &full_tx, property_write("cap-over"), false, petal, FullChannel::Retry, cap_at);
+            assert_eq!(over, GuiSend::Busy, "a full waiting queue refuses the new write");
+            assert!(!write_in_door(&doors, "cap-over"));
+            assert!(write_in_door(&doors, "cap-0"), "already-queued writes stay");
+            assert_eq!(door_counts(&doors), (WAITING_CAP, 0));
+            lock(&doors).waiting.clear();
+        }
+
+        // Eviction at the dead-letter cap is counted, not silent.
+        {
+            let mut letters = DeadLetters { letters: VecDeque::new(), next_id: 0, evicted: 0 };
+            let (evict_tx, _evict_rx) = crossbeam::channel::bounded(1);
+            for index in 0..=DEAD_LETTER_CAP {
+                let id = format!("e-{index}");
+                let origin = WriteSource { door: &door, sender: &evict_tx, petal: None, correlation_id: Some(id.clone()) }
+                    .into_origin(property_write(&id));
+                letters.push(origin, STAYED_BUSY);
+            }
+            assert_eq!((letters.letters.len(), letters.evicted), (DEAD_LETTER_CAP, 1));
+        }
 
         // A closed channel dead-letters at once; Retry cannot send and keeps it listed; Discard drops it.
         let (closed_tx, closed_rx) = crossbeam::channel::bounded(1);
