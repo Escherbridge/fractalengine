@@ -71,3 +71,5 @@ fe-sync/tests/fixtures/p2p_store_v035_gen/target/
 /tools/qa/**/__pycache__/
 # root-only: the register and run dirs live in /qa; tools/qa is tracked source (an unanchored qa/ silently ignored new harness files)
 /qa/
+# per-machine conductor session log: records local paths and private track names, never tracked
+/conductor/.conductor_session_log
