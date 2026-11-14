@@ -290,9 +290,6 @@ fn render_installed_tab(
         });
 }
 
-/// One installed-map card: a clipped/copyable region name + seeding toggle
-/// on the header line, a plain stats line, then the Map and Remove actions —
-/// see `render_installed_tab`'s doc comment (M-01).
 /// Chip text and hover for a non-default access state; `None` when nothing needs saying.
 fn access_chip(access: TilesetAccess) -> Option<(&'static str, &'static str)> {
     match access {
@@ -303,12 +300,21 @@ fn access_chip(access: TilesetAccess) -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// Only plain web links are offered; the publisher's string is otherwise untrusted.
-fn is_web_url(url: &str) -> bool {
-    let lower = url.trim().to_ascii_lowercase();
-    lower.starts_with("https://") || lower.starts_with("http://")
+/// Longest publisher link offered; anything longer is omitted rather than clipped.
+const MAX_LICENCE_URL_LEN: usize = 2048;
+
+/// The publisher's link when it is a plain http(s) URL with no whitespace or control characters; otherwise `None`.
+fn web_url(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let scheme_ok = url.get(..8).is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        || url.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"));
+    let clean = !url.chars().any(|character| character.is_whitespace() || character.is_control());
+    (scheme_ok && clean && url.len() <= MAX_LICENCE_URL_LEN).then_some(url)
 }
 
+/// One installed-map card: a clipped/copyable region name + seeding toggle
+/// on the header line, a plain stats line, then the Map and Remove actions —
+/// see `render_installed_tab`'s doc comment (M-01).
 fn render_installed_map_card(
     ui: &mut egui::Ui,
     ts: &mut InstalledTilesetDto,
@@ -329,8 +335,9 @@ fn render_installed_map_card(
                         .on_hover_text(hover);
                 }
                 if ts.access != TilesetAccess::Entitled {
-                    if let Some(url) = ts.verification_url.as_deref().filter(|url| is_web_url(url)) {
-                        ui.hyperlink_to("Licence details", url);
+                    if let Some(url) = ts.verification_url.as_deref().and_then(web_url) {
+                        ui.hyperlink_to("Licence details", url)
+                            .named(ui, format_args!("Licence details for {}", ts.region_name));
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

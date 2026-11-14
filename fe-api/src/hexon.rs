@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
@@ -572,7 +572,12 @@ pub async fn get_crate_asset(
     match loaded {
         Ok(Ok(bytes)) => (
             StatusCode::OK,
-            [(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))],
+            // Blob bytes are publisher-supplied: download only, never sniffed into a renderable type.
+            [
+                (CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
+                (CONTENT_DISPOSITION, HeaderValue::from_static("attachment")),
+                (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+            ],
             bytes,
         )
             .into_response(),

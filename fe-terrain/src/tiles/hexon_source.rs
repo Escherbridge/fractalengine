@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use anyhow::{bail, Context, Result};
 use fe_format::manifest::{TilesetBundleIndex, TilesetMeta};
 use fe_format::{ArchiveChanged, HexonArchive, HexonArchiveIndex, Layout};
-use fe_hexon::entitlement_gate::{EntitlementGate, GateRefusal, LicenseTerms};
+use fe_format::entitlement::unix_now;
+use fe_hexon::entitlement_gate::{EntitlementGate, GateRefusal, GateStatus, LicenseTerms};
 
 use crate::splat::format::{decode_baked_splats, read_baked_splats_from_archive, BakedSplatBuffer};
 
@@ -436,6 +437,16 @@ impl HexonTileSource {
         Ok(())
     }
 
+    /// True when `member` is refused whatever its bytes are (licensed, non-free, no entitled gate): skip the read.
+    fn refused_before_read(&self, member: &str) -> bool {
+        if !self.license_terms.is_licensed() || self.license_terms.is_free_entry(member) {
+            return false;
+        }
+        self.entitlement_gate
+            .as_ref()
+            .is_none_or(|gate| matches!(gate.status_at(unix_now()), GateStatus::Preview(_)))
+    }
+
     /// Licence check for one stored member: free/unlicensed pass, sealed ones open only through an entitled gate.
     fn admit_member<'stored>(&self, member: &str, stored: &'stored [u8]) -> Result<Cow<'stored, [u8]>> {
         match &self.entitlement_gate {
@@ -573,6 +584,15 @@ impl HexonTileSource {
                 if let Some(hit) = self.cache().get(&key) {
                     return Ok(Some(hit));
                 }
+                if self.license_terms.is_licensed() {
+                    let member = layer.member_name(key.1);
+                    let (zoom, x, y) = key.1;
+                    if self.refused_before_read(&member)
+                        && container.chunk_index.bundle_for_tile(zoom, x, y).is_some()
+                    {
+                        return Err(EntitlementRequired { member }.into());
+                    }
+                }
                 let Some(value) = container.read_tile(layer, key.1)? else {
                     return Ok(None);
                 };
@@ -587,6 +607,9 @@ impl HexonTileSource {
         }
         let member = layer.member_name(key.1);
         let mut archive = Self::archive(lock);
+        if self.refused_before_read(&member) && archive.members.contains(&key) {
+            return Err(EntitlementRequired { member }.into());
+        }
         let mut reindexed = false;
         let data = loop {
             if !archive.members.contains(&key) {
