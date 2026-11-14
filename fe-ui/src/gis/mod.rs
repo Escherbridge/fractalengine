@@ -526,7 +526,6 @@ impl PathEditorState {
     /// is pending — so a foreign `NodeCreated` (GPX import, create-entity
     /// dialog) can never flush the pen point onto the wrong node. See
     /// `pen_autocreate_track_20260713` + AGENTS.md §path-editor.
-    #[cfg(test)]
     fn take_pending_pen_create_if(
         &mut self,
         correlation_id: &str,
@@ -927,6 +926,7 @@ mod tests {
             handle_out: Some([0.5, 0.0, 0.0]),
             corner: CornerKind::Symmetric,
             smoothness: 0.0,
+            trailing_points: Vec::new(),
         });
         let pen = s.take_pending_pen_create_if("pen-track:9").unwrap();
         assert_eq!(pen.first_point, [1.0, 0.0, 2.0]);

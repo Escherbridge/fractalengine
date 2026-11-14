@@ -295,6 +295,8 @@ mod tests {
             seeding_enabled: false,
             installed_at: String::new(),
             publisher_did: None,
+            access: Default::default(),
+            verification_url: None,
         }
     }
 

@@ -15,8 +15,9 @@ use crate::verse_manager::VerseManager;
 use super::widgets;
 
 /// A hierarchy level the user can pin the Inspector to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HierarchyLevel {
+    #[default]
     Verse,
     Fractal,
     Petal,

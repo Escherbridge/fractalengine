@@ -326,6 +326,8 @@ pub fn render_right_sidebar(
     // Measure tool anchors (hexon_scale FR-9): the Options Measure arm's
     // Undo/Clear/Close/mode buttons run the same reducer as viewport clicks.
     measure_state: &mut crate::node_manager::measure::MeasureState,
+    // Road tool chain + settings, edited by the Options Road arm.
+    road_state: &mut crate::node_manager::road_chain::RoadBuilderState,
     // VIS-PH5: the Groups section reads the registry + membership; edits go
     // out as `UiAction`s (optimistic + authed in the reducer).
     visibility: &VisibilityState,
@@ -342,6 +344,8 @@ pub fn render_right_sidebar(
     // `sync_volume_report_request`/`drain_volume_report_result` (PostUpdate)
     // are its sole writers.
     volume_report: &VolumeReportState,
+    // UI-05: Section block state under the Volume report.
+    section_profile: &mut crate::panels::section_profile_panel::SectionProfileState,
     modal: &mut super::modal::ModalManagerState,
     settings_session: &mut crate::settings::SettingsSession,
     topbar: &mut super::topbar::TopbarState,
@@ -425,6 +429,7 @@ pub fn render_right_sidebar(
             nav,
             petal_map,
             local_role,
+            road_state,
         ),
         Some(RightSidebarSection::TerrainTools) => render_terrain_tools_section(
             ctx,
@@ -448,6 +453,7 @@ pub fn render_right_sidebar(
                 hierarchy,
                 nav.active_petal_id.as_deref(),
                 volume_report,
+                section_profile,
                 local_role.role.is_some_and(|role| role.can_view()),
             );
             if let Some(node_id) = open_node.filter(|node_id| {
@@ -608,6 +614,7 @@ fn render_options_section(
     nav: &NavigationManager,
     petal_map: &PetalMapState,
     role: &LocalUserRole,
+    road_state: &mut crate::node_manager::road_chain::RoadBuilderState,
 ) {
     let kind = ui_mgr
         .editor_batch
@@ -674,6 +681,7 @@ fn render_options_section(
             active_petal_id,
             measure_state,
             measure_world_scale,
+            road_state,
             &mut tool.snap,
             &mut tool.terrain,
             nav,
@@ -766,6 +774,7 @@ fn render_proposal_report_section(
     hierarchy: &VerseManager,
     active_petal: Option<&str>,
     volume_report: &VolumeReportState,
+    section_profile: &mut crate::panels::section_profile_panel::SectionProfileState,
     can_view: bool,
 ) -> Option<String> {
     let mut open_node = None;
@@ -788,6 +797,12 @@ fn render_proposal_report_section(
             hierarchy,
             active_petal,
             &mut open_node,
+        );
+        crate::panels::section_profile_panel::render_section_profile_block(
+            ui,
+            ui_mgr,
+            section_profile,
+            volume_report,
         );
         if proposal_state.selected.as_ref().is_some_and(|selected| {
             proposal_state

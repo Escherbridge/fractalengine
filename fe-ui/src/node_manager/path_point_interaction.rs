@@ -569,6 +569,7 @@ fn release_pen_gesture(
         handle_out,
         corner,
         smoothness,
+        trailing_points: Vec::new(),
     });
     ui_mgr.push_action(UiAction::PathCreateTrack {
         petal_id,

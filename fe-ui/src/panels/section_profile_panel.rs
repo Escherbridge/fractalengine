@@ -300,7 +300,7 @@ fn render_plot(ui: &mut egui::Ui, result: &SectionProfileResult) {
     let width = ui.available_width().max(120.0);
     let (response, painter) =
         ui.allocate_painter(egui::vec2(width, PLOT_HEIGHT), egui::Sense::hover());
-    response.named(ui, "Section profile plot");
+    let response = response.named(ui, "Section profile plot");
     let rect = response.rect.shrink2(egui::vec2(4.0, 6.0));
     painter.rect_filled(response.rect, 2.0, theme::BG_PANEL);
     let to_screen = |distance: f32, elevation: f32| {
