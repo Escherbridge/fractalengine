@@ -596,6 +596,14 @@ impl Plugin for TerrainPlugin {
             // P2 S5 volume-report request/reply seam (idempotent with fe-ui's registration).
             .add_message::<fe_renderer::terrain_overlay::VolumeReportRequest>()
             .add_message::<fe_renderer::terrain_overlay::VolumeReportResult>()
+            // Section-profile request/reply seam (idempotent with fe-ui's registration).
+            .add_message::<fe_renderer::section_profile::SectionProfileRequest>()
+            .add_message::<fe_renderer::section_profile::SectionProfileResult>()
+            .add_systems(
+                Update,
+                crate::section_responder::answer_section_profile_requests
+                    .after(answer_volume_report_requests),
+            )
             .add_systems(
                 Update,
                 (
@@ -1697,7 +1705,7 @@ fn render_terrain_proposals(
 
 /// Valid earthwork regions in the config's proposal block — the bake predicate
 /// filter, parsed through the designated `sculpt::parse_regions`.
-fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::EarthworkRegion> {
+pub(crate) fn config_earthwork_regions(config: &TerrainConfig) -> Vec<crate::sculpt::EarthworkRegion> {
     let raw: Vec<serde_json::Value> = config
         .proposals
         .iter()
