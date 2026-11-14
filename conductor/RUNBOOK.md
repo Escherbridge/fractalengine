@@ -2,13 +2,13 @@
 type: runbook
 title: FractalEngine session runbook
 updated: 2026-11-13
-head: acb39de6
+head: 44ecc1b6
 ---
 
 # FractalEngine — Runbook
 
-**Last updated:** 2026-11-13 19:45 · **Branch:** `main` · **Last commit:** `acb39de6 docs(conductor): runbook — repair a
-tab left by an escaped path` (+ this hand-off commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
+**Last updated:** 2026-11-13 18:25 MST · **Branch:** `main` · **Last commit:** `44ecc1b6 fix(fe-ui): a full DB channel is
+Busy at the scene write door, not Closed` (+ this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
 `tracks.md`, and the work queue `conductor/doneness-ledger.md`.
@@ -111,7 +111,22 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-13 19:45 — HAND-OFF, focus: HELD-OUT WORK. CI on `main` is RED.** Run `43470091074` (`acb39de6`):
+- **2026-11-13 18:25 MST — RESUME; §7 step 1 fix committed locally (`44ecc1b6`), NOT pushed (push denied by the
+  permission classifier; user's call), so CI on `main` is still red.** Drift found at
+  resume: (1) the hand-off entry below is stamped 19:45 but was pushed at 18:11 MST; (2) the red run stopped at
+  the fe-ui binary (`cargo test` without `--no-fail-fast`), so the `fractalengine` tests never ran in it; the run
+  before (`43437948878`, `45f88a69`) had fe-ui 1069/0 and TWO `fractalengine` failures this file never recorded:
+  `terrain_bridge::tests::install_from_registry_installs_a_sealed_container_end_to_end` and
+  `vision_bridge::tests::window_mode_locks_applies_the_pose_and_restores_the_snapshot`. So green needed four
+  tests. **Root cause of the fe-ui pair (proven by reading, not by a run):** `send_plain` in
+  `fe-ui/src/actions/node.rs` returned `GuiSend::Closed` for `TrySendError::Full`; fixed with a distinct
+  `GuiSend::Busy` handled at every non-blocking caller (`fe-ui/src/actions/AGENTS.md` §scene-write-door). **The
+  fractalengine pair were stale tests:** registry install has reported one whole-package fetch (0/1, 1/1) since
+  `7ae7adad`; the pose test set the camera to 60 degrees and asserted the 45-degree default. Gate:
+  `cargo check -p fe-ui -p fractalengine --all-targets` green (`.omc/research/check-ci-green-20261113.log`).
+  **Not verified:** no test ran locally; the CI sweep after the push is the proof. Logs:
+  `.omc/research/ci-43437948878-failed-20261113.log`.
+- **2026-11-13 19:45 (actual ~18:10 MST) — HAND-OFF, focus: HELD-OUT WORK. CI on `main` is RED.** Run `43470091074` (`acb39de6`):
   Windows build + package green, Lint green, Linux `Test sweep` FAILED, so `latest` was NOT republished (there is
   no public prerelease right now). fe-ui: 1067 passed / 2 failed; the two earlier terminal-reset failures are gone
   (`FE_DEV_TOOLS=1` worked). Both failures are on the queue-full path and are believed (not proven) to come
@@ -264,7 +279,8 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 |---|---|---|---|
 | Swarm turn 3 (`wf_b0df7ead-28e`, 73 slices) | per-slice reviewers + automated security findings routed as steers (`conductor/tracks/*/review-turn3/`) | R-STORE, R-ZM fixes confirmed; others recorded per track | PASS-WITH-FIXES per slice; NO whole-surface review |
 | Turn-3 close + refine (`wf_949ff699-7d5`) | `cargo check --all-targets`, public + examples + private | compile fixes only | COMPILES; untested |
-| Orchestrator scene-gate rewiring `450ca722`, `1f6e7ca5` | none (written and committed by the orchestrator) | CI: 2 fe-ui queue-full regressions | UNREVIEWED, RED |
+| Orchestrator scene-gate rewiring `450ca722`, `1f6e7ca5` | none (written and committed by the orchestrator) | CI: 2 fe-ui queue-full regressions | UNREVIEWED, RED (queue-full part fixed in `44ecc1b6`; the rest waits for §7 step 3) |
+| CI fix `44ecc1b6` (`GuiSend::Busy` + 2 stale fractalengine tests) | separate-context adversarial review of the fe-ui diff (sonnet, read-only); orchestrator read both test diffs | 0 blocking; 1M trap (eight blocking callers test `== GuiSend::Closed`, so a later switch to a `try_` variant would treat `Busy` as sent); 1M by design (undo and stamp promotion blocked on a full channel before `1f6e7ca5`, now return a busy error); 2L wording | PASS-WITH-FIXES, optional fixes deferred; CI run is the test proof |
 | Track merges into `main` (`6fdbd951`, 2026-11-09) | merge-gate `/code-review` + `/security-review` | not run | UNREVIEWED (scheduled: §7 step 3) |
 | CI signing step (`build-artifacts.yml`, `release.yml`) | security review of the action pin | action pinned to a commit SHA | FIXED; never exercised (no secrets) |
 | CI fix `0682517` | independent review of async-trait diff | 1 misread corrected | SOUND |
@@ -682,7 +698,13 @@ three-session bus model that this single orchestrator session replaced).** Stand
 run until step 4; `cargo check -p <crate>` is the only gate; never stage `conductor/.conductor_session_log`;
 leak grep before every public commit.
 
-1. **Get `main` green.** Open `fe-ui/src/actions/node.rs` (`try_submit_scene_write_on` / `submit_scene_write`)
+1. **Get `main` green — fix committed LOCALLY as `44ecc1b6` (2026-11-13), NOT pushed: the push was denied by
+   the permission classifier and waits for the user.** `git push origin main`, then confirm the CI run on it:
+   `gh run list --branch main --limit 2`. If it is red, read EVERY `test result:` line: the sweep stops at the
+   first failing binary, so a failure can hide later ones (`gh run view <id> --log-failed`, captured to
+   `.omc/research/`). Per-chunk progress for registry installs is gone since `7ae7adad` (one `fetch_hexon`
+   call); if the Hexon Manager should show real download progress again, that is a product slice for round 4,
+   not a test fix. Original instruction, kept for context: Open `fe-ui/src/actions/node.rs` (`try_submit_scene_write_on` / `submit_scene_write`)
    and the two call sites changed in `1f6e7ca5`: `fe-ui/src/actions/earthwork_volumes.rs` and
    `fe-ui/src/editor_batch/mod.rs`. On a full DB channel the old code kept the pending write for the next pump
    (earthwork) and returned an error containing "busy" (editor batch); restore both behaviours through the gated
@@ -761,7 +783,24 @@ leak grep before every public commit.
 
 ## 8. Session log
 
-### 2026-11-13 19:45 — hand-off, focus on held-out work
+### 2026-11-13 18:25 MST — resume; CI fix for four tests
+- Done: `44ecc1b6` — `GuiSend::Busy` at the scene write door (fe-ui queue-full pair) and two stale
+  `fractalengine` test expectations (registry progress, pose fov); `cargo check -p fe-ui -p fractalengine
+  --all-targets` green; §scene-write-door written in `fe-ui/src/actions/AGENTS.md` (code pointed at a section
+  that did not exist).
+- Reviewed: fe-ui diff by a separate-context reviewer, PASS-WITH-FIXES (ledger row); the two test edits read by
+  the orchestrator.
+- In flight: nothing. Two local commits are unpushed (the fix and this runbook update). CI run `43539046646`
+  on the hand-off commit will end red for the old reason.
+- Blocked (user): `git push origin main` (denied to the agent by the permission classifier).
+- Deferred: `GuiSend::is_unsent()` for the eight `== GuiSend::Closed` callers (trigger: any of them moves to a
+  `try_` variant); whether undo and stamp promotion should block again on a full channel instead of returning a
+  busy error (trigger: a user sees "queue is busy" on Undo in the app); H4 untouched (it is the
+  `SetNodeProperty` follow-up in `fe-ui/src/verse_manager/db_results/nodes.rs:70`, which names no petal, not
+  the volume save).
+- Next: push, confirm CI (read every `test result:` line), then `/slice` for round 4 (§7 step 2).
+
+### 2026-11-13 19:45 (actual ~18:10 MST) — hand-off, focus on held-out work
 - Done: swarm turns 1-3 (extension platform, portal surface, private marketplace services); both tracks merged
   into `main`; turn-3 close + refine green on `cargo check --all-targets`; clippy removed everywhere; toolchain
   pinned 1.99.0; optional Windows signing wired; five 30 s teasers delivered; public `acb39de6` and private
