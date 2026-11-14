@@ -7,22 +7,24 @@ pub mod distributed_query;
 pub mod docs_engine;
 pub mod endpoint;
 pub mod event_outbox;
-pub mod lifecycle;
 pub mod gossip_auth;
 pub mod join_ticket;
+pub mod lifecycle;
 pub mod messages;
+pub mod net_diagnostics;
 pub mod offline;
 pub mod p2p_store_migration;
 pub mod placement;
-pub mod net_diagnostics;
 pub mod reachability;
 pub mod reconciliation;
 pub mod relay_advertise;
 pub mod relay_config;
-pub mod replication;
-pub mod replicator;
+pub mod relay_reconcile;
 #[cfg(feature = "relay-server")]
 pub mod relay_server;
+pub mod relay_trust;
+pub mod replication;
+pub mod replicator;
 pub mod sharding;
 mod peer_book;
 mod scene_asset_gate;
@@ -46,7 +48,7 @@ pub use lifecycle::{
 pub use messages::{SyncCommand, SyncCommandSender, SyncEvent, SyncEventReceiver};
 pub use placement::{plan_shard_hosts, PlacementPlan, Retention, TransferRoute};
 pub use relay_config::{
-    RelayConfig, RelayConfigError, RelayHealth, RelayStatusSummary, RELAY_CONFIG_ENV_VAR,
+    RelayAdvertisePolicy, RelayConfig, RelayConfigError, RelayHealth, RelayStatusSummary, RELAY_CONFIG_ENV_VAR,
 };
 pub use replicator::{
     IncomingEntryApplicator, IrohDocsReplicator, IrohPetalReplicator, MockVerseReplicator,
