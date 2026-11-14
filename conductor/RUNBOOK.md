@@ -111,6 +111,19 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-14 — FOUR USER DECISIONS; REVIEW AND TESTS IN FLIGHT.** Answers (AskUserQuestion): scoped review
+  now; push the private repo; untrack and ignore the session log; run the batches for the crates CI never runs.
+  Done: private repo pushed (`5423823..e7f3258`, 46 commits, secret and personal-path scan over every commit in
+  the range: 0 hits); session log untracked and ignored (`2343ff82`, local). In flight, all read-only or
+  build-only, no source edits until they finish: (a) test batches `R7,R8,R9,R10` via
+  `tools\qa\test_batches.ps1`, log `.omc/research/test-batches-r7-r10-20261114.log`; (b) review workflow
+  `wf_e715df70-1b8` (6 reviewers over `2b289db1..HEAD` by crate group: opus on sync+relay, database+policy,
+  api+runtime, extension host; sonnet on fe-ui and the binary/terrain group; then 3 sonnet skeptics on HIGH/MED
+  findings; no fixes); (c) the CI monitor agent on run 43596433455. Next: one fix pass over confirmed review
+  findings plus test failures (sonnet, opus only where the finding is in sync/database), one `cargo check`,
+  re-run only the batches that failed, then one push carrying the two held local commits. Local commits held
+  off the remote until then: `cfffdb16`, `2343ff82`.
+
 - **2026-11-14 — CI WATCHING MOVED OFF THE ORCHESTRATOR (user directive).** The user: "stop fiddling with ci
   ... or delegate it to a monitor agent". Rule from here: after a push, a background haiku monitor agent
   (read-only) polls the run, saves the Linux job log under `.omc/research/` and reports totals plus each failed
