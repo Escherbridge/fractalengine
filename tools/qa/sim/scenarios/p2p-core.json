@@ -153,6 +153,7 @@
     },
     {
       "id": "5", "title": "SAME-INSTANT conflicting GUI transforms of N1 (barrier)", "settle_s": 20, "covers": ["QA-0100", "QA-0126"],
+      "note": "Winner rule (QA-0126, documented): per key the entry with the greatest (HLC, author DID) wins, so the outcome depends on the clocks of that run; every peer must agree, no author is predicted.",
       "probe": {"hierarchy_ms": 0},
       "prepare": [
         {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Select node N1"}},
@@ -172,7 +173,7 @@
       ],
       "expect": [
         {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "agree", "within_s": 15},
-        {"probe": "transform", "target": "$n1.id", "path": "position.0", "predicate": "equals", "value": 7, "within_s": 15, "meta": {"severity": "S3"}, "covers": "documented LWW tie-break predicts the owner's X=7 (QA-0126)"}
+        {"probe": "transform", "target": "$n1.id", "path": "position.0", "predicate": "agree", "within_s": 15, "covers": "QA-0126 the winner is max (HLC, author DID) per key (documented rule), so the scenario asserts agreement on every peer, not a named author"}
       ]
     },
     {
@@ -186,6 +187,7 @@
     },
     {
       "id": "6", "title": "SAME-INSTANT conflicting REST transforms of N2 (barrier)", "settle_s": 15, "covers": ["QA-0126", "QA-0128"],
+      "note": "Winner rule (QA-0126, documented): per key the entry with the greatest (HLC, author DID) wins; every peer must agree, no author is predicted.",
       "actions": [
         {"peer": "owner", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [5, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}, "sync": "barrier"},
         {"peer": "editor", "via": "rest", "op": "set_transform", "args": {"node_id": "$n2.id", "position": [-5, 0, 0], "rotation": [0, 1.5708, 0], "scale": [2, 2, 2]}, "sync": "barrier"},
@@ -193,7 +195,7 @@
       ],
       "expect": [
         {"probe": "transform", "target": "$n2.id", "predicate": "agree", "within_s": 15},
-        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "equals", "value": [5, 0, 0], "within_s": 15, "meta": {"severity": "S3"}, "covers": "documented tie-break predicts [5,0,0]; run 1 settled on [-5,0,0] (QA-0126)"}
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "within_s": 15, "covers": "QA-0126 the winner is max (HLC, author DID) per key (documented rule), so the scenario asserts agreement on every peer, not a named author"}
       ]
     },
     {
@@ -410,7 +412,10 @@
         {"probe": "transform", "target": "$n1.id", "peers": ["owner", "viewer", "editor2"], "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "editor_demoted"], "covers": "QA-0121 transform never accepted elsewhere"},
         {"probe": "properties", "target": "$n1.id", "path": "revoked_rest", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121/0122 rows that arrived before the revoke are dropped on every peer"},
         {"probe": "properties", "target": "$n1.id", "path": "revoked_mcp", "predicate": "absent", "after": "reenter", "within_s": 30, "needs": ["revoke"]},
-        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121 every peer back on the durable value"}
+        {"probe": "transform", "target": "$n1.id", "path": "position", "predicate": "equals", "value": [7, 0, -3.25], "after": "reenter", "within_s": 30, "needs": ["revoke"], "covers": "QA-0121 every peer back on the durable value; written by the owner (step 12), never by the revoked editor, so it is not a past authorized edit of the editor"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke", "within_s": 40, "needs": ["revoke"], "covers": "QA-0165 a revoke keeps the revoked editor's authorized past transform edits: N2 does not change or diverge on any peer"},
+        {"probe": "properties", "target": "$n4.id", "path": "after_restart_rest", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "post_restart_rest"], "covers": "QA-0165 the editor's step-12 REST property written while authorized stays on every peer after the revoke"},
+        {"probe": "properties", "target": "$n4.id", "path": "after_restart_mcp", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke", "hold_s": 40, "needs": ["revoke", "post_restart_mcp"], "covers": "QA-0165 the editor's step-12 MCP property written while authorized stays on every peer after the revoke"}
       ]
     },
     {
@@ -440,7 +445,10 @@
         {"probe": "properties", "target": "$n2.id", "path": "revoked2_mcp", "predicate": "absent", "within_s": 30, "needs": ["revoke2"]},
         {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "not_equals", "value": [9, 0, 9], "within_s": 30, "needs": ["revoke2"]},
         {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "revoked2_rest", "predicate": "absent", "mode": "always", "hold_s": 40, "needs": ["revoke2"]},
-        {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "race2_rest", "predicate": "absent", "after": "revoke2", "within_s": 30, "needs": ["race2_rest"], "covers": "QA-0121/0131 a row written after the revoke is refused or re-judged away on every other peer"}
+        {"probe": "properties", "target": "$n2.id", "peers": ["owner", "viewer", "editor"], "path": "race2_rest", "predicate": "absent", "after": "revoke2", "within_s": 30, "needs": ["race2_rest"], "covers": "QA-0121/0131 a row written after the revoke is refused or re-judged away on every other peer"},
+        {"probe": "transform", "target": "$n2.id", "path": "position", "predicate": "agree", "after": "revoke2", "within_s": 40, "needs": ["revoke2"], "covers": "QA-0165 a revoke keeps editor2's authorized past transform edits: N2 does not change or diverge on any peer"},
+        {"probe": "properties", "target": "$n4.id", "path": "after_restart_rest", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "post_restart_rest"], "covers": "QA-0165 step-12 rows stay on every peer after the second revoke"},
+        {"probe": "properties", "target": "$n4.id", "path": "after_restart_mcp", "predicate": "equals", "value": 1, "mode": "always", "after": "revoke2", "hold_s": 40, "needs": ["revoke2", "post_restart_mcp"], "covers": "QA-0165 step-12 rows stay on every peer after the second revoke"}
       ]
     },
     {
@@ -489,6 +497,35 @@
       ],
       "checkpoints": [
         {"peer": "owner", "capture": "window", "expect_visual": "Query tab shows 'Results 4 rows' (deleted N3 must not be listed: QA-0127)"}
+      ]
+    },
+    {
+      "id": "14p", "title": "Per-key clock: different keys both survive, the same key agrees, a petal rename flip-flop converges", "settle_s": 30, "covers": ["QA-0156", "QA-0166"],
+      "note": "Peers: the owner and editor2 (re-granted in 13c); the editor is revoked since 13a and cannot write. Target N4 (owner-created in step 12, still live). Different keys: each peer sets its own key at the same instant, so both must be present on every peer. Same key: both write clock_same; the winner is max (HLC, author DID), so every peer must agree. QA-0166: only a Manager can rename a petal (entity settings), so the flip-flop is owner A -> B -> A through the petal Options dialog (type replaces the field text); the last rename wins by clock on every peer, read as the petal listed under 'Swarm Fractal/A'. An editor2 race on the name is not expressible: it lacks the Manager role. Hierarchy polling runs here because the rename probe reads it.",
+      "probe": {"hierarchy_ms": 2000},
+      "actions": [
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n4.id", "key": "clock_owner_key", "value": "owner"}, "sync": "barrier"},
+        {"peer": "editor2", "via": "rest", "op": "set_property", "args": {"node_id": "$n4.id", "key": "clock_editor2_key", "value": "editor2"}, "sync": "barrier"},
+        {"peer": "owner", "via": "rest", "op": "set_property", "args": {"node_id": "$n4.id", "key": "clock_same", "value": "owner"}, "sync": "+10"},
+        {"peer": "editor2", "via": "rest", "op": "set_property", "args": {"node_id": "$n4.id", "key": "clock_same", "value": "editor2"}, "sync": "+10"},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Back", "role": "button", "wait_s": 1}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Open fractal Swarm Fractal"}, "optional": true},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options menu for petal Swarm Petal", "exact": true}},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Options… petal Swarm Petal", "exact": true}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name", "role": "textinput", "text": "A"}},
+        {"id": "rename_a1", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Rename Petal Swarm Petal", "exact": true, "wait_s": 2}},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name", "role": "textinput", "text": "B"}, "needs": ["rename_a1"]},
+        {"id": "rename_b", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Rename Petal A", "exact": true, "wait_s": 2}, "needs": ["rename_a1"]},
+        {"peer": "owner", "via": "gui", "op": "type", "args": {"into": "Name", "role": "textinput", "text": "A"}, "needs": ["rename_b"]},
+        {"id": "rename_a2", "peer": "owner", "via": "gui", "op": "click", "args": {"name": "Rename Petal B", "exact": true, "wait_s": 2}, "needs": ["rename_b"]},
+        {"peer": "owner", "via": "gui", "op": "click", "args": {"name": "Close window", "role": "button", "wait_s": 1}, "optional": true}
+      ],
+      "expect": [
+        {"probe": "properties", "target": "$n4.id", "path": "clock_owner_key", "predicate": "equals", "value": "owner", "within_s": 30, "covers": "QA-0156 concurrent writes of different keys: the owner's key is present on every peer"},
+        {"probe": "properties", "target": "$n4.id", "path": "clock_editor2_key", "predicate": "equals", "value": "editor2", "within_s": 30, "covers": "QA-0156 concurrent writes of different keys: editor2's key is present on every peer"},
+        {"probe": "properties", "target": "$n4.id", "path": "clock_same", "predicate": "agree", "within_s": 30, "covers": "QA-0156 concurrent writes of the same key: every peer agrees (winner is max (HLC, author DID))"},
+        {"probe": "hierarchy", "target": "$fixture.verse_id", "path": "petals", "predicate": "includes", "value": "Swarm Fractal/A", "after": "rename_a2", "within_s": 30, "needs": ["rename_a2"], "covers": "QA-0166 the last rename A -> B -> A wins by clock: every peer shows the petal as 'A'"},
+        {"probe": "hierarchy", "target": "$fixture.verse_id", "path": "petals", "predicate": "excludes", "value": "Swarm Fractal/B", "after": "rename_a2", "within_s": 30, "needs": ["rename_a2"], "covers": "QA-0166 no peer is left on the stale name 'B'"}
       ]
     },
     {
