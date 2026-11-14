@@ -177,6 +177,7 @@ Range requests work: DuckDB's httpfs issues ranged GETs and the relay answers 20
 SELECT * FROM read_parquet('http://localhost:8765/api/v1/petals/<petal id>/export.parquet?query=SELECT%20%2A%20FROM%20iot_reading%20WHERE%20petal_id%20%3D%20%27<petal id>%27%20AND%20recorded_at_ms%20%3C%3D%20<as_of_ms>%20ORDER%20BY%20recorded_at_ms%2C%20reading_id&as_of_ms=<as_of_ms>');
 ```
 
+- **What a snapshot does not pin:** each reading row carries its anchor node's current position, so moving an anchor changes the body (and ETag) of the same snapshot. A share link redeems without `as_of_ms`; the Readings source keeps the cutoff in its SQL (`recorded_at_ms <= <as_of_ms>`), so shared readings links stay pinned too. A hand-written query that adds `LIMIT` without that cutoff and `ORDER BY` is not a stable snapshot.
 - **Petal-scoped token for share links:** `POST /api/v1/query/share` refuses parquet/csv links unless the caller's token is scoped to a single petal. Mint one with `Mint-Token "VERSE#$verseId-FRACTAL#$fractalId-PETAL#$petalId" 'owner' 'petal1'` (the `$petalToken` of section 4), then POST the share body with that token as the bearer. The in-app card cannot mint it (the editor has no HTTP client to the API), so it shows a curl to run with your token.
 
 ## Troubleshooting

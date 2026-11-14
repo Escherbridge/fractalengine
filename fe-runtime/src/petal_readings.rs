@@ -7,7 +7,7 @@ pub const ROW_LIMIT: usize = 256;
 /// Default look-back window for the count column.
 pub const WINDOW_MS: i64 = 60_000;
 
-/// Newest reading of one (node, metric) plus how many arrived in the window.
+/// Newest reading of one (node, metric, units) series plus how many arrived in the window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatestReading {
     pub node_id: String,
@@ -18,7 +18,7 @@ pub struct LatestReading {
     pub count_window: u32,
 }
 
-/// Rows sorted by node then metric; `truncated` when rows or source reads were capped.
+/// Rows sorted by node, metric, then units; `truncated` when rows or source reads were capped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PetalReadingsSummary {
     pub petal_id: String,

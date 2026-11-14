@@ -613,7 +613,7 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
             "arrival order cannot become chart order"
         );
     }
-    // Petal readings summary: one row per (node, metric), newest value, window count.
+    // Petal readings summary: one row per (node, metric, units), newest value, window count.
     for (petal, grant, ok) in [
         (petal_id.clone(), fe_runtime::node_history::NodeAccessGrant::Local, true),
         (petal_id.clone(), fe_runtime::node_history::NodeAccessGrant::Scoped("VERSE#foreign".into()), false),
@@ -621,16 +621,20 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
         db.cmd_tx
             .send(DbCommand::ReadPetalReadings {
                 petal_id: petal,
-                since_ms: Some(0),
+                since_ms: 0,
                 grant,
                 correlation_id: "gis-readings-test".into(),
             })
             .unwrap();
         match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
             DbResult::PetalReadingsLoaded { summary, .. } if ok => {
-                assert_eq!(summary.rows.len(), 2, "one row per (node, metric)");
-                let mine = summary.rows.iter().find(|row| row.node_id == historical).unwrap();
-                assert_eq!((mine.value, mine.count_window), (12.0, 4));
+                assert_eq!(summary.rows.len(), 3, "one row per (node, metric, units)");
+                let mine = |units: &str| {
+                    let row = summary.rows.iter().find(|row| row.node_id == historical && row.units == units).unwrap();
+                    (row.value, row.count_window)
+                };
+                assert_eq!(mine("m"), (12.0, 3), "newest metre value, metre count only");
+                assert_eq!(mine("ft"), (33.0, 1), "feet never fold into metres");
                 let other = summary.rows.iter().find(|row| row.node_id == other_node).unwrap();
                 assert_eq!((other.value, other.count_window), (999.0, 1));
                 assert!(!summary.truncated);

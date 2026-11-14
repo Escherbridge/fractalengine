@@ -155,15 +155,13 @@ pub(crate) fn order_and_cut_readings(
     if let Some(cutoff) = as_of_ms {
         rows.retain(|r| r["recorded_at_ms"].as_i64().unwrap_or(0) <= cutoff);
     }
-    rows.sort_by(|a, b| {
-        let key = |r: &serde_json::Value| {
-            (
-                r["recorded_at_ms"].as_i64().unwrap_or(0),
-                r["reading_id"].as_str().unwrap_or_default().to_string(),
-            )
-        };
-        key(a).cmp(&key(b))
-    });
+    fn key(row: &serde_json::Value) -> (i64, &str) {
+        (
+            row["recorded_at_ms"].as_i64().unwrap_or(0),
+            row["reading_id"].as_str().unwrap_or_default(),
+        )
+    }
+    rows.sort_by(|a, b| key(a).cmp(&key(b)));
     rows
 }
 

@@ -118,7 +118,7 @@ fn render_source_selector(
             if ui.add(btn).observed(ui).clicked() {
                 gis_state.egress.source = source;
                 if source == EgressSource::Readings && gis_state.egress.readings_as_of_ms.is_none() {
-                    gis_state.egress.readings_as_of_ms = Some(now_epoch_ms());
+                    gis_state.egress.readings_as_of_ms = Some(crate::gis::readings::now_unix_ms());
                 }
             }
         }
@@ -129,7 +129,7 @@ fn render_source_selector(
             ui.horizontal(|ui| {
                 if let Some(as_of) = gis_state.egress.readings_as_of_ms {
                     ui.label(
-                        egui::RichText::new(format!("Snapshot as of {as_of} ms"))
+                        egui::RichText::new(snapshot_label(as_of))
                             .small()
                             .color(theme::TEXT_MUTED),
                     );
@@ -138,7 +138,7 @@ fn render_source_selector(
                     .observed(ui)
                     .clicked()
                 {
-                    gis_state.egress.readings_as_of_ms = Some(now_epoch_ms());
+                    gis_state.egress.readings_as_of_ms = Some(crate::gis::readings::now_unix_ms());
                 }
             });
         }
@@ -201,12 +201,12 @@ fn build_sql(gis_state: &GisPanelState, petal_id: &str, world_scale: f64) -> Opt
     }
 }
 
-/// Current wall-clock epoch milliseconds (0 if the clock is before the epoch).
-fn now_epoch_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
+/// "Snapshot as of 2026-11-13 22:44:59 UTC"; raw epoch ms only if out of chrono's range.
+fn snapshot_label(as_of_ms: i64) -> String {
+    match chrono::DateTime::from_timestamp_millis(as_of_ms) {
+        Some(time) => format!("Snapshot as of {}", time.format("%Y-%m-%d %H:%M:%S UTC")),
+        None => format!("Snapshot as of {as_of_ms} ms"),
+    }
 }
 
 fn source_error(source: EgressSource) -> &'static str {
