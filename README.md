@@ -103,7 +103,6 @@ macOS build.
 |---|---|---|
 | Rust | 1.96+ | `rustup toolchain install stable` (the repo pins 1.99.0 in `rust-toolchain.toml`, which rustup picks up automatically) |
 | rustfmt | latest | `rustup component add rustfmt` |
-| clippy | latest | `rustup component add clippy` |
 
 Platform-specific system packages (WebKitGTK on Linux, VS Build Tools on
 Windows, Xcode CLT on macOS) are covered in [BUILDING.md](BUILDING.md), along
@@ -131,9 +130,8 @@ cargo build --release -p fractalengine-relay
 # Pre-commit gate: type-check the crates you touched
 cargo check -p fe-ui -p fe-database      # example; name your own crates
 
-# Format and lint (CI's lint job runs these)
+# Format (CI's lint job runs this)
 cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
 
 # CI's lint job also runs these two (fuzzing needs nightly + Linux).
 # CI lint is warn-only: failures become run-summary warnings, never a red run.
@@ -142,6 +140,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo deny --all-features check advisories bans sources licenses
 cd fuzz && cargo +nightly fuzz run jwt_parse -- -max_total_time=60
 ```
+
+CI's PR test sweep is intentionally scoped to three crates (`cargo test --release --no-fail-fast -p fe-ui -p fe-terrain -p fractalengine`); the full suite runs only through the batch runner described below.
 
 Tests run in selectable batches, on purpose rather than by habit. Each batch in
 [conductor/test-batches.md](conductor/test-batches.md) is a short list of plain
@@ -293,7 +293,7 @@ replicator remains mock-backed — it is not part of this path.)
 - **BI egress.** Export nodes and IoT readings as Parquet/CSV over signed,
   time-limited share URLs for DuckDB, PowerBI, or a spreadsheet — no database
   credentials required. See [docs/bi-egress.md](docs/bi-egress.md).
-- **MCP surface.** 54 machine-callable tools in total (no shipped binary
+- **MCP surface.** 55 machine-callable tools in total (no shipped binary
   advertises all of them) behind one table-driven authorization path: a role
   floor plus a scope rule resolved from the DB, never from caller-supplied
   ancestry ids. 36 are advertised on every host.
@@ -304,7 +304,8 @@ replicator remains mock-backed — it is not part of this path.)
   `clear_binding`). `screenshot` and `get_camera` are on unless
   `FE_API_SCREENSHOT_ALLOW=0`; the rest need `FE_API_INPUT_ALLOW=1` (see
   [Environment Variables](#environment-variables)); the five `sim_*` tools
-  appear only on a simulation-lab relay.
+  appear only on a simulation-lab relay, and `get_network_diagnostics` appears only
+  on hosts that wire the sync diagnostics bridge (the desktop app does).
 - **Relays and the iroh 1.x flag day.** iroh 0.35 and 1.x peers cannot
   interoperate, so every peer of a swarm upgrades together (any iroh v1 minor
   talks to any other). The default relays are n0's public iroh v1 fleet —

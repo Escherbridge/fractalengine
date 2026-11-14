@@ -84,12 +84,16 @@ merely restate them will be deduplicated against this list.
   the build or the rolling download.
 - **Peer write admission has residual gaps.** Inbound replicated rows are
   admitted on the database thread only when their author holds Editor+ at
-  the verse scope (fe-policy, deny-by-default). Residuals: rows for a verse
-  whose manifest has not arrived yet are admitted on the replica capability
-  alone (bootstrap window); an admitted row's references into other verses
-  are not yet checked; and gossip frames relayed through a neighbour are
-  attributed by claim until signing is enforced (see S-1 below). Treat
-  anyone holding a verse's namespace capability as able to write to it.
+  the verse scope (fe-policy, deny-by-default), the row's references all
+  resolve inside the replica's verse (a reference into another verse is
+  denied; one not yet known locally waits), and every row other than the
+  verse manifest waits until the manifest has landed. Residuals: the first
+  manifest of a verse is accepted on trust at first use (it must name a
+  did:key owner, and a store joined by invite already holds a pinned
+  manifest); and gossip frames relayed through a neighbour are attributed by
+  claim until signing is enforced (see S-1 below). Treat anyone holding a
+  verse's namespace capability as able to write to it until its manifest is
+  known.
 - **S-1: gossip relayed attribution, closed under signing but not by
   default.** Each gossip frame (`FEG1`, `fe-sync/src/gossip_auth.rs`) now
   carries an ed25519 signature over verse, author, HLC, kind and payload.

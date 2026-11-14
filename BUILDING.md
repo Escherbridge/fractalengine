@@ -7,7 +7,7 @@
 
 ```bash
 rustup toolchain install stable
-rustup component add rustfmt clippy
+rustup component add rustfmt
 ```
 
 ## Windows
