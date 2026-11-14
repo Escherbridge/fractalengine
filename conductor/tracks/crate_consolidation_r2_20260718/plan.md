@@ -21,18 +21,18 @@ Watch for the rustc/surrealdb ICE workaround on big rebuilds
 
 Goal: current consumer graphs for all three pairs, no stale audit data.
 
-- [ ] Task: FR-3 consumer map — grep all workspace Cargo.tomls for fe-query + use-site check (confirm/refute the preliminary fe-database dependency and what it actually uses); record as an artifact in this folder — AUDIT 2026-10-10: OPEN (no artifact recorded). Spot check: `fe-query` is still depended on by BOTH `fe-api/Cargo.toml` and `fe-database/Cargo.toml`, so the layering-inversion risk stands.
-- [ ] Task: FR-1/FR-2 dep snapshot — fe-plugin-test consumer list, fe-hexon-registry dep closure vs fe-hexon closure (sizes the docker-image cost of G-2) — AUDIT 2026-10-10: OPEN (no artifact). Spot check: no workspace Cargo.toml depends on `fe-plugin-test` (zero consumers); `fe-hexon-registry` is a dev-dependency of `fe-hexon` and is built by `docker/Dockerfile.hexon-registry`.
-- [ ] Task: Cross-reference task — add the format-merge gate to hexon_unification_20260716 (spec note + plan task there; sequencing note both directions)
+- [x] Task: FR-3 consumer map — grep all workspace Cargo.tomls for fe-query + use-site check (confirm/refute the preliminary fe-database dependency and what it actually uses); record as an artifact in this folder — AUDIT 2026-10-10: OPEN (no artifact recorded). Spot check: `fe-query` is still depended on by BOTH `fe-api/Cargo.toml` and `fe-database/Cargo.toml`, so the layering-inversion risk stands. DONE 2026-11-13: `evidence/consumer-map.md` (use sites carried from the scoper, not re-grepped).
+- [x] Task: FR-1/FR-2 dep snapshot — fe-plugin-test consumer list, fe-hexon-registry dep closure vs fe-hexon closure (sizes the docker-image cost of G-2) — AUDIT 2026-10-10: OPEN (no artifact). Spot check: no workspace Cargo.toml depends on `fe-plugin-test` (zero consumers); `fe-hexon-registry` is a dev-dependency of `fe-hexon` and is built by `docker/Dockerfile.hexon-registry`. DONE 2026-11-13: direct dependencies listed in `evidence/consumer-map.md`; closure sizes NOT measured (no cargo this round).
+- [ ] Task: Cross-reference task — add the format-merge gate to hexon_unification_20260716 (spec note + plan task there; sequencing note both directions) — OPEN: routed to T-HEXON as a NEEDS line (`hexon_unification_20260716/{spec,plan}.md`); not applied by this track.
 - [ ] Verification: evidence artifacts complete; gates ready to decide [checkpoint]
 
 ## Phase 2: Decision gates
 
 Goal: G-1/G-2/G-3 each decided ACCEPT or DEFER with rationale.
 
-- [ ] Task: G-1 (fe-plugin-test→fe-plugin test-utils feature) — decide against the F8 counter-evidence (OSS plugin-author closure cost); record in decision register
-- [ ] Task: G-2 (fe-hexon-registry→fe-hexon feature-gated bin) — decide against the F7 counter-evidence (docker closure, foundry extraction); record
-- [ ] Task: G-3 (fe-query→fe-api) — decide from the Phase-1 consumer map (sole-consumer ⇒ mechanical; fe-database consumer ⇒ layering inversion, pick option a/b/defer); record
+- [x] Task: G-1 (fe-plugin-test→fe-plugin test-utils feature) — decide against the F8 counter-evidence (OSS plugin-author closure cost); record in decision register. DEFER (default, pending user) in `conductor/decisions/crate-consolidation-r2-gates-20261113.md`.
+- [x] Task: G-2 (fe-hexon-registry→fe-hexon feature-gated bin) — decide against the F7 counter-evidence (docker closure, foundry extraction); record. DEFER (default, pending user) in `conductor/decisions/crate-consolidation-r2-gates-20261113.md`.
+- [x] Task: G-3 (fe-query→fe-api) — decide from the Phase-1 consumer map (sole-consumer ⇒ mechanical; fe-database consumer ⇒ layering inversion, pick option a/b/defer); record. DEFER (default, pending user): fe-database consumer means layering inversion; in `conductor/decisions/crate-consolidation-r2-gates-20261113.md`.
 - [ ] Verification: three register entries exist, user-visible [checkpoint: gate outcomes recorded]
 
 ## Phase 3: Execute accepted merges
