@@ -77,6 +77,17 @@ pub enum ResidentTile {
     Splats(Arc<BakedSplatBuffer>),
 }
 
+impl std::fmt::Debug for ResidentTile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResidentTile::Bytes(bytes) => write!(f, "ResidentTile::Bytes({} bytes)", bytes.len()),
+            ResidentTile::Splats(splats) => {
+                write!(f, "ResidentTile::Splats({} splats)", splats.positions.len())
+            }
+        }
+    }
+}
+
 impl ResidentTile {
     /// Bytes this value charges against the cache budget.
     pub fn byte_cost(&self) -> u64 {
