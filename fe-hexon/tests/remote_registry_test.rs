@@ -150,6 +150,25 @@ async fn search_download_verify_roundtrip() {
     let addr = spawn_registry(tmp.path(), None).await;
     let client = RemoteRegistryClient::new(format!("http://{addr}"), None);
 
+    // Publish leg: a HexonBuilder package is accepted, indexes on hexon_id, and downloads byte-identical.
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let published = fe_hexon::publisher::HexonBuilder::new(
+        "published-model",
+        fe_format::verifying_key_to_did(&signing_key.verifying_key()),
+    )
+    .name("Published Model")
+    .hexon_type(HexonType::Model)
+    .version("1.0.0")
+    .tag("published")
+    .add_entry_with_file("model_main", EntryKind::Model, "glb", "Main", b"published glb bytes")
+    .build(&signing_key)
+    .expect("builder output");
+    client.publish(published.clone()).await.expect("registry accepts builder output");
+    let hits = client.search(Some("published-model"), None, None).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].hexon_id, "published-model");
+    assert_eq!(client.download("published-model").await.unwrap(), published);
+
     // Search by q, tags, type.
     let hits = client.search(Some("alpine"), None, None).await.unwrap();
     assert_eq!(hits.len(), 2);

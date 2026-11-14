@@ -116,6 +116,26 @@ impl RemoteRegistryClient {
         }
     }
 
+    /// POST with bearer auth applied when configured.
+    fn post(&self, url: String) -> reqwest::RequestBuilder {
+        match &self.token {
+            Some(t) => self.http.post(url).bearer_auth(t),
+            None => self.http.post(url),
+        }
+    }
+
+    /// Publish sealed `.hexon` bytes (raw body, as the registry's publish route reads it); returns the registry's receipt.
+    pub async fn publish(&self, bytes: Vec<u8>) -> Result<serde_json::Value> {
+        let resp = self
+            .post(format!("{}/api/v1/hexons/publish", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .context("registry publish request failed")?;
+        Self::unwrap_envelope(resp).await
+    }
+
     /// Search the registry (`q` substring, `tags` comma-list, `hexon_type` exact); all optional.
     pub async fn search(
         &self,

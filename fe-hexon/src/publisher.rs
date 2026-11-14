@@ -4,7 +4,7 @@ use std::path::Path;
 use ed25519_dalek::SigningKey;
 
 use crate::manifest::{
-    AssetEntry, CrateDep, EntryKind, HexonKind, HexonManifest, License, LicenseType,
+    AssetEntry, EntryKind, HexonDep, HexonManifest, HexonType, License, LicenseType,
 };
 use crate::package::HexonPackage;
 use crate::signature;
@@ -32,20 +32,20 @@ pub enum BuilderError {
     Build(#[from] anyhow::Error),
 }
 
-/// Fluent builder for constructing signed `.fecrate` packages.
+/// Fluent builder for signed `.hexon` packages on fe-format (see `src/AGENTS.md` §unified-format).
 ///
 /// # Example
 /// ```no_run
 /// use fe_hexon::publisher::HexonBuilder;
-/// use fe_hexon::manifest::{EntryKind, HexonKind, LicenseType};
+/// use fe_hexon::manifest::{EntryKind, HexonType, LicenseType};
 /// # use ed25519_dalek::SigningKey;
 /// # use rand::rngs::OsRng;
 /// # let signing_key = SigningKey::generate(&mut OsRng);
 ///
-/// let crate_bytes = HexonBuilder::new("my-model-v1", "did:key:z6Mk...")
+/// let hexon_bytes = HexonBuilder::new("my-model-v1", "did:key:z6Mk...")
 ///     .name("My Model")
 ///     .description("A beautiful 3D model")
-///     .hexon_type(HexonKind::Model)
+///     .hexon_type(HexonType::Model)
 ///     .version("1.0.0")
 ///     .tag("model")
 ///     .tag("architecture")
@@ -61,18 +61,18 @@ pub enum BuilderError {
 ///     .expect("build failed");
 /// ```
 pub struct HexonBuilder {
-    crate_id: String,
+    hexon_id: String,
     publisher_did: String,
-    publisher_name: String,
+    publisher_name: Option<String>,
     version: String,
-    build_id: String,
+    build_id: Option<String>,
     name: String,
-    description: String,
+    description: Option<String>,
     tags: Vec<String>,
-    hexon_type: HexonKind,
-    min_engine_version: String,
+    hexon_type: HexonType,
+    min_engine_version: Option<String>,
     homepage_url: Option<String>,
-    dependencies: Vec<CrateDep>,
+    dependencies: Vec<HexonDep>,
     entries: Vec<AssetEntry>,
     assets: HashMap<String, Vec<u8>>,
     license_type: LicenseType,
@@ -85,19 +85,19 @@ pub struct HexonBuilder {
 }
 
 impl HexonBuilder {
-    /// Create a new builder with the required crate_id and publisher DID.
-    pub fn new(crate_id: impl Into<String>, publisher_did: impl Into<String>) -> Self {
+    /// Create a new builder with the required hexon_id and publisher DID.
+    pub fn new(hexon_id: impl Into<String>, publisher_did: impl Into<String>) -> Self {
         Self {
-            crate_id: crate_id.into(),
+            hexon_id: hexon_id.into(),
             publisher_did: publisher_did.into(),
-            publisher_name: String::new(),
+            publisher_name: None,
             version: "0.1.0".to_string(),
-            build_id: ulid::Ulid::new().to_string(),
+            build_id: Some(ulid::Ulid::new().to_string()),
             name: String::new(),
-            description: String::new(),
+            description: None,
             tags: Vec::new(),
-            hexon_type: HexonKind::Model,
-            min_engine_version: "0.1.0".to_string(),
+            hexon_type: HexonType::Model,
+            min_engine_version: None,
             homepage_url: None,
             dependencies: Vec::new(),
             entries: Vec::new(),
@@ -118,16 +118,16 @@ impl HexonBuilder {
     }
 
     pub fn description(mut self, desc: impl Into<String>) -> Self {
-        self.description = desc.into();
+        self.description = Some(desc.into());
         self
     }
 
     pub fn publisher_name(mut self, name: impl Into<String>) -> Self {
-        self.publisher_name = name.into();
+        self.publisher_name = Some(name.into());
         self
     }
 
-    pub fn hexon_type(mut self, kind: HexonKind) -> Self {
+    pub fn hexon_type(mut self, kind: HexonType) -> Self {
         self.hexon_type = kind;
         self
     }
@@ -138,12 +138,12 @@ impl HexonBuilder {
     }
 
     pub fn build_id(mut self, build_id: impl Into<String>) -> Self {
-        self.build_id = build_id.into();
+        self.build_id = Some(build_id.into());
         self
     }
 
     pub fn min_engine_version(mut self, version: impl Into<String>) -> Self {
-        self.min_engine_version = version.into();
+        self.min_engine_version = Some(version.into());
         self
     }
 
@@ -167,7 +167,7 @@ impl HexonBuilder {
         hexon_uri: impl Into<String>,
         version_req: impl Into<String>,
     ) -> Self {
-        self.dependencies.push(CrateDep {
+        self.dependencies.push(HexonDep {
             hexon_uri: hexon_uri.into(),
             version_req: version_req.into(),
         });
@@ -213,12 +213,16 @@ impl HexonBuilder {
             format: format.into(),
             label: label.into(),
             tags: vec![],
-            description: String::new(),
+            description: None,
             is_placeable: true,
             is_private: false,
+            auto_scale: false,
             preview_image: None,
-            metadata: None,
+            center: None,
+            extents: None,
             sub_assets: None,
+            address: None,
+            metadata: None,
         };
         self.assets.insert(hash, data.to_vec());
         self.entries.push(entry);
@@ -259,7 +263,7 @@ impl HexonBuilder {
         self
     }
 
-    /// Validate and build the signed `.fecrate` ZIP package.
+    /// Validate and build the sealed, signed `.hexon` package.
     ///
     /// Returns raw ZIP bytes suitable for distribution or writing to disk.
     pub fn build(self, signing_key: &SigningKey) -> Result<Vec<u8>, BuilderError> {
@@ -267,8 +271,8 @@ impl HexonBuilder {
         if self.name.is_empty() {
             return Err(BuilderError::MissingField("name"));
         }
-        if self.crate_id.is_empty() {
-            return Err(BuilderError::MissingField("crate_id"));
+        if self.hexon_id.is_empty() {
+            return Err(BuilderError::MissingField("hexon_id"));
         }
         if self.publisher_did.is_empty() {
             return Err(BuilderError::MissingField("publisher_did"));
@@ -312,9 +316,11 @@ impl HexonBuilder {
         let total_size: u64 = self.assets.values().map(|v| v.len() as u64).sum();
 
         let now = chrono::Utc::now().to_rfc3339();
+        // `HexonPackage::build` seals and signs; the seal stamps the signer's DID over `publisher_did`.
         let manifest = HexonManifest {
-            schema_version: 1,
-            crate_id: self.crate_id,
+            schema_version: "1.0.0".to_string(),
+            hexon_id: self.hexon_id,
+            hexon_type: self.hexon_type,
             publisher_did: self.publisher_did,
             publisher_name: self.publisher_name,
             version: self.version,
@@ -322,29 +328,30 @@ impl HexonBuilder {
             name: self.name,
             description: self.description,
             tags: self.tags,
-            hexon_type: self.hexon_type,
             created_at: now.clone(),
             updated_at: now,
-            approx_size_bytes: total_size,
+            source_peer_did: None,
+            approx_size_bytes: Some(total_size),
             min_engine_version: self.min_engine_version,
             homepage_url: self.homepage_url,
             dependencies: self.dependencies,
-            signature: String::new(), // filled by HexonPackage::build
+            platforms: Vec::new(),
+            address: None,
+            integrity: None,
+            signature: None,
         };
 
         let license = License {
             license_type: self.license_type,
             attribution: self.attribution,
-            payment_provider: None,
-            payment_verification_url: None,
             free_entries: self.free_entries,
-            encrypted_key: None,
+            ..License::default()
         };
 
         HexonPackage::build(
             manifest,
             self.entries,
-            license,
+            Some(license),
             self.assets,
             self.icon,
             self.previews,
@@ -473,13 +480,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     fn test_did(keypair: &SigningKey) -> String {
-        let pub_key = keypair.verifying_key();
-        let mut bytes = vec![0xed, 0x01];
-        bytes.extend_from_slice(&pub_key.to_bytes());
-        format!(
-            "did:key:{}",
-            multibase::encode(multibase::Base::Base58Btc, &bytes)
-        )
+        fe_format::verifying_key_to_did(&keypair.verifying_key())
     }
 
     #[test]
@@ -493,7 +494,7 @@ mod tests {
             .name("Test Model")
             .description("A builder test")
             .publisher_name("Test Publisher")
-            .hexon_type(HexonKind::Model)
+            .hexon_type(HexonType::Model)
             .version("1.0.0")
             .tag("test")
             .tag("model")
@@ -510,12 +511,21 @@ mod tests {
             .expect("build should succeed");
 
         let package = HexonPackage::open(&zip_bytes).expect("open should succeed");
-        assert_eq!(package.manifest.crate_id, "test-model-v1");
+        assert_eq!(package.manifest.hexon_id, "test-model-v1");
         assert_eq!(package.manifest.name, "Test Model");
-        assert_eq!(package.manifest.hexon_type, HexonKind::Model);
+        assert_eq!(package.manifest.hexon_type, HexonType::Model);
         assert_eq!(package.entries.len(), 1);
         assert!(package.signature_valid());
         assert!(package.readme.is_some());
+        assert_eq!(package.manifest.schema_version, "1.0.0");
+
+        // The package opens through fe-format's own importer and is sealed by the signer.
+        let imported = fe_format::HexonArchive::import(&zip_bytes).expect("fe-format import");
+        assert_eq!(imported.manifest.hexon_id, "test-model-v1");
+        assert!(matches!(
+            imported.integrity,
+            fe_format::IntegrityStatus::Sealed { ref publisher_did } if *publisher_did == did
+        ));
 
         // Verify asset hash matches
         let entry = &package.entries[0];
@@ -540,17 +550,21 @@ mod tests {
             format: "pbr_bundle".to_string(),
             label: "PBR Material".to_string(),
             tags: vec![],
-            description: String::new(),
+            description: None,
             is_placeable: true,
             is_private: false,
+            auto_scale: false,
             preview_image: None,
-            metadata: None,
+            center: None,
+            extents: None,
             sub_assets: Some(HashMap::from([("normal".to_string(), normal_hash.clone())])),
+            address: None,
+            metadata: None,
         };
 
         let mut builder = HexonBuilder::new("test-mat-v1", &did)
             .name("Test Material")
-            .hexon_type(HexonKind::Material)
+            .hexon_type(HexonType::Material)
             .version("1.0.0")
             .license(LicenseType::Attribution)
             .attribution("CC-BY 4.0")
@@ -576,6 +590,9 @@ mod tests {
             .build(&keypair);
 
         assert!(matches!(result, Err(BuilderError::MissingField("name"))));
+
+        let result = HexonBuilder::new("", &did).name("Named").build(&keypair);
+        assert!(matches!(result, Err(BuilderError::MissingField("hexon_id"))));
     }
 
     #[test]
@@ -590,12 +607,16 @@ mod tests {
             format: "glb".to_string(),
             label: "Missing".to_string(),
             tags: vec![],
-            description: String::new(),
+            description: None,
             is_placeable: true,
             is_private: false,
+            auto_scale: false,
             preview_image: None,
-            metadata: None,
+            center: None,
+            extents: None,
             sub_assets: None,
+            address: None,
+            metadata: None,
         };
 
         let result = HexonBuilder::new("test", &did)
@@ -617,7 +638,7 @@ mod tests {
 
         let zip_bytes = HexonBuilder::new("preview-test", &did)
             .name("Preview Test")
-            .hexon_type(HexonKind::Model)
+            .hexon_type(HexonType::Model)
             .version("1.0.0")
             .license(LicenseType::Free)
             .add_entry_with_file("model_001", EntryKind::Model, "glb", "Model", model_data)
