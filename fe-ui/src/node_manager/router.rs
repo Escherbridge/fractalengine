@@ -23,6 +23,9 @@ pub(super) enum ClickPriority {
     /// Measure tool anchor placement (hexon_scale FR-9). Registered right after
     /// Brush; claims a fresh press only while Measure is the active tool.
     Measure,
+    /// Road builder placement (road_builder FR-8); registered right after
+    /// Measure in the chain; claims a fresh press only while Road is active.
+    Road,
     /// Drag a bezier handle marker of the edited track (pen_curve_tool_20260722
     /// FR-5, ratified Q7): outranks the gimbal arm AND the vertex marker, so an
     /// overlapping handle + vertex resolves to the handle.
@@ -338,6 +341,7 @@ mod tests {
         let chain = [
             ClickPriority::Brush,
             ClickPriority::Measure,
+            ClickPriority::Road,
             ClickPriority::PathHandle,
             ClickPriority::Gimbal,
             ClickPriority::PathMarker,
@@ -362,6 +366,7 @@ mod tests {
         for who in [
             ClickPriority::Brush,
             ClickPriority::Measure,
+            ClickPriority::Road,
             ClickPriority::PathHandle,
             ClickPriority::Gimbal,
             ClickPriority::PathMarker,

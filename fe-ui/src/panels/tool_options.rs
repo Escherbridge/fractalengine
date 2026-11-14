@@ -35,6 +35,8 @@ pub(crate) enum ToolOptionsArm {
     Brush,
     /// Measure — Tape/Area mode, live readout, Undo/Clear/Close polygon.
     Measure,
+    /// Road — controls filled by the road builder options slice.
+    Road,
 }
 
 /// Map the active tool to its options arm. Pure + total.
@@ -45,6 +47,7 @@ pub(crate) fn options_arm(tool: Tool) -> ToolOptionsArm {
         Tool::Pen => ToolOptionsArm::Pen,
         Tool::Brush => ToolOptionsArm::Brush,
         Tool::Measure => ToolOptionsArm::Measure,
+        Tool::Road => ToolOptionsArm::Road,
     }
 }
 
@@ -59,6 +62,7 @@ pub(crate) fn arm_has_live_controls(arm: ToolOptionsArm) -> bool {
             | ToolOptionsArm::Pen
             | ToolOptionsArm::Brush
             | ToolOptionsArm::Measure
+            | ToolOptionsArm::Road
     )
 }
 
@@ -114,6 +118,8 @@ pub(crate) fn render(
         ToolOptionsArm::Measure => {
             render_measure_options(ui, measure, measure_world_scale, ui_mgr, active_petal_id)
         }
+        // Stub: the road builder options body lands with CITY-13.
+        ToolOptionsArm::Road => {}
     }
     // Never-blank (`ui_ux.md §7`): an arm without live controls falls back to
     // the descriptor's calm "(soon)" lines — one table, no duplicated copy.
@@ -628,7 +634,7 @@ pub(crate) fn reveal(section: RightSidebarSection) -> UiAction {
 mod tests {
     use super::*;
 
-    fn all_tools() -> [Tool; 7] {
+    fn all_tools() -> [Tool; 8] {
         [
             Tool::Select,
             Tool::Move,
@@ -637,6 +643,7 @@ mod tests {
             Tool::Pen,
             Tool::Brush,
             Tool::Measure,
+            Tool::Road,
         ]
     }
 
@@ -649,6 +656,7 @@ mod tests {
         assert_eq!(options_arm(Tool::Pen), ToolOptionsArm::Pen);
         assert_eq!(options_arm(Tool::Brush), ToolOptionsArm::Brush);
         assert_eq!(options_arm(Tool::Measure), ToolOptionsArm::Measure);
+        assert_eq!(options_arm(Tool::Road), ToolOptionsArm::Road);
     }
 
     #[test]
@@ -683,6 +691,7 @@ mod tests {
         assert!(arm_has_live_controls(ToolOptionsArm::Pen));
         assert!(arm_has_live_controls(ToolOptionsArm::Brush));
         assert!(arm_has_live_controls(ToolOptionsArm::Measure));
+        assert!(arm_has_live_controls(ToolOptionsArm::Road));
         assert!(!arm_has_live_controls(ToolOptionsArm::Selection));
         assert!(arm_has_live_controls(ToolOptionsArm::Transform));
         let ctx=egui::Context::default();let mut time=0.0;

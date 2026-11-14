@@ -23,13 +23,15 @@ pub enum Tool {
     Brush,
     /// Tape (distance + bearing) and Area measurements on the ground plane.
     Measure,
+    /// Cities-Skylines style road builder.
+    Road,
 }
 
 impl Tool {
     pub(crate) fn requires_edit(self) -> bool {
         matches!(
             self,
-            Self::Move | Self::Rotate | Self::Scale | Self::Pen | Self::Brush
+            Self::Move | Self::Rotate | Self::Scale | Self::Pen | Self::Brush | Self::Road
         )
     }
 }
@@ -47,7 +49,7 @@ pub(crate) struct ToolDef {
 
 /// Single source for toolbar buttons/tooltips, the keyboard bindings
 /// (`node_manager::shortcuts`), and the viewport hint line — so they can't drift.
-pub(crate) const TOOL_DEFS: [ToolDef; 7] = [
+pub(crate) const TOOL_DEFS: [ToolDef; 8] = [
     ToolDef {
         tool: Tool::Select,
         icon: Icon::Select,
@@ -96,6 +98,13 @@ pub(crate) const TOOL_DEFS: [ToolDef; 7] = [
         name: "Measure",
         key: "M",
         key_code: KeyCode::KeyM,
+    },
+    ToolDef {
+        tool: Tool::Road,
+        icon: Icon::Road,
+        name: "Road",
+        key: "L",
+        key_code: KeyCode::KeyL,
     },
 ];
 
@@ -244,6 +253,7 @@ mod tests {
             Tool::Pen,
             Tool::Brush,
             Tool::Measure,
+            Tool::Road,
         ] {
             assert!(
                 TOOL_DEFS.iter().any(|d| d.tool == t),

@@ -61,7 +61,7 @@ pub(super) fn update_hovered_axis(
     // per-frame raycast, and must not highlight an axis they cannot grab.
     if matches!(
         tool.active_tool,
-        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure
+        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure | Tool::Road
     ) {
         return;
     }
@@ -242,7 +242,7 @@ pub(super) fn handle_gimbal_interaction(
     // is already a no-op, so early-returning loses nothing. See AGENTS.md §pen-tool.
     if matches!(
         tool.active_tool,
-        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure
+        Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure | Tool::Road
     ) {
         return;
     }
@@ -326,7 +326,7 @@ pub(super) fn handle_gimbal_interaction(
                             * drag.start_rot;
                 }
                 // Pen is a path-drawing mode, not a transform gizmo — no drag.
-                Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure => {}
+                Tool::Select | Tool::Pen | Tool::Brush | Tool::Measure | Tool::Road => {}
             }
             return;
         }

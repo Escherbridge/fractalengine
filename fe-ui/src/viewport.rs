@@ -116,6 +116,7 @@ pub fn viewport_petal_space(
         Some(toolbar::Tool::Pen)=>Some("Pen: click terrain to add points; drag a marker to move; Ctrl+drag raises or lowers height; Shift/Alt+click annotates.".to_owned()),
         Some(toolbar::Tool::Brush)=>Some("Brush: press-drag to sample earthwork; release commits; Escape or right-click cancels the stroke.".to_owned()),
         Some(toolbar::Tool::Measure)=>Some("Measure: click ground to place points; read and copy the result in Options; Escape returns to Select.".to_owned()),
+        Some(toolbar::Tool::Road)=>Some("Road: click to start and place points, or drag for a freeform stroke; Escape ends the road.".to_owned()),
         _ if node_mgr.selected_entity().is_none()=>Some(format!("Click an object to select it. {}",toolbar::shortcut_hint_line())),
         _=>None,
     };

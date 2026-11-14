@@ -106,7 +106,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
             // Pen intent dominates: an empty-ground append still wins over
             // selecting the node the ray grazed (matches §pen-tool routing).
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush | Tool::Measure => Operation::None,
+            Tool::Brush | Tool::Measure | Tool::Road => Operation::None,
             _ => Operation::SelectNode(entity),
         },
         // A concrete object hit selects that object regardless of tool; WHEN such
@@ -125,7 +125,7 @@ pub fn resolve_operation(tool: Tool, kind: &SelectionKind, hit: HitTarget) -> Op
         // verb set matches `Empty` too — `dialogs::context_menu`).
         HitTarget::TerrainCell | HitTarget::Empty => match tool {
             Tool::Pen => Operation::PlacePathPoint,
-            Tool::Brush | Tool::Measure => Operation::None,
+            Tool::Brush | Tool::Measure | Tool::Road => Operation::None,
             _ => Operation::Deselect,
         },
     }
@@ -503,6 +503,23 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_operation(Tool::Measure, &SelectionKind::Node(entity(1)), hit.clone()),
+                Operation::None,
+                "{hit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn road_never_selects_and_never_deselects() {
+        // Road claims its own gesture upstream; a click that slips past must
+        // neither drop the selection nor grab a node mid-road.
+        for hit in [
+            HitTarget::Empty,
+            HitTarget::TerrainCell,
+            HitTarget::Node(entity(9)),
+        ] {
+            assert_eq!(
+                resolve_operation(Tool::Road, &SelectionKind::Node(entity(1)), hit.clone()),
                 Operation::None,
                 "{hit:?}"
             );

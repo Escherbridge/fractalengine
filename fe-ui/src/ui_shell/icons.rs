@@ -12,6 +12,7 @@ pub(crate) enum Icon {
     Pen,
     Brush,
     Measure,
+    Road,
     Close,
     Info,
     Options,
@@ -109,6 +110,13 @@ impl Icon {
                 line(&[[0.0, 0.5], [1.0, 0.5]]);
                 line(&[[0.2, 0.3], [0.0, 0.5], [0.2, 0.7]]);
                 line(&[[0.8, 0.3], [1.0, 0.5], [0.8, 0.7]]);
+            }
+            Self::Road => {
+                line(&[[0.25, 1.0], [0.4, 0.0]]);
+                line(&[[0.75, 1.0], [0.6, 0.0]]);
+                line(&[[0.5, 0.9], [0.5, 0.75]]);
+                line(&[[0.5, 0.55], [0.5, 0.4]]);
+                line(&[[0.5, 0.2], [0.5, 0.1]]);
             }
             Self::Info => {
                 TreeIcon::Ring.paint(painter, rect, color);
@@ -245,7 +253,7 @@ impl egui::Widget for IconButton {
 pub(super) fn assert_icon_button_journey() {
     use crate::accessibility::ResponseExt;
     let icons = [Icon::Select, Icon::Move, Icon::Rotate, Icon::Scale, Icon::Pen,
-        Icon::Brush, Icon::Measure, Icon::Close, Icon::Info, Icon::Options,
+        Icon::Brush, Icon::Measure, Icon::Road, Icon::Close, Icon::Info, Icon::Options,
         Icon::Terrain, Icon::Report, Icon::Settings, Icon::Maps, Icon::Groups,
         Icon::Data, Icon::Expand, Icon::Collapse, Icon::Visible, Icon::Hidden, Icon::Mixed];
     for scale in [0.75, 1.0, 2.0] {

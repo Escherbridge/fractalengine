@@ -102,6 +102,16 @@ pub(crate) fn panel_descriptor(tool: Tool) -> ToolPanelDescriptor {
             // Mode, readout, Undo/Clear/Close are live in the Options arm.
             options_hints: &[],
         },
+        Tool::Road => ToolPanelDescriptor {
+            title: "Road",
+            subtitle: "Draw a road by clicking or dragging",
+            use_zone: &[
+                "Click to start, click to place points",
+                "Drag for a freeform stroke",
+                "Escape ends the road",
+            ],
+            options_hints: &[],
+        },
     }
 }
 
@@ -185,7 +195,7 @@ mod tests {
     use super::*;
     use bevy::prelude::Entity;
 
-    fn all_tools() -> [Tool; 7] {
+    fn all_tools() -> [Tool; 8] {
         [
             Tool::Select,
             Tool::Move,
@@ -194,6 +204,7 @@ mod tests {
             Tool::Pen,
             Tool::Brush,
             Tool::Measure,
+            Tool::Road,
         ]
     }
 
@@ -219,7 +230,7 @@ mod tests {
                 "{tool:?} has no live Options controls and no hints either"
             );
         }
-        for tool in [Tool::Move, Tool::Rotate, Tool::Scale, Tool::Pen, Tool::Brush, Tool::Measure] {
+        for tool in [Tool::Move, Tool::Rotate, Tool::Scale, Tool::Pen, Tool::Brush, Tool::Measure, Tool::Road] {
             assert!(
                 panel_descriptor(tool).options_hints.is_empty(),
                 "{tool:?} renders real controls; a hint list would be stale copy"
