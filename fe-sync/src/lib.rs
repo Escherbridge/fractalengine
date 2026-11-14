@@ -3,6 +3,8 @@ pub mod blob_store;
 pub mod blob_transport;
 pub mod cache;
 pub mod compute;
+pub mod dialback_prober;
+pub mod dialback_responder;
 pub mod distributed_query;
 pub mod docs_engine;
 pub mod endpoint;
