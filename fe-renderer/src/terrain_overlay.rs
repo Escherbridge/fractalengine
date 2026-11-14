@@ -314,6 +314,17 @@ pub struct VolumeReportResult {
     /// Scaled indicator: true if world_scale is finite and > 0.
     pub scaled: bool,
     pub object_impacts: crate::scene_analysis::ObjectImpactReport,
+    /// `Some` when the request could not be measured (no figures are valid).
+    pub unavailable: Option<VolumeUnavailable>,
+}
+
+/// Why a volume report request could not be served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeUnavailable {
+    /// The petal has no enabled terrain map.
+    NoMap,
+    /// The request names a petal other than the active one.
+    WrongPetal,
 }
 
 impl VolumeReportResult {
@@ -342,7 +353,8 @@ impl VolumeReportResult {
 
     /// Whether every selected cell is measured and every result is finite.
     pub fn is_complete(&self) -> bool {
-        self.expected_samples > 0
+        self.unavailable.is_none()
+            && self.expected_samples > 0
             && self.sampled_pairs == self.expected_samples
             && self.has_finite_measurements()
     }

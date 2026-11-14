@@ -5,7 +5,7 @@ use bevy_egui::egui;
 
 use crate::accessibility::ResponseExt;
 
-use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult};
+use fe_renderer::terrain_overlay::{VolumeReportRequest, VolumeReportResult, VolumeUnavailable};
 use fe_runtime::messages::DbResult;
 
 use crate::actions::terrain_proposal::{SculptShapeMode, SculptToolState};
@@ -384,7 +384,8 @@ pub fn drain_volume_report_result(
         if state.correlation_id.as_deref() == Some(result.correlation_id.as_str())
             && state.petal_id.as_deref() == Some(result.petal_id.as_str())
             && nav.active_petal_id.as_deref() == Some(result.petal_id.as_str())
-            && result.object_impacts.scene_revision == state.scene_revision
+            && (result.unavailable.is_some()
+                || result.object_impacts.scene_revision == state.scene_revision)
         {
             state.result = Some(result.clone());
         }
@@ -410,6 +411,11 @@ pub(crate) enum VolumeDisplay<'a> {
         label: &'a str,
         result: &'a VolumeReportResult,
     },
+    /// fe-terrain answered that this request cannot be measured.
+    Unavailable {
+        label: &'a str,
+        reason: VolumeUnavailable,
+    },
 }
 
 pub(crate) fn resolve_volume_display(state: &VolumeReportState) -> VolumeDisplay<'_> {
@@ -417,6 +423,13 @@ pub(crate) fn resolve_volume_display(state: &VolumeReportState) -> VolumeDisplay
         return VolumeDisplay::Unselected;
     };
     match &state.result {
+        Some(VolumeReportResult {
+            unavailable: Some(reason),
+            ..
+        }) => VolumeDisplay::Unavailable {
+            label,
+            reason: *reason,
+        },
         Some(result) if !result.is_complete() => VolumeDisplay::Incomplete { label, result },
         Some(result) => VolumeDisplay::Ready { label, result },
         None => VolumeDisplay::Pending { label },
@@ -730,6 +743,27 @@ pub(crate) fn render_volume_report_body(
             );
             return;
         }
+        VolumeDisplay::Unavailable { label, reason } => {
+            ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
+            match reason {
+                VolumeUnavailable::NoMap => {
+                    ui.label("No map on this petal. Assign one in Maps");
+                    if ui
+                        .add(egui::Button::new("Open Maps").min_size(egui::vec2(0.0, 24.0)))
+                        .named(ui, format_args!("Open Maps section"))
+                        .clicked()
+                    {
+                        ui_mgr.push_action(crate::panels::tool_options::reveal(
+                            crate::ui_shell::right_sidebar::RightSidebarSection::Maps,
+                        ));
+                    }
+                }
+                VolumeUnavailable::WrongPetal => {
+                    ui.label("This selection belongs to another petal. Select again here.");
+                }
+            }
+            return;
+        }
         VolumeDisplay::Incomplete { label, result } => {
             ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
             ui.label(if result.has_finite_measurements() {
@@ -876,6 +910,7 @@ mod tests {
             has_overlap: false,
             scaled: true,
             object_impacts: Default::default(),
+            unavailable: None,
         }
     }
 
@@ -1250,6 +1285,21 @@ mod tests {
         match resolve_volume_display(&state) {
             VolumeDisplay::Pending { label } => assert_eq!(label, "Selected proposal p1"),
             other => panic!("expected Pending, got {other:?}"),
+        }
+
+        // fe-terrain's explicit "cannot measure" reply replaces Pending, never Ready.
+        let mut unavailable = sample_result("c1");
+        unavailable.unavailable = Some(VolumeUnavailable::NoMap);
+        let state = VolumeReportState {
+            result: Some(unavailable),
+            ..state
+        };
+        match resolve_volume_display(&state) {
+            VolumeDisplay::Unavailable { label, reason } => {
+                assert_eq!(label, "Selected proposal p1");
+                assert_eq!(reason, VolumeUnavailable::NoMap);
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
         }
     }
 

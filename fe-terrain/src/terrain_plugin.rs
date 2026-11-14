@@ -2551,11 +2551,22 @@ fn answer_volume_report_requests(
     }
     retained.revision = Some(active.revision);
     for request in requests.read() {
-        if active.petal_id.as_deref() == Some(request.petal_id.as_str())
-            && active.config.as_ref().is_some_and(|config| config.enabled)
-        {
-            retained.request = Some(request.clone());
-            dirty = true;
+        let unavailable = if active.petal_id.as_deref() != Some(request.petal_id.as_str()) {
+            Some(fe_renderer::terrain_overlay::VolumeUnavailable::WrongPetal)
+        } else if !active.config.as_ref().is_some_and(|config| config.enabled) {
+            Some(fe_renderer::terrain_overlay::VolumeUnavailable::NoMap)
+        } else {
+            None
+        };
+        match unavailable {
+            // A request is always answered: unavailable is a result, not silence.
+            Some(reason) => {
+                results.write(unavailable_volume_result(request, reason));
+            }
+            None => {
+                retained.request = Some(request.clone());
+                dirty = true;
+            }
         }
     }
     if !dirty {
@@ -2678,7 +2689,31 @@ fn answer_volume_report_requests(
         has_overlap: report.overlap,
         scaled: report.scaled,
         object_impacts,
+        unavailable: None,
     });
+}
+
+/// Zero-figure reply telling the panel why a request cannot be measured.
+fn unavailable_volume_result(
+    request: &fe_renderer::terrain_overlay::VolumeReportRequest,
+    reason: fe_renderer::terrain_overlay::VolumeUnavailable,
+) -> fe_renderer::terrain_overlay::VolumeReportResult {
+    fe_renderer::terrain_overlay::VolumeReportResult {
+        correlation_id: request.correlation_id.clone(),
+        petal_id: request.petal_id.clone(),
+        expected_samples: 0,
+        sampled_pairs: 0,
+        area_m2: 0.0,
+        cut_m3: 0.0,
+        fill_m3: 0.0,
+        net_m3: 0.0,
+        step_m: 0.0,
+        items: Vec::new(),
+        has_overlap: false,
+        scaled: false,
+        object_impacts: Default::default(),
+        unavailable: Some(reason),
+    }
 }
 
 #[cfg(test)]
@@ -4170,7 +4205,27 @@ mod tests {
         assert!((latest.fill_m3 - 300.0).abs() < 0.001);
 
         app.world_mut().resource_mut::<ActivePetalTerrain>().config = None;
+        app.world_mut().write_message(VolumeReportRequest {
+            correlation_id: "corr-no-map".into(),
+            petal_id: "petal".into(),
+            footprint: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            elevation_band: None,
+        });
+        let before_no_map = app.world().resource::<CapturedVolumeResults>().0.len();
         app.update();
+        let no_map_results = &app.world().resource::<CapturedVolumeResults>().0;
+        assert_eq!(
+            no_map_results.len(),
+            before_no_map + 1,
+            "a request on a petal without a map gets exactly one reply"
+        );
+        let no_map = no_map_results.last().unwrap();
+        assert_eq!(no_map.correlation_id, "corr-no-map");
+        assert_eq!(
+            no_map.unavailable,
+            Some(fe_renderer::terrain_overlay::VolumeUnavailable::NoMap)
+        );
+        assert!(!no_map.is_complete() && no_map.items.is_empty());
         let count = app.world().resource::<CapturedVolumeResults>().0.len();
         {
             let mut active = app.world_mut().resource_mut::<ActivePetalTerrain>();
@@ -4286,9 +4341,18 @@ mod tests {
         });
         app.update();
 
-        assert!(
-            app.world().resource::<CapturedVolumeResults>().0.is_empty(),
-            "a request scoped to a different petal must be dropped, not answered"
+        let results = &app.world().resource::<CapturedVolumeResults>().0;
+        assert_eq!(results.len(), 1, "a foreign-petal request gets one reply");
+        assert_eq!(results[0].correlation_id, "corr-2");
+        assert_eq!(
+            results[0].unavailable,
+            Some(fe_renderer::terrain_overlay::VolumeUnavailable::WrongPetal)
+        );
+        app.update();
+        assert_eq!(
+            app.world().resource::<CapturedVolumeResults>().0.len(),
+            1,
+            "the reply is not repeated every frame"
         );
     }
 
