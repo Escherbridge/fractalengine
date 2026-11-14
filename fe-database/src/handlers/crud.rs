@@ -174,6 +174,21 @@ pub(crate) async fn create_petal_handler(
 // Node
 // ---------------------------------------------------------------------------
 
+/// World scale of a petal's map (1.0 when unmapped, missing or unreadable; never fails placement).
+pub(crate) async fn petal_world_scale(db: &Db, petal_id: &str) -> f64 {
+    let terrain = super::petal_terrain::get_petal_terrain_handler(db, petal_id)
+        .await
+        .ok()
+        .flatten();
+    fe_format::scale::world_scale_from_terrain_json(terrain.as_ref())
+}
+
+/// Initial placement scale vector for a world scale.
+fn placement_scale_vec(world_scale: f64) -> Vec<f64> {
+    vec![world_scale; 3]
+}
+
+/// Create a node at the petal map's world scale; returns (id, applied scale).
 #[instrument(skip(db))]
 pub(crate) async fn create_node_as(
     db: &Db,
@@ -181,7 +196,8 @@ pub(crate) async fn create_node_as(
     name: &str,
     position: [f32; 3],
     actor: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, [f32; 3])> {
+    let world_scale = petal_world_scale(db, petal_id).await;
     let (id, _) = super::node_history::create_object(
         db,
         petal_id,
@@ -189,12 +205,13 @@ pub(crate) async fn create_node_as(
         None,
         position,
         vec![0.0, 0.0, 0.0, 1.0],
-        vec![1.0, 1.0, 1.0],
+        placement_scale_vec(world_scale),
         serde_json::Map::new(),
         actor,
     )
     .await?;
-    Ok(id)
+    let applied = world_scale as f32;
+    Ok((id, [applied; 3]))
 }
 
 /// Delete a node and cascade to its child waypoint rows.
@@ -313,7 +330,7 @@ pub(crate) async fn import_gltf_handler(
     let asset_path = imported.path().to_owned();
     let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
         petal_id, name, asset: super::object_creation::SceneAsset::Imported(imported), position,
-        rotation: vec![0.0,0.0,0.0,1.0], scale: vec![1.0;3], properties: serde_json::Map::new(),
+        rotation: vec![0.0,0.0,0.0,1.0], scale: placement_scale_vec(petal_world_scale(db, petal_id).await), properties: serde_json::Map::new(),
         actor, grant: &fe_runtime::node_history::NodeAccessGrant::Local,
     }).await?;
     let current = super::object_creation::commit(db, prepared).await?;
@@ -1756,14 +1773,50 @@ mod delete_node_tests {
     }
 
     #[tokio::test]
+    async fn placement_scale_follows_the_petal_map() {
+        let cases: [(Option<serde_json::Value>, f64); 4] = [
+            (None, 1.0),
+            (Some(serde_json::json!({ "world_scale": 1.0 })), 1.0),
+            (Some(serde_json::json!({ "world_scale": 0.01 })), 0.01),
+            (
+                Some(serde_json::json!({ "world_scale": 0.5, "scale_bounds": [0.001, 0.1] })),
+                0.1,
+            ),
+        ];
+        for (terrain, expected) in cases {
+            let db = setup_mem_db().await;
+            if let Some(terrain) = terrain {
+                db.query("UPDATE petal SET terrain = $t WHERE petal_id = 'petal-1'")
+                    .bind(("t", terrain))
+                    .await
+                    .expect("seed terrain")
+                    .check()
+                    .expect("seed terrain statement");
+            }
+            let (id, applied) = create_node_as(&db, "petal-1", "n", [0.0, 0.0, 0.0], "did:key:z6MkA")
+                .await
+                .expect("create node");
+            let (_, _, row_scale) = get_node_transform_handler(&db, &id)
+                .await
+                .expect("read transform")
+                .expect("node row");
+            assert_eq!(row_scale, [expected as f32; 3], "row scale for world_scale {expected}");
+            assert_eq!(applied, row_scale, "returned scale equals the committed row");
+            // FR-6 round trip: one placed unit is one real meter.
+            let meters = fe_format::scale::world_to_meters(f64::from(row_scale[0]), expected);
+            assert!((meters - 1.0).abs() < 1e-6, "scale / world_scale = 1 m, got {meters}");
+        }
+    }
+
+    #[tokio::test]
     async fn delete_node_removes_row_and_cascades_waypoints() {
         let db = setup_mem_db().await;
         let track_id = create_node_as(&db, "petal-1", "track", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
-            .expect("create track node");
+            .expect("create track node").0;
         let wp_id = create_node_as(&db, "petal-1", "wp", [1.0, 0.0, 1.0], "did:key:z6MkA")
             .await
-            .expect("create waypoint node");
+            .expect("create waypoint node").0;
 
         // Tag the waypoint as a child of the track, mirroring gpx_bridge's
         // property shape (properties.gpx_track_id == track node_id).
@@ -1873,10 +1926,10 @@ mod cascade_batch_update_tests {
         let db = setup_mem_db().await;
         let a = create_node_as(&db, "petal-1", "a", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
-            .unwrap();
+            .unwrap().0;
         let b = create_node_as(&db, "petal-1", "b", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
-            .unwrap();
+            .unwrap().0;
         let ids = vec![a.clone(), b.clone()];
         let marker = tombstone_marker(1, "did:key:z6MkA");
 
@@ -2289,12 +2342,12 @@ mod tombstone_atomicity_tests {
         crate::op_log::init_hlc(0);
         let root = create_node_as(&db, "petal-1", "root", [0.0, 0.0, 0.0], "did:key:z6MkA")
             .await
-            .expect("create root");
+            .expect("create root").0;
         let mut ids = vec![root.clone()];
         for name in ["child-a", "child-b"] {
             let child = create_node_as(&db, "petal-1", name, [1.0, 0.0, 0.0], "did:key:z6MkA")
                 .await
-                .expect("create child");
+                .expect("create child").0;
             db.query("UPDATE node SET properties.parent_id = $root WHERE node_id = $child")
                 .bind(("root", root.clone()))
                 .bind(("child", child.clone()))
@@ -2429,7 +2482,11 @@ mod import_gltf_ktx2_guard_tests {
     /// A minimal valid GLB whose sole image declares `mimeType: "image/ktx2"`
     /// — the exact shape `fe_runtime::ktx2_guard::check_glb` refuses.
     fn glb_with_ktx2_image() -> Vec<u8> {
-        let json = r#"{"images":[{"bufferView":0,"mimeType":"image/ktx2"}],"bufferViews":[{"buffer":0,"byteLength":4}]}"#;
+        glb_from_json(r#"{"images":[{"bufferView":0,"mimeType":"image/ktx2"}],"bufferViews":[{"buffer":0,"byteLength":4}]}"#)
+    }
+
+    /// Wrap a JSON chunk and a 4-byte BIN chunk into a GLB container.
+    fn glb_from_json(json: &str) -> Vec<u8> {
         let mut json_bytes = json.as_bytes().to_vec();
         while !json_bytes.len().is_multiple_of(4) {
             json_bytes.push(b' ');
@@ -2493,6 +2550,29 @@ mod import_gltf_ktx2_guard_tests {
             .take(0)
             .unwrap_or_default();
         assert!(nodes.is_empty(), "no node row on refusal");
+
+        // A clean GLB imported on a 0.01-scale map lands at that scale (FR-6 placement default).
+        db.query("UPDATE petal SET terrain = $t WHERE petal_id = 'petal-1'")
+            .bind(("t", serde_json::json!({ "world_scale": 0.01 })))
+            .await
+            .expect("set terrain")
+            .check()
+            .expect("set terrain statement");
+        let clean_path = dir.path().join("clean.glb");
+        std::fs::write(&clean_path, glb_from_json(r#"{"asset":{"version":"2.0"}}"#))
+            .expect("write clean glb");
+        let (_, _, _, committed) = import_gltf_handler(
+            &db,
+            &blob_store,
+            "petal-1",
+            "good-model",
+            clean_path.to_str().expect("utf8 path"),
+            [0.0, 0.0, 0.0],
+            "owner-did",
+        )
+        .await
+        .expect("a clean GLB imports");
+        assert_eq!(committed.node.scale, [0.01_f32; 3], "import applies the petal map scale");
     }
 }
 

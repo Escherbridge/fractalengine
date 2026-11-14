@@ -1274,11 +1274,13 @@ mod tests {
             .await.unwrap().check().unwrap();
         let tree_node = crud::create_node_as(&db, "tree-petal", "tree node", [0.0; 3], "did:qa")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let other_node =
             crud::create_node_as(&db, "tree-other-petal", "other node", [0.0; 3], "did:qa")
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
         let before_tree = crate::handlers::node_history::committed_receipt(&db, &tree_node)
             .await
             .unwrap();
@@ -1601,7 +1603,8 @@ mod tests {
         let victim =
             crud::create_node_as(&db, "tree-other-petal", "plain victim", [0.0; 3], "did:qa")
                 .await
-                .unwrap();
+                .unwrap()
+                .0;
         let mixed = vec![
             PendingOp::SetProperty {
                 node_id: other_node.clone(),
@@ -1754,7 +1757,7 @@ mod tests {
         );
         use fe_runtime::node_history::{NodeEditBefore,NodeEditPrecondition};
         use fe_runtime::messages::NodeMutation;
-        let undo_node=crud::create_node_as(&db,"tree-other-petal","undo point fixture",[0.0;3],"did:qa").await.unwrap();
+        let undo_node=crud::create_node_as(&db,"tree-other-petal","undo point fixture",[0.0;3],"did:qa").await.unwrap().0;
         let path_before=serde_json::json!([[1.0,0.0,2.0,17.25,-0.5,0.0,0.0,0.5,0.0,0.0,2.0,0.6],[8.0,2.0,9.0,29.5]]);
         crate::handlers::entity_property::set_entity_property_as(&db,&undo_node,"gpx_points",&path_before,"did:qa").await.unwrap();
         let base=crate::handlers::node_history::receipt(&db,&undo_node).await.unwrap();
