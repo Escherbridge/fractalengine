@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The type of content a `.hexon` archive contains.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HexonType {
     Scene,
@@ -30,6 +30,79 @@ pub enum HexonType {
     /// A sealed third-party extension package (`plugin/extension.json` header
     /// member plus a `plugin/component.wasm` body member); see `src/AGENTS.md` §plugin-package.
     Plugin,
+    /// A sealed script package (one type system; see `src/AGENTS.md` §manifest).
+    Script,
+    /// A sealed snapshot of one petal's scene (see `src/AGENTS.md` §manifest).
+    PetalSnapshot,
+}
+
+/// Every `HexonType` variant with its snake_case wire name.
+const HEXON_TYPE_NAMES: [(HexonType, &str); 16] = [
+    (HexonType::Scene, "scene"),
+    (HexonType::Model, "model"),
+    (HexonType::Material, "material"),
+    (HexonType::Skybox, "skybox"),
+    (HexonType::Terrain, "terrain"),
+    (HexonType::TerrainTileset, "terrain_tileset"),
+    (HexonType::GpxCollection, "gpx_collection"),
+    (HexonType::Surface, "surface"),
+    (HexonType::Sound, "sound"),
+    (HexonType::VisualLayer, "visual_layer"),
+    (HexonType::Theme, "theme"),
+    (HexonType::Bundle, "bundle"),
+    (HexonType::ObservationBatch, "observation_batch"),
+    (HexonType::Plugin, "plugin"),
+    (HexonType::Script, "script"),
+    (HexonType::PetalSnapshot, "petal_snapshot"),
+];
+
+/// A hexon type string that matches no known type or legacy kind spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownHexonType(pub String);
+
+impl std::fmt::Display for UnknownHexonType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown hexon type: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownHexonType {}
+
+impl std::fmt::Display for HexonType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = HEXON_TYPE_NAMES
+            .iter()
+            .find(|(variant, _)| variant == self)
+            .map(|(_, name)| *name)
+            .unwrap_or("unknown");
+        f.write_str(name)
+    }
+}
+
+impl std::str::FromStr for HexonType {
+    type Err = UnknownHexonType;
+
+    /// Case-insensitive; accepts snake_case names plus legacy fe-hexon kind spellings.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let lowered = text.to_ascii_lowercase();
+        if let Some((variant, _)) = HEXON_TYPE_NAMES.iter().find(|(_, name)| *name == lowered) {
+            return Ok(variant.clone());
+        }
+        match lowered.as_str() {
+            "gpx" | "gpxcollection" => Ok(HexonType::GpxCollection),
+            "terraintileset" => Ok(HexonType::TerrainTileset),
+            "petalsnapshot" => Ok(HexonType::PetalSnapshot),
+            _ => Err(UnknownHexonType(text.to_string())),
+        }
+    }
+}
+
+/// Split a hexon URI into `(hexon_id, Option<version>)` on the first '@'.
+pub fn split_hexon_uri(uri: &str) -> (&str, Option<&str>) {
+    match uri.split_once('@') {
+        Some((id, version)) => (id, Some(version)),
+        None => (uri, None),
+    }
 }
 
 /// Metadata for a `TerrainTileset` hexon.
@@ -477,5 +550,41 @@ mod bundle_index_tests {
         // (no `blake3` key emitted), per `#[serde(skip_serializing_if)]`.
         let json = serde_json::to_value(&parsed).unwrap();
         assert!(json.get("blake3").is_none());
+    }
+}
+
+#[cfg(test)]
+mod hexon_type_tests {
+    use super::*;
+
+    #[test]
+    fn hexon_type_names_round_trip_and_accept_legacy_kinds() {
+        for (variant, name) in HEXON_TYPE_NAMES.iter() {
+            let json = serde_json::to_string(variant).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(&serde_json::from_str::<HexonType>(&json).unwrap(), variant);
+            assert_eq!(variant.to_string(), *name);
+            assert_eq!(&name.parse::<HexonType>().unwrap(), variant);
+            assert_eq!(&name.to_uppercase().parse::<HexonType>().unwrap(), variant);
+        }
+        let legacy = [
+            ("model", HexonType::Model),
+            ("material", HexonType::Material),
+            ("skybox", HexonType::Skybox),
+            ("terrain", HexonType::Terrain),
+            ("gpx", HexonType::GpxCollection),
+            ("GpxCollection", HexonType::GpxCollection),
+            ("sound", HexonType::Sound),
+            ("theme", HexonType::Theme),
+            ("script", HexonType::Script),
+            ("TerrainTileset", HexonType::TerrainTileset),
+            ("PetalSnapshot", HexonType::PetalSnapshot),
+        ];
+        for (text, expected) in legacy {
+            assert_eq!(text.parse::<HexonType>().unwrap(), expected, "{text}");
+        }
+        assert_eq!("nonsense".parse::<HexonType>(), Err(UnknownHexonType("nonsense".into())));
+        assert_eq!(split_hexon_uri("a@1.0"), ("a", Some("1.0")));
+        assert_eq!(split_hexon_uri("a"), ("a", None));
     }
 }

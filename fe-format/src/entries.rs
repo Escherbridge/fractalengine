@@ -13,10 +13,47 @@ pub enum EntryKind {
     VisualLayer,
     VisualScope,
     Sound,
+    #[serde(alias = "gpx_file", alias = "GpxFile")]
     GpxTrack,
     GeoJson,
     TerrainTileset,
     Script,
+}
+
+/// An entry kind string that matches no known kind or legacy spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownEntryKind(pub String);
+
+impl std::fmt::Display for UnknownEntryKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown entry kind: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownEntryKind {}
+
+impl std::str::FromStr for EntryKind {
+    type Err = UnknownEntryKind;
+
+    /// Case-insensitive; snake_case names plus legacy "gpx"/"gpxfile"/"terraintileset".
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "model" => Ok(EntryKind::Model),
+            "texture" => Ok(EntryKind::Texture),
+            "sprite" => Ok(EntryKind::Sprite),
+            "material" => Ok(EntryKind::Material),
+            "skybox" => Ok(EntryKind::Skybox),
+            "surface" => Ok(EntryKind::Surface),
+            "visual_layer" => Ok(EntryKind::VisualLayer),
+            "visual_scope" => Ok(EntryKind::VisualScope),
+            "sound" => Ok(EntryKind::Sound),
+            "gpx_track" | "gpx" | "gpxfile" | "gpx_file" => Ok(EntryKind::GpxTrack),
+            "geo_json" => Ok(EntryKind::GeoJson),
+            "terrain_tileset" | "terraintileset" => Ok(EntryKind::TerrainTileset),
+            "script" => Ok(EntryKind::Script),
+            _ => Err(UnknownEntryKind(text.to_string())),
+        }
+    }
 }
 
 /// A single asset entry within the `entries.json` catalog.

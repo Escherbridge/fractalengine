@@ -183,10 +183,7 @@ pub fn scan_dir(dir: &Path) -> Vec<HexonIndexEntry> {
 
 /// Split a hexon URI into `(hexon_id, Option<version>)`.
 pub fn split_uri(uri: &str) -> (&str, Option<&str>) {
-    match uri.split_once('@') {
-        Some((id, v)) => (id, Some(v)),
-        None => (uri, None),
-    }
+    fe_format::manifest::split_hexon_uri(uri)
 }
 
 /// Resolve a URI against the index; unversioned URIs pick the latest version.
