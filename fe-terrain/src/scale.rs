@@ -1,26 +1,6 @@
 //! Pure world-scale math for multi-scale terrain rendering; see `src/AGENTS.md` §scale.
 
-/// Sanitize a world scale (world units per real meter): finite and `> 0`, else `1.0`.
-pub fn sanitize_world_scale(scale: f64) -> f64 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    }
-}
-
-/// Clamp a sanitized world scale into hexon-declared `[min, max]` bounds
-/// (C1/OQ-2: clamp silently, but the caller surfaces the returned value back
-/// to the user rather than rejecting).
-pub fn clamp_world_scale_to_bounds(scale: f64, bounds: Option<[f64; 2]>) -> f64 {
-    let sanitized = sanitize_world_scale(scale);
-    match bounds {
-        Some([min, max]) if min.is_finite() && max.is_finite() && min > 0.0 && max >= min => {
-            sanitized.clamp(min, max)
-        }
-        _ => sanitized,
-    }
-}
+pub use fe_format::scale::{clamp_world_scale_to_bounds, sanitize_world_scale};
 
 /// World-space edge length of a tile: real meters × scale.
 pub fn scaled_tile_size(tile_world_size_m: f64, scale: f64) -> f64 {
