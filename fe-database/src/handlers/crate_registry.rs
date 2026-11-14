@@ -138,3 +138,51 @@ pub async fn uninstall_crate_in_petal(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn count(db: &Surreal<Db>, table: &str, hexon_uri: &str) -> usize {
+        let mut response = db
+            .query(format!("SELECT VALUE hexon_uri FROM {table} WHERE hexon_uri = $hexon_uri"))
+            .bind(("hexon_uri", hexon_uri.to_string()))
+            .await
+            .unwrap();
+        let rows: Vec<String> = response.take(0).unwrap();
+        rows.len()
+    }
+
+    async fn install(db: &Surreal<Db>, uri: &str, petal: &str) {
+        install_crate(db, uri, "hash", "did:key:z6MkPub", "model", "1.0.0", "Crate", &[], petal, 10)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn crate_registry_rows_follow_per_petal_uninstall_journey() {
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .expect("in-memory SurrealDB");
+        db.use_ns("test").use_db("test").await.expect("ns/db");
+        crate::schema::apply_all(&db).await.expect("schema");
+
+        let uri = "hexon://pub/crate";
+        install(&db, uri, "petal-a").await;
+        install(&db, uri, "petal-b").await;
+        for entry in ["e1", "e2"] {
+            install_crate_entry(&db, entry, uri, "model", "h", "glb", entry, &serde_json::Value::Null)
+                .await
+                .unwrap();
+        }
+        assert_eq!(count(&db, "crate_registry", uri).await, 2);
+
+        uninstall_crate_in_petal(&db, uri, "petal-a").await.unwrap();
+        assert_eq!(count(&db, "crate_registry", uri).await, 1, "B's row survives");
+        assert_eq!(count(&db, "crate_entry", uri).await, 2, "shared entries stay while B holds it");
+
+        uninstall_crate_in_petal(&db, uri, "petal-b").await.unwrap();
+        assert_eq!(count(&db, "crate_registry", uri).await, 0);
+        assert_eq!(count(&db, "crate_entry", uri).await, 0, "last holder drops the entries");
+    }
+}

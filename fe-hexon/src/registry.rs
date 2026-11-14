@@ -396,24 +396,12 @@ impl HexonRegistry {
         }
 
         if let Some(tx) = &self.db_tx {
-            // UninstallCrate carries no petal id yet and would drop every petal's rows, so it is
-            // sent only once no petal still holds this build (src/AGENTS.md §authz).
-            let held_elsewhere = self
-                .installed
-                .values()
-                .any(|petal_records| petal_records.contains_key(hexon_uri));
-            if held_elsewhere {
-                warn!(
-                    "Uninstalled {} from petal {} in memory only; its DB rows stay while another petal holds it",
-                    hexon_uri, petal_id
-                );
-            } else {
-                let cmd = DbCommand::UninstallCrate {
-                    hexon_uri: hexon_uri.to_string(),
-                };
-                if tx.send(cmd).is_err() {
-                    warn!("Failed to send UninstallCrate command to DB thread");
-                }
+            let cmd = DbCommand::UninstallCrate {
+                hexon_uri: hexon_uri.to_string(),
+                petal_id: Some(petal_id.to_string()),
+            };
+            if tx.send(cmd).is_err() {
+                warn!("Failed to send UninstallCrate command to DB thread");
             }
         }
 
@@ -860,20 +848,24 @@ mod tests {
         }
         assert!(registry.list_installed(Some("petal-456")).is_empty());
 
-        // Uninstall from A leaves B, and the DB rows B still needs are not dropped.
+        // Uninstall from A leaves B and tells the DB to drop only A's row.
         let _ = db_rx.try_iter().count();
         registry.uninstall(&uri, "petal-a").expect("uninstall from A");
         assert!(registry.get_in_petal(&uri, "petal-a").is_none());
         assert_eq!(registry.list_installed(Some("petal-b")).len(), 1);
-        assert!(
-            !db_rx.try_iter().any(|row| matches!(row, DbCommand::UninstallCrate { .. })),
-            "B still holds the build, so its DB rows stay"
-        );
+        let uninstalls_a: Vec<DbCommand> = db_rx
+            .try_iter()
+            .filter(|row| matches!(row, DbCommand::UninstallCrate { .. }))
+            .collect();
+        assert_eq!(uninstalls_a.len(), 1, "exactly one UninstallCrate for A");
+        assert!(matches!(&uninstalls_a[0],
+            DbCommand::UninstallCrate { petal_id: Some(petal), .. } if petal == "petal-a"));
         registry.uninstall(&uri, "petal-b").expect("uninstall from B");
         assert!(registry.list_installed(None).is_empty());
         assert!(db_rx
             .try_iter()
-            .any(|row| matches!(row, DbCommand::UninstallCrate { hexon_uri } if hexon_uri == uri)));
+            .any(|row| matches!(row, DbCommand::UninstallCrate { hexon_uri, petal_id: Some(petal) }
+                if hexon_uri == uri && petal == "petal-b")));
 
         // A published record installs into a petal without its package: blobs are reused.
         registry

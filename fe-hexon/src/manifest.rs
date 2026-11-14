@@ -26,9 +26,6 @@ pub struct InstalledHexon {
     pub license: Option<License>,
 }
 
-/// Transitional name kept until the registry and API are re-typed (HEXON-04/06 remove it).
-pub type InstalledCrate = InstalledHexon;
-
 #[cfg(test)]
 mod tests {
     use super::*;
