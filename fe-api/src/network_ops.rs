@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use fe_runtime::usage::{JsonLinesUsageSink, NoopUsageSink, UsageSink};
+use fe_runtime::usage::{FanoutUsageSink, JsonLinesUsageSink, NoopUsageSink, UsageSink};
+
+use crate::metrics::MetricsRegistry;
 
 /// Operator-facing network services a host hands to the API; every field defaults to off.
 #[derive(Clone)]
@@ -11,6 +13,8 @@ pub struct NetworkOps {
     pub usage_sink: Arc<dyn UsageSink>,
     /// `host:port` for the opt-in metrics listener; `None` binds nothing.
     pub metrics_bind: Option<String>,
+    /// Request counters served on the metrics listener; `Some` only when `metrics_bind` is set.
+    pub metrics: Option<Arc<MetricsRegistry>>,
     /// Key that signs relay advertisements; `None` disables signed advertisement.
     pub advertisement_signer: Option<Arc<fe_identity::NodeKeypair>>,
 }
@@ -20,6 +24,7 @@ impl Default for NetworkOps {
         Self {
             usage_sink: Arc::new(NoopUsageSink),
             metrics_bind: None,
+            metrics: None,
             advertisement_signer: None,
         }
     }
@@ -46,7 +51,21 @@ impl NetworkOps {
             }
         }
         ops.metrics_bind = metrics_bind.filter(|value| !value.trim().is_empty());
+        if ops.metrics_bind.is_some() {
+            ops.metrics = Some(Arc::new(MetricsRegistry::new()));
+        }
         ops
+    }
+
+    /// The sink for the usage layer: the usage sink fanned out to the metrics registry when metrics are on.
+    pub fn usage_sink_with_metrics(&self) -> Arc<dyn UsageSink> {
+        match &self.metrics {
+            Some(registry) => Arc::new(FanoutUsageSink(vec![
+                self.usage_sink.clone(),
+                registry.clone() as Arc<dyn UsageSink>,
+            ])),
+            None => self.usage_sink.clone(),
+        }
     }
 }
 
@@ -89,9 +108,14 @@ mod tests {
         ];
         for (usage_log, metrics_bind, expect_line, expect_bind) in rows {
             let ops = NetworkOps::from_values(usage_log.clone(), metrics_bind);
-            ops.usage_sink.record(sample_event()).await;
+            ops.usage_sink_with_metrics().record(sample_event()).await;
             assert_eq!(ops.metrics_bind.as_deref(), expect_bind, "bind for {usage_log:?}");
+            assert_eq!(ops.metrics.is_some(), expect_bind.is_some(), "metrics registry for {usage_log:?}");
             assert!(ops.advertisement_signer.is_none());
+            // The combined sink (recorded above) feeds the registry exactly when metrics are on.
+            if let Some(registry) = &ops.metrics {
+                assert!(registry.render_openmetrics().contains("status_class=\"2xx\"} 1"));
+            }
             let lines = std::fs::read_to_string(&log_file).map(|text| text.lines().count()).unwrap_or(0);
             assert_eq!(lines, usize::from(expect_line), "log lines for {usage_log:?}");
         }
