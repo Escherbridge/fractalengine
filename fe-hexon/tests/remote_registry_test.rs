@@ -277,6 +277,60 @@ async fn search_download_verify_roundtrip() {
         other => panic!("expected a content hexon, got {other:?}"),
     }
 
+    // Download progress against the real registry: monotonic, ends at (n, n), totals match the listing, bytes still verify.
+    let progress_base = format!("http://{addr}");
+    let fixture_dir = tmp.path().to_path_buf();
+    let (events, listed_size, listed_url, tampered) = tokio::task::spawn_blocking(move || {
+        let trust = SourceTrust {
+            is_trust_root: Arc::new(|_| false),
+            index_signer: Arc::new(|_| None),
+            is_killed: fe_hexon::registry_source::no_kill_list(),
+            allow_unsigned_dev: true,
+        };
+        let source = remote_source("progress registry", progress_base, None, trust).unwrap();
+        let entry = source
+            .list(Some("alpine"))
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|e| e.version == "1.2.0")
+            .expect("alpine 1.2.0 listed");
+        let mut events: Vec<(u64, u64)> = Vec::new();
+        let fetched = source.fetch_hexon_with_progress(&entry, &mut |received, total| events.push((received, total)));
+        assert!(matches!(fetched, Ok(FetchedHexon::Content(_))), "progress download must still verify");
+
+        // One flipped byte on disk after indexing: the listed hash no longer matches, so verification fails.
+        let morning = source.list(Some("morning-run")).unwrap().entries.into_iter().next().expect("morning-run listed");
+        let path = fixture_dir.join("morning-run@0.1.0.hexon");
+        let mut bytes = std::fs::read(&path).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
+        let mut tamper_events: Vec<(u64, u64)> = Vec::new();
+        let tampered = source.fetch_hexon_with_progress(&morning, &mut |received, total| tamper_events.push((received, total)));
+        assert!(tamper_events.last().is_some_and(|(received, total)| received == total), "progress completes before verification refuses");
+        (events, entry.size, entry.url.clone(), tampered)
+    })
+    .await
+    .unwrap();
+    assert!(!events.is_empty());
+    assert!(events.windows(2).all(|pair| pair[0].0 <= pair[1].0), "received never decreases: {events:?}");
+    let (final_received, final_total) = *events.last().unwrap();
+    assert_eq!(final_received, final_total, "last event is (n, n)");
+    assert_eq!(final_received, listed_size, "n equals the downloaded length");
+    assert!(events.iter().all(|(_, total)| *total == 0 || *total == listed_size), "totals are unknown or the listed size: {events:?}");
+    assert!(tampered.is_err(), "a flipped byte must fail verification after progress completes");
+
+    // Oversized Content-Length is refused before any byte or callback: cap below the file length.
+    let cap = listed_size / 2;
+    let mut capped_events: Vec<(u64, u64)> = Vec::new();
+    let refused = client
+        .download_capped_with_progress(&listed_url, cap, 0, &mut |received, total| capped_events.push((received, total)))
+        .await;
+    assert!(refused.is_err(), "a download larger than the cap is refused");
+    assert!(capped_events.iter().all(|(received, _)| *received <= cap && *received < listed_size));
+    assert!(capped_events.is_empty(), "the Content-Length check refuses before any progress event: {capped_events:?}");
+
     // A registry that advertises no protocol is still refused before any listing (fail closed).
     let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let silent_addr = silent.local_addr().unwrap();
