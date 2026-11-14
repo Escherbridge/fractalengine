@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fe_database::handlers::petal_snapshot::{
-    export_petal_snapshot, import_petal_snapshot, import_petal_snapshot_reply, ImportError,
+    export_petal_snapshot, import_petal_snapshot, import_petal_snapshot_as, import_petal_snapshot_reply, ImportError,
 };
 use fe_database::op_log::commit_operation;
 use fe_database::types::{NodeId, OpLogEntry, OpType};
@@ -329,7 +329,12 @@ async fn petal_snapshot_export_then_import_journey() {
     // Import leg: restore into a fresh DB whose hierarchy already holds the parent fractal.
     let restored_db = fresh_db().await;
     seed_fractal(&restored_db).await;
-    import_petal_snapshot(&restored_db, snapshot.clone()).await.expect("import into a fresh DB");
+    // An archive may carry a forged `imported_by`; with no actor it must be dropped, not kept.
+    let mut forged_snapshot = snapshot.clone();
+    forged_snapshot.oplog[0]["imported_by"] = json!("did:key:zForged");
+    import_petal_snapshot(&restored_db, forged_snapshot).await.expect("import into a fresh DB");
+    let unstamped = select(&restored_db, "SELECT VALUE source_id FROM op_log_imported WHERE imported_by != NONE").await;
+    assert!(unstamped.is_empty(), "no actor and a forged archive value: imported_by stays absent: {unstamped:?}");
     let restored = export_petal_snapshot(&restored_db, PETAL).await.expect("export the restored petal");
     // Quarantine: imported history is never live op-log, so no proof or marker lookup can read it.
     let live_types = select(&restored_db, "SELECT VALUE op_type FROM op_log ORDER BY lamport_clock ASC").await;
@@ -367,7 +372,12 @@ async fn petal_snapshot_export_then_import_journey() {
 
     let c_db = fresh_db().await;
     seed_fractal(&c_db).await;
-    import_petal_snapshot(&c_db, to_rows(read_back.data.clone())).await.expect("import the archive's rows into a fresh DB");
+    let mut actor_rows = to_rows(read_back.data.clone());
+    actor_rows.oplog[0]["imported_by"] = json!("did:key:zForged");
+    import_petal_snapshot_as(&c_db, actor_rows, Some("did:key:z6MkActor")).await.expect("import the archive's rows into a fresh DB");
+    let stamped = select(&c_db, "SELECT VALUE imported_by FROM op_log_imported").await;
+    assert_eq!(stamped.len(), a_rows.oplog.len(), "every quarantined row carries the stamp");
+    assert!(stamped.iter().all(|value| value == &json!("did:key:z6MkActor")), "the actor overwrites the forged value: {stamped:?}");
     let c_rows = export_petal_snapshot(&c_db, PETAL).await.expect("re-export from the fresh DB");
     assert_eq!(state_row_sets(&c_rows), state_row_sets(&a_rows), "every state table equal as a row set");
     assert!(c_rows.roles.is_empty(), "roles are a signed-statement cache and are not restored");
@@ -552,7 +562,7 @@ async fn petal_snapshot_export_then_import_journey() {
     let collision_db = fresh_db().await;
     seed_fractal(&collision_db).await;
     seed_node(&collision_db, "petal-elsewhere", "node-a1", None).await;
-    let reply = import_petal_snapshot_reply(&collision_db, snapshot.clone(), Some("collide-1".into())).await;
+    let reply = import_petal_snapshot_reply(&collision_db, snapshot.clone(), Some("collide-1".into()), None).await;
     assert!(
         matches!(&reply, DbResult::PetalSnapshotImportRefused { reason, correlation_id: Some(id), .. }
             if reason.contains("collide") && id == "collide-1"),
@@ -566,7 +576,7 @@ async fn petal_snapshot_export_then_import_journey() {
     let history_db = fresh_db().await;
     seed_fractal(&history_db).await;
     run(&history_db, "CREATE node_log CONTENT { log_id: 'stray-log', node_id: 'node-a2', hlc_timestamp: 1, op: 'baseline', payload: {}, row_version: 1, created_at: '2026-11-13T00:00:00Z' }", json!({})).await;
-    let reply = import_petal_snapshot_reply(&history_db, snapshot.clone(), Some("history-1".into())).await;
+    let reply = import_petal_snapshot_reply(&history_db, snapshot.clone(), Some("history-1".into()), None).await;
     assert!(
         matches!(&reply, DbResult::PetalSnapshotImportRefused { correlation_id: Some(id), .. } if id == "history-1"),
         "an id with surviving node_log history is refused: {reply:?}"

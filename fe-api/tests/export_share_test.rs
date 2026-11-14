@@ -1884,6 +1884,9 @@ async fn petal_snapshot_export_import_authz_journey() {
     let mut state = channel_only_state(api_cmd_tx);
     state.db_reader = Some(Arc::new(fe_api::db_reader::ReadDb::new(db.clone())));
     let state = Arc::new(state);
+    // Every actor the DB thread receives on an import, in arrival order.
+    let import_actors = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+    let recorded_actors = Arc::clone(&import_actors);
     tokio::spawn(async move {
         use fe_database::handlers::petal_snapshot::{export_petal_snapshot_reply, import_petal_snapshot_reply};
         loop {
@@ -1902,8 +1905,9 @@ async fn petal_snapshot_export_import_authz_journey() {
                 DbCommand::ExportPetalSnapshot { petal_id, correlation_id } => {
                     export_petal_snapshot_reply(&db, petal_id, correlation_id).await
                 }
-                DbCommand::ImportPetalSnapshot { rows, correlation_id } => {
-                    import_petal_snapshot_reply(&db, *rows, correlation_id).await
+                DbCommand::ImportPetalSnapshot { rows, correlation_id, actor } => {
+                    recorded_actors.lock().expect("actor log").push(actor.clone());
+                    import_petal_snapshot_reply(&db, *rows, correlation_id, actor).await
                 }
                 other => panic!("only snapshot commands ride the channel here: {other:?}"),
             };
@@ -1986,11 +1990,18 @@ async fn petal_snapshot_export_import_authz_journey() {
 
     // Manager onto the source node: the petal already exists, so the import is refused, never merged.
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let manager_subject = manager.sub.clone();
     let response = import_petal_snapshot(State(state.clone()), Extension(manager), multipart).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let refused = body_json(response).await;
     assert_eq!(refused["error"], "refused", "{refused}");
     assert_eq!(refused["petal_id"], petal_id.as_str(), "{refused}");
+    // The DB thread received the token holder's DID as the import actor (the gate sends none, so it never got here).
+    assert_eq!(
+        *import_actors.lock().expect("actor log"),
+        vec![Some(manager_subject)],
+        "the real import carries the Manager token's sub"
+    );
 
     // Editor, and a Manager of another fractal, are denied before anything is restored.
     for caller in [editor, foreign_manager] {

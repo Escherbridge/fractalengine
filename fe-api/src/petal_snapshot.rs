@@ -42,7 +42,7 @@ pub const HOOK_AUGMENT_UNSUPPORTED: &str = "hook-augment-unsupported";
 const INVALID_SNAPSHOT_REASON: &str = "invalid petal snapshot";
 
 /// The one existence-safe denial: missing, out of scope, or under-privileged look the same.
-fn denied() -> Response {
+pub(crate) fn denied() -> Response {
     (StatusCode::NOT_FOUND, NOT_FOUND_OR_DENIED).into_response()
 }
 
@@ -52,7 +52,7 @@ fn envelope_error(status: StatusCode, message: impl Into<String>) -> Response {
 }
 
 /// Manager+ on `scope`: token role floor, token scope coverage, then the registry policy for `Manage`.
-fn manager_covers(claims: &ApiClaims, scope: Option<String>) -> Option<String> {
+pub(crate) fn manager_covers(claims: &ApiClaims, scope: Option<String>) -> Option<String> {
     if require_role(claims, SNAPSHOT_MINIMUM_ROLE).is_err() {
         return None;
     }
@@ -278,7 +278,7 @@ pub async fn import_petal_snapshot(
         nodes: snapshot_nodes,
         ..Default::default()
     };
-    let gate_command = DbCommand::ImportPetalSnapshot { rows: Box::new(gate_rows), correlation_id: None };
+    let gate_command = DbCommand::ImportPetalSnapshot { rows: Box::new(gate_rows), correlation_id: None, actor: None };
     let door = Door { claims: &claims, kind: SceneCallerKind::Rest };
     // Node ids are only known to the DB, so augments cannot be staged: refuse rather than drop them silently.
     let admission = match admit(door, &snapshot_petal_id, gate_command).await {
@@ -320,7 +320,11 @@ pub async fn import_petal_snapshot(
 
     match db_round_trip(
         &state,
-        |correlation_id| DbCommand::ImportPetalSnapshot { rows: Box::new(rows), correlation_id },
+        |correlation_id| DbCommand::ImportPetalSnapshot {
+            rows: Box::new(rows),
+            correlation_id,
+            actor: Some(claims.sub.clone()),
+        },
         IMPORT_TIMEOUT,
     )
     .await

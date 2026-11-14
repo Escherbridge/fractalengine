@@ -257,15 +257,25 @@ COMMIT TRANSACTION;";
 
 /// Restore a snapshot verbatim in one transaction, advance the HLC past its clocks, then record `ImportPetal`.
 pub async fn import_petal_snapshot(db: &Db, rows: PetalSnapshotRows) -> Result<(), ImportError> {
-    import_petal_snapshot_correlated(db, rows, None).await
+    import_petal_snapshot_correlated(db, rows, None, None).await
 }
 
-/// [`import_petal_snapshot`] with the caller's correlation id stamped on the quarantined history.
+/// [`import_petal_snapshot`] stamping `actor` (the importer's DID) on the quarantined history.
+pub async fn import_petal_snapshot_as(
+    db: &Db,
+    rows: PetalSnapshotRows,
+    actor: Option<&str>,
+) -> Result<(), ImportError> {
+    import_petal_snapshot_correlated(db, rows, None, actor).await
+}
+
+/// [`import_petal_snapshot`] with the caller's correlation id and actor stamped on the quarantined history.
 #[instrument(skip_all)]
 async fn import_petal_snapshot_correlated(
     db: &Db,
     rows: PetalSnapshotRows,
     correlation_id: Option<&str>,
+    actor: Option<&str>,
 ) -> Result<(), ImportError> {
     let petal_id = rows.petal_id();
     if petal_id.is_empty() {
@@ -286,7 +296,7 @@ async fn import_petal_snapshot_correlated(
     let petal_scope = format!("{fractal_scope}-PETAL#{petal_id}");
     let source_node_id = string_field(&rows.petal, "node_id").unwrap_or_default().to_string();
     let import_id = ulid::Ulid::new().to_string();
-    let provenance = Provenance { import_id: &import_id, correlation_id };
+    let provenance = Provenance { import_id: &import_id, correlation_id, actor };
     let plan = RestorePlan::build(&petal_id, &petal_scope, &provenance, rows)?;
     let clock_maxima = plan.clock_maxima;
 
@@ -328,9 +338,10 @@ pub async fn import_petal_snapshot_reply(
     db: &Db,
     rows: PetalSnapshotRows,
     correlation_id: Option<String>,
+    actor: Option<String>,
 ) -> DbResult {
     let petal_id = rows.petal_id();
-    let outcome = import_petal_snapshot_correlated(db, rows, correlation_id.as_deref()).await;
+    let outcome = import_petal_snapshot_correlated(db, rows, correlation_id.as_deref(), actor.as_deref()).await;
     match outcome {
         Ok(()) => DbResult::PetalSnapshotImported {
             petal_id,
@@ -352,7 +363,12 @@ pub async fn import_petal_snapshot_reply(
 struct Provenance<'a> {
     import_id: &'a str,
     correlation_id: Option<&'a str>,
+    /// Importer DID; provenance only, never an authorization input.
+    actor: Option<&'a str>,
 }
+
+/// Longest actor string stamped on quarantined history.
+const MAXIMUM_ACTOR_LENGTH: usize = 256;
 
 /// The validated restore transaction: script, its bindings and the highest restored clock per family.
 struct RestorePlan {
@@ -587,7 +603,11 @@ impl RestorePlan {
             object.insert("source_id".into(), json!(record));
             object.insert("import_petal_id".into(), json!(petal_id));
             object.insert("import_id".into(), json!(provenance.import_id));
+            // Remove first: a forged archive value must never survive.
             object.remove("imported_by");
+            if let Some(actor) = provenance.actor.filter(|actor| !actor.is_empty() && actor.len() <= MAXIMUM_ACTOR_LENGTH) {
+                object.insert("imported_by".into(), json!(actor));
+            }
             match provenance.correlation_id {
                 Some(correlation_id) => object.insert("correlation_id".into(), json!(correlation_id)),
                 None => object.remove("correlation_id"),
