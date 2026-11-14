@@ -516,6 +516,10 @@ pub(crate) fn group_controls(
         .as_ref()
         .map(|capture| capture.groups.clone())
         .unwrap_or_else(|| crate::visibility::groups::dtos_from_groups(visibility.groups()));
+    let reading = role.can_edit()
+        && state.error.is_none()
+        && !state.is_pending()
+        && state.capture(nav, nodes).is_none();
     for group in &groups {
         let present = captured.as_ref().map_or(0, |capture| {
             capture
@@ -539,6 +543,9 @@ pub(crate) fn group_controls(
             nodes.selection_count()
         ));
         ui.horizontal_wrapped(|ui| {
+            if reading {
+                ui.small("Reading selected objects");
+            }
             for (label, member) in [("Add all selected", true), ("Remove all selected", false)] {
                 if ui
                     .add_enabled(ready, egui::Button::new(label))
