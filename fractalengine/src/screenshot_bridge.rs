@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use bevy::image::Image;
 use bevy::input::ButtonInput;
 use bevy::prelude::{
-    App, Commands, Entity, KeyCode, Local, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
-    With, World,
+    Added, App, Commands, Entity, KeyCode, Local, On, PostUpdate, Query, Res, ResMut, Resource, Time, Update,
+    With, Without, World,
 };
 use bevy::render::view::screenshot::{Capturing, Screenshot, ScreenshotCaptured};
 use bevy::tasks::AsyncComputeTaskPool;
@@ -179,9 +179,11 @@ pub fn capture_pending_screenshots(
     capture_lock: Option<Res<CameraCaptureLock>>,
     nav: Option<Res<NavigationManager>>,
     view: ViewScope,
+    fresh_captures: Query<(), (Added<Screenshot>, Without<Capturing>)>,
     mut commands: Commands,
 ) {
-    if capture_lock.is_some() || pending.0.is_empty() {
+    // One `Screenshot` per frame on the window: an F12 (or posed) capture spawned this frame keeps them held.
+    if capture_lock.is_some() || pending.0.is_empty() || !fresh_captures.is_empty() {
         return;
     }
     // A request held across a lock may have been abandoned meanwhile (the
@@ -611,6 +613,22 @@ mod tests {
         assert_eq!(captures(&mut world), 1, "the deferred F12 fires once");
         schedule.run(&mut world);
         assert_eq!(captures(&mut world), 1, "and only once");
+
+        // Opposite order: F12 already spawned this frame, so the API capture is held, then served.
+        let _late = send(&tx, "api-late", "VERSE#v");
+        frame(&mut world);
+        assert_eq!(captures(&mut world), 1, "no second Screenshot beside the F12 one");
+        assert!(!world.resource::<PendingScreenshots>().is_empty(), "held, not dropped");
+        let spawned: Vec<Entity> = world
+            .query_filtered::<Entity, With<Screenshot>>()
+            .iter(&world)
+            .collect();
+        spawned.into_iter().for_each(|entity| {
+            world.despawn(entity);
+        });
+        capture(&mut world);
+        assert_eq!(captures(&mut world), 1, "served on the next clear frame");
+        assert!(world.resource::<PendingScreenshots>().is_empty());
     }
 
     #[test]

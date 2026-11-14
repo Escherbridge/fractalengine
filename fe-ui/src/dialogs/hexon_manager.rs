@@ -131,7 +131,7 @@ pub fn render_hexon_manager(
                 ui.add_enabled_ui(registry_url.is_some(), |ui| {
                     ui.add(
                         crate::ui_shell::layout_policy::text_input(ui, registry_uri_buf)
-                            .hint_text("package name or name@version")
+                            .hint_text("map ID or ID@version")
                             .desired_width((ui.available_width() - 120.0).max(64.0)),
                     )
                     .named(ui, "Registry map ID and optional version");

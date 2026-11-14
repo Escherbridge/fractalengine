@@ -747,7 +747,7 @@ pub(crate) fn render_volume_report_body(
             ui.label(egui::RichText::new(label).color(theme::TEXT_DIM));
             match reason {
                 VolumeUnavailable::NoMap => {
-                    ui.label("No map on this petal. Assign one in Maps");
+                    ui.label("No map on this petal. Assign one in Maps.");
                     if ui
                         .add(egui::Button::new("Open Maps").min_size(egui::vec2(0.0, 24.0)))
                         .named(ui, format_args!("Open Maps section"))
@@ -759,7 +759,8 @@ pub(crate) fn render_volume_report_body(
                     }
                 }
                 VolumeUnavailable::WrongPetal => {
-                    ui.label("This selection belongs to another petal. Select again here.");
+                    // The terrain side has not bound this petal's map yet; the panel re-requests when it loads.
+                    ui.label("Waiting for this petal's map to load.");
                 }
             }
             return;

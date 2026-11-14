@@ -114,7 +114,7 @@ pub struct RightSidebarState {
     /// Settings-section residency readout, refreshed by `update_residency_readout`.
     pub residency: ResidencyReadout,
     pub(crate) width: super::layout_policy::PanelWidthState,
-    /// Session-only "Cut/fill colors" checkbox; mirrored to the fe-renderer toggle by `sync_heatmap_overlay_toggle`.
+    /// Session-only "Cut/fill colors" checkbox; mirrored to the fe-renderer toggle by `update_residency_readout`.
     pub heatmap_overlay: fe_renderer::terrain_overlay::HeatmapOverlayToggle,
 }
 
@@ -927,7 +927,7 @@ fn render_settings_section(
             .checkbox(&mut offline, "Offline tiles (no network)")
             .observed(ui)
             .on_hover_text(
-                "Serve terrain only from installed hexons; off = each petal's own tile source mode",
+                "Serve terrain only from installed maps; off = each petal's own tile source mode",
             )
             .changed()
         {
@@ -1215,7 +1215,7 @@ fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
         ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut buffer).desired_width(220.0))
             .labelled(ui, label)
             .on_hover_text(
-                "Hosted map registry base URL, e.g. https://hexons.example.com \
+                "Hosted map registry base URL, e.g. https://maps.example.com \
                  (FE_HEXON_REGISTRY_URL overrides); blank = no registry configured",
             );
     });
