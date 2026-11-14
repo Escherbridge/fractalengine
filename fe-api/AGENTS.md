@@ -964,7 +964,7 @@ in-memory; no temp files) or local CSV serialization.
   and accept `as_of_ms`, a post-filter on `recorded_at_ms` (`export::prepare_export`; refused for node exports). A pinned
   cutoff keeps the page identical across reads, so its strong ETag stays stable for DuckDB range reads. A readings
   snapshot does not pin anchor positions: the cutoff filters only on `recorded_at_ms` (`export.rs:155-156`).
-  TODO: confirm how share links carry the cutoff (`fe-api/src/share.rs` stores the exact SQL, `share.rs:29`).
+  Share links do not carry the cutoff: `SharePayload` stores only the SQL (`share.rs:29`) and redemption calls `prepare_export` (`share.rs:308`), which passes `None`, so a shared readings export is uncut.
 - **Validators + caching (DEC-C18, M4 fix M1, 2026-10-09).** A22's
   "immutable cache" expectation is amended: export/share bodies are LIVE
   query output, so they carry `Cache-Control: private, no-store` (json share

@@ -618,9 +618,10 @@ opt in (`undo.rs:560`, `undo.rs:875`, `stamp_selection.rs:593`). Other callers k
 
 Retry and discard (`node.rs:612-619`): `retry_dead_letter` re-gates the stored command through
 `retry_dead_letter_in` (`node.rs:659`), re-enters the queue with a fresh retry budget and keeps its
-correlation id; `discard_dead_letter` drops it for good. A retried dead letter has no owner. The plan
-default (section 9, item 36) is that the `verse_manager` arms apply it and undo history does not
-record it. TODO: verify that against `fe-ui/src/undo.rs` and the `verse_manager` arms.
+correlation id; `discard_dead_letter` drops it for good. A retried dead letter has no owner: the dead
+letter already fired `RequestFailed` on its id, which `undo.rs` (`DbResult::RequestFailed` arm, `p.request_id ==
+*correlation_id`) reconciled and cleared, so the retry's later receipt matches no `undo.pending` and records no history.
+The unsaved-edits panel only toasts the retry (`panels/unsaved_edits.rs:116`).
 
 Petal hint for follow-up writes: `submit_scene_write_in` (`node.rs:540`) and
 `submit_scene_write_in_through` (`node.rs:545`) authorize against the petal the caller names. Writes
