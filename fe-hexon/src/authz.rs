@@ -7,8 +7,9 @@ use fe_policy::{
     RoleLevelPolicy, Scope,
 };
 
-use crate::manifest::{HexonKind, HexonManifest, InstalledCrate};
+use crate::manifest::{HexonManifest, HexonType, InstalledHexon};
 use crate::package::HexonPackageData;
+pub use crate::registry::PUBLISHED_BINDING;
 use crate::registry::{HexonRegistry, RegistryError};
 
 /// Registry policy: public discovery reads; Editor+ install/uninstall; Manager+ publish.
@@ -29,9 +30,6 @@ pub fn authorize(subject: &AuthContext, action: &Action, scope: &str) -> Result<
     }
 }
 
-/// The petal binding that marks a crate's published (registry-level) record.
-pub const PUBLISHED_BINDING: &str = "global";
-
 /// Owner-only gate: `subject` must be `owner_did` (see src/AGENTS.md §authz).
 fn require_owner(
     owner_did: &str,
@@ -48,42 +46,74 @@ fn require_owner(
     }
 }
 
+/// Hexon-id collision rule: a hexon_id published by one DID is closed to every other signer.
+fn require_hexon_id_publisher(
+    registry: &HexonRegistry,
+    manifest: &HexonManifest,
+    action: &Action,
+) -> Result<(), RegistryError> {
+    let Some(existing) = registry.published_by_another(&manifest.hexon_id, &manifest.publisher_did)
+    else {
+        return Ok(());
+    };
+    let signer = AuthContext::Did {
+        did: manifest.publisher_did.clone(),
+        role: fe_policy::RoleLevel::None,
+    };
+    require_owner(
+        &existing.manifest.publisher_did,
+        &signer,
+        action,
+        &format!("hexon:{}", manifest.hexon_id),
+    )
+}
+
+/// Petal installs never write the publish-scope binding; only `publish_as` does.
+fn refuse_published_binding(petal_id: &str) -> Result<(), RegistryError> {
+    if petal_id == PUBLISHED_BINDING {
+        return Err(RegistryError::PermissionDenied(format!(
+            "the {PUBLISHED_BINDING} binding is written only by publish"
+        )));
+    }
+    Ok(())
+}
+
 impl HexonRegistry {
     /// Policy-gated publish: Manager+ (RoleLevelPolicy), then only the signed
-    /// publisher DID that first published a `crate_id` may republish it.
+    /// publisher DID that first published a `hexon_id` may republish it.
     pub fn publish_as(
         &mut self,
         subject: &AuthContext,
         package: HexonPackageData,
-    ) -> Result<InstalledCrate, RegistryError> {
+    ) -> Result<InstalledHexon, RegistryError> {
         authorize(subject, &Action::Publish, PUBLISHED_BINDING)?;
-        let publisher = AuthContext::Did {
-            did: package.manifest.publisher_did.clone(),
-            role: fe_policy::RoleLevel::None,
-        };
-        if let Some(existing) = self.list_installed(None).into_iter().find(|installed| {
-            installed.manifest.crate_id == package.manifest.crate_id
-                && installed.manifest.publisher_did != package.manifest.publisher_did
-        }) {
-            require_owner(
-                &existing.manifest.publisher_did,
-                &publisher,
-                &Action::Publish,
-                &format!("crate:{}", package.manifest.crate_id),
-            )?;
-        }
+        require_hexon_id_publisher(self, &package.manifest, &Action::Publish)?;
         self.install(package, PUBLISHED_BINDING)
     }
 
-    /// Policy-gated install: requires Editor+ at the petal scope.
+    /// Policy-gated install: Editor+ at the petal scope; a hexon_id published by another signer is refused.
     pub fn install_as(
         &mut self,
         subject: &AuthContext,
         package: HexonPackageData,
         petal_id: &str,
-    ) -> Result<InstalledCrate, RegistryError> {
+    ) -> Result<InstalledHexon, RegistryError> {
         authorize(subject, &Action::Install, petal_id)?;
+        refuse_published_binding(petal_id)?;
+        require_hexon_id_publisher(self, &package.manifest, &Action::Install)?;
         self.install(package, petal_id)
+    }
+
+    /// Policy-gated install of a published build into a petal: Editor+ at the petal scope, like `install_as`.
+    pub fn install_published_as(
+        &mut self,
+        subject: &AuthContext,
+        hexon_uri: &str,
+        petal_id: &str,
+    ) -> Result<InstalledHexon, RegistryError> {
+        authorize(subject, &Action::Install, petal_id)?;
+        refuse_published_binding(petal_id)?;
+        self.install_published(hexon_uri, petal_id)
     }
 
     /// Policy-gated uninstall: requires Editor+ at the petal scope.
@@ -94,13 +124,10 @@ impl HexonRegistry {
         petal_id: &str,
     ) -> Result<(), RegistryError> {
         authorize(subject, &Action::Write, petal_id)?;
-        let Some(installed) = self
-            .get_installed(hexon_uri)
-            .filter(|installed| installed.petal_id == petal_id)
-        else {
+        let Some(installed) = self.get_in_petal(hexon_uri, petal_id) else {
             return Err(RegistryError::NotFound(hexon_uri.to_string()));
         };
-        if installed.petal_id == PUBLISHED_BINDING {
+        if petal_id == PUBLISHED_BINDING {
             require_owner(
                 &installed.manifest.publisher_did,
                 subject,
@@ -116,7 +143,7 @@ impl HexonRegistry {
         &self,
         subject: &AuthContext,
         petal_id: Option<&str>,
-    ) -> Result<Vec<InstalledCrate>, RegistryError> {
+    ) -> Result<Vec<InstalledHexon>, RegistryError> {
         authorize(subject, &Action::Read, petal_id.unwrap_or("*"))?;
         Ok(self.list_installed(petal_id))
     }
@@ -127,7 +154,7 @@ impl HexonRegistry {
         subject: &AuthContext,
         query: &str,
         tags: &[&str],
-        kind: Option<HexonKind>,
+        kind: Option<HexonType>,
     ) -> Result<Vec<HexonManifest>, RegistryError> {
         self.search_local_in_petal_as(subject, None, query, tags, kind)
     }
@@ -139,24 +166,21 @@ impl HexonRegistry {
         petal_id: Option<&str>,
         query: &str,
         tags: &[&str],
-        kind: Option<HexonKind>,
+        kind: Option<HexonType>,
     ) -> Result<Vec<HexonManifest>, RegistryError> {
         authorize(subject, &Action::Read, petal_id.unwrap_or("*"))?;
         Ok(self.search_local_in_petal(petal_id, query, tags, kind))
     }
 
-    /// Policy-gated crate lookup constrained to a petal binding.
+    /// Policy-gated lookup of the `(hexon_uri, petal_id)` install record.
     pub fn get_installed_as(
         &self,
         subject: &AuthContext,
         hexon_uri: &str,
         petal_id: &str,
-    ) -> Result<Option<InstalledCrate>, RegistryError> {
+    ) -> Result<Option<InstalledHexon>, RegistryError> {
         authorize(subject, &Action::Read, petal_id)?;
-        Ok(self
-            .get_installed(hexon_uri)
-            .filter(|installed| installed.petal_id == petal_id)
-            .cloned())
+        Ok(self.get_in_petal(hexon_uri, petal_id).cloned())
     }
 }
 
@@ -181,33 +205,30 @@ mod tests {
         signed_package(&SigningKey::generate(&mut OsRng), "1.0.0")
     }
 
-    /// A signed package of the fixed `authz-model-v1` crate at `version`.
+    /// A signed package of the fixed `authz-model-v1` hexon at `version`.
     fn signed_package(keypair: &SigningKey, version: &str) -> HexonPackageData {
-        let pub_key = keypair.verifying_key();
-        let publisher_did = {
-            use multibase::Base;
-            let mut bytes = vec![0xed, 0x01];
-            bytes.extend_from_slice(&pub_key.to_bytes());
-            format!("did:key:{}", multibase::encode(Base::Base58Btc, &bytes))
-        };
         let manifest = HexonManifest {
-            schema_version: 1,
-            crate_id: "authz-model-v1".to_string(),
-            publisher_did,
-            publisher_name: "Authz Publisher".to_string(),
+            schema_version: "1.0.0".to_string(),
+            hexon_id: "authz-model-v1".to_string(),
+            hexon_type: HexonType::Model,
+            publisher_did: fe_format::verifying_key_to_did(&keypair.verifying_key()),
+            publisher_name: Some("Authz Publisher".to_string()),
             version: version.to_string(),
-            build_id: "build-authz".to_string(),
+            build_id: Some("build-authz".to_string()),
             name: "Authz Model".to_string(),
-            description: "Policy gate test crate".to_string(),
+            description: Some("Policy gate test hexon".to_string()),
             tags: vec!["test".to_string()],
-            hexon_type: HexonKind::Model,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
-            approx_size_bytes: 1024,
-            min_engine_version: "0.1.0".to_string(),
+            source_peer_did: None,
+            approx_size_bytes: Some(1024),
+            min_engine_version: Some("0.1.0".to_string()),
             homepage_url: None,
             dependencies: vec![],
-            signature: String::new(),
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: None,
         };
         let entries = vec![AssetEntry {
             entry_id: "model_001".to_string(),
@@ -216,20 +237,20 @@ mod tests {
             format: "gltf".to_string(),
             label: "Authz Model".to_string(),
             tags: vec![],
-            description: "test".to_string(),
+            description: Some("test".to_string()),
             is_placeable: true,
             is_private: false,
+            auto_scale: false,
             preview_image: None,
-            metadata: None,
+            center: None,
+            extents: None,
             sub_assets: None,
+            address: None,
+            metadata: None,
         }];
         let license = License {
             license_type: LicenseType::Free,
-            attribution: None,
-            payment_provider: None,
-            payment_verification_url: None,
-            free_entries: vec![],
-            encrypted_key: None,
+            ..License::default()
         };
         let mut assets = HashMap::new();
         assets.insert(
@@ -239,7 +260,7 @@ mod tests {
         let zip_bytes = HexonPackage::build(
             manifest,
             entries,
-            license,
+            Some(license),
             assets,
             None,
             HashMap::new(),
@@ -265,6 +286,11 @@ mod tests {
             .install_as(&did(RoleLevel::Editor), package, "petal-1")
             .expect("editor install must pass");
         assert_eq!(installed.hexon_uri, uri);
+
+        // A petal install never writes the publish-scope record, whatever the role.
+        let into_published = registry.install_as(&did(RoleLevel::Owner), test_package(), PUBLISHED_BINDING);
+        assert!(matches!(into_published, Err(RegistryError::PermissionDenied(_))));
+        assert!(registry.list_installed(Some(PUBLISHED_BINDING)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -392,7 +418,7 @@ mod tests {
             .publish_as(&did(RoleLevel::Owner), a_v1)
             .expect("first publish by A");
 
-        // Same crate_id signed by B: denied whether same or new version.
+        // Same hexon_id signed by B: denied whether same or new version.
         for version in ["1.0.0", "1.1.0"] {
             let result =
                 registry.publish_as(&did(RoleLevel::Owner), signed_package(&key_b, version));
@@ -405,7 +431,32 @@ mod tests {
         assert_eq!(held.len(), 1, "only A's record remains");
         assert_eq!(held[0].manifest.publisher_did, a_did);
 
-        // A publishing v2 of its own crate is allowed.
+        // B's build of A's hexon_id cannot be installed into a petal either.
+        let squat = registry.install_as(&did(RoleLevel::Editor), signed_package(&key_b, "1.0.0"), "petal-1");
+        assert!(matches!(squat, Err(RegistryError::PermissionDenied(_))), "got {squat:?}");
+        assert!(registry.list_installed(Some("petal-1")).is_empty());
+
+        // Installing A's published build into a petal: Editor+ like install_as, deny-by-default.
+        let a_uri = "authz-model-v1@1.0.0".to_string();
+        for denied_subject in [did(RoleLevel::Viewer), AuthContext::Anonymous] {
+            let denied = registry.install_published_as(&denied_subject, &a_uri, "petal-1");
+            assert!(matches!(denied, Err(RegistryError::PermissionDenied(_))), "got {denied:?}");
+        }
+        assert!(registry.list_installed(Some("petal-1")).is_empty(), "nothing installed on deny");
+        let copied = registry
+            .install_published_as(&did(RoleLevel::Editor), &a_uri, "petal-1")
+            .expect("editor installs the published build");
+        assert_eq!(copied.manifest.publisher_did, a_did);
+        assert!(registry
+            .get_installed_as(&did(RoleLevel::Viewer), &a_uri, "petal-1")
+            .expect("read policy")
+            .is_some());
+        assert!(matches!(
+            registry.install_published_as(&did(RoleLevel::Owner), &a_uri, PUBLISHED_BINDING),
+            Err(RegistryError::PermissionDenied(_))
+        ));
+
+        // A publishing v2 of its own hexon is allowed.
         registry
             .publish_as(&did(RoleLevel::Owner), signed_package(&key_a, "2.0.0"))
             .expect("owner republish allowed");

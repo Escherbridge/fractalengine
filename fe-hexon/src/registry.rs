@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use fe_format::split_hexon_uri;
 use fe_runtime::messages::DbCommand;
 use tracing::{info, warn};
 
-use crate::manifest::{HexonKind, HexonManifest, InstalledCrate};
+use crate::manifest::{AssetEntry, EntryKind, HexonManifest, HexonType, InstalledHexon};
 use crate::package::{hexon_uri, HexonPackageData};
 use crate::signature;
 
@@ -138,13 +139,15 @@ impl FsBlobStore {
     }
 }
 
-/// Local hexon crate registry.
+/// The petal binding that marks a hexon's published (registry-level) record.
+pub const PUBLISHED_BINDING: &str = "global";
+
+/// Local hexon registry: one install record per `(petal_id, hexon_uri)`, blobs shared by content address.
 ///
-/// Tracks installed crates per petal and manages asset blob storage.
-/// Can be used as a Bevy Resource.
+/// Can be used as a Bevy Resource; see `src/AGENTS.md` §authz for the petal-keyed install model.
 pub struct HexonRegistry {
-    /// Installed crates keyed by hexon URI.
-    installed: HashMap<String, InstalledCrate>,
+    /// Install records keyed by petal id, then `{hexon_id}@{version}`.
+    installed: BTreeMap<String, BTreeMap<String, InstalledHexon>>,
     /// Content-addressed blob storage.
     blob_store: FsBlobStore,
     /// DB command sender for persisting registry state.
@@ -155,7 +158,7 @@ impl HexonRegistry {
     /// Create a new registry with the given blob store directory.
     pub fn new(blob_store_dir: PathBuf) -> Self {
         Self {
-            installed: HashMap::new(),
+            installed: BTreeMap::new(),
             blob_store: FsBlobStore::new(blob_store_dir),
             db_tx: None,
         }
@@ -171,38 +174,23 @@ impl HexonRegistry {
     // Install / Uninstall
     // -----------------------------------------------------------------------
 
-    /// Install a hexon crate into a petal.
-    ///
-    /// Workflow:
-    /// 1. Verify manifest signature
-    /// 2. Extract manifest + entries
-    /// 3. Copy asset blobs to FsBlobStore (skip if hash exists)
-    /// 4. Write registry entries to DB (via DbCommand)
-    /// 5. For terrain crates: auto-configure petal TerrainConfig
-    /// 6. For model crates: register assets in petal
+    /// Install a verified package into `petal_id`: check every blob, store them, persist, run the type handler.
     pub fn install(
         &mut self,
         package: HexonPackageData,
         petal_id: &str,
-    ) -> Result<InstalledCrate, RegistryError> {
-        // Step 1: Trust signature_verified from open() (verified against raw ZIP bytes).
-        // Re-verification here would fail because re-serialization differs from raw bytes.
+    ) -> Result<InstalledHexon, RegistryError> {
+        let uri = hexon_uri(&package.manifest);
+        // `signature_verified` was established by open() over the stored bytes; re-serializing would differ.
         if !package.signature_verified {
-            let uri = hexon_uri(&package.manifest);
             return Err(RegistryError::SignatureVerificationFailed(uri));
         }
-
-        let uri = hexon_uri(&package.manifest);
-
-        // Check if already installed for this petal
-        if let Some(existing) = self.installed.get(&uri) {
-            if existing.petal_id == petal_id {
-                return Err(RegistryError::AlreadyInstalled(uri));
-            }
+        if self.get_in_petal(&uri, petal_id).is_some() {
+            return Err(RegistryError::AlreadyInstalled(uri));
         }
 
-        // Step 2: every catalogued blob must be present and hash to its
-        // asset_hash before ANY is stored (D-76 (3); see src/AGENTS.md §blob-store).
+        // Every catalogued blob must be present and hash to its asset_hash before ANY is stored
+        // (D-76 (3); see src/AGENTS.md §blob-store).
         for entry in &package.entries {
             let Some(data) = package.assets.get(&entry.asset_hash) else {
                 return Err(RegistryError::MissingAssetBlob(entry.asset_hash.clone()));
@@ -216,13 +204,11 @@ impl HexonRegistry {
             }
         }
 
-        // Step 3: Copy asset blobs to blob store
         for entry in &package.entries {
             let data = &package.assets[&entry.asset_hash];
-            let stored = self.blob_store.store(&entry.asset_hash, data)?;
-            if stored {
+            if self.blob_store.store(&entry.asset_hash, data)? {
                 info!(
-                    "Stored new asset blob {} for entry {} in crate {}",
+                    "Stored new asset blob {} for entry {} in hexon {}",
                     entry.asset_hash, entry.entry_id, uri
                 );
             } else {
@@ -233,146 +219,208 @@ impl HexonRegistry {
             }
         }
 
-        // Step 4: Write registry entries to DB
         if let Some(tx) = &self.db_tx {
-            self.persist_install_to_db(&package, petal_id, tx)?;
+            persist_install_to_db(&package.manifest, &package.entries, petal_id, tx);
         }
 
-        // Build the InstalledCrate record
-        let installed = InstalledCrate {
+        let installed = InstalledHexon {
             hexon_uri: uri.clone(),
             manifest: package.manifest.clone(),
             entries: package.entries.clone(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             petal_id: petal_id.to_string(),
             signature_valid: true,
+            license: package.license.clone(),
         };
 
-        // Step 5 & 6: Type-specific post-install actions via handlers
+        // Type-specific post-install actions (terrain, model, ...) via handlers.
         match crate::handlers::handle_install(&package, petal_id, &self.blob_store) {
-            Ok(result) => {
-                info!("{}", result.summary);
-            }
-            Err(e) => {
-                warn!("Handler post-install failed for {}: {}", uri, e);
-            }
+            Ok(result) => info!("{}", result.summary),
+            Err(error) => warn!("Handler post-install failed for {}: {}", uri, error),
         }
 
-        self.installed.insert(uri, installed.clone());
+        self.insert_record(installed.clone());
         Ok(installed)
     }
 
-    /// Uninstall a hexon crate from a petal.
-    ///
-    /// Removes registry entries. Asset blobs remain if referenced elsewhere
-    /// (shared content addressing).
-    pub fn uninstall(&mut self, hexon_uri: &str, _petal_id: &str) -> Result<(), RegistryError> {
-        let crate_data = self
-            .installed
-            .remove(hexon_uri)
+    /// Associate an already-published hexon with `petal_id`; its blobs are reused, never re-stored.
+    pub fn install_published(
+        &mut self,
+        hexon_uri: &str,
+        petal_id: &str,
+    ) -> Result<InstalledHexon, RegistryError> {
+        if petal_id == PUBLISHED_BINDING {
+            return Err(RegistryError::PermissionDenied(format!(
+                "the {PUBLISHED_BINDING} binding is written only by publish"
+            )));
+        }
+        let (hexon_id, version) = split_hexon_uri(hexon_uri);
+        if hexon_id.is_empty() || version.is_none_or(str::is_empty) {
+            return Err(RegistryError::NotFound(hexon_uri.to_string()));
+        }
+        let published = self
+            .get_published(hexon_uri)
             .ok_or_else(|| RegistryError::NotFound(hexon_uri.to_string()))?;
-
-        // Remove from DB
-        if let Some(tx) = &self.db_tx {
-            let cmd = DbCommand::UninstallCrate {
-                hexon_uri: hexon_uri.to_string(),
-            };
-            if tx.send(cmd).is_err() {
-                warn!("Failed to send UninstallCrate command to DB thread");
+        if self.get_in_petal(hexon_uri, petal_id).is_some() {
+            return Err(RegistryError::AlreadyInstalled(hexon_uri.to_string()));
+        }
+        // The publish install stored every blob; refuse if one has since gone missing.
+        for entry in &published.entries {
+            let sub_asset_hashes = entry.sub_assets.iter().flat_map(|sub_assets| sub_assets.values());
+            for hash in std::iter::once(&entry.asset_hash).chain(sub_asset_hashes) {
+                if !self.blob_store.has(hash) {
+                    return Err(RegistryError::MissingAssetBlob(hash.clone()));
+                }
             }
         }
 
-        // Note: we do NOT remove asset blobs from the blob store because other
-        // crates may reference the same hashes (shared content addressing).
-        info!(
-            "Uninstalled crate {} from petal {}",
-            hexon_uri, crate_data.petal_id
-        );
+        let installed = InstalledHexon {
+            installed_at: chrono::Utc::now().to_rfc3339(),
+            petal_id: petal_id.to_string(),
+            ..published.clone()
+        };
+        if let Some(tx) = &self.db_tx {
+            persist_install_to_db(&installed.manifest, &installed.entries, petal_id, tx);
+        }
+        info!("Installed published hexon {} into petal {}", hexon_uri, petal_id);
+        self.insert_record(installed.clone());
+        Ok(installed)
+    }
+
+    /// Remove the `(hexon_uri, petal_id)` record; blobs stay (shared content addressing).
+    pub fn uninstall(&mut self, hexon_uri: &str, petal_id: &str) -> Result<(), RegistryError> {
+        let removed = self
+            .installed
+            .get_mut(petal_id)
+            .and_then(|petal_records| petal_records.remove(hexon_uri));
+        if removed.is_none() {
+            return Err(RegistryError::NotFound(hexon_uri.to_string()));
+        }
+        if self.installed.get(petal_id).is_some_and(BTreeMap::is_empty) {
+            self.installed.remove(petal_id);
+        }
+
+        if let Some(tx) = &self.db_tx {
+            // UninstallCrate carries no petal id yet and would drop every petal's rows, so it is
+            // sent only once no petal still holds this build (src/AGENTS.md §authz).
+            let held_elsewhere = self
+                .installed
+                .values()
+                .any(|petal_records| petal_records.contains_key(hexon_uri));
+            if held_elsewhere {
+                warn!(
+                    "Uninstalled {} from petal {} in memory only; its DB rows stay while another petal holds it",
+                    hexon_uri, petal_id
+                );
+            } else {
+                let cmd = DbCommand::UninstallCrate {
+                    hexon_uri: hexon_uri.to_string(),
+                };
+                if tx.send(cmd).is_err() {
+                    warn!("Failed to send UninstallCrate command to DB thread");
+                }
+            }
+        }
+
+        info!("Uninstalled hexon {} from petal {}", hexon_uri, petal_id);
         Ok(())
+    }
+
+    /// Insert or replace one install record under its own `(petal_id, hexon_uri)` key.
+    fn insert_record(&mut self, installed: InstalledHexon) {
+        self.installed
+            .entry(installed.petal_id.clone())
+            .or_default()
+            .insert(installed.hexon_uri.clone(), installed);
     }
 
     // -----------------------------------------------------------------------
     // Queries
     // -----------------------------------------------------------------------
 
-    /// List all installed crates, optionally filtered by petal.
-    pub fn list_installed(&self, petal_id: Option<&str>) -> Vec<InstalledCrate> {
-        self.installed
-            .values()
-            .filter(|c| match petal_id {
-                Some(pid) => c.petal_id == pid,
-                None => true,
-            })
-            .cloned()
-            .collect()
+    /// Every install record, optionally only those of one petal.
+    pub fn list_installed(&self, petal_id: Option<&str>) -> Vec<InstalledHexon> {
+        self.records(petal_id).cloned().collect()
     }
 
-    /// Search local installed crates by query string, tags, and kind.
+    /// Search installed hexons by query, tags and type across every petal (one hit per build).
     pub fn search_local(
         &self,
         query: &str,
         tags: &[&str],
-        kind: Option<HexonKind>,
+        kind: Option<HexonType>,
     ) -> Vec<HexonManifest> {
         self.search_local_in_petal(None, query, tags, kind)
     }
 
-    /// Search local crates, optionally constrained to a petal binding.
+    /// Search installed hexons, optionally in one petal; the query matches name, description and hexon_id.
     pub fn search_local_in_petal(
         &self,
         petal_id: Option<&str>,
         query: &str,
         tags: &[&str],
-        kind: Option<HexonKind>,
+        kind: Option<HexonType>,
     ) -> Vec<HexonManifest> {
         let query_lower = query.to_lowercase();
+        let tags_lower: Vec<String> = tags.iter().map(|tag| tag.to_lowercase()).collect();
+        let mut seen_uris = BTreeSet::new();
 
-        self.installed
-            .values()
-            .filter(|c| {
-                if petal_id.is_some_and(|pid| c.petal_id != pid) {
+        self.records(petal_id)
+            .filter(|record| {
+                let manifest = &record.manifest;
+                if kind.as_ref().is_some_and(|kind| manifest.hexon_type != *kind) {
                     return false;
                 }
-                // Match on kind
-                if let Some(k) = kind {
-                    if c.manifest.hexon_type != k {
-                        return false;
-                    }
-                }
-
-                // Match on query (name, description, crate_id)
-                if !query.is_empty() {
-                    let matches = c.manifest.name.to_lowercase().contains(&query_lower)
-                        || c.manifest.description.to_lowercase().contains(&query_lower)
-                        || c.manifest.crate_id.to_lowercase().contains(&query_lower);
+                if !query_lower.is_empty() {
+                    let matches = manifest.name.to_lowercase().contains(&query_lower)
+                        || manifest
+                            .description
+                            .as_deref()
+                            .is_some_and(|text| text.to_lowercase().contains(&query_lower))
+                        || manifest.hexon_id.to_lowercase().contains(&query_lower);
                     if !matches {
                         return false;
                     }
                 }
-
-                // Match on tags
-                if !tags.is_empty() {
-                    let manifest_tags_lower: Vec<String> =
-                        c.manifest.tags.iter().map(|t| t.to_lowercase()).collect();
-                    let has_all_tags = tags.iter().all(|t| {
-                        manifest_tags_lower
-                            .iter()
-                            .any(|mt| mt.contains(&t.to_lowercase()))
-                    });
+                if !tags_lower.is_empty() {
+                    let manifest_tags: Vec<String> =
+                        manifest.tags.iter().map(|tag| tag.to_lowercase()).collect();
+                    let has_all_tags = tags_lower
+                        .iter()
+                        .all(|tag| manifest_tags.iter().any(|held| held.contains(tag.as_str())));
                     if !has_all_tags {
                         return false;
                     }
                 }
-
                 true
             })
-            .map(|c| c.manifest.clone())
+            .filter_map(|record| {
+                seen_uris
+                    .insert(record.hexon_uri.as_str())
+                    .then(|| record.manifest.clone())
+            })
             .collect()
     }
 
-    /// Get a specific installed crate by URI.
-    pub fn get_installed(&self, hexon_uri: &str) -> Option<&InstalledCrate> {
-        self.installed.get(hexon_uri)
+    /// The install record of `hexon_uri` in `petal_id`, if that petal holds it.
+    pub fn get_in_petal(&self, hexon_uri: &str, petal_id: &str) -> Option<&InstalledHexon> {
+        self.installed.get(petal_id)?.get(hexon_uri)
+    }
+
+    /// The published (registry-level) record of `hexon_uri`.
+    pub fn get_published(&self, hexon_uri: &str) -> Option<&InstalledHexon> {
+        self.get_in_petal(hexon_uri, PUBLISHED_BINDING)
+    }
+
+    /// A published record of `hexon_id` (any version) signed by someone other than `publisher_did`.
+    pub fn published_by_another(
+        &self,
+        hexon_id: &str,
+        publisher_did: &str,
+    ) -> Option<&InstalledHexon> {
+        self.installed.get(PUBLISHED_BINDING)?.values().find(|record| {
+            record.manifest.hexon_id == hexon_id && record.manifest.publisher_did != publisher_did
+        })
     }
 
     /// Get the blob path for an asset hash.
@@ -385,61 +433,69 @@ impl HexonRegistry {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // DB Persistence
-    // -----------------------------------------------------------------------
+    /// Records of one petal, or of every petal when `petal_id` is `None`.
+    fn records<'a>(
+        &'a self,
+        petal_id: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a InstalledHexon> + 'a {
+        self.installed
+            .iter()
+            .filter(move |(petal, _)| petal_id.is_none_or(|wanted| petal.as_str() == wanted))
+            .flat_map(|(_, petal_records)| petal_records.values())
+    }
+}
 
-    /// Persist an install to the database via DbCommand.
-    fn persist_install_to_db(
-        &self,
-        package: &HexonPackageData,
-        petal_id: &str,
-        tx: &crossbeam::channel::Sender<DbCommand>,
-    ) -> Result<(), RegistryError> {
-        let manifest = &package.manifest;
+/// Send the `InstallCrate` row and one `InstallCrateEntry` row per entry; a failed send warns.
+fn persist_install_to_db(
+    manifest: &HexonManifest,
+    entries: &[AssetEntry],
+    petal_id: &str,
+    tx: &crossbeam::channel::Sender<DbCommand>,
+) {
+    let uri = hexon_uri(manifest);
+    let cmd = DbCommand::InstallCrate {
+        hexon_uri: uri.clone(),
+        manifest_hash: signature::manifest_hash(&serde_json::to_vec(manifest).unwrap_or_default()),
+        publisher_did: manifest.publisher_did.clone(),
+        hexon_type: manifest.hexon_type.to_string(),
+        version: manifest.version.clone(),
+        name: manifest.name.clone(),
+        tags: manifest.tags.clone(),
+        petal_id: petal_id.to_string(),
+        size_bytes: manifest.approx_size_bytes.unwrap_or(0),
+    };
+    if tx.send(cmd).is_err() {
+        warn!("Failed to send InstallCrate command to DB thread");
+    }
 
-        // Insert crate_registry row
-        let cmd = DbCommand::InstallCrate {
-            hexon_uri: hexon_uri(manifest),
-            manifest_hash: signature::manifest_hash(
-                &serde_json::to_vec(manifest).unwrap_or_default(),
-            ),
-            publisher_did: manifest.publisher_did.clone(),
-            hexon_type: manifest.hexon_type.to_string(),
-            version: manifest.version.clone(),
-            name: manifest.name.clone(),
-            tags: manifest.tags.clone(),
-            petal_id: petal_id.to_string(),
-            size_bytes: manifest.approx_size_bytes,
+    for entry in entries {
+        let cmd = DbCommand::InstallCrateEntry {
+            entry_id: entry.entry_id.clone(),
+            hexon_uri: uri.clone(),
+            kind: entry_kind_name(&entry.kind),
+            asset_hash: entry.asset_hash.clone(),
+            format: entry.format.clone(),
+            label: entry.label.clone(),
+            metadata: entry.metadata.clone().unwrap_or_default(),
         };
         if tx.send(cmd).is_err() {
-            warn!("Failed to send InstallCrate command to DB thread");
+            warn!("Failed to send InstallCrateEntry command to DB thread");
         }
+    }
+}
 
-        // Insert crate_entry rows
-        for entry in &package.entries {
-            let cmd = DbCommand::InstallCrateEntry {
-                entry_id: entry.entry_id.clone(),
-                hexon_uri: hexon_uri(manifest),
-                kind: entry.kind.to_string(),
-                asset_hash: entry.asset_hash.clone(),
-                format: entry.format.clone(),
-                label: entry.label.clone(),
-                metadata: entry.metadata.clone().unwrap_or_default(),
-            };
-            if tx.send(cmd).is_err() {
-                warn!("Failed to send InstallCrateEntry command to DB thread");
-            }
-        }
-
-        Ok(())
+/// The snake_case wire name of an entry kind (fe-format's serde spelling).
+fn entry_kind_name(kind: &EntryKind) -> String {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => "unknown".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{AssetEntry, EntryKind, HexonKind, HexonManifest, License, LicenseType};
+    use crate::manifest::{License, LicenseType};
     use crate::package::{hexon_uri, HexonPackage};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
@@ -469,32 +525,28 @@ mod tests {
     }
 
     fn test_manifest(keypair: &SigningKey) -> HexonManifest {
-        let pub_key = keypair.verifying_key();
-        let did = {
-            use multibase::Base;
-            let mut bytes = vec![0xed, 0x01];
-            bytes.extend_from_slice(&pub_key.to_bytes());
-            format!("did:key:{}", multibase::encode(Base::Base58Btc, &bytes))
-        };
-
         HexonManifest {
-            schema_version: 1,
-            crate_id: "test-model-v1".to_string(),
-            publisher_did: did,
-            publisher_name: "Test Publisher".to_string(),
+            schema_version: "1.0.0".to_string(),
+            hexon_id: "test-model-v1".to_string(),
+            hexon_type: HexonType::Model,
+            publisher_did: fe_format::verifying_key_to_did(&keypair.verifying_key()),
+            publisher_name: Some("Test Publisher".to_string()),
             version: "1.0.0".to_string(),
-            build_id: "build-001".to_string(),
+            build_id: Some("build-001".to_string()),
             name: "Test Model".to_string(),
-            description: "A test model crate for FractalEngine".to_string(),
+            description: Some("A test model hexon for FractalEngine".to_string()),
             tags: vec!["test".to_string(), "model".to_string()],
-            hexon_type: HexonKind::Model,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
-            approx_size_bytes: 2048,
-            min_engine_version: "0.1.0".to_string(),
+            source_peer_did: None,
+            approx_size_bytes: Some(2048),
+            min_engine_version: Some("0.1.0".to_string()),
             homepage_url: None,
             dependencies: vec![],
-            signature: String::new(),
+            platforms: vec![],
+            address: None,
+            integrity: None,
+            signature: None,
         }
     }
 
@@ -509,29 +561,29 @@ mod tests {
             format: "gltf".to_string(),
             label: "Test Model".to_string(),
             tags: vec!["test".to_string()],
-            description: "A test model".to_string(),
+            description: Some("A test model".to_string()),
             is_placeable: true,
             is_private: false,
+            auto_scale: false,
             preview_image: None,
-            metadata: None,
+            center: None,
+            extents: None,
             sub_assets: None,
+            address: None,
+            metadata: None,
         }];
         let license = License {
             license_type: LicenseType::Free,
-            attribution: None,
-            payment_provider: None,
-            payment_verification_url: None,
-            free_entries: vec![],
-            encrypted_key: None,
+            ..License::default()
         };
 
         let mut assets = HashMap::new();
         assets.insert(model_hash, model_bytes);
 
         let zip_bytes = HexonPackage::build(
-            manifest.clone(),
-            entries.clone(),
-            license,
+            manifest,
+            entries,
+            Some(license),
             assets,
             None,
             HashMap::new(),
@@ -544,6 +596,8 @@ mod tests {
         HexonPackage::open(&zip_bytes).expect("open should succeed")
     }
 
+    /// Install records are keyed by (hexon_uri, petal_id): one build lives in two petals and the
+    /// published record, each persisted with fe-format names, and uninstalling one leaves the rest.
     #[test]
     fn test_install_and_list() {
         let keypair = test_signing_key();
@@ -551,24 +605,84 @@ mod tests {
         let uri = hexon_uri(&package.manifest);
 
         let temp_dir = std::env::temp_dir().join(format!("hexon_test_{}", ulid::Ulid::new()));
-        let mut registry = HexonRegistry::new(temp_dir.clone());
+        let (db_tx, db_rx) = crossbeam::channel::unbounded();
+        let mut registry = HexonRegistry::new(temp_dir.clone()).with_db_channel(db_tx);
 
         let installed = registry
-            .install(package, "petal-123")
+            .install(package.clone(), "petal-a")
             .expect("install should succeed");
         assert_eq!(installed.hexon_uri, uri);
         assert!(installed.signature_valid);
+        assert!(installed.license.is_some(), "the package licence is kept on the record");
 
-        let list = registry.list_installed(None);
-        assert_eq!(list.len(), 1);
+        // The DB rows carry fe-format's snake_case type and entry-kind names.
+        let rows: Vec<DbCommand> = db_rx.try_iter().collect();
+        assert!(rows.iter().any(|row| matches!(row,
+            DbCommand::InstallCrate { hexon_uri, hexon_type, petal_id, size_bytes, .. }
+                if *hexon_uri == uri && hexon_type == "model" && petal_id == "petal-a" && *size_bytes == 2048)));
+        assert!(rows.iter().any(|row| matches!(row,
+            DbCommand::InstallCrateEntry { entry_id, kind, .. } if entry_id == "model_001" && kind == "model")));
 
-        let list_petal = registry.list_installed(Some("petal-123"));
-        assert_eq!(list_petal.len(), 1);
+        // The same build into a second petal is a second record, not an overwrite.
+        registry
+            .install(package.clone(), "petal-b")
+            .expect("a second petal gets its own install");
+        assert_eq!(registry.list_installed(None).len(), 2);
+        for petal in ["petal-a", "petal-b"] {
+            let listed = registry.list_installed(Some(petal));
+            assert_eq!(listed.len(), 1, "{petal} lists its own install");
+            assert_eq!(listed[0].petal_id, petal);
+            assert!(registry.get_in_petal(&uri, petal).is_some());
+        }
+        assert!(registry.list_installed(Some("petal-456")).is_empty());
 
-        let list_other = registry.list_installed(Some("petal-456"));
-        assert_eq!(list_other.len(), 0);
+        // Uninstall from A leaves B, and the DB rows B still needs are not dropped.
+        let _ = db_rx.try_iter().count();
+        registry.uninstall(&uri, "petal-a").expect("uninstall from A");
+        assert!(registry.get_in_petal(&uri, "petal-a").is_none());
+        assert_eq!(registry.list_installed(Some("petal-b")).len(), 1);
+        assert!(
+            !db_rx.try_iter().any(|row| matches!(row, DbCommand::UninstallCrate { .. })),
+            "B still holds the build, so its DB rows stay"
+        );
+        registry.uninstall(&uri, "petal-b").expect("uninstall from B");
+        assert!(registry.list_installed(None).is_empty());
+        assert!(db_rx
+            .try_iter()
+            .any(|row| matches!(row, DbCommand::UninstallCrate { hexon_uri } if hexon_uri == uri)));
 
-        // Cleanup
+        // A published record installs into a petal without its package: blobs are reused.
+        registry
+            .install(package, PUBLISHED_BINDING)
+            .expect("publish-scope record");
+        let copied = registry
+            .install_published(&uri, "petal-c")
+            .expect("install the published build into petal C");
+        assert_eq!(copied.petal_id, "petal-c");
+        assert_eq!(copied.manifest.hexon_id, "test-model-v1");
+        assert!(db_rx.try_iter().any(|row| matches!(row,
+            DbCommand::InstallCrate { petal_id, hexon_type, .. } if petal_id == "petal-c" && hexon_type == "model")));
+        assert_eq!(registry.list_installed(Some("petal-c")).len(), 1);
+        assert!(registry.get_published(&uri).is_some(), "the published record stays");
+        assert!(matches!(
+            registry.install_published(&uri, "petal-c"),
+            Err(RegistryError::AlreadyInstalled(_))
+        ));
+        assert!(matches!(
+            registry.install_published(&uri, PUBLISHED_BINDING),
+            Err(RegistryError::PermissionDenied(_))
+        ));
+        for unknown in ["test-model-v1@9.9.9", "test-model-v1", "@1.0.0"] {
+            assert!(
+                matches!(
+                    registry.install_published(unknown, "petal-d"),
+                    Err(RegistryError::NotFound(_))
+                ),
+                "{unknown} is not a published build"
+            );
+        }
+        assert!(registry.list_installed(Some("petal-d")).is_empty());
+
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
@@ -682,23 +796,36 @@ mod tests {
         let mut registry = HexonRegistry::new(temp_dir.clone());
 
         registry
-            .install(package, "petal-123")
+            .install(package.clone(), "petal-123")
             .expect("install should succeed");
+        registry
+            .install(package, "petal-456")
+            .expect("second petal install should succeed");
 
-        // Search by name
+        // Search by name: one hit per build even though two petals hold it
         let results = registry.search_local("Test", &[], None);
         assert_eq!(results.len(), 1);
+
+        // Search by hexon_id, unscoped and scoped
+        let results = registry.search_local("test-model-v1", &[], None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].hexon_id, "test-model-v1");
+        let results = registry.search_local_in_petal(Some("petal-456"), "test-model", &[], None);
+        assert_eq!(results.len(), 1);
+        assert!(registry
+            .search_local_in_petal(Some("petal-789"), "test-model", &[], None)
+            .is_empty());
 
         // Search by tag
         let results = registry.search_local("", &["model"], None);
         assert_eq!(results.len(), 1);
 
         // Search by kind
-        let results = registry.search_local("", &[], Some(HexonKind::Model));
+        let results = registry.search_local("", &[], Some(HexonType::Model));
         assert_eq!(results.len(), 1);
 
         // Search by wrong kind
-        let results = registry.search_local("", &[], Some(HexonKind::Terrain));
+        let results = registry.search_local("", &[], Some(HexonType::Terrain));
         assert_eq!(results.len(), 0);
 
         // Search with no matches
