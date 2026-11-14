@@ -187,7 +187,7 @@ pub(crate) async fn load(
 
 /// Admitted statements at exactly `scope`, newest first, bounded to [`MAX_PEERS`].
 async fn grant_record(db: &Db, scope: &str) -> anyhow::Result<Vec<EntityGrantRecord>> {
-    let mut statements = crate::role_grants::load_scope_statements(db, scope).await?;
+    let mut statements = crate::role_grants::load_scope_statements(db, scope, MAX_PEERS + 1).await?;
     statements.retain(|stmt| {
         stmt.scope == scope && bounded_identity(&stmt.peer_did) && bounded_identity(&stmt.grantor_did)
     });

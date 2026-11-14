@@ -480,15 +480,17 @@ pub fn held_at_write_in(
     fe_policy::held_at(view_owner, admitted.iter(), author, scope, level, hlc)
 }
 
-/// Every ADMITTED statement whose scope is exactly `scope` (read-only; the Access panel).
-pub async fn load_scope_statements(db: &Db, scope: &str) -> anyhow::Result<Vec<RoleStatement>> {
-    select_statements(
-        db,
-        "SELECT * FROM role_grant WHERE scope = $s",
-        GRANT_TABLE,
-        vec![("s", scope.to_string())],
-    )
-    .await
+/// Up to `limit` ADMITTED statements at exactly `scope`, numerically newest hlc first (read-only; the Access panel).
+pub async fn load_scope_statements(
+    db: &Db,
+    scope: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<RoleStatement>> {
+    // hlc is a decimal STRING without leading zeros: length then text orders it numerically.
+    let sql = format!(
+        "SELECT *, string::len(hlc) AS hlc_digits FROM role_grant WHERE scope = $s          ORDER BY hlc_digits DESC, hlc DESC LIMIT {limit}"
+    );
+    select_statements(db, &sql, GRANT_TABLE, vec![("s", scope.to_string())]).await
 }
 
 /// Place one VALIDATED statement (`fe_policy::validate_statement` already passed) under

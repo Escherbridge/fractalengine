@@ -313,6 +313,22 @@ fn a_non_owner_creating_a_petal_gets_no_implicit_owner_row() {
     rt.block_on(async {db.query("INSERT INTO role_grant $statements").bind(("statements",statements)).await.expect("seed statements").check().expect("seeded statements")});
     let crowded=access("access-many-statements",Access::Load {peer_dids:vec![]}).expect("a grantee's many statements list it once");
     assert_eq!(crowded.roles.iter().filter(|(did,_)|did==PEER).count(),1);
+    // The Access read is bounded in SQL by numeric hlc (string column: '9' < '1000' lexically), then truncated to 256.
+    let crowded_scope=target.scope.clone();
+    let hlc_values:Vec<String>=(1..=297).map(|n|n.to_string()).chain(["1000","1001","1002"].map(String::from)).collect();
+    let bounded_rows:Vec<serde_json::Value>=hlc_values.iter().enumerate().map(|(i,hlc)|serde_json::json!({
+        "statement_key":format!("{crowded_scope}/did:key:bounded-{i}/{}",local_did()),"verse_id":owned_parts.verse_id,"scope":crowded_scope,
+        "peer_did":format!("did:key:bounded-{i}"),"grantor_did":local_did(),"role":"viewer","revoked":false,"hlc":hlc,"updated_at":"2026-11-08T00:00:00Z"})).collect();
+    rt.block_on(async {db.query("INSERT INTO role_grant $statements").bind(("statements",bounded_rows)).await.expect("seed bounded rows").check().expect("seeded bounded rows")});
+    let bounded=access("access-bounded-grants",Access::Load {peer_dids:vec![]}).expect("bounded grant record");
+    assert_eq!(bounded.grants.len(),256,"the grant record is truncated to MAX_PEERS");
+    for newest in [1002u64,1001,1000] {assert!(bounded.grants.iter().any(|g|g.hlc==newest),"numeric newest {newest} survives the bound");}
+    assert!(bounded.grants.windows(2).all(|pair|pair[0].hlc>=pair[1].hlc),"grants are listed newest first");
+    let everything=rt.block_on(fe_database::role_grants::load_scope_statements(&db,&crowded_scope,100_000)).expect("unbounded read");
+    let mut numeric_newest:Vec<u64>=everything.iter().map(|stmt|stmt.hlc).collect();
+    numeric_newest.sort_unstable_by(|a,b|b.cmp(a));
+    let five=rt.block_on(fe_database::role_grants::load_scope_statements(&db,&crowded_scope,5)).expect("limited read");
+    assert_eq!(five.iter().map(|stmt|stmt.hlc).collect::<Vec<_>>(),numeric_newest[..5].to_vec(),"LIMIT keeps the five numerically newest, in order");
     let minted=access("access-token-mint",Access::MintToken {max_role:"viewer".into(),ttl_hours:1,client_did:None}).expect("scoped mint");
     assert!(minted.minted.is_some());assert!(!format!("{minted:?}").contains(&minted.minted.as_ref().unwrap().token),"Debug never reveals token");
     let token=minted.tokens.first().expect("readback token");
