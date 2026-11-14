@@ -112,6 +112,13 @@ with the role reason. The carrier's `pending_remove` field is now dead weight:
 `seed_hexon_manager()` in `ui_shell/right_sidebar.rs` still fills it, nothing
 reads it (removal belongs to the W6 dead-code sweep).
 
+Installed-map cards show an access chip (Preview / Locked / Licensed) only when access != Installed
+(`hexon_manager.rs` `access_chip`, `:294`). The licence link is outward only: `ui.hyperlink_to`, http/https
+only, trimmed, no whitespace or control characters, max 2048 bytes (`web_url`, `:307`), never fetched or
+auto-opened, with a per-row accessible name; the UI says only "Licence details" (`:339`). The link is
+offered only when access != Entitled. Chunkless registry installs draw the byte ProgressBar
+(`:763`). The Available tab carries no licence state (peer adverts have no licence terms).
+
 ## §claim-ownership (F6)
 
 `entity_settings.rs`'s General tab (Verse only) shows "Claim Ownership"
@@ -359,6 +366,12 @@ it as an active setting. Copy/dirty-close remain available for a retained draft.
 
 entity_access separates request ownership from rendering. Each local request binds a fresh ULID to EntityType/id/full stored scope. Late/foreign receipts are ignored; timeout is unconfirmed. Failed writes require an explicit read before another mutation. Role controls show effective inherited roles and confirm every assignment/revoke. Owner blocking and Manager own-grant revocation use distinct copy. UI hints are not backend authority.
 
+The Access tab sets `verse_local_only` from the verse's namespace: `mark_verse_local_only_from_tree` (`entity_access.rs:187`)
+runs every frame before the dialog renders (`panels/mod.rs:403`). A verse with no `namespace_id` in the tree is the
+local-only seed: invites are disabled with `LOCAL_ONLY_REASON` (`entity_access.rs:55`). A verse missing from the
+tree is not local-only (`false`), so a tree entry whose namespace is still unset reads as local-only until a
+namespace is set; the tree's own load state is not consulted.
+
 EntitySettings generates invites/API credentials through this typed owner, not legacy uncorrelated list/mint/invite state. Secrets are masked by default, clear on leaving API Access and are rejected at receipt use if another tab is active, including programmatic transitions. Explicit copy emits the requested value and a nonsecret toast. Read examples derive from the confirmed listener: Petal uses its registered scoped nodes GET; Verse/Fractal use authenticated scoped query POST. No health-check bearer demo or guessed port is shown.
 
 The unrendered InviteDialog variant is retired. Legacy invite completion never opens an invisible exclusive modal or retains its credential; it directs the user to scoped Access controls. Existing General details/draft readback remain authoritative. The dialog body has one bounded vertical viewport below the tabs.
@@ -467,3 +480,28 @@ button additionally check their prepared pass before inserting/submitting. See
 The Peer Debug dialog's Network block (`peer_debug.rs::render_network_block`) shows the redacted snapshot held in `fe_sync::status::NetworkDiagnosticsState`. Rows: Relay mode, Home relay, Relay health, Port mapping, Reachability, Relay server. When the home relay is not advertised in one or more verses, a warning says their peers may not reach this node through it. Opening the dialog asks the sync thread for a fresh snapshot (`SyncCommand::GetNetworkDiagnostics`).
 
 No IP addresses are shown: the panel renders the redacted snapshot. The test `network_panel_renders_fixture_without_ips` renders a fixture and asserts that no address appears.
+
+## Access record (entity_access.rs)
+
+- Row labels: "Granted here: <role>" when a live grant exists at this scope, "Blocked here" when the strongest
+  live grant is `none`, "Inherited from ..." when there is no grant here and the effective role is not `none`
+  (`entity_access.rs:500-538`).
+- "Grant record (N)" lists the LATEST admitted statement per (scope, peer, grantor), not an op log
+  (`entity_access.rs:601`; the snapshot contract is `fe-runtime`'s `EntityAccessSnapshot.grants`).
+- The UI is advisory; the server is authoritative. A revoke retracts only the caller's own grant
+  (`revoke_role_checked`, `fe-database/src/role_manager.rs:313`).
+
+## Presets (entity_access.rs)
+
+- Public = default access `viewer`; Members only = default `none` with explicit grants kept
+  (`preset_controls`, `entity_access.rs:393-416`).
+- Managers only = default `none` plus revoking every grant below manager (`below_manager_peers`); it needs a
+  confirm click (`entity_access.rs:437`).
+- Verse scope only, except Managers only: Public and Members only are set on the verse, and the
+  Managers only control sets default `none` only when the scope is the verse (`entity_access.rs:448`).
+- Bulk revoke is sequential: one request in flight, the next revoke only after the previous reply is confirmed
+  (`entity_access.rs:265`), and it halts at the first refusal with "Managers only stopped" (`:382`). The queue
+  and flag are cleared by Refresh (`:79-81`), by the 30 s request timeout (`:161-162`) and when a minted API secret
+  moves the tab (`:363-364`).
+- The default part is sent before the revokes (`entity_settings.rs:385-400`); if the default send fails, no revoke
+  is started.

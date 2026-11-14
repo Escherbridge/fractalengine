@@ -12,7 +12,7 @@ use super::{CornerKind, GisResultRow, PathPointRow};
 /// import-free of the `actions` layer — see AGENTS.md).
 const ANNOTATION_TITLE_KEY: &str = "gis.annotation.title";
 const ANNOTATION_COLOR_KEY: &str = "gis.annotation.color";
-/// Mirrors `actions::node_props::TRACK_NAME_KEY` (duplicated for the same
+/// Mirrors the gis.track.name marker set by the GPX bridge (duplicated for the same
 /// import-free reason as the annotation keys above).
 const TRACK_NAME_KEY: &str = "gis.track.name";
 

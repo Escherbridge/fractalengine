@@ -80,3 +80,17 @@ The raw matching/take helper exists only in state-only tests. Production callers
 must use the context-checked consume seam. The existing result-handler journey
 covers same-Petal navigation intent changes, fresh access after invalidation,
 manager replacement, ordinary matching success once and duplicate birth refusal.
+
+## Copied and pasted node reads (QA-0127)
+
+Every node read built by `gis/egress_strings.rs` (petal, node and bbox builders, `escape_sql_str`
+at :79 and `petal_scope_sql`/`node_selection_sql`/`node_by_id_sql`/`bbox_sql` at :84-130) and by the
+Query tab templates in `panels/query_tab.rs` (:44, :54) ends in `AND tombstone = NONE`, so a
+soft-deleted node vanishes exactly like the REST read. String literals are escaped with backslashes,
+as `query_tab::sql_literal` does, because SurrealQL does not accept doubled quotes (R-DATA-1 D1).
+The "This node's device data" template (`query_tab.rs:48`) stays unfiltered: `iot_reading` defines no
+tombstone field in `fe-database/src/schema.rs`.
+The pasted-string round trip (real DB thread, ScopedQuery, GetNodeProperties parity, then tombstone
+and zero rows) is `pasted_string_reads_same_node_then_nothing_after_tombstone`
+(`egress_strings.rs:420`), called from `api_string_for_returns_node_scoped_sql` (:404-417); it runs under
+batch R3 filter `gis::`.

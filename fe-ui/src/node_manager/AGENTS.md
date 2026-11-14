@@ -203,8 +203,9 @@ second copy of the rule — call `pickable`. Rationale: `fe-ui/src/AGENTS.md`
 ## §staged-escape — four-rung gesture cancellation
 
 The canonical staged Escape (codified in `ui_ux.md §5`): four rungs with ratified
-D4-override. The `GestureParams` bundle carries all SIX in-flight gestures — the five
-gesture resources plus the entity gimbal's `AxisDrag`, which lives inside
+D4-override. The `GestureParams` bundle carries all SEVEN in-flight gestures — the five
+gesture resources, the road builder (`RoadBuilderState::is_active`: an open chain or an in-flight
+segment, `road_chain.rs:182`) and the entity gimbal's `AxisDrag`, which lives inside
 `NodeManager.selected` and so brings `NodeManager` into the bundle (a second
 `ResMut<NodeManager>` on the same system would be a param-aliasing panic).
 `handle_tool_shortcuts` MUST stay first in the chain; no tool may read Escape privately.
@@ -216,6 +217,9 @@ applies its drag LIVE and therefore restores the press-time `Transform` snapshot
 the aggregate for the egui side; because it is written before any gesture system runs it
 lags both ways — stale-FALSE on the frame a gesture starts (the unsafe direction: that
 frame's right-click still opens the object menu) and stale-TRUE on the frame it releases.
+Rung 0 calls `RoadBuilderState::cancel_stage` (`node_manager/mod.rs:259`), which is one stage per
+call: the pending segment is dropped first, and the open chain ends on the next Escape
+(`road_chain.rs:366-373`).
 
 0. Close an open ContextMenu, preserving every gesture/selection/session underneath it.
 1. Gesture-cancel (tool-specific: pen/handle drag cancel)
@@ -251,8 +255,9 @@ Design choices:
 - **Metric readout** is `measure::measure_world_scale` + `geometry::format_distance_m`, which
   replaces the plan's `metric_scale` helper.
 - **Router order** in the nested chain is brush, measure, road (`router.rs:334-336`).
-- **HANDED-OFF**: the pen-create failure cleanup is not wired to a production `DbResult::Error`
-  path at HEAD (`fe-ui/src/AGENTS.md` §path-editor, road first commit).
+- A failed road or pen create (`DbResult::RequestFailed`) clears the pending create via
+  `PathEditorState::fail_pending_pen_create` in the `db_results` RequestFailed arm
+  (`verse_manager/db_results/mod.rs:1006`).
 
 ### §road-snap — pure snap core (`road_snap.rs`)
 
@@ -274,6 +279,16 @@ A pure reducer turns clicks and drags into `RoadCommit`s. It keeps a per-chain l
 point counts, so undo-last-segment removes exactly what the last segment added. Points closer
 than the chain tolerance (world units, XZ) are the same anchor. `road_overlay.rs` draws the ghost
 polyline, guides, snap ring and a cursor-tethered live length readout.
+
+Undo is paced: Backspace queues one checked `PathRemovePoint` at a time, tail first
+(`issue_next_removal` in `road_interaction.rs`; `PointEditOrigin` must equal the live buffer for each
+remove), and placement is blocked while the queue drains (`road_chain.rs:344-348`). Undo also waits
+for the create echo: until `session_track` is set there is no track to remove from. `A` is the camera
+fly-left key (`road_interaction.rs:30-31`), so angle snap is panel-only. Freeform spacing is metres:
+`RoadBuilderState.world_scale` (set each frame from `measure_world_scale`, `road_interaction.rs:316-319`)
+converts it before `decimate`, so ghost and commit agree on any map scale (NaN or 0 means no map,
+`road_chain.rs:176`). Ghost and commit share `expand_segment_into` (`road_chain.rs:447`); a curved ghost
+appends through `curve::bezier_into` (`curve.rs:121`) into the caller's buffer.
 
 ## §pen-tool — pen (phase 1 polyline + phase 2 curves/shapes + bezier anchors)
 

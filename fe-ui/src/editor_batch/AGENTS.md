@@ -198,6 +198,18 @@ The existing Inspector journey authors a terminal owned read, visible error,
 actual Refresh click and exactly one subsequent read with no edit or invented
 capture. Compilation and live failure/retry acceptance remain separate gates.
 
+## Groups auto-read and its reason label (DATA-02, QA-0111)
+
+`EditorBatchState::maintain` (`mod.rs:482`, driven every frame from `actions/mod.rs`) issues one
+`DbCommand::ReadEditorBatch` per selection change, and only while capture, read, pending and error
+are all empty (`mod.rs:583-586`); it is not a per-frame read. The per-group "Add all selected" and
+"Remove all selected" buttons (`ui.rs:547-549`) render disabled, with the small label
+"Reading selected objects", until the capture lands; the label shows only when the role can edit,
+there is no error and nothing is pending (`ui.rs:519-522`). After a read error or timeout `self.error`
+stays set (`mod.rs:579`: "Refresh to retry"), so there is no auto-retry: the manual refresh button
+is the retry, by design. Covering journey: `panels/inspector.rs` `inspector_transform_and_typed_property_editing_journey`
+(the "Reading selected objects" assertion near `:5520`); batches R2 (`editor_batch::`) and R3 (`panels::inspector`).
+
 ## Committed refresh and stale-read convergence (QA pass 74/75, 2026-11-06)
 
 Two loops made a selected node's transform permanently unavailable ("Reading stored

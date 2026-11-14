@@ -187,6 +187,11 @@ is set.
   `gis::query::extract_xz`); validate against the live guard/DB in Phase 6.
 - Route/URL shapes implement the plan contract (Phases 2–3), not fe-api's
   current code — endpoints are being built concurrently to the same contract.
+- Readings source: pins `readings_as_of_ms` (set on choosing the source and on Refresh snapshot,
+  `egress_card.rs:120-121`, `:141`), shows the snapshot as a UTC time (`:204-207`), the pinned
+  Parquet/CSV URLs and a DuckDB snippet (`:88`), plus the petal-scoped token note (`:265`) (EXT-13).
+- Every pasted or copied node read (petal, node, bbox, templates) ends in `AND tombstone = NONE`
+  (QA-0127); see `fe-ui/src/gis/AGENTS.md` §Copied and pasted node reads.
 
 ## §tool-options — active-tool options dispatcher
 
@@ -646,6 +651,17 @@ these authored assertions have not been executed in the source-only lane and
 do not prove DB persistence or backend schema enforcement. Integrated
 compilation, execution and live UI readability/a11y verification remain required.
 
+### Property types
+
+Semantic types are validated by `property_value::parse_selected` (`property_value.rs:16`, called from
+`inspector.rs:1803`): `datetime` is an RFC 3339 string (trimmed); `address` is at most 256 characters;
+`blob_ref` and `hexon_ref` are at most 512 characters with no whitespace; `geometry_point` and
+`geometry_polygon` are parsed as JSON objects and checked by GeoJSON shape (polygon rings are closed
+numerically, with at least 4 positions, and positions carry 2 or 3 finite coordinates).
+`from_selection` is unchanged and only drives the hint display. The Viewer gate on Add/Edit/Delete
+(`inspector.rs:2206` `PROPERTY_EDIT_DENIED`) is UI honesty only; the DB `require_write_role`
+(`fe-database/src/rbac.rs:84`) is authoritative.
+
 ## Hierarchy rows and local appearance
 
 Active Petals display registered Groups and Ungrouped rows. Membership is non-owning
@@ -714,8 +730,9 @@ integrated checks execute; it does not claim multi-selection or group behavior.
 The sidebar no longer hosts Reset Database or the old Space count grid. Moving
 the reset action to the campaign's application Danger Zone remains a separate
 shell task; this slice does not claim that rehoming is complete.
-The tree appearance dialog pins its action row below the scroll area, so Apply and Close stay
-reachable at any window height (QA-0112).
+The tree appearance dialog pins its action row below the scroll area, so Save, Cancel and Reset to
+default stay reachable at any window height (QA-0112); the body scrolls and the window's own vscroll
+is off (`tree_appearance.rs:243`, `:257`).
 
 ## Selected terrain volume and material
 
@@ -1046,3 +1063,33 @@ The inspector sends no scene write itself: property, transform, URL and schema e
 ## Bound bundle offer (I-UI)
 
 `bound_bundle_offer_section` in `inspector.rs` calls `portal::binding_offer::show_offer` under the Repository section; see `fe-ui/src/AGENTS.md` section portal for the feed and the select-then-open flow.
+
+## Hierarchy info card (`hierarchy_info.rs`)
+
+- Precedence: a selected Node wins (`inspected_entity`, `hierarchy_info.rs:54`). An `InspectedOverride`
+  set by RE-CLICKING the already-active verse/fractal/petal row (`sidebar.rs:18-30`) shows the card and
+  also deselects the node; the override is cleared by node selection or a navigation change
+  (`InspectedOverride::sync`, `hierarchy_info.rs:89`).
+- The sidebar request travels as egui temp data (`request_inspect`, `hierarchy_info.rs:83`), so
+  `left_sidebar`'s signature stays unchanged.
+- Card inputs ride `InspectorFormState.hierarchy_card` (`plugin.rs:320`), refreshed in `gardener_ui_system`
+  through `refresh_hierarchy_card` (`inspector.rs:140`); the peers copy is rebuilt only on change
+  (`inspector.rs:158-170`).
+- Role: the "Your role" line shows only when the card is the deepest active scope
+  (`card_is_active_scope`, `hierarchy_info.rs:192`). A card outside the active scope is denied Settings
+  (`card_settings_denial`, `:207`); otherwise the Settings button uses the Editor role gate
+  (`settings_denial`, `:202`). The verse card counts online vs known peers (`peer_counts`, `:138`).
+- Access stays in the Entity Settings dialog: there is no fourth `InspectorTab::Access` (`plugin.rs:236-242`).
+
+## §section-profile (`section_profile_panel.rs`)
+
+- Opens inside the Volume report. A chord through the footprint centroid at a `DragValue` angle
+  (`section_chord`, `:71`) needs no viewport gesture; a two-click pick is a later enhancement.
+- Requests use correlation ids `section-profile:<n>` (`:142`). Replies are plain-data messages from
+  `fe-renderer::section_profile` (`SectionProfileRequest`/`SectionProfileResult`), because fe-ui has no
+  fe-terrain dependency.
+- The plot is drawn with the egui painter (`render_plot`, `:289`); there is no `egui_plot` dependency.
+- Metre factor = `length / world_length` (`display_factor`, `:179-181`), used only when the reply is scaled.
+- An unavailable reply shows a one-line reason instead of a blank plot: `NoMap` ("No terrain under this
+  section yet.") and `WrongPetal` ("Waiting for this petal's map to load.") (`:254-262`). When the whole
+  volume report is unavailable, the volume body shows the Maps prompt instead (`:222-227`).
