@@ -170,5 +170,16 @@
     "focused_verified": 41,
     "closed": 1
   },
-  "source_batch_evidence": "./evidence/source-batch-20261104/index.md"
+  "source_batch_evidence": "./evidence/source-batch-20261104/index.md",
+  "round5_new": {
+    "plan_section": "./plan.md#round-5-additions-new",
+    "ticked": ["NEW5-01", "NEW5-02", "NEW5-03", "NEW5-04", "NEW5-05", "NEW5-06", "NEW5-07"],
+    "gates": {"R5-DOC": "PASS-WITH-FIXES", "R5-NEW": "PASS-WITH-FIXES"},
+    "run_status": "code done; every test run pending (user-gated)",
+    "handed_off": "R5-NEW N8: every test that builds an app with NodeManagerPlugin should hold GUI_DOOR_TEST_LOCK (owner: later R2 test round)",
+    "decisions_default_taken_awaiting_ratification": [
+      "NEW-05 trust anchor: terrain_bridge.rs accepts any valid seal from the operator-chosen registry (steer 2026-11-13); default kept",
+      "N7 policy: plain correlated writes queue behind a backing-off write (NEW5-05); uncorrelated commands still bypass; default yes"
+    ]
+  }
 }

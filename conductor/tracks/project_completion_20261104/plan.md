@@ -141,3 +141,15 @@ Items with no conductor track of their own. Each box is ticked only when its gat
 - [x] NEW-03 status bar "Unsaved edits" chip with Retry and Discard (`fe-ui/src/panels/unsaved_edits.rs:79-90`). Code done; run pending (user-gated). Gate: R-NEW-1.
 - [x] NEW-04 RUNBOOK H4 petal judge: follow-up earthwork and callout SetNodeProperty writes are judged against the node's own petal, not the active one (`fe-ui/src/verse_manager/db_results/nodes.rs`, `fe-ui/src/actions/dimension_callout.rs`). Code done; run pending (user-gated). Gate: R-NEW-1.
 - [x] NEW-05 registry install reports monotonic byte progress with a final N/N before `RegistryInstalled` (`fe-hexon/src/remote.rs:363`, `fractalengine/src/terrain_bridge.rs:1142`). Code done; run pending (user-gated). Gate: R-NEW-2.
+
+## Round 5 additions (NEW)
+
+Round-5 closure of the round-4 NEW items. Each box is ticked only when its gate verdict in `review-turn5/` is PASS or PASS-WITH-FIXES. Test runs stay user-gated and pending.
+
+- [x] NEW5-01 registry install progress documented in the fe-hexon and fractalengine directory docs (`fe-hexon/src/AGENTS.md:247`, `fractalengine/src/AGENTS.md:767`). Code done; run pending (user-gated). Gate: R5-DOC.
+- [x] NEW5-02 scene-write door documented as it now stands, including the retry and dead-letter paragraph (`fe-ui/src/actions/AGENTS.md:585`, §scene-write-door). Code done; run pending (user-gated). Gate: R5-DOC.
+- [x] NEW5-03 test-visible door pump seam (`fe-ui/src/actions/node.rs:757` GUI_DOOR_TEST_LOCK, `:765` pump_gui_door_after) plus the undo retry leg (`fe-ui/src/node_manager/mod.rs:1048`). Code done; run pending (user-gated). Gate: R5-NEW.
+- [x] NEW5-04 stamp promotion retry leg in the viewport_pick journey (`fe-ui/src/node_manager/viewport_pick.rs:853`). Code done; run pending (user-gated). Gate: R5-NEW.
+- [x] NEW5-05 plain correlated scene writes queue behind a backing-off head; FIFO kept, uncorrelated writes still bypass, `Busy` only for a full channel with an empty queue (`fe-ui/src/actions/node.rs:374`). Code done; run pending (user-gated). Gate: R5-NEW.
+- [x] NEW5-06 undo reconcile never blocks the frame; it uses try_send and keeps the Disconnected error (`fe-ui/src/undo.rs:913`). Code done; run pending (user-gated). Gate: R5-NEW.
+- [x] NEW5-07 registry download progress: real-registry assertions and an oversized Content-Length refused before any byte or callback (`fe-hexon/src/remote.rs:373`, `fe-hexon/tests/remote_registry_test.rs:331`). Code done; run pending (user-gated). Gate: R5-NEW.
