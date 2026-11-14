@@ -130,7 +130,7 @@ fn counts_label(counts: &ContentCounts<'_>) -> String {
     )
 }
 
-fn bounded_details(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn bounded_details(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     ui.set_max_width(520.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(120.0)));
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     let max_height = (ui.ctx().viewport_rect().height() - 100.0).max(80.0);

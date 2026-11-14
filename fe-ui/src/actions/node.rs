@@ -532,7 +532,18 @@ pub(crate) fn submit_scene_write_in_through(
     petal_id: &str,
     command: DbCommand,
 ) -> GuiSend {
-    submit_with(&GUI_DOOR, door, sender, command, true, Some(petal_id), FullChannel::Report, Instant::now())
+    submit_in(&GUI_DOOR, door, sender, petal_id, command)
+}
+
+/// Blocking, petal-hinted submit on an explicit queue (the test journey passes its own).
+fn submit_in(
+    doors: &Mutex<GuiDoorQueue>,
+    door: &SceneWriteDoor,
+    sender: &Sender<DbCommand>,
+    petal_id: &str,
+    command: DbCommand,
+) -> GuiSend {
+    submit_with(doors, door, sender, command, true, Some(petal_id), FullChannel::Report, Instant::now())
 }
 
 /// As [`submit_scene_write`] for frame systems that must not block on a full channel.
@@ -995,10 +1006,12 @@ mod tests {
             let (door_tx, _door_rx) = crossbeam::channel::unbounded();
             let hooked = SceneWriteDoor::new(SceneHookGate::new(std::sync::Arc::new(RefusingBackend)), door_tx);
             let (tx, rx) = crossbeam::channel::bounded(4);
-            let refused = submit_scene_write_in_through(&hooked, &tx, "p-node", property_write("node-petal"));
+            // The journey's own queue (active petal unset): the global door is shared with parallel tests.
+            let refused = submit_in(&doors, &hooked, &tx, "p-node", property_write("node-petal"));
             assert!(matches!(refused, GuiSend::Refused(_)), "judged against the node's petal");
             assert!(rx.try_recv().is_err(), "a refused follow-up sends nothing");
-            let sent = submit_scene_write_in_through(&hooked, &tx, "p-active", property_write("active-petal"));
+            assert_eq!(door_counts(&doors), (0, 0), "a gate refusal is final, never dead-lettered");
+            let sent = submit_in(&doors, &hooked, &tx, "p-active", property_write("active-petal"));
             assert_eq!(sent, GuiSend::Sent);
             assert_eq!(received_id(&rx).as_deref(), Some("active-petal"));
         }

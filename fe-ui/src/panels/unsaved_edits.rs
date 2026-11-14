@@ -6,9 +6,6 @@ use crate::accessibility::ResponseExt;
 use crate::actions::UiManager;
 use crate::theme;
 
-/// Warning text colour for the chip (matches the advisory notice family).
-const UNSAVED_WARNING: egui::Color32 = egui::Color32::from_rgb(224, 176, 80);
-
 /// A player choice in the "Unsaved edits" list, applied after the panel closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnsavedEditAction {
@@ -46,11 +43,13 @@ pub(crate) fn unsaved_edits_segment(
     let chip = ui
         .add_sized(
             [0.0, minimum],
+            // The advisory notice palette (contrast-checked in panels::tests).
             egui::Button::new(
                 egui::RichText::new(format!("{dead} unsaved"))
                     .small()
-                    .color(UNSAVED_WARNING),
-            ),
+                    .color(theme::NOTICE_TEXT),
+            )
+            .fill(theme::notice_fill(crate::notice::Severity::Advisory)),
         )
         .button_named(ui, "Unsaved edits");
     let mut action = None;
@@ -59,57 +58,70 @@ pub(crate) fn unsaved_edits_segment(
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .layout(egui::Layout::top_down(egui::Align::Min))
         .show(|ui| {
-            ui.set_max_width(420.0_f32.min((ui.ctx().viewport_rect().width() - 32.0).max(120.0)));
-            ui.heading("Unsaved edits");
-            for letter in crate::actions::node::dead_letters() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(letter.label);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&letter.reason)
-                                    .small()
-                                    .color(theme::TEXT_MUTED),
-                            )
-                            .wrap(),
-                        );
+            crate::native_accessibility::surface::popup(ui.ctx());
+            // Up to 32 letters: scroll inside the viewport like the other footer popups.
+            super::status_bar::bounded_details(ui, |ui| {
+                ui.heading("Unsaved edits");
+                for letter in crate::actions::node::dead_letters() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(letter.label);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&letter.reason)
+                                        .small()
+                                        .color(theme::TEXT_MUTED),
+                                )
+                                .wrap(),
+                            );
+                        });
+                        if ui
+                            .add_sized([0.0, minimum], egui::Button::new("Retry"))
+                            .button_named(ui, format!("Retry {}", letter.label))
+                            .clicked()
+                        {
+                            action = Some(UnsavedEditAction::Retry(letter.id));
+                        }
+                        if ui
+                            .add_sized([0.0, minimum], egui::Button::new("Discard"))
+                            .button_named(ui, format!("Discard {}", letter.label))
+                            .clicked()
+                        {
+                            action = Some(UnsavedEditAction::Discard(letter.id));
+                        }
                     });
-                    if ui
-                        .add_sized([0.0, minimum], egui::Button::new("Retry"))
-                        .button_named(ui, format!("Retry {}", letter.label))
-                        .clicked()
-                    {
-                        action = Some(UnsavedEditAction::Retry(letter.id));
-                    }
-                    if ui
-                        .add_sized([0.0, minimum], egui::Button::new("Discard"))
-                        .button_named(ui, format!("Discard {}", letter.label))
-                        .clicked()
-                    {
-                        action = Some(UnsavedEditAction::Discard(letter.id));
-                    }
-                });
-                ui.separator();
-            }
+                    ui.separator();
+                }
+            });
         });
     action
 }
 
-/// Applies a chosen action; a refused retry is already queued as an advisory by the door.
+/// Applies a chosen action; a gate refusal of a retry is already queued as an advisory by the door.
 pub(crate) fn apply_unsaved_edit_action(
     ui_mgr: &mut UiManager,
     action: UnsavedEditAction,
     now_secs: f64,
 ) {
+    use crate::actions::node::GuiSend;
     match action {
         UnsavedEditAction::Retry(id) => {
-            let label = crate::actions::node::dead_letters()
+            let Some(label) = crate::actions::node::dead_letters()
                 .into_iter()
                 .find(|letter| letter.id == id)
-                .map(|letter| letter.label);
-            crate::actions::node::retry_dead_letter(id);
-            if let Some(label) = label {
-                ui_mgr.show_toast(format!("Retrying {label}"), now_secs);
+                .map(|letter| letter.label)
+            else {
+                return;
+            };
+            match crate::actions::node::retry_dead_letter(id) {
+                GuiSend::Sent | GuiSend::Waiting => {
+                    ui_mgr.show_toast(format!("Retrying {label}"), now_secs)
+                }
+                GuiSend::Closed | GuiSend::Busy => ui_mgr.show_error(
+                    format!("{label} was not saved: Database connection closed. It stays under Unsaved edits."),
+                    now_secs,
+                ),
+                GuiSend::Refused(_) => {}
             }
         }
         UnsavedEditAction::Discard(id) => {
