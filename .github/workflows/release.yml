@@ -7,7 +7,7 @@ name: Release
 # packaging as the rolling build in build-artifacts.yml), publishes a GitHub
 # Release with a SHA256SUMS manifest (minisign-signed when MINISIGN_SECRET_KEY is set,
 # notes rendered from .github/release-notes-template.md), and pushes the relay Docker image to GHCR. Tags containing '-' (e.g. v0.3.0-rc1) publish as
-# pre-releases. `workflow_dispatch` runs the builds without publishing.
+# pre-releases. `workflow_dispatch` runs the builds without publishing, on any ref.
 
 on:
   push:
@@ -280,7 +280,7 @@ jobs:
     name: Docker relay image (GHCR)
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
     permissions:
       contents: read
       packages: write
@@ -323,7 +323,7 @@ jobs:
       - windows-x86_64
       - windows-arm64
       - musl-relay
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'
     permissions:
       contents: write
     env:

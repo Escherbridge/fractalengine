@@ -14,7 +14,7 @@
 
 Extract the whole archive and read `QUICKSTART.txt` inside it. Keep the
 `assets` folder next to the desktop app: the app keeps its `data` folder there.
-Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
+Verify downloads as described in the Verify section below.
 
 Windows binaries signed: {{WINDOWS_SIGNED}}
 

@@ -109,6 +109,7 @@ The `publish` job renders `.github/release-notes-template.md` with `sed` into
 `{{OWNER}}`, `{{REPOSITORY}}`, `{{WINDOWS_SIGNED}}`, `{{CHECKSUMS_SIGNED}}`. Values reach the script
 through step `env` (never interpolated into shell text) and are escaped for `sed`; a placeholder left
 unrendered fails the job. Edit the template, not the workflow, to change the notes.
+The `publish` and GHCR image jobs run only for tag pushes, never for `workflow_dispatch`, even when it is started from a tag.
 
 ## Hardening notes
 
