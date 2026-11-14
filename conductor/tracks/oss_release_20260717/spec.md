@@ -48,44 +48,73 @@ backfill and no dual-read". Legacy op_log rows are permanently unsigned; real si
 lives in the canonical log (fe-canonical-log), not in these sites. This register is the
 disclosure artifact for SECURITY.md and README.
 
-**Re-grep (2026-10-11, working tree on 562f551):**
-`git grep -n '"00"\.repeat(64)' -- '*.rs'` → **22 hits in 9 files, all fe-database**:
-21 production write paths + 1 `#[cfg(test)]` fixture. (Equivalent:
-`rg -n '"00"\.repeat\(64\)' --type rust -g '!target'`.) Task 6.4 is a re-run of this
-command against the table below.
+**Register rebuilt 2026-11-13 (REL5-04, working tree on 91782e9a).** Command:
+`git grep -n '"00"\.repeat(64)' -- 'fe-*' 'fractalengine*' tools extensions` returns **51 hits**:
+**36 production** write paths + **14 test** + **0 check** + **1 doc mention**
+(`fe-database/src/AGENTS.md:502`, prose, not code) = 51. Every site stamps an `OpLogEntry`
+whose `sig` is the all-zero placeholder; none of the hits compares against or rejects it
+(no quarantine or admission check reads the placeholder), so the CHECK class is empty.
+Classification is mechanical: a hit is TEST when it sits in a `#[cfg(test)]` module or
+`#[cfg(test)]` fn, or in a `tests/` file; otherwise it is a production write.
 
-| # | Site | Purpose (op written with the placeholder sig) |
+| # | Site (function) | Op written with the placeholder sig |
 | --- | --- | --- |
-| 1 | [fe-database/src/handlers/crud.rs:219](../../../fe-database/src/handlers/crud.rs#L219) | `create_node_handler` — NodeCreated |
-| 2 | [fe-database/src/handlers/crud.rs:318](../../../fe-database/src/handlers/crud.rs#L318) | `delete_node_handler` — NodeDeleted |
-| 3 | [fe-database/src/handlers/crud.rs:604](../../../fe-database/src/handlers/crud.rs#L604) | `create_node_with_asset_handler` — NodeCreated |
-| 4 | [fe-database/src/handlers/crud.rs:1320](../../../fe-database/src/handlers/crud.rs#L1320) | `tombstone_node_handler` — NodeTombstoned |
-| 5 | [fe-database/src/handlers/crud.rs:1444](../../../fe-database/src/handlers/crud.rs#L1444) | `cascade_tombstone_node_handler` — NodeTombstoned |
-| 6 | [fe-database/src/handlers/crud.rs:1561](../../../fe-database/src/handlers/crud.rs#L1561) | `promote_instance_handler` — NodePromoted |
-| 7 | [fe-database/src/handlers/elevated_query.rs:137](../../../fe-database/src/handlers/elevated_query.rs#L137) | `run_write` — ElevatedQuery audit row |
-| 8 | [fe-database/src/handlers/entity_property.rs:34](../../../fe-database/src/handlers/entity_property.rs#L34) | `set_entity_property_handler` |
-| 9 | [fe-database/src/handlers/entity_property.rs:128](../../../fe-database/src/handlers/entity_property.rs#L128) | `delete_entity_property_handler` |
-| 10 | [fe-database/src/handlers/transform.rs:36](../../../fe-database/src/handlers/transform.rs#L36) | `update_node_transform_handler` |
-| 11 | [fe-database/src/queries.rs:21](../../../fe-database/src/queries.rs#L21) | `create_petal` |
-| 12 | [fe-database/src/queries.rs:58](../../../fe-database/src/queries.rs#L58) | `create_room` |
-| 13 | [fe-database/src/queries.rs:95](../../../fe-database/src/queries.rs#L95) | `place_model` |
-| 14 | [fe-database/src/role_manager.rs:110](../../../fe-database/src/role_manager.rs#L110) | `assign_role_checked` |
-| 15 | [fe-database/src/role_manager.rs:149](../../../fe-database/src/role_manager.rs#L149) | `revoke_role_checked` |
-| 16 | [fe-database/src/session_cache.rs:60](../../../fe-database/src/session_cache.rs#L60) | `revoke_session` (moved from fe-auth 2026-07-17) |
-| 17 | [fe-database/src/space_manager.rs:44](../../../fe-database/src/space_manager.rs#L44) | `update_petal_metadata` |
-| 18 | [fe-database/src/space_manager.rs:103](../../../fe-database/src/space_manager.rs#L103) | `set_petal_visibility` |
-| 19 | [fe-database/src/space_manager.rs:204](../../../fe-database/src/space_manager.rs#L204) | `update_room_metadata` |
-| 20 | [fe-database/src/space_manager.rs:270](../../../fe-database/src/space_manager.rs#L270) | `update_model_metadata` |
-| 21 | [fe-database/src/space_manager.rs:341](../../../fe-database/src/space_manager.rs#L341) | `upsert_model_kv` |
-| T | [fe-database/src/op_log.rs:420](../../../fe-database/src/op_log.rs#L420) | `probe_entry` — `#[cfg(test)]` fixture, not a production path |
+| 1 | [fe-database/src/handlers/checked_mutation.rs:205](../../../fe-database/src/handlers/checked_mutation.rs#L205) `commit` | caller-supplied kind (checked mutation) |
+| 2 | [fe-database/src/handlers/crud.rs:1188](../../../fe-database/src/handlers/crud.rs#L1188) `tombstone_node_handler` | NodeTombstoned |
+| 3 | [fe-database/src/handlers/crud.rs:1312](../../../fe-database/src/handlers/crud.rs#L1312) `cascade_tombstone_node_handler` | NodeTombstoned |
+| 4 | [fe-database/src/handlers/crud.rs:1508](../../../fe-database/src/handlers/crud.rs#L1508) `promote_instance_handler` | NodePromoted |
+| 5 | [fe-database/src/handlers/crud.rs:1574](../../../fe-database/src/handlers/crud.rs#L1574) `rename_node_handler` | NodeRenamed |
+| 6 | [fe-database/src/handlers/editor_batch/mod.rs:141](../../../fe-database/src/handlers/editor_batch/mod.rs#L141) `compile` | EditorTransaction manifest |
+| 7 | [fe-database/src/handlers/elevated_query.rs:169](../../../fe-database/src/handlers/elevated_query.rs#L169) `run_write` | ElevatedQuery audit row |
+| 8 | [fe-database/src/handlers/entity_property.rs:42](../../../fe-database/src/handlers/entity_property.rs#L42) `set_entity_property_granted` | PropertySet |
+| 9 | [fe-database/src/handlers/entity_property.rs:113](../../../fe-database/src/handlers/entity_property.rs#L113) `delete_entity_property_granted` | PropertyDeleted |
+| 10 | [fe-database/src/handlers/entity_property.rs:158](../../../fe-database/src/handlers/entity_property.rs#L158) `delete_entity_properties_as` | PropertyDeleted |
+| 11 | [fe-database/src/handlers/extension_binding.rs:635](../../../fe-database/src/handlers/extension_binding.rs#L635) `commit_local` | ExtensionAudit |
+| 12 | [fe-database/src/handlers/extension_policy.rs:833](../../../fe-database/src/handlers/extension_policy.rs#L833) `audit_op` | ExtensionAudit |
+| 13 | [fe-database/src/handlers/object_creation.rs:324](../../../fe-database/src/handlers/object_creation.rs#L324) `commit` | NodeCreated |
+| 14 | [fe-database/src/handlers/petal_render_distance.rs:67](../../../fe-database/src/handlers/petal_render_distance.rs#L67) `set_petal_render_distance_handler` | SetPetalRenderDistance |
+| 15 | [fe-database/src/handlers/petal_requirements.rs:103](../../../fe-database/src/handlers/petal_requirements.rs#L103) `set` | SetPetalRequirements |
+| 16 | [fe-database/src/handlers/petal_snapshot.rs:63](../../../fe-database/src/handlers/petal_snapshot.rs#L63) `export_petal_snapshot` | ExportPetal |
+| 17 | [fe-database/src/handlers/petal_snapshot.rs:328](../../../fe-database/src/handlers/petal_snapshot.rs#L328) `import_petal_snapshot_correlated` | ImportPetal |
+| 18 | [fe-database/src/handlers/petal_terrain.rs:129](../../../fe-database/src/handlers/petal_terrain.rs#L129) `commit` | SetPetalTerrain |
+| 19 | [fe-database/src/handlers/plugin_host.rs:607](../../../fe-database/src/handlers/plugin_host.rs#L607) `commit` | PluginTransaction |
+| 20 | [fe-database/src/handlers/scene_asset_adoption.rs:245](../../../fe-database/src/handlers/scene_asset_adoption.rs#L245) `adopt` | SceneAssetAdopted |
+| 21 | [fe-database/src/handlers/stamp_overrides.rs:265](../../../fe-database/src/handlers/stamp_overrides.rs#L265) `prepare` | PropertySet |
+| 22 | [fe-database/src/handlers/stamp_promotion.rs:301](../../../fe-database/src/handlers/stamp_promotion.rs#L301) `prepare` | NodePromoted |
+| 23 | [fe-database/src/handlers/transform.rs:48](../../../fe-database/src/handlers/transform.rs#L48) `update_node_transform_granted` | TransformUpdate |
+| 24 | [fe-database/src/handlers/transform.rs:325](../../../fe-database/src/handlers/transform.rs#L325) `prepare_node_url_write` | UpdateModelMeta |
+| 25 | [fe-database/src/migration/role_grants.rs:176](../../../fe-database/src/migration/role_grants.rs#L176) `convert_to_owner_statement` | AssignRole (migrated) |
+| 26 | [fe-database/src/migration/transform_mapping.rs:943](../../../fe-database/src/migration/transform_mapping.rs#L943) `dual_emit_update_node_transform` | TransformUpdate |
+| 27 | [fe-database/src/queries.rs:20](../../../fe-database/src/queries.rs#L20) `create_petal` | CreatePetal |
+| 28 | [fe-database/src/queries.rs:60](../../../fe-database/src/queries.rs#L60) `create_room` | CreateRoom |
+| 29 | [fe-database/src/queries.rs:97](../../../fe-database/src/queries.rs#L97) `place_model` | PlaceModel |
+| 30 | [fe-database/src/role_manager.rs:194](../../../fe-database/src/role_manager.rs#L194) `issue_local_statement` | AssignRole |
+| 31 | [fe-database/src/session_cache.rs:60](../../../fe-database/src/session_cache.rs#L60) `revoke_session` | RevokeSession |
+| 32 | [fe-database/src/space_manager.rs:44](../../../fe-database/src/space_manager.rs#L44) `update_petal_metadata` | UpdatePetalMeta |
+| 33 | [fe-database/src/space_manager.rs:103](../../../fe-database/src/space_manager.rs#L103) `set_petal_visibility` | UpdatePetalMeta |
+| 34 | [fe-database/src/space_manager.rs:204](../../../fe-database/src/space_manager.rs#L204) `update_room_metadata` | UpdateRoomMeta |
+| 35 | [fe-database/src/space_manager.rs:270](../../../fe-database/src/space_manager.rs#L270) `update_model_metadata` | UpdateModelMeta |
+| 36 | [fe-database/src/space_manager.rs:342](../../../fe-database/src/space_manager.rs#L342) `upsert_model_kv` | UpdateModelMeta |
 
-Drift since the 2026-07-17 register (13 sites): crud.rs 0→6 (node-lifecycle spine
-c99dcf2 and later handler work), space_manager.rs 4→5, elevated_query.rs 0→1 (562f551),
-op_log.rs test fixture +1; the original sites' line numbers shifted. (A cosmetic `signature_placeholder_here` in
-`fe-hexon/src/manifest.rs` is test-fixture-only — not in the register.)
+**TEST hits (14):**
+- `fe-api/tests/export_share_test.rs:1875` (`petal_snapshot_export_import_authz_journey` fixture).
+- `fe-database/src/handlers/crud.rs:268` (`delete_node_handler` is itself `#[cfg(test)]`-gated, line 224).
+- `fe-database/src/handlers/invite.rs:480` (corrupts a fixture row on purpose; inside `mod tests`, line 177).
+- `fe-database/src/op_log.rs:477` (`probe_entry`, inside `mod tests`, line 368).
+- `fe-database/src/role_manager.rs:491` (`resolve_role_uses_verse_default_access`, inside `mod tests`, line 368).
+- `fe-database/tests/petal_snapshot_test.rs:78, 433, 443, 449, 474, 489, 510, 516, 523` (9 fixture rows).
+
+**CHECK hits (0):** no site compares against or rejects the placeholder.
+
+Drift note: the 2026-10-11 register had 22 hits (21 production + 1 test). New production
+sites since then come from the checked-mutation spine, object creation, petal terrain,
+render distance, requirements, snapshot export/import, plugin host, extension audit,
+stamp overrides and promotion, and the grant migration. (A cosmetic
+`signature_placeholder_here` in `fe-hexon/src/manifest.rs` is test-fixture-only and not
+counted.)
 
 - **Requirement:** before public push, EITHER (a) real op-log signing via fe-identity
-  keys at all 21 production sites — but per-op signing is unratified D5-1-adjacent scope, so this
+  keys at all 36 production sites — but per-op signing is unratified D5-1-adjacent scope, so this
   path is BLOCKED-ON-USER — OR (b) amend the README Key Design Invariants to state
   op-log signing is NOT yet implemented and list it in SECURITY.md known limitations.
   Shipping the current README text with these sites intact is a false security claim.
@@ -93,39 +122,7 @@ op_log.rs test fixture +1; the original sites' line numbers shifted. (A cosmetic
   push and reconcile.
 
 
-**Re-run 2026-11-13 (T-REL; crate-scoped `git grep -n '"00"\.repeat(64)' -- <crate>/*.rs`, crates fe-database fe-api fe-sync fe-runtime fe-ui fe-identity fe-canonical-log fe-policy):**
-45 hits in 27 files (22 on 2026-10-11). Hits in files not in the table above are new since
-2026-10-11 and must be classified (production write path or `#[cfg(test)]`/`tests/` fixture) and
-added to the table. Table line numbers have also drifted (e.g. `crud.rs` now at 268, 1188, 1312,
-1508, 1574). Lines below are raw hits, not yet classified:
-
-- fe-api/tests/export_share_test.rs: 1802
-- fe-database/src/handlers/checked_mutation.rs: 205
-- fe-database/src/handlers/crud.rs: 268, 1188, 1312, 1508, 1574
-- fe-database/src/handlers/editor_batch/mod.rs: 141
-- fe-database/src/handlers/elevated_query.rs: 169
-- fe-database/src/handlers/entity_property.rs: 42, 113, 158
-- fe-database/src/handlers/extension_binding.rs: 635
-- fe-database/src/handlers/extension_policy.rs: 833
-- fe-database/src/handlers/invite.rs: 480 (corrupts a fixture on purpose; test)
-- fe-database/src/handlers/object_creation.rs: 318
-- fe-database/src/handlers/petal_render_distance.rs: 67
-- fe-database/src/handlers/petal_requirements.rs: 103
-- fe-database/src/handlers/petal_snapshot.rs: 61, 268
-- fe-database/src/handlers/petal_terrain.rs: 122
-- fe-database/src/handlers/plugin_host.rs: 607
-- fe-database/src/handlers/scene_asset_adoption.rs: 245
-- fe-database/src/handlers/stamp_overrides.rs: 265
-- fe-database/src/handlers/stamp_promotion.rs: 301
-- fe-database/src/handlers/transform.rs: 48, 325
-- fe-database/src/migration/role_grants.rs: 176
-- fe-database/src/migration/transform_mapping.rs: 943
-- fe-database/src/op_log.rs: 477
-- fe-database/src/queries.rs: 20, 60, 97
-- fe-database/src/role_manager.rs: 194, 491
-- fe-database/src/session_cache.rs: 60
-- fe-database/src/space_manager.rs: 44, 103, 204, 270, 341
-- fe-database/tests/petal_snapshot_test.rs: 75, 390, 405, 428
+The 2026-11-13 re-run is folded into the register table above (51 hits classified: 36 production, 14 test, 0 check, 1 doc mention); re-run the command in its header and reconcile before push.
 
 ## FR-3 — SurrealDB BUSL-1.1 third-party notice maintenance (REL-04)
 
@@ -183,6 +180,9 @@ unsigned-op-log register and any open RBAC gaps. Attack surface justifying it: P
 
 - Fast lint job (fmt --check + clippy -D warnings, Linux-only) in
   `build-artifacts.yml` — README:79 declares the standard; CI must enforce it.
+  **Amendment 2026-11-13:** the fast lint job no longer runs clippy (user decision
+  2026-11-09: clippy is in no gate; CONTRIBUTING.md:30). The lint job is fmt +
+  cargo-deny + fuzz, warn-only (build-artifacts.yml:60-125).
 - `release.yml` build-job timeouts bumped 120→150 to match commit f0d4bd3's
   cold-cache headroom (tag builds are the coldest).
 - build-artifacts workflow badge in README.

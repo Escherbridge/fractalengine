@@ -32,19 +32,18 @@ are tracked for resolution before a production-ready release; reports that
 merely restate them will be deduplicated against this list.
 
 - **Legacy op-log entries are unsigned.** The op-log format reserves an
-  ed25519 signature field, but 21 production write paths in `fe-database`
+  ed25519 signature field, but 36 production write paths in `fe-database`
   stamp a placeholder (all-zero) signature, session revocation among them.
   Per decision D-CL24(5), these pre-canonical `op_log` rows are permanently
   unsigned and untrusted: there is no signature backfill. Signed operations
   belong to the canonical log. Do not rely on `op_log` signatures for
   integrity or non-repudiation. The site-by-site register is in
-  `conductor/tracks/oss_release_20260717/spec.md` (FR-2). It was
-  re-verified 2026-10-11 with `git grep -n '"00"\.repeat(64)' -- '*.rs'`,
-  which returned 22 hits: 21 production sites plus 1 test fixture. Re-run
-  2026-11-13 it returns 45 hits across `fe-database` (including `#[cfg(test)]`
-  fixtures and tests) and `fe-api` tests; new write paths added since keep the
-  same placeholder, so the statement above holds and the count is not a
-  stable figure.
+  `conductor/tracks/oss_release_20260717/spec.md` (FR-2). It was rebuilt
+  2026-11-13 with `git grep -n '"00"\.repeat(64)' -- 'fe-*' 'fractalengine*' tools extensions`,
+  which returned 51 hits: 36 production sites, 14 test fixtures, 0 checks
+  and 1 documentation mention. New write paths added since keep the same
+  placeholder, so the statement above holds and the count is not a stable
+  figure.
 - **Known dependency advisories are triaged, not yet fixed.** `deny.toml`
   explicitly ignores these RustSec IDs, each with a reason:
   - None for `wasmtime`: the 19 ignores for 29.0.1 were retired when
