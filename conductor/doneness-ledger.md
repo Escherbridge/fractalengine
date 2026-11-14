@@ -61,23 +61,23 @@ Counts are plan checkboxes (`[x]` versus `[ ]`/`[~]`) where a plan exists. `-` m
 | [pen_curve_tool_20260722](./tracks/pen_curve_tool_20260722/) | implemented_pending_inapp_verify | 31 | 0 | In-app re-verify + archive only |
 | [ui_shell_architecture_20260724](./tracks/ui_shell_architecture_20260724/) | implemented_pending_inapp_verify | 23 | 6 | All 6 open are in-app checkpoints |
 | [ui_semantics_unification_20260808](./tracks/ui_semantics_unification_20260808/) | implemented_pending_inapp_verify | - | 5 | In-app, rulings record, f32::MAX lint |
-| [endpoint_api_surface_20260725](./tracks/endpoint_api_surface_20260725/) | in_progress | 7 | 1 | T5-LOCK, T5-PARITY, retro DONE (49e2de0); T5-TRIGGER needs ratification (op vocabulary) |
+| [endpoint_api_surface_20260725](./tracks/endpoint_api_surface_20260725/) | in_progress | 7 | 1 | T5-LOCK, T5-PARITY, retro DONE (49e2de0); T5-TRIGGER out of scope (Q33 default a, 2026-11-14; was needs ratification) |
 | [hierarchy_visibility_groups_20260808](./tracks/hierarchy_visibility_groups_20260808/) | implemented_pending_inapp_verify | - | in-app | Phases 2-6 DONE (VIS-PH2..6, 7a74214); in-app verify user-gated |
 | [mcp_scene_primitives_20260716](./tracks/mcp_scene_primitives_20260716/) | done | 26 | 0 | 2.2/5.2/2.4 DONE (49e2de0: MCP-TEST-UPLOAD, MCP-TEST-LOOP, MCP-2.4) — back to done |
-| [hexon_scale_orchestration_20260712](./tracks/hexon_scale_orchestration_20260712/) | in_progress | 22 | 2 | HS-P5, HS-P6-GRID DONE (7a74214); HS-P6-CALLOUT ratified 2026-10-13 (D-11), doable now; Phase 6 user-verification stays gated (HS-USER) |
-| [auth_policy_pattern_20260710](./tracks/auth_policy_pattern_20260710/) | in_progress | 15 | 1 | AP-3.1, AP-3.4 DONE (49e2de0); 3.5 stale (superseded, no action) |
+| [hexon_scale_orchestration_20260712](./tracks/hexon_scale_orchestration_20260712/) | complete in code (Phase 6 in-app check and sweep user-gated) | 22 | 2 | HS-P5, HS-P6-GRID DONE (7a74214); HS-P6-CALLOUT ratified 2026-10-13 (D-11), doable now; Phase 6 user-verification stays gated (HS-USER) |
+| [auth_policy_pattern_20260710](./tracks/auth_policy_pattern_20260710/) | complete (2026-11-14, C-DATA) | 15 | 1 | AP-3.1, AP-3.4 DONE (49e2de0); 3.5 stale (superseded, no action) |
 | [canonical_data_log_20260808](./tracks/canonical_data_log_20260808/) | in_progress | - | 14 tasks | CDL-W4 + CDL-R2 DONE-pending-sweep (9 slices `41c466b`..`7c31344` + security-fix `e886539` + review-fix `00a2a08`, 2026-10-14) — code-complete and reviewed, tests written not run; CDL-R1/R6/WS-ORACLE DONE (49e2de0); network NO-GO |
 | [p2p_asset_streaming_20260718](./tracks/p2p_asset_streaming_20260718/) | in_progress | 26 | 6 | PAS-P0, PAS-P4B DONE (7a74214); PAS-P3/PAS-P4/PETAL-RENDER-DISTANCE code-complete pending the end-of-campaign sweep (S1-S8b, f25f906..4a61b19, 2026-10-13 — tests written, not run); PAS-P5 code-complete pending the sweep (S1-S8, `db5883b`..`e7762d9`, 2026-10-14; critic tick 5 AC-23 caveat: FetchStrategy is not the single P2P policy layer, see PAS-P5-P2P-POLICY); PAS-P1V script written, not executed; PAS-P6 open — large-phases campaign order: P3+P4 -> P5 -> CDL-W4 (counts recomputed 2026-10-14 against plan.md's current `[x]`/`[ ]` tally; critic tick 5) |
-| [oss_release_20260717](./tracks/oss_release_20260717/) | in_progress | 23 | 9 | 1.3 DONE (`da3e6a1`; re-cited W6-11, see the OSS-1.3 correction above) + 1.5/2.4/3.7B/4.2/4.3 DONE (49e2de0/93b1bcd/877e801); still open: P6 (user-blocked residuals), 5.3/5.5 (ratified-but-unbuilt) |
-| [release_ci_20260429](./tracks/release_ci_20260429/) | in_progress | 9 | 1 | v* tag run (user) |
+| [oss_release_20260717](./tracks/oss_release_20260717/) | in_progress | 25 | 7 | 1.3 DONE (`da3e6a1`; re-cited W6-11, see the OSS-1.3 correction above) + 1.5/2.4/3.7B/4.2/4.3 DONE (49e2de0/93b1bcd/877e801); still open: P6 (user-blocked residuals), 5.3/5.5 (ratified-but-unbuilt) |
+| [release_ci_20260429](./tracks/release_ci_20260429/) | in_progress | 3.2-3.6 | 2.7, 3.7, 3.1 partial | Phase 3 landed; 2.7 and 3.7 user-gated (first tag); 3.1 Windows provider is the user's |
 | [cross_platform_desktop_20260429](./tracks/cross_platform_desktop_20260429/) | in_progress | 12 | 2 | ARM64 via tag (user); D-66 resolved 2026-10-13 — stays scoped, no Linux --workspace widen (see OSS-5.5) |
 | [thorns_shields_20260321](./tracks/thorns_shields_20260321/) | in_progress | - | 1 FR | TS-FR1, TS-FR3 DONE (49e2de0; CI confirmed f002e8e/850466d); TS-FR2 still needs ratification |
 | [ux_qa_review_20260714](./tracks/ux_qa_review_20260714/) | in_progress (meta) | - | 5 | Never done by design |
-| [hexon_unification_20260716](./tracks/hexon_unification_20260716/) | pending | 0 | 37 | HU-P1..P6 all doable |
-| [map_scale_authority_20260716](./tracks/map_scale_authority_20260716/) | pending | 0 | 21 | MSA-P1..3,5 doable; P4 now ratified too (D-38, 2026-10-13) — all 5 phases doable |
-| [road_builder_ux_20260716](./tracks/road_builder_ux_20260716/) | pending | 0 | 30 | ROAD-PATH-KIND, ROAD-CORE doable |
+| [hexon_unification_20260716](./tracks/hexon_unification_20260716/) | in_progress | 30 | 8 | code complete except round-5 items HEXON5-01..09 (per-petal uninstall, API waiter correlation, imported_by, imported-history read, blob rollback, verify_strict, space_manager payload, row-count check) |
+| [map_scale_authority_20260716](./tracks/map_scale_authority_20260716/) | in_progress | 2 | 3 | Phases 1 and 2 landed, Phase 3 partly; FR-3 units audit, placement wiring, Phase 5 manual and sweep open (user-gated); defaults awaiting ratification |
+| [road_builder_ux_20260716](./tracks/road_builder_ux_20260716/) | in_progress | - | - | code landed for CITY5-01/02/03/05, spec amended to shipped values; AC queue tests, in-app pass and sweep open (user-gated); defaults awaiting ratification |
 | [iroh_1_0_upgrade_20260711](./tracks/iroh_1_0_upgrade_20260711/) | in_progress | 8 | 1 | IROH-1X port + test sweep + flag-day rollout DONE (ff8b1e4 + final sweep, RUNBOOK §1); open: relay-assisted AC against a self-hosted iroh-relay 1.3 (needs a host, D-23); EOL risk retired |
-| [crate_consolidation_r2_20260718](./tracks/crate_consolidation_r2_20260718/) | pending | 0 | 15 | CC-P1 doable; gates need ratification |
+| [crate_consolidation_r2_20260718](./tracks/crate_consolidation_r2_20260718/) | gated | 7 | 8 | G-1/G-2/G-3 recorded DEFER (conductor/decisions/crate-consolidation-r2-gates-20261113.md); evidence artifact landed; fe-plugin-test has three consumers; fe_query used in 16 fe-database files |
 | [inspector_settings_20260419](./tracks/inspector_settings_20260419/) | in_progress | 11 | 19 | FR-3/FR-4 RATIFIED 2026-10-13 (D-32 full scope, D-33 ratified-as-written) — doable now, sequenced after role propagation lands |
 | [outstanding_decisions_20260715](./tracks/outstanding_decisions_20260715/) | blocked_on_ratification | 68 resolved | 72 entries | 4 open — D-26 to ratify (SSO token lifetime, proposal rejected); D-29/D-46/D-53 await a user ACTION not a decision (tracks.md:366-375) |
 | [role_propagation_20261013](./tracks/role_propagation_20261013/) | planned | 0 | 4 | New 2026-10-13 track; owns SYNC-ROLE-PROPAGATION, SYNC-RESPONDER, P2P-REF-CONFINE, SYNC-SIGNED-PLANE's `__shards` slice; plan.md WRITTEN (14 slices RP-0..RP-10 incl. RP-4b/RP-4s/RP-9b) and amended at critic tick 8 (`.omc/accountability/tick-20261015-0908.md`, C11-C21) — citations re-grounded @`009b282`; zero code built yet, next track to run |
@@ -372,3 +372,23 @@ Superseded or already true. Most are one-line doc/TODO cleanups: batch them into
 | **STALE-1ULP** | 1-ULP legacy rows backfill | S | mission plan M3 deferred | None in prod | No action |
 | **STALE-F24-RACE** | F24 hydration/drain startup race | S | mission plan M3 deferred #9 | Relay subscribes before DB spawn | No action |
 | **OD-OVERTAKEN** | Ten register entries overtaken by later decisions/landed work | S | outstanding_decisions D-1, D-2, D-10, D-14, D-21, D-36, D-50, D-55, D-61, D-68 | Per the spec.md 2026-10-10 audit appendix (mission D1, DEC-C9, D-CI2, 195f5cc, ba0b8d2/236ae8e, etc.); confirmed still closed in the 2026-10-13 register pass | User confirms; each marked [RESOLVED] superseded-by with a date |
+
+## Round 5 status (2026-11-14, I5-CONDUCTOR)
+
+| Track | Status | Note |
+|---|---|---|
+| hexon_entitlements_20261031 | in_progress | S1, S2, S3, S5, S6 done in code; S4 Installed-tab states done, Available-tab licence state out of scope; S7 docs per HEXON5-07/11; gates W1-W3, sweep, retro open (user-gated) |
+| peer_networking_support_20261031 | code-complete, sweep pending | NET5-01..08 COMPLETE at HEAD; F1 and F2 PASS-WITH-FIXES; F3, P11, P13 open (user-gated); R6-10 still open (relay start unreachable) |
+| relay_operability_20261031 | code-complete-pending-sweep | S9 review-and-fix open; full sweep user-gated |
+| extension_platform_20261107 | in_progress | P6.5 done after round 5 (EXT5-05); 41 of 43 done; P4.4 and P6.3 open (user-gated) |
+| portal_surface_20261107 | in_progress | T5.5 code done, run pending (user-gated) |
+| project_completion_20261104 | in_progress | INT5 15 ticked; INT5-09 open (code done, test leg handed off by R5-INT-2); all runs user-gated |
+| iroh_1_0_upgrade_20260711 | in_progress | Port landed 2026-10-11; open: sweep + flag day before 2026-12-31 |
+
+| ID | Status | Scope | Source | Done when |
+|---|---|---|---|---|
+| **POLISH-W2** | code landed, wave review not run | Polish wave 2 | polish_lane_20261031 | Wave review verdict recorded; in-app look user-gated |
+| **POLISH-W3** | code landed, wave review not run | Polish wave 3 | polish_lane_20261031 | Wave review verdict recorded; in-app look user-gated (W3) |
+| **POLISH-W4** | code landed, wave review not run | Polish wave 4 | polish_lane_20261031 | Wave review verdict recorded |
+| **POLISH-W5** | code landed, wave review not run | Polish wave 5 | polish_lane_20261031 | Wave review verdict recorded |
+| **POLISH-W6** | code landed, wave review not run | Polish wave 6 | polish_lane_20261031 | Wave review verdict recorded; in-app look user-gated (W6) |

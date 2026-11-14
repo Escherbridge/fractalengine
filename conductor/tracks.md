@@ -93,23 +93,23 @@ Order: signing and release first, then agent QA, then the operator seams.
   resolved pose returned), `GET /api/v1/debug/camera`, multi-focus terrain streaming, and the folded-in input surface.
   Runs after polish wave 1, before polish wave 2. 5 vision slices + I1-I5 + advocate + critic (security depth) —
   [./tracks/agent_vision_20261031/](./tracks/agent_vision_20261031/)
-- [ ] **relay_operability** (P1) — **S-RELAY** + **S-RELAY-ADVERTISE**: opt-in `/metrics`, a `UsageEvent` sink,
+- [~] **relay_operability** (P1) — **S-RELAY** + **S-RELAY-ADVERTISE**: opt-in `/metrics`, a `UsageEvent` sink,
   TLS/backup/self-hosted iroh-relay docs, and verse-advertised relays via `Endpoint::insert_relay` —
   [./tracks/relay_operability_20261031/](./tracks/relay_operability_20261031/)
-  Status 2026-11-13 (NET-38): code-complete-pending-sweep; plan 9 of 10 tasks ticked. Open: S9 review-and-fix with recorded verdicts, full sweep (user-gated).
+  Status 2026-11-14 (NET5-10): code-complete, sweep and in-app evidence pending. Plan 9 of 10 tasks ticked. Open: S9 review-and-fix with recorded verdicts, full sweep (user-gated).
 - [ ] **hexon_entitlements** (P1) — **S-REGISTRY** + **S-ENTITLEMENT**: registry protocol v1, a `PackageStore`
   trait, default-deny registry auth, and an `EntitlementVerifier` that gives effect to the inert
   `LicenseType::Paid` / `encrypted_key` / `free_entries` fields —
   [./tracks/hexon_entitlements_20261031/](./tracks/hexon_entitlements_20261031/)
-  Status 2026-11-13 (HEXON-18): S1 `b32eabcd` and S3 `89b2f2f5` landed, S5 `8558990d` landed, S6 close-out ticked in `b9951457`. S2 (PackageStore, default-deny) and S4 (Hexon Manager states) are partial at HEAD; S7 docs and the full sweep stay open.
-- [ ] **peer_networking_support** (P1) — secure relay-capable peers, built on S-RELAY-ADVERTISE. Scope:
+  Status 2026-11-14 (HEXON5-12): S1, S2, S3, S5, S6 done in code; S4 Installed-tab states done, Available-tab licence state out of scope; S7 docs per HEXON5-07/11; gates W1-W3, sweep, retro open (user-gated).
+- [~] **peer_networking_support** (P1) — secure relay-capable peers, built on S-RELAY-ADVERTISE. Scope:
   - an embedded iroh-relay server in fe-relay (opt-in, members-only `AccessControl`, live eviction on revoke);
   - desktop relay mode after a UDP self-test plus an HTTPS dial-back;
   - signed and bounded advertisements, adopted as **DialOnly** by default (the home relay is per endpoint, not per verse);
   - per-message gossip signing, closing residual S-1;
   - truthful direct-vs-relayed diagnostics.
 
-  Status 2026-11-13 (NET-38): 15 of 26 plan tasks ticked. F0 PASS-WITH-FIXES (2026-10-31); F1, F2 and F3 PASS-WITH-FIXES via R-NET-3..R-NET-6 (2026-11-13). F3 relay start waits on R6-05, R6-10, R6-11; evidence and sweep pending.
+  Status 2026-11-14 (NET5-10): code-complete, sweep and in-app evidence pending. 15 of 26 plan tasks ticked. F0 PASS-WITH-FIXES (2026-10-31); F1 and F2 PASS-WITH-FIXES; F3, P11, P13 open (user-gated). F3 relay start waits on R6-05, R6-10 (still open: relay_serve_bridge.rs requires dialback_passed), R6-11.
 
   **Fable review gates F0–F3 are embedded.** F0 is the design and threat-model review, before any code. Sequenced after
   relay_operability — [./tracks/peer_networking_support_20261031/](./tracks/peer_networking_support_20261031/)
@@ -141,6 +141,7 @@ Builds on the S-PLUGIN enabler above. Decisions D-X1..D-X8 live in the track's c
 
   Author-only until the build gate opens (D-X2). `portal_surface_20261107` depends on it —
   [./tracks/extension_platform_20261107/](./tracks/extension_platform_20261107/)
+  Status 2026-11-14 (EXT5-05): P6.5 ticked; 41 of 43 plan tasks done; P4.4 and P6.3 open (user-gated).
 
 - [ ] **portal_surface** (P1) — depends on **extension_platform**; extends the Petal Portal: signed web bundles
   (dashboards, documentation sites, repository-node code bundles) in the sealed `.hexon` family, admitted per
@@ -148,6 +149,7 @@ Builds on the S-PLUGIN enabler above. Decisions D-X1..D-X8 live in the track's c
   the local blob store via a custom protocol with per-package origins, CSP and an exact-origin navigation
   allowlist; its own QA lane (PJ1–PJ10). Decisions D-X5..D-X8. Author-only until the build gate opens —
   [./tracks/portal_surface_20261107/](./tracks/portal_surface_20261107/)
+  Status 2026-11-14 (EXT5-05): T5.5 code done, run pending (user-gated).
 
 ---
 
@@ -162,9 +164,9 @@ implementation and combined smoke. Current ownership, evidence and remaining que
 [qa-chain-progress-20261101.md](./qa-chain-progress-20261101.md). Final CI/tagged-release publication is authorized
 after the complete goal and local verification pass; implementation stays local until then.
 
-### [ ] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
+### [~] polish_lane_20261031 — finish stubs, complete features, close seams, usability of every feature
 
-_Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · pending · 0 / 6 waves · UI-13 2026-11-13: wave code landed (see accountability log); W3/W6 in-app look user-gated · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_
+_Link: [./tracks/polish_lane_20261031/](./tracks/polish_lane_20261031/) · done-pending-inapp-verify · 6 of 6 waves code-landed · W3/W6 in-app look user-gated (see accountability log) · created 2026-10-31 from Lane A recon (R1 stubs + R2 UX QA, 82 findings)_
 
 Six waves of disjoint leaf slices (27 total), each followed by a serial gate, an **advocate** review-and-fix
 (design patterns, reuse, ergonomics) and a **critic** review-and-fix (defects, anti-patterns, tests that
@@ -224,7 +226,7 @@ Spin-out of terrain_proposal_delta_viz FR-11 (assets-in-volume takeoff). Spec an
 
 ### [~] terrain_proposal_delta_viz — visible cut/fill delta + selected-volume report
 
-_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · done-pending-sweep · 14 done / 0 open · created 2026-10-25 from in-app F5 · UI-13 2026-11-13: in-app F5 verify and sweep still user-gated_
+_Link: [./tracks/terrain_proposal_delta_viz_20261025/](./tracks/terrain_proposal_delta_viz_20261025/) · done-pending-sweep · S1-S9 done, S10 open (I-UI-1 handoff) · created 2026-10-25 from in-app F5 · in-app F5 verify and sweep still user-gated_
 
 **COMPLETE:** W1–W4 (all slices S1–S7 + S8 docs). P1 lattice ghost + civil red/blue cut/fill
 heatmap (live before commit) + P2 selected-volume report (true cut/fill/net, per-item,
@@ -288,9 +290,9 @@ eyes (VIS-PH4), Groups section + unified layer registry (VIS-PH5), REST/MCP (VIS
 The four 2026-07-16 fix tracks were archived 2026-07-17
 ([batch retro](./tracks/_archive/ux_retro_20260716/retro.md)). Remaining:
 
-### [ ] road_builder_ux — C:S-inspired road/path builder input layer
+### [~] road_builder_ux — C:S-inspired road/path builder input layer
 
-_Link: [./tracks/road_builder_ux_20260716/](./tracks/road_builder_ux_20260716/) · pending · 0 / 30_
+_Link: [./tracks/road_builder_ux_20260716/](./tracks/road_builder_ux_20260716/) · in-progress · code landed for CITY5-01/02/03/05 (spec amended to shipped values) · AC queue tests, in-app pass and sweep open (user-gated)_
 
 Not started. Design user-ratified 2026-07-16 (input layer only); its prerequisite
 (ui_shell pointer-ops manager) has landed, so it is buildable: `path_kind` provenance
@@ -319,17 +321,17 @@ Phases 1–4 done (scale plumbing, `RulerPlugin` scale bar); GPX path-length rea
 (0082c64). Open: tape/bearing + area tools (HS-P5), adaptive metric grid (HS-P6-GRID),
 dimension callouts (blocked on D-11), user in-app check. The D-10 gate (egress GA) is met.
 
-### [ ] map_scale_authority — map-authoritative scale for placement + UI numbers
+### [~] map_scale_authority — map-authoritative scale for placement + UI numbers
 
-_Link: [./tracks/map_scale_authority_20260716/](./tracks/map_scale_authority_20260716/) · pending · 0 / 21_
+_Link: [./tracks/map_scale_authority_20260716/](./tracks/map_scale_authority_20260716/) · in-progress · Phases 1 and 2 landed, Phase 3 partly · FR-3 units audit, placement wiring, Phase 5 manual and sweep open (user-gated)_
 
 Not started (no `fe-format/src/scale.rs`; `crud.rs`/`lib.rs` still hardcode scale
 `[1,1,1]`). Design binding since 2026-07-16; Phases 1–3 + 5 agent-doable (MSA-P1..P3,
 P5 — P3 also closes the ux_qa scale-authority split); Phase 4 snap-on-place waits on D-38.
 
-### [~] auth_policy_pattern — policy engine (RBAC-on-results backbone)
+### [x] auth_policy_pattern — policy engine (RBAC-on-results backbone)
 
-_Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/) · in_progress · 13 done / 3 open_
+_Link: [./tracks/auth_policy_pattern_20260710/](./tracks/auth_policy_pattern_20260710/) · complete (2026-11-14, C-DATA) · 13 done / 3 open (3.5 superseded, no action)_
 
 fe-policy crate, fe-database/fe-hexon routing, hexon HTTP routes through the engine
 (5199352), inbound peer admission at the DB thread (F3, supersedes the sync-thread
@@ -372,7 +374,7 @@ constraint now applies to the canonical path only (F1/F2 made the legacy row pat
 
 ### [ ] hexon_unification — one canonical .hexon + portable petal snapshot
 
-_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · in_progress · HU-P1..P5 landed via HEXON slices · 37 tasks_
+_Link: [./tracks/hexon_unification_20260716/](./tracks/hexon_unification_20260716/) · in_progress · HU-P1..P5 landed via HEXON slices · 30 of 38 plan tasks ticked (plan.md) · code complete except round-5 items HEXON5-01..09_
 
 Landed (2026-11-13, HEXON-18): PetalSnapshot writer and reader `c6ea3da8`, blob attach and verify-then-write restore `51e216d3`, import `091efecf`, export `a8fd6377`, Manager+ routes `f5f16938` and `d87dce6f`, FR-9 round trip `d7510139`. Open: HU-P6 docs and Phase 6 verification (sweep, user-gated). `crate_id` and `.fecrate` removal not re-verified this round.
 Fully ratified (user directives 2026-07-16) and agent-doable in order HU-P1→P6.
@@ -401,15 +403,13 @@ the flag-day rollout. Timing/posture decisions D-22/D-23 remain open in the regi
 
 ### [ ] crate_consolidation_r2 — user-directed crate merges
 
-_Link: [./tracks/crate_consolidation_r2_20260718/](./tracks/crate_consolidation_r2_20260718/) · pending · 0 / 15_
+_Link: [./tracks/crate_consolidation_r2_20260718/](./tracks/crate_consolidation_r2_20260718/) · gates recorded DEFER · 7 / 15 ticked_
 
-Nothing executed. Phase 1 evidence (consumer maps, closure sizes) is agent-doable
-(CC-P1); merges G-1/G-2/G-3 wait on gate decisions (CC-GATES). Spot evidence:
-fe-plugin-test has zero consumers; fe-query is consumed by fe-api AND fe-database.
+Gates G-1/G-2/G-3 recorded DEFER (conductor/decisions/crate-consolidation-r2-gates-20261113.md); evidence artifact landed. fe-plugin-test has three consumers (fe-plugin dev-dep, fe-ext, iot-bridge); fe_query is used in 16 fe-database files, so a merge would invert layering.
 
 ### [~] oss_release — open-source release checklist
 
-_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_progress · 17 done / 15 open · Apache-2.0 ratified_
+_Link: [./tracks/oss_release_20260717/](./tracks/oss_release_20260717/) · in_progress · 25 done / 7 open (plan.md, 2026-11-14; 6.4 closed, 6.3 open) · Apache-2.0 ratified_
 
 Licence files, THIRD-PARTY-LICENSES (BUSL-1.1), README/SECURITY claims, crate
 descriptions done. 2026-10-10: README Status corrected, SECURITY.md stale "permissive
@@ -421,9 +421,9 @@ preflight; user-gated: vulnerability reporting toggle, publishing gate, visibili
 
 ### [~] release_ci — cross-compilation pipeline + Docker image
 
-_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · 9 done / 1 open + code-signing & `v0.1.0` phase added 2026-10-31_
+_Link: [./tracks/release_ci_20260429/](./tracks/release_ci_20260429/) · in_progress · Phase 3 landed: 3.2-3.6 done, 3.1 partial (Windows provider is the user's), 2.7 and 3.7 user-gated (first tag) · code-signing & `v0.1.0` phase added 2026-10-31_
 
-Only task 2.7 remains: the first `v*` tag run (user-gated). Its artifact checklist must
+Open: 2.7 and 3.7 (the first `v*` tag run, user-gated); 3.1 partial. Its artifact checklist must
 be re-derived after macOS removal (c272246): Linux x64, Windows x64, Windows ARM64,
 musl relay ×2, GHCR image. Latest main CI 38095577669 is fully green.
 

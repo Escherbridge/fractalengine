@@ -785,3 +785,10 @@ fail-closed).
 - 2026-11-13 — UI-13 retro, agent_vision_20261031: screenshot and input surfaces built; the in-app AC-11 minimized-window check and the sweep are user-gated.
 - 2026-11-13 — UI-13 retro, agent_input_surface_20261031: merged into agent_vision (I1-I5 built); only the user-gated in-app input check remains.
 - 2026-11-13 — UI-13 retro, utility_node_contract_20261113: deferred spin-out stub (UI-12), docs only, parent terrain_proposal_delta_viz_20261025.
+- 2026-11-14 — I5-CONDUCTOR (round 5): ledger and track bookkeeping for HEXON5-12, NET5-10, REL5-05 and UI5-07 applied; the exact UI5-07 POLISH-W text was not found at HEAD, so POLISH-W2..W6 rows were written from the polish_lane status text (default, for review).
+- 2026-11-14 — T5-CITY: four user-question defaults for road_builder_ux_20260716 and map_scale_authority_20260716 recorded as awaiting ratification (angle snap panel-only, 3D pen length, shipped 2.0 m / 16 samples, NodeCreated scale widening).
+- 2026-11-14 — T5-DATA: Q33 default (a) taken: endpoint trigger-op out of scope; manual-Refresh default taken; both awaiting ratification. auth_policy_pattern_20260710 set complete per completeness-turn4 C-DATA.
+- 2026-11-14 — T5-EXT: extension_platform P6.5 ticked on R5-EXT COMPLETE evidence and H4-1/H4-2 HEAD checks; no override taken.
+- 2026-11-14 — T5-NET: NET5-08 did not close R6-10; relay_serve_bridge.rs decide() still requires dialback_passed (circular). Recorded as QA-0178; N5-08 still HANDED-OFF (fe-api/src/network.rs owner).
+- 2026-11-14 — T5-INT: R5-INT-2 hand-off for the INT5-09 test leg (fe-ui/src/actions/mod.rs); the R5-CITY stale INT5-07 line is superseded by the HEAD scale field.
+- 2026-11-14 — T5-REL: oss_release 6.4 closed (sum 51), 6.3 open; crate_consolidation_r2 gates G-1/G-2/G-3 recorded DEFER by default.
