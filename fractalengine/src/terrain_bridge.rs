@@ -943,13 +943,14 @@ fn install_from_registry(
             tracing::warn!(uri, "InstallFromRegistry progress channel closed");
         }
     };
-    progress(0, entry.size);
-    // Last forwarded count, so the final event before the install is always (n, n).
-    let mut last_received = 0u64;
-    let mut last_total = entry.size;
+    // Last forwarded (received, total): repeats and regressions are dropped, and the final event is always (n, n).
+    let mut last = (0u64, entry.size);
+    progress(last.0, last.1);
     let fetched = source.fetch_hexon_with_progress(&entry, &mut |received, total| {
-        last_received = received;
-        last_total = total;
+        if received < last.0 || (received, total) == last {
+            return;
+        }
+        last = (received, total);
         progress(received, total);
     });
     let content = match fetched {
@@ -959,8 +960,8 @@ fn install_from_registry(
         }
         Err(e) => return fail(e.to_string()),
     };
-    if last_received != last_total || last_received == 0 {
-        let complete = if last_received == 0 { content.bytes.len() as u64 } else { last_received };
+    let complete = if last.0 == 0 { content.bytes.len() as u64 } else { last.0 };
+    if last != (complete, complete) {
         progress(complete, complete);
     }
     let outcome = match registry.store().install_tileset(&content.bytes) {
