@@ -92,6 +92,41 @@ op_log.rs test fixture +1; the original sites' line numbers shifted. (A cosmetic
 - The register above is the maintenance artifact: re-grep `"00".repeat(64)` before
   push and reconcile.
 
+
+**Re-run 2026-11-13 (T-REL; crate-scoped `git grep -n '"00"\.repeat(64)' -- <crate>/*.rs`, crates fe-database fe-api fe-sync fe-runtime fe-ui fe-identity fe-canonical-log fe-policy):**
+45 hits in 27 files (22 on 2026-10-11). Hits in files not in the table above are new since
+2026-10-11 and must be classified (production write path or `#[cfg(test)]`/`tests/` fixture) and
+added to the table. Table line numbers have also drifted (e.g. `crud.rs` now at 268, 1188, 1312,
+1508, 1574). Lines below are raw hits, not yet classified:
+
+- fe-api/tests/export_share_test.rs: 1802
+- fe-database/src/handlers/checked_mutation.rs: 205
+- fe-database/src/handlers/crud.rs: 268, 1188, 1312, 1508, 1574
+- fe-database/src/handlers/editor_batch/mod.rs: 141
+- fe-database/src/handlers/elevated_query.rs: 169
+- fe-database/src/handlers/entity_property.rs: 42, 113, 158
+- fe-database/src/handlers/extension_binding.rs: 635
+- fe-database/src/handlers/extension_policy.rs: 833
+- fe-database/src/handlers/invite.rs: 480 (corrupts a fixture on purpose; test)
+- fe-database/src/handlers/object_creation.rs: 318
+- fe-database/src/handlers/petal_render_distance.rs: 67
+- fe-database/src/handlers/petal_requirements.rs: 103
+- fe-database/src/handlers/petal_snapshot.rs: 61, 268
+- fe-database/src/handlers/petal_terrain.rs: 122
+- fe-database/src/handlers/plugin_host.rs: 607
+- fe-database/src/handlers/scene_asset_adoption.rs: 245
+- fe-database/src/handlers/stamp_overrides.rs: 265
+- fe-database/src/handlers/stamp_promotion.rs: 301
+- fe-database/src/handlers/transform.rs: 48, 325
+- fe-database/src/migration/role_grants.rs: 176
+- fe-database/src/migration/transform_mapping.rs: 943
+- fe-database/src/op_log.rs: 477
+- fe-database/src/queries.rs: 20, 60, 97
+- fe-database/src/role_manager.rs: 194, 491
+- fe-database/src/session_cache.rs: 60
+- fe-database/src/space_manager.rs: 44, 103, 204, 270, 341
+- fe-database/tests/petal_snapshot_test.rs: 75, 390, 405, 428
+
 ## FR-3 — SurrealDB BUSL-1.1 third-party notice maintenance (REL-04)
 
 surrealdb / surrealdb-core 3.0.5 are Business Source License 1.1 (not OSI), embedded

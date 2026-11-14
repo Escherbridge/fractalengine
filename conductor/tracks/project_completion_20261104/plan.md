@@ -28,9 +28,9 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 - [ ] QA-0072: preserve guarded Owner QA observation before actual native provider handoff. QA40 three no-input UI reads failed despite state and actual screenshot succeeding; explicit ordering correction d8da3a46 is source-reviewed, compiled d8da3a46; QA41 matching tree/state/screenshot and102physicalID joins recovered, independent focused review approved. Native output suppression and Owner/scope/privacy gates remain required.
 
-- [ ] QA-0071: repair shared scene/UI pointer arbitration so armed Circle/Rectangle/other world tools cannot write through actual viewport Back/breadcrumb/hint UI. QA38 reproduced one Back click causing both navigation and a new terrain region; preserve evidence and existing accepted data. Do not equate this with the unknown historical QA0024 trigger.
+- [ ] QA-0071: repair shared scene/UI pointer arbitration so armed Circle/Rectangle/other world tools cannot write through actual viewport Back/breadcrumb/hint UI. QA38 reproduced one Back click causing both navigation and a new terrain region; preserve evidence and existing accepted data. Do not equate this with the unknown historical QA0024 trigger. SOURCE STATE 2026-11-13: source fix 86095074 is in (`ScenePointerChrome::exclude_completed_hud`, fe-renderer/src/scene_pointer.rs:151, withholds the ruler HUD footprint from scene pointer admission); live re-test pending.
 
-- [ ] QA-0070: preserve verified terrain API scope/credential grant and exact admitted ancestry through REST/MCP/runtime to transactional use-time validation; retain local publisher authority and test queued reparent/expiry/revoke/reset refusals.
+- [ ] QA-0070: preserve verified terrain API scope/credential grant and exact admitted ancestry through REST/MCP/runtime to transactional use-time validation; retain local publisher authority and test queued reparent/expiry/revoke/reset refusals. SOURCE STATE 2026-11-13: implemented at fe-api/src/terrain_credential.rs and fe-database/src/handlers/petal_terrain.rs; the credential-guard journey at petal_terrain.rs:595-660 asserts the reparent refusal ("ancestry changed"); journeys made to compile by 28972bf8; executed result not recorded; live acceptance pending.
 
 - [x] QA-0069 source correction: complete finite source-bound measurement/atomic pair stack and all three ownership/projection blockers plus source-hash cache independently approved and integrated0e6668bd. Live acceptance remains below.
 - [ ] Verify no new cut/fill history on navigation/reload, true zero versus unavailable, late direct and resolved receipts, current access/source changes, newer gestures and terminal outcome retention.
@@ -57,7 +57,7 @@ reviewed slice. Historical evidence stays linked rather than rewritten.
 
 ## P3: full UX and feature coverage
 
-- [~] QA0075 missing-symbol controls: shared native-button vector adapter independently source/integration reviewed and committed9498869e. QA60 (10 PNGs across `1024`/`1280`/`1600` at `1x`/`2x` + `1159`/`1160`/`1161` at `1x`) independently visual- and full-packet-reviewed: zero missing-glyph squares (`□`), clear selected tree row at `1x`/`2x`, and `whole_targets_fit=true` across all 9 matrix cases. Residual `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0`) remains open.
+- [~] QA0075 missing-symbol controls: shared native-button vector adapter independently source/integration reviewed and committed9498869e. QA60 (10 PNGs across `1024`/`1280`/`1600` at `1x`/`2x` + `1159`/`1160`/`1161` at `1x`) independently visual- and full-packet-reviewed: zero missing-glyph squares (`□`), clear selected tree row at `1x`/`2x`, and `whole_targets_fit=true` across all 9 matrix cases. Residual `1160`/`1161` `Deselect` topbar breakpoint overlap (`1160.0` -> `1248.0`) remains open. SOURCE STATE 2026-11-13: the topbar overlap is already fixed in source: `COMPACT_TOPBAR_WIDTH: f32 = 1248.0` at fe-ui/src/ui_shell/topbar.rs:36 and the width table test at topbar.rs:1007 (1024-1920 incl. 1159-1161, 1247-1248). Live re-check pending.
 
 Use [the screenshot inspection checklist](./visual-checklist.md) for the changed hierarchy workflow and subsequent UI fixes.
 
@@ -87,10 +87,10 @@ logs, exact SHA/toolchain/configuration and every command exit code; never dump
 the full environment or credentials.
 
 - [ ] `cargo +1.99.0 fmt --all -- --check`
-- [ ] `cargo +1.99.0 clippy --workspace --all-targets --locked --features fe-terrain/render -j2 --keep-going -- -D warnings`
-- [ ] `cargo +1.99.0 test --workspace --locked --features fe-terrain/render -j2 --no-fail-fast -- --test-threads=1 --show-output`
+- [ ] ~~`cargo +1.99.0 clippy --workspace --all-targets --locked --features fe-terrain/render -j2 --keep-going -- -D warnings`~~ OBSOLETE 2026-11-13: clippy is out of every gate (user decision 2026-11-09; root AGENTS.md test execution policy; CONTRIBUTING.md:30).
+- [ ] `cargo +1.99.0 test --workspace --locked --features fe-terrain/render -j2 --no-fail-fast -- --test-threads=1 --show-output` — SUPERSEDED 2026-11-13: the suite runs only through `tools/qa/test_batches.ps1 -Batches All` (root AGENTS.md item 3), never `cargo test --workspace` (it filled the disk 2026-11-08).
 - [ ] `cargo +1.99.0 run --locked -p fractalengine-test-harness -j2` reports **18 passed / 0 failed**, never 0/0.
-- [ ] Separate `extensions/iot-bridge/Cargo.toml` workspace: fmt check, all-targets locked Clippy with warnings denied, locked tests with one test thread and show-output.
+- [ ] Separate `extensions/iot-bridge/Cargo.toml` workspace: fmt check, ~~all-targets locked Clippy with warnings denied~~ (clippy clause OBSOLETE 2026-11-09), locked tests with one test thread and show-output.
 - [ ] Review skip/ignored results and real Podman/store fixture execution; retain explicit external GIS archive and user-check limitations.
 - [ ] Reconcile final source fingerprints, immutable evidence, findings, decisions, metadata, manual checklist and retrospective before publication.
 

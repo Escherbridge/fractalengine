@@ -230,7 +230,14 @@ truth alignment → community/CI → metadata → ratification → preflight + p
         root .glbs), the 24-crate count (members = 24; fuzz/ is excluded), the
         signing disclosure (README:54, :258), and the 7-thread diagram note. Keep
         this item open for the final pre-push pass.
+      — RE-RUN 2026-11-13 (REL group, T-REL): item stays OPEN (it is the final pre-push
+        pass, user-timed). Landed since 2026-10-11: REL-02 truth pass `3a1eaf79`
+        (MSRV, crate count, MCP tools, macOS, SmartScreen) and REL-03 diagram redraw
+        `695d4714` (seven-thread topology). The claim-by-claim verdict list from REL-02
+        is not in T-REL's inputs: NEEDS the REL-02 final message pasted here before 6.3
+        can close. Placeholder-signature re-grep: see 6.4 (count moved 22 -> 45).
       — CONSOLIDATION 2026-10-10: partial re-run done — README Status section corrected (BI egress + IoT export moved to works-today, MCP vocabulary dropped from Planned, release matrix post-macOS, plugin host marked library-only incl. T7 diagram note, 24 crates); SECURITY.md stale "sync write gate is permissive" bullet replaced with the DB-thread Editor+ gate and its residuals. Keep open for the pre-push re-run.
-- [x] 6.4 Final `"00".repeat(64)` re-grep matches the disclosed register.
+- [ ] 6.4 Final `"00".repeat(64)` re-grep matches the disclosed register.
       — 2026-10-11: `git grep -n '"00"\.repeat(64)' -- '*.rs'` = 22 (21 prod + 1 test) == spec FR-2 table. Re-run this exact command before push.
+      — RE-OPENED 2026-11-13 (T-REL): crate-scoped re-run (fe-database fe-api fe-sync fe-runtime fe-ui fe-identity fe-canonical-log fe-policy) = 45 hits in 27 files, not 22. The new sites are listed file:line in spec.md FR-2 "Re-run 2026-11-13". The register does not match yet; SECURITY.md:43 still says 22. Close only after the FR-2 table and SECURITY.md are rebuilt from that list.
 - [ ] 6.5 **BLOCKED-ON-USER:** the push itself (first public push is a user action).

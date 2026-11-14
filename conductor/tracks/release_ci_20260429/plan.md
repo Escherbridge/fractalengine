@@ -268,7 +268,7 @@ Sign `fractalengine.exe` and `fe-relay.exe` in every Windows job
 
 ---
 
-### Task 3.2 — Linux artifact signing [ ]
+### Task 3.2 — Linux artifact signing [x] (code done 2026-11-13: one minisign signature over SHA256SUMS covers every archive, `release.yml` step "Sign SHA256SUMS (minisign)" at :356-374; no CI run claimed)
 
 Produce a detached signature over the Linux artifacts (or over
 `SHA256SUMS`, see Task 3.3) so `.tar.gz` downloads get the same trust chain
@@ -290,7 +290,7 @@ as the signed Windows archives.
 
 ---
 
-### Task 3.3 — Sign `SHA256SUMS` [ ]
+### Task 3.3 — Sign `SHA256SUMS` [x] (code done 2026-11-13: `release.yml` "Sign SHA256SUMS (minisign)" :356-374 and "Verify SHA256SUMS signature" :393-395; the public key `docs/release-signing.pub` is NOT committed yet, so the first verified run is user-gated under 3.7)
 
 `SHA256SUMS` is already generated (`publish` job, `sha256sum * >
 SHA256SUMS`) but is itself unsigned — anyone who can replace a release
@@ -305,7 +305,7 @@ against a published public key before the checksums it contains are trusted.
 
 ---
 
-### Task 3.4 — Release notes template [ ]
+### Task 3.4 — Release notes template [x] (done 2026-11-13: `.github/release-notes-template.md` rendered by the "Render release notes" step in `release.yml:399-416`; a leftover `{{PLACEHOLDER}}` fails the job)
 
 Replace the inline `body:` block in the `publish` job (currently a
 hand-written downloads table) with a template file (e.g.
@@ -317,7 +317,7 @@ across tags and can include signing-verification instructions (Tasks
 
 ---
 
-### Task 3.5 — SmartScreen reputation note (docs) [ ]
+### Task 3.5 — SmartScreen reputation note (docs) [x] (done 2026-11-13: `BUILDING.md:35-37` "### SmartScreen" and `.github/release-notes-template.md:54-57` "## Windows SmartScreen")
 
 Document, in `BUILDING.md` and/or the release notes template, that early
 Windows releases may still show a SmartScreen warning even when signed —
@@ -331,7 +331,7 @@ users and support don't mistake it for tampering.
 
 ---
 
-### Task 3.6 — Reconcile `BUILDING.md`'s macOS section (doc fix) [ ]
+### Task 3.6 — Reconcile `BUILDING.md`'s macOS section (doc fix) [x] (done 2026-11-13: `BUILDING.md:76-82` marks macOS "Buildable locally; not built or tested in CI")
 
 `BUILDING.md`'s `## macOS` section still fully documents macOS as a
 supported build target, but the macOS GUI matrix and the `lipo`
@@ -390,3 +390,4 @@ authorization before pushing the tag.
 - **2026-07-15:** Task 2.7 end-to-end tag verification pending (requires live
   GitHub run). Track stays in_progress until a test tag produces a complete
   release (8 artifacts + SHA256SUMS + GHCR image).
+- **2026-11-13 — REL bookkeeping (T-REL):** Tasks 3.2-3.6 ticked after a HEAD check (see each heading for file:line). Task 3.1 stays `[~]` (provider choice and secrets are user actions). Tasks 2.7 and 3.7 stay open: they need a live `v*` tag, which the user cuts. Gate verdict for the signing change: `conductor/tracks/release_ci_20260429/review-turn4/R-REL-1.md` (PASS-WITH-FIXES, RR1-01..RR1-11). No CI run is claimed by this entry.
