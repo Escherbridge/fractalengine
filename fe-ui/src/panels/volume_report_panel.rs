@@ -272,6 +272,18 @@ impl VolumeReportState {
     pub(crate) fn has_selection(&self) -> bool {
         self.selection_key.is_some()
     }
+    /// In-flight request id; changes whenever the volume answer is re-requested.
+    pub(crate) fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
+    }
+    /// Test seam: pretend a drawn footprint was resolved for `petal_id`.
+    #[cfg(test)]
+    pub(crate) fn seed_selection_for_test(&mut self, petal_id: &str, footprint: Vec<[f32; 2]>) {
+        self.selection_key = Some("drawn".into());
+        self.petal_id = Some(petal_id.into());
+        self.correlation_id = Some("volume-report:test".into());
+        self.footprint = footprint;
+    }
     fn clear(&mut self) {
         self.display_label = None;
         self.selection_key = None;

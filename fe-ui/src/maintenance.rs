@@ -62,6 +62,7 @@ pub fn clear_read_models(world: &mut World) {
     reset::<crate::terrain_proposal_state::ProposalEditState>(world);
     reset::<crate::terrain_preview::PreviewReadout>(world);
     reset::<crate::panels::volume_report_panel::VolumeReportState>(world);
+    reset::<crate::panels::section_profile_panel::SectionProfileState>(world);
     reset::<crate::panels::tool_panel::ToolPanelState>(world);
     reset::<crate::scene_analysis::SceneMaterialCache>(world);
     reset::<crate::settings::PetalRenderOverride>(world);
