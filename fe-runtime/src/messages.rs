@@ -1175,6 +1175,23 @@ pub enum DbCommand {
         grant: crate::node_history::NodeAccessGrant,
         correlation_id: String,
     },
+    /// Desktop-only petal-wide latest-readings summary (extension GIS surface).
+    ReadPetalReadings {
+        petal_id: String,
+        since_ms: i64,
+        grant: crate::node_history::NodeAccessGrant,
+        correlation_id: String,
+    },
+    /// Export every row of one petal for a snapshot bundle.
+    ExportPetalSnapshot {
+        petal_id: String,
+        correlation_id: Option<String>,
+    },
+    /// Import a petal snapshot's rows as a new petal (refused on conflict).
+    ImportPetalSnapshot {
+        rows: Box<crate::petal_snapshot::PetalSnapshotRows>,
+        correlation_id: Option<String>,
+    },
     /// Desktop-only material projection, checked as the local Viewer at DB use.
     ReadSceneMaterials {
         petal_id: String,
@@ -1566,6 +1583,24 @@ pub enum DbResult {
     NodeMeasurementsLoaded {
         measurements: crate::node_measurements::NodeMeasurements,
         correlation_id: String,
+    },
+    PetalReadingsLoaded {
+        summary: crate::petal_readings::PetalReadingsSummary,
+        correlation_id: String,
+    },
+    PetalSnapshotExported {
+        petal_id: String,
+        rows: Box<crate::petal_snapshot::PetalSnapshotRows>,
+        correlation_id: Option<String>,
+    },
+    PetalSnapshotImported {
+        petal_id: String,
+        correlation_id: Option<String>,
+    },
+    PetalSnapshotImportRefused {
+        petal_id: String,
+        reason: String,
+        correlation_id: Option<String>,
     },
     SceneMaterialsLoaded {
         materials: crate::scene_materials::SceneMaterials,

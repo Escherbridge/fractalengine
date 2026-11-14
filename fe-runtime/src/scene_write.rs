@@ -668,6 +668,9 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
         | DbCommand::GetFieldSchema { .. }
         | DbCommand::ReadNodeHistory { .. }
         | DbCommand::ReadNodeMeasurements { .. }
+        | DbCommand::ReadPetalReadings { .. }
+        | DbCommand::ExportPetalSnapshot { .. }
+        | DbCommand::ImportPetalSnapshot { .. }
         | DbCommand::ReadSceneMaterials { .. }
         | DbCommand::DeleteFieldDef { .. }
         | DbCommand::ScopedQuery { .. }
