@@ -1865,6 +1865,13 @@ pub trait ProtocolV1Transport: Send + Sync {
     fn search(&self, query: Option<&str>) -> Result<Vec<RegistryEntry>, String>;
     /// Download sealed bytes for an entry.
     fn download(&self, entry: &RegistryEntry) -> Result<Vec<u8>, String>;
+    /// [`Self::download`] reporting `(received, total)` byte counts; the default reports once, at the end.
+    fn download_with_progress(&self, entry: &RegistryEntry, on_bytes: &mut dyn FnMut(u64, u64)) -> Result<Vec<u8>, String> {
+        let bytes = self.download(entry)?;
+        let length = bytes.len() as u64;
+        on_bytes(length, length);
+        Ok(bytes)
+    }
     /// The attestation document (`package_id`, `version`, `content_hash`, `manifest_b64`, `header_members_b64`) for an entry; `None` when the registry has none.
     fn attestation(&self, _entry: &RegistryEntry) -> Result<Option<Vec<u8>>, String> {
         Ok(None)
@@ -1955,10 +1962,19 @@ impl ProtocolV1Source {
     /// Download and verify any hexon type (plugin or content such as a tileset), dispatching on the manifest's type.
     /// Whole-archive and capped at [`PACKAGE_MAX_BYTES`]: large chunked tilesets keep the partial-fetch path.
     pub fn fetch_hexon(&self, entry: &RegistryEntry) -> Result<FetchedHexon, RegistryError> {
+        self.fetch_hexon_with_progress(entry, &mut |_, _| {})
+    }
+
+    /// [`Self::fetch_hexon`] reporting download byte progress; progress only observes, verification runs on the complete bytes.
+    pub fn fetch_hexon_with_progress(
+        &self,
+        entry: &RegistryEntry,
+        on_bytes: &mut dyn FnMut(u64, u64),
+    ) -> Result<FetchedHexon, RegistryError> {
         requested_uri_matches(entry)?;
         self.check_protocol()?;
         self.trust.refuse_killed(&entry.package_id, &entry.content_hash)?;
-        let bytes = self.transport.download(entry).map_err(RegistryError::Transport)?;
+        let bytes = self.transport.download_with_progress(entry, on_bytes).map_err(RegistryError::Transport)?;
         verify_fetched_hexon(bytes, entry, &self.trust)
     }
 }

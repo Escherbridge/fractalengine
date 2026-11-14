@@ -454,15 +454,12 @@ pub enum HexonAssembleOutcome {
         file_name: String,
         reason: String,
     },
-    /// PAS-P5 S7b: one "install from registry" fetch made progress (header
-    /// resolved → `chunks_received == 0`; each verified chunk after that).
-    /// Reuses the Downloads tab's existing progress bar, keyed by the
-    /// REQUESTED uri (the `hexon_id` the signed header confirms is only known
-    /// once the fetch succeeds — see `RegistryInstalled`).
+    /// One "install from registry" download made byte progress (`0/total` first,
+    /// final `n/n` before `RegistryInstalled`), keyed by the REQUESTED uri.
     RegistryProgress {
         uri: String,
-        chunks_received: u32,
-        total_chunks: u32,
+        bytes_received: u64,
+        total_bytes: u64,
     },
     /// An "install from registry" fetch finished and the archive is on disk,
     /// indexed and reloaded.
@@ -934,27 +931,38 @@ fn install_from_registry(
     }) else {
         return fail(format!("'{uri}' is not offered by the registry"));
     };
-    let progress = |chunks_received: u32| {
+    let progress = |bytes_received: u64, total_bytes: u64| {
         if tx
             .send(HexonAssembleOutcome::RegistryProgress {
                 uri: uri.to_string(),
-                chunks_received,
-                total_chunks: 1,
+                bytes_received,
+                total_bytes,
             })
             .is_err()
         {
             tracing::warn!(uri, "InstallFromRegistry progress channel closed");
         }
     };
-    progress(0);
-    let content = match source.fetch_hexon(&entry) {
+    progress(0, entry.size);
+    // Last forwarded count, so the final event before the install is always (n, n).
+    let mut last_received = 0u64;
+    let mut last_total = entry.size;
+    let fetched = source.fetch_hexon_with_progress(&entry, &mut |received, total| {
+        last_received = received;
+        last_total = total;
+        progress(received, total);
+    });
+    let content = match fetched {
         Ok(fe_hexon::registry_source::FetchedHexon::Content(content)) => content,
         Ok(fe_hexon::registry_source::FetchedHexon::Plugin(_)) => {
             return fail("a plugin package cannot be installed as a map; use the Extensions panel".into())
         }
         Err(e) => return fail(e.to_string()),
     };
-    progress(1);
+    if last_received != last_total || last_received == 0 {
+        let complete = if last_received == 0 { content.bytes.len() as u64 } else { last_received };
+        progress(complete, complete);
+    }
     let outcome = match registry.store().install_tileset(&content.bytes) {
         Ok(installed) => {
             // `install_tileset` writes through the store directly, so the in-memory source cache needs a reload.
@@ -979,7 +987,7 @@ fn install_from_registry(
     }
 }
 
-/// Chunked fetch+install core kept for the partial-fetch tests (production uses `fetch_hexon`) (PAS-P5 S7b step 3): `FetchStrategy::fetch_header`
+/// Chunked fetch+install core kept for the partial-fetch tests (production uses `fetch_hexon_with_progress`) (PAS-P5 S7b step 3): `FetchStrategy::fetch_header`
 /// then `fetch_chunk` for every chunk a container names (seq `0` is the whole
 /// archive for a monolithic hexon). `on_progress(chunks_received, total)` is
 /// called once after the header resolves (`0, total`) and once per verified
@@ -1100,13 +1108,13 @@ pub fn drain_hexon_assemble_results(
             // the sync thread to cancel).
             HexonAssembleOutcome::RegistryProgress {
                 uri,
-                chunks_received,
-                total_chunks,
+                bytes_received,
+                total_bytes,
             } => {
                 if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
                     dl.status = DownloadStatus::Downloading;
-                    dl.chunks_received = chunks_received;
-                    dl.total_chunks = total_chunks;
+                    dl.bytes_received = bytes_received;
+                    dl.total_bytes_estimate = total_bytes;
                 }
             }
             HexonAssembleOutcome::RegistryInstalled { uri, hexon_id } => {
@@ -3202,13 +3210,26 @@ mod tests {
         );
     }
 
+    /// 256 KiB of deterministic LCG bytes (incompressible, distinct per `seed`).
+    fn incompressible_tile(seed: u32) -> Vec<u8> {
+        let mut state = 0x9E37_79B9u32 ^ seed.wrapping_mul(2_654_435_761);
+        (0..256 * 1024)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
     /// (plan S7b) `install_from_registry_installs_a_sealed_container_end_to_end`:
     /// a real in-process registry serves a sealed, THREE-chunk container
     /// (same fixture shape as `fe-terrain`'s
     /// `container_backed_source_serves_tiles_from_every_chunk`, just sealed);
     /// queuing `HexonOp::InstallFromRegistry` and driving it through
-    /// `drain_hexon_ops` fetches the whole package (`fetch_hexon`, progress
-    /// 0/1 → 1/1) and installs the sealed container
+    /// `drain_hexon_ops` fetches the whole package (`fetch_hexon_with_progress`,
+    /// large incompressible tiles so the body spans many HTTP pieces: ordered
+    /// byte progress `0/total` .. `total/total` before `RegistryInstalled`)
+    /// and installs the sealed container
     /// — proven by reading a real tile back through the registry afterward,
     /// not just checking the result enum.
     #[test]
@@ -3218,7 +3239,7 @@ mod tests {
 
         let mut chunks = Vec::new();
         for seq in 0..3u32 {
-            let tile_bytes = vec![(100 + seq) as u8; 16];
+            let tile_bytes = incompressible_tile(seq);
             let chunk_bytes = fe_format::HexonArchive::export_tileset(
                 synthetic_tileset_manifest(hexon_id),
                 synthetic_tileset(hexon_id).tileset_meta.as_ref().unwrap(),
@@ -3265,22 +3286,36 @@ mod tests {
         app.update(); // drains the op, spawning the background fetch+install thread
 
         let outcomes = collect_registry_outcomes(&rx, std::time::Duration::from_secs(20));
-        let progress: Vec<(u32, u32)> = outcomes
+        let progress: Vec<(u64, u64)> = outcomes
             .iter()
             .filter_map(|o| match o {
                 HexonAssembleOutcome::RegistryProgress {
-                    chunks_received,
-                    total_chunks,
+                    bytes_received,
+                    total_bytes,
                     ..
-                } => Some((*chunks_received, *total_chunks)),
+                } => Some((*bytes_received, *total_bytes)),
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            progress,
-            vec![(0, 1), (1, 1)],
-            "production installs via one whole-package `fetch_hexon`: progress 0/1 then 1/1: {outcomes:?}"
+        let total = progress.last().map(|p| p.1).unwrap_or(0);
+        assert_eq!(progress.first(), Some(&(0, total)), "first progress is 0/total: {progress:?}");
+        assert!(total > 0, "a known total: {progress:?}");
+        assert!(progress.len() >= 3, "multi-step progress: {progress:?}");
+        assert!(
+            progress.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "bytes_received strictly increasing: {progress:?}"
         );
+        assert!(progress.iter().all(|p| p.1 == total), "every total equal: {progress:?}");
+        assert_eq!(progress.last(), Some(&(total, total)), "final progress is n/n: {progress:?}");
+        let last_progress_index = outcomes
+            .iter()
+            .rposition(|o| matches!(o, HexonAssembleOutcome::RegistryProgress { .. }))
+            .expect("progress events");
+        let installed_index = outcomes
+            .iter()
+            .position(|o| matches!(o, HexonAssembleOutcome::RegistryInstalled { .. }))
+            .expect("installed event");
+        assert!(last_progress_index < installed_index, "RegistryInstalled after the last progress: {outcomes:?}");
         match outcomes.last() {
             Some(HexonAssembleOutcome::RegistryInstalled {
                 uri,
@@ -3299,7 +3334,7 @@ mod tests {
         for seq in 0..3u32 {
             assert_eq!(
                 tileset_registry.get_tile(hexon_id, 10, seq, 0).as_deref(),
-                Some(vec![(100 + seq) as u8; 16].as_slice()),
+                Some(incompressible_tile(seq).as_slice()),
                 "chunk {seq}'s tile must read back byte-identical"
             );
         }

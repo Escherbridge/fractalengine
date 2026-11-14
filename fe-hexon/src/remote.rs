@@ -355,14 +355,39 @@ impl RemoteRegistryClient {
     }
 
     /// Read a response body under `cap` bytes.
-    async fn get_capped_response(&self, mut resp: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
+    async fn get_capped_response(&self, resp: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
+        self.get_capped_response_with_progress(resp, cap, &mut |_, _| {}).await
+    }
+
+    /// [`Self::get_capped_response`] reporting `(received, total)`, throttled, with a final `(received, received)`.
+    async fn get_capped_response_with_progress(
+        &self,
+        mut resp: reqwest::Response,
+        cap: u64,
+        on_bytes: &mut dyn FnMut(u64, u64),
+    ) -> Result<Vec<u8>> {
+        let declared = resp.content_length();
+        if declared.is_some_and(|length| length > cap) {
+            return Err(anyhow!("registry response exceeds {cap} bytes"));
+        }
+        let total = declared.unwrap_or(cap);
+        let step = (total / 100).max(64 * 1024);
+        on_bytes(0, total);
         let mut body = Vec::new();
+        let mut last_reported = 0u64;
         while let Some(piece) = resp.chunk().await? {
             if (body.len() + piece.len()) as u64 > cap {
                 return Err(anyhow!("registry response exceeds {cap} bytes"));
             }
             body.extend_from_slice(&piece);
+            let received = body.len() as u64;
+            if received - last_reported >= step && received < total {
+                last_reported = received;
+                on_bytes(received, total);
+            }
         }
+        let received = body.len() as u64;
+        on_bytes(received, received);
         Ok(body)
     }
 
@@ -378,6 +403,25 @@ impl RemoteRegistryClient {
             return Err(anyhow!("registry download failed: {status}"));
         }
         self.get_capped_response(resp, cap).await
+    }
+
+    /// [`Self::download_capped`] reporting byte progress to `on_bytes`.
+    pub async fn download_capped_with_progress(
+        &self,
+        uri: &str,
+        cap: u64,
+        on_bytes: &mut dyn FnMut(u64, u64),
+    ) -> Result<Vec<u8>> {
+        let resp = self
+            .get(format!("{}/api/v1/hexons/{uri}/download", self.base_url))
+            .send()
+            .await
+            .context("registry download request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("registry download failed: {status}"));
+        }
+        self.get_capped_response_with_progress(resp, cap, on_bytes).await
     }
 }
 
@@ -449,6 +493,15 @@ impl ProtocolV1Transport for RemoteProtocolV1Transport {
         }
         self.runtime
             .block_on(self.client.download_capped(&entry.url, download_cap(entry)))
+            .map_err(|e| e.to_string())
+    }
+
+    fn download_with_progress(&self, entry: &RegistryEntry, on_bytes: &mut dyn FnMut(u64, u64)) -> Result<Vec<u8>, String> {
+        if !is_plain_registry_uri(&entry.url) {
+            return Err(format!("refusing registry uri {:?}", entry.url));
+        }
+        self.runtime
+            .block_on(self.client.download_capped_with_progress(&entry.url, download_cap(entry), on_bytes))
             .map_err(|e| e.to_string())
     }
 
