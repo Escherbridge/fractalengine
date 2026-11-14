@@ -90,7 +90,7 @@ the full environment or credentials.
 - [ ] ~~`cargo +1.99.0 clippy --workspace --all-targets --locked --features fe-terrain/render -j2 --keep-going -- -D warnings`~~ OBSOLETE 2026-11-13: clippy is out of every gate (user decision 2026-11-09; root AGENTS.md test execution policy; CONTRIBUTING.md:30).
 - [ ] `cargo +1.99.0 test --workspace --locked --features fe-terrain/render -j2 --no-fail-fast -- --test-threads=1 --show-output` — SUPERSEDED 2026-11-13: the suite runs only through `tools/qa/test_batches.ps1 -Batches All` (root AGENTS.md item 3), never `cargo test --workspace` (it filled the disk 2026-11-08).
 - [ ] `cargo +1.99.0 run --locked -p fractalengine-test-harness -j2` reports **18 passed / 0 failed**, never 0/0.
-- [ ] Separate `extensions/iot-bridge/Cargo.toml` workspace: fmt check, ~~all-targets locked Clippy with warnings denied~~ (clippy clause OBSOLETE 2026-11-09), locked tests with one test thread and show-output.
+- [ ] `extensions/iot-bridge` (workspace member, `Cargo.toml:29-30`): fmt check, ~~all-targets locked Clippy with warnings denied~~ (clippy clause OBSOLETE 2026-11-09), locked tests with one test thread and show-output.
 - [ ] Review skip/ignored results and real Podman/store fixture execution; retain explicit external GIS archive and user-check limitations.
 - [ ] Reconcile final source fingerprints, immutable evidence, findings, decisions, metadata, manual checklist and retrospective before publication.
 

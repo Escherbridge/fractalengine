@@ -378,6 +378,12 @@ authorization before pushing the tag.
 
 ## Status Notes
 
+- **2026-11-14 — REL5-01 (T5-REL):** `workflow_dispatch` no longer publishes or pushes GHCR, even from a tag
+  ref. The publish and docker jobs gate on `startsWith(github.ref, 'refs/tags/') && github.event_name == 'push'`
+  (`.github/workflows/release.yml:283`, `:326`); the verify-order line was fixed (signature before `sha256sum -c`,
+  `.github/release-notes-template.md:17`). Commit `eb48430d`. Tasks 2.7, 3.1 remainder and 3.7 stay open (user-gated).
+  Default taken, awaiting ratification: the first tag is `v0.1.0-qa.YYYYMMDD` (publishes as prerelease) before
+  `v0.1.0`; a dispatch from a tag ref no longer publishes.
 - **2026-07-15 — CI run 29390918844 (build-artifacts.yml, push on main):**
   - Linux job **FAILED** in "Build release binaries" (exit 101): `glib-sys v0.18.1`
     build script — `pkg-config` could not find `glib-2.0` (`Package 'glib-2.0' ...

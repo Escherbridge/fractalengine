@@ -24,20 +24,32 @@ Dependency edges, re-grepped at edit time:
 `datafusion`, `arrow`, `parquet`, `fe-entity-store` (`fe-query/Cargo.toml` `[dependencies]`).
 It does not depend on `fe-api` or `fe-database`, so no cycle exists today.
 
-`fe-database` use sites (carried from the scoper, not re-grepped this round):
+`fe-database` use sites (re-grepped 2026-11-14 with `git grep -n 'fe_query' -- fe-database/src`, excluding the
+`fe-database/src/AGENTS.md` prose): **19 code occurrences in 16 files**.
 
 - `fe-database/src/api_token_store.rs:6`
-- `fe-database/src/canon_log/observation/hydrator.rs:25`
+- `fe-database/src/canon_log/observation/hydrator.rs:25`, `:1018` (test module)
 - `fe-database/src/canon_log/observation/mod.rs:9`
 - `fe-database/src/canon_log/observation/sealer.rs:39`
 - `fe-database/src/handlers/device_payload.rs:5`
 - `fe-database/src/handlers/elevated_query.rs:28`
 - `fe-database/src/handlers/field_def.rs:10`
+- `fe-database/src/handlers/invite.rs:8`
+- `fe-database/src/handlers/iot_reading.rs:3`
+- `fe-database/src/handlers/node_log.rs:1`
+- `fe-database/src/handlers/scoped_query.rs:6`
+- `fe-database/src/handlers/seed.rs:3`
+- `fe-database/src/handlers/ts_partial.rs:24`, `:27`
+- `fe-database/src/query_helpers.rs:1`, `:5`
+- `fe-database/src/rbac.rs:6`
+- `fe-database/src/role_manager.rs:1`
+
+The scoper carried 7 of these sites; the re-grep found 19.
 
 Reading: moving `fe-query` under `fe-api` makes `fe-database` depend on `fe-api`, which is a
 layering inversion (the storage crate would import the HTTP crate). Option (a) needs
 `fe-database`'s query-builder and columnar pieces moved to a lower crate first. Option (b)
-leaves two homes for the query code. Neither is mechanical. Outcome: DEFER (see decision record).
+leaves two homes for the query code. Neither is mechanical. Outcome: DEFER (see decision record); the 19-site re-grep strengthens it, and the merge would invert layering rather than fold a sparse crate.
 
 ## FR-1: fe-plugin-test (G-1)
 
@@ -51,6 +63,8 @@ Dependency edges, re-grepped at edit time:
 
 `fe-plugin` uses it at `fe-plugin/src/rhai/sandbox.rs:96`, `fe-plugin/src/wasm/mod.rs:363` and
 `:456` (carried from the scoper). No workspace crate depends on it outside those three.
+Re-verified 2026-11-14: exactly three consumers, all with the edges in the table above (`fe-plugin/Cargo.toml:63`,
+`tools/fe-ext/Cargo.toml:23`, `extensions/iot-bridge/Cargo.toml:19`).
 
 Shape: `fe-plugin-test/Cargo.toml` has its own published-crate shape. Direct dependencies:
 `fe-sdk` (path, 0.1.0), `rhai` 1.19, `serde` (derive), `serde_json`, `ulid` (workspace). Per

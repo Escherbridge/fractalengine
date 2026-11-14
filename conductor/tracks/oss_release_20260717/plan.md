@@ -97,11 +97,13 @@ truth alignment → community/CI → metadata → ratification → preflight + p
 - [x] 3.1 CONTRIBUTING.md (build via BUILDING.md, pre-commit trio
       `cargo fmt && cargo clippy -- -D warnings && cargo test`, licensing-of-
       contributions note) (REL-07). (done 2026-07-17)
+      — clippy clause OBSOLETE 2026-11-09 (CONTRIBUTING.md:30): clippy is not run; the pre-commit trio is `cargo fmt` + `cargo test -p <crate>` batches.
 - [x] 3.2 CODE_OF_CONDUCT.md (Contributor Covenant 2.1) (REL-07). (done 2026-07-17)
 - [x] 3.3 `.github/ISSUE_TEMPLATE/{bug_report,feature_request}.yml` + PR template
       referencing the test policy (REL-07). (done 2026-07-17)
 - [x] 3.4 Fast lint job (fmt --check + clippy -D warnings, Linux-only) in
       `build-artifacts.yml` (spec FR-8). (done 2026-07-17)
+      — clippy clause OBSOLETE 2026-11-09 (CONTRIBUTING.md:30); lint job is fmt + cargo-deny + fuzz (`build-artifacts.yml:11`, `:61` "Lint (warn-only -- fmt, cargo-deny, fuzz)").
 - [x] 3.5 `release.yml` build-job timeouts 120→150 (parity with f0d4bd3).
       (done 2026-07-17)
 - [x] 3.6 build-artifacts badge in README; document the scoped 3-crate test sweep in
@@ -236,8 +238,19 @@ truth alignment → community/CI → metadata → ratification → preflight + p
         `695d4714` (seven-thread topology). The claim-by-claim verdict list from REL-02
         is not in T-REL's inputs: NEEDS the REL-02 final message pasted here before 6.3
         can close. Placeholder-signature re-grep: see 6.4 (count moved 22 -> 45).
+      — RE-RUN 2026-11-14 (T5-REL, claim-by-claim; REL-02 results read from README.md, BUILDING.md, SECURITY.md at HEAD and the R5-REL gate `conductor/tracks/release_ci_20260429/review-turn5/R5-REL.md`):
+        - CLAIM ok: README.md:51 "the first tag-triggered release has not yet run" (`git tag -l 'v*'` is empty).
+        - CLAIM ok: seven-thread note and "no macOS build" untouched and still true.
+        - CLAIM fixed: MCP tool count 49 -> 55 (README.md:296; RREL5-07 counts 54 `tool!` rows plus the `get_network_diagnostics` literal at fe-api/src/mcp/mod.rs:311-320).
+        - CLAIM fixed: SECURITY.md:34-46 placeholder-signature count is 36 production / 51 hits, equal to the FR-2 register (see 6.4).
+        - CLAIM ok: BUILDING.md:37 SmartScreen text matches docs/release-signing.md:43 (the earlier citation :40 has moved).
+        - CLAIM ok: MSRV 1.96+ in README.md:104, BUILDING.md:5, CONTRIBUTING.md:8.
+        - CLAIM ok: 26 crates = `Cargo.toml` workspace members (includes `extensions/iot-bridge`, `Cargo.toml:29-30`).
+        - CLAIM fixed: clippy removed from install and test steps (no `clippy` in README.md or BUILDING.md); CI scoped-sweep sentence at README.md:144.
+        - Still OPEN: the final pre-push pass is user-timed (see 6.5).
       — CONSOLIDATION 2026-10-10: partial re-run done — README Status section corrected (BI egress + IoT export moved to works-today, MCP vocabulary dropped from Planned, release matrix post-macOS, plugin host marked library-only incl. T7 diagram note, 24 crates); SECURITY.md stale "sync write gate is permissive" bullet replaced with the DB-thread Editor+ gate and its residuals. Keep open for the pre-push re-run.
-- [ ] 6.4 Final `"00".repeat(64)` re-grep matches the disclosed register.
+- [x] 6.4 Final `"00".repeat(64)` re-grep matches the disclosed register.
+      — CLOSED 2026-11-14 (T5-REL): `git grep -c '"00"\.repeat(64)' -- 'fe-*' 'fractalengine*' tools extensions` sums to 51, equal to the FR-2 register totals (36 production + 14 test + 0 check + 1 doc mention) in spec.md FR-2 and SECURITY.md:34-46.
       — 2026-10-11: `git grep -n '"00"\.repeat(64)' -- '*.rs'` = 22 (21 prod + 1 test) == spec FR-2 table. Re-run this exact command before push.
-      — RE-OPENED 2026-11-13 (T-REL): crate-scoped re-run (fe-database fe-api fe-sync fe-runtime fe-ui fe-identity fe-canonical-log fe-policy) = 45 hits in 27 files, not 22. The new sites are listed file:line in spec.md FR-2 "Re-run 2026-11-13". The register does not match yet; SECURITY.md:43 still says 22. Close only after the FR-2 table and SECURITY.md are rebuilt from that list.
+      — RE-OPENED 2026-11-13 (T-REL): crate-scoped re-run (fe-database fe-api fe-sync fe-runtime fe-ui fe-identity fe-canonical-log fe-policy) = 45 hits in 27 files, not 22. The new sites are listed file:line in spec.md FR-2 "Re-run 2026-11-13". Register and SECURITY.md were rebuilt from that list in REL5-04 (see the CLOSED line above).
 - [ ] 6.5 **BLOCKED-ON-USER:** the push itself (first public push is a user action).

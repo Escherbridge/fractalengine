@@ -121,6 +121,14 @@ Configure `cross-rs` for any ARM GNU targets:
 
 ## Spec Amendments
 
+### 2026-11-13 — macOS removed; PR check is two OS families; `v0.1.0-qa.*` is a prerelease
+macOS builds and the `lipo` universal binary were removed 2026-08-19 at the owner's direction
+(commit `c272246`). This amends Goals item 5, FR-5, Target Artifact Matrix rows 4-6 and the Phase 1/2
+checkpoints. Evidence: `.github/workflows/release.yml:225-227` and `.github/workflows/build-artifacts.yml:547-552`.
+The PR check is Linux build + test plus Windows build-only (`build-artifacts.yml:336-396`, `:468-545`), so the
+"3 OS families" checkpoint reads "two families". `release.yml:14` pattern `v*` also matches `v0.1.0-qa.*`, which
+publishes as a prerelease (`release.yml:425`, `prerelease: ${{ contains(github.ref_name, '-') }}`).
+
 ### 2026-07-15 — FR-3 deviation blessed: Swatinem/rust-cache instead of sccache
 The landed workflows use `Swatinem/rust-cache@v2` (cargo registry + `target/`
 caching, per-job `shared-key`) rather than sccache + GHA cache backend. It is
