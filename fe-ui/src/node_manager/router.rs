@@ -115,7 +115,8 @@ impl ClickArbiter {
         self.phase == PointerPhase::Press
     }
 
-    /// Whether `who` owns this frame's click.
+    /// Whether `who` owns this frame's click (read by the router-consumer tests only).
+    #[cfg(test)]
     pub(super) fn is_owner(&self, who: ClickPriority) -> bool {
         self.owner == Some(who)
     }

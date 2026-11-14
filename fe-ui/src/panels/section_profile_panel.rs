@@ -175,11 +175,10 @@ pub fn drain_section_profile_result(
 // Display helpers (pure)
 // ---------------------------------------------------------------------------
 
-/// Display units per world unit: meters when scaled, else 1.
+/// Display units per world unit: meters when scaled, else 1 (from the full line, not the last surviving station).
 fn display_factor(result: &SectionProfileResult) -> f32 {
-    let end = result.samples.last().map_or(0.0, |s| s[0]);
-    if result.scaled && end > 0.0 {
-        (result.length / f64::from(end)) as f32
+    if result.scaled && result.world_length > 0.0 {
+        (result.length / f64::from(result.world_length)) as f32
     } else {
         1.0
     }
@@ -220,7 +219,12 @@ pub(crate) fn render_section_profile_block(
     state: &mut SectionProfileState,
     volume: &VolumeReportState,
 ) {
-    if !volume.has_selection() {
+    // The volume body already shows the Maps prompt when the whole report is unavailable.
+    let volume_unavailable = matches!(
+        crate::panels::volume_report_panel::resolve_volume_display(volume),
+        crate::panels::volume_report_panel::VolumeDisplay::Unavailable { .. }
+    );
+    if !volume.has_selection() || volume_unavailable {
         return;
     }
     ui.add_space(6.0);
@@ -248,17 +252,9 @@ pub(crate) fn render_section_profile_block(
                 return;
             };
             match result.unavailable {
+                // The petal has a map (the volume report answered), but no terrain under this line yet.
                 Some(VolumeUnavailable::NoMap) => {
-                    ui.label("No map on this petal. Assign one in Maps.");
-                    if ui
-                        .add(egui::Button::new("Open Maps").min_size(egui::vec2(0.0, 24.0)))
-                        .named(ui, format_args!("Open Maps section"))
-                        .clicked()
-                    {
-                        ui_mgr.push_action(crate::panels::tool_options::reveal(
-                            crate::ui_shell::right_sidebar::RightSidebarSection::Maps,
-                        ));
-                    }
+                    ui.label("No terrain under this section yet.");
                     return;
                 }
                 Some(VolumeUnavailable::WrongPetal) => {
@@ -393,6 +389,7 @@ mod tests {
                 petal_id: request.petal_id.clone(),
                 samples,
                 length: 10.0,
+                world_length: 10.0,
                 step: 1.0,
                 cut_area: 2.5,
                 fill_area: 3.5,

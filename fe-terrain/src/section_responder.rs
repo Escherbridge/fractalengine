@@ -11,77 +11,112 @@ use crate::sculpt::{composite_proposed_height, prepare_composite};
 use crate::terrain_plugin::config_earthwork_regions;
 use crate::terrain_proposal::{apply_proposal_over_base, point_in_polygon};
 
-/// Reply once per request; an unservable request gets an `unavailable` result, never silence.
+/// Latest servable request, re-answered under the same id when the terrain changes.
+#[derive(Default)]
+pub struct RetainedSectionRequest {
+    request: Option<SectionProfileRequest>,
+    revision: Option<u64>,
+}
+
+/// Reply once per request (never silence), and re-answer the latest one when tiles or the config change.
 pub fn answer_section_profile_requests(
     mut requests: MessageReader<SectionProfileRequest>,
     active: Res<ActivePetalTerrain>,
     height_field: Option<Res<TerrainHeightField>>,
     mut results: MessageWriter<SectionProfileResult>,
+    mut retained: Local<RetainedSectionRequest>,
 ) {
-    if requests.is_empty() {
-        return;
+    let terrain_changed = retained.revision != Some(active.revision)
+        || height_field.as_ref().is_some_and(|field| field.is_changed());
+    retained.revision = Some(active.revision);
+    if retained
+        .request
+        .as_ref()
+        .is_some_and(|request| active.petal_id.as_deref() != Some(request.petal_id.as_str()))
+    {
+        retained.request = None;
     }
-    for request in requests.read() {
-        let reply = if active.petal_id.as_deref() != Some(request.petal_id.as_str()) {
-            unavailable_result(request, VolumeUnavailable::WrongPetal)
-        } else if let Some(config) = active.config.as_ref().filter(|config| config.enabled) {
-            let base = |x: f32, z: f32| height_field.as_ref().and_then(|field| field.height_at(x, z));
-            let proposals: Vec<_> = config
-                .proposals
-                .iter()
-                .filter(|proposal| !proposal.is_earthwork_region())
-                .cloned()
-                .collect();
-            let regions = config_earthwork_regions(config);
-            let composite = prepare_composite(&regions, &base);
-            // Same combined surface as the volume report: palette proposals, then earthwork regions.
-            let proposed = |x: f32, z: f32| {
-                let mut height = base(x, z)?;
-                for proposal in &proposals {
-                    if point_in_polygon([x, z], &proposal.footprint) {
-                        let current = height;
-                        if let Some(next) =
-                            apply_proposal_over_base(&|_, _| Some(current), proposal, &[[x, z]])
-                                .into_iter()
-                                .next()
-                                .flatten()
-                        {
-                            height = next;
-                        }
-                    }
-                }
-                Some(composite_proposed_height(&composite, height, x, z))
-            };
-            match sample_profile(
-                &base,
-                &proposed,
-                request.a,
-                request.b,
-                PROFILE_MAX_SAMPLES,
-                config.effective_world_scale(),
-            ) {
-                Some(profile) => SectionProfileResult {
-                    correlation_id: request.correlation_id.clone(),
-                    petal_id: request.petal_id.clone(),
-                    samples: profile
-                        .samples
-                        .iter()
-                        .map(|sample| [sample.distance, sample.base_y, sample.proposed_y])
-                        .collect(),
-                    length: profile.length,
-                    step: profile.step,
-                    cut_area: profile.cut_area,
-                    fill_area: profile.fill_area,
-                    scaled: profile.scaled,
-                    unavailable: None,
-                },
-                // Fewer than two covered stations: no coverage along the line.
-                None => unavailable_result(request, VolumeUnavailable::NoMap),
+    let field = height_field.as_deref();
+    if !requests.is_empty() {
+        for request in requests.read() {
+            if active.petal_id.as_deref() == Some(request.petal_id.as_str()) {
+                retained.request = Some(request.clone());
             }
-        } else {
-            unavailable_result(request, VolumeUnavailable::NoMap)
-        };
-        results.write(reply);
+            results.write(section_reply(request, &active, field));
+        }
+    } else if terrain_changed {
+        // Tiles streamed in or the proposals changed: the open section must not stay stale.
+        if let Some(request) = retained.request.as_ref() {
+            results.write(section_reply(request, &active, field));
+        }
+    }
+}
+
+/// One reply for `request` against the active petal's combined proposed surface.
+fn section_reply(
+    request: &SectionProfileRequest,
+    active: &ActivePetalTerrain,
+    height_field: Option<&TerrainHeightField>,
+) -> SectionProfileResult {
+    if active.petal_id.as_deref() != Some(request.petal_id.as_str()) {
+        return unavailable_result(request, VolumeUnavailable::WrongPetal);
+    }
+    let Some(config) = active.config.as_ref().filter(|config| config.enabled) else {
+        return unavailable_result(request, VolumeUnavailable::NoMap);
+    };
+    let base = |x: f32, z: f32| height_field.and_then(|field| field.height_at(x, z));
+    let proposals: Vec<_> = config
+        .proposals
+        .iter()
+        .filter(|proposal| !proposal.is_earthwork_region())
+        .cloned()
+        .collect();
+    let regions = config_earthwork_regions(config);
+    let composite = prepare_composite(&regions, &base);
+    // Same combined surface as the volume report: palette proposals, then earthwork regions.
+    let proposed = |x: f32, z: f32| {
+        let mut height = base(x, z)?;
+        for proposal in &proposals {
+            if point_in_polygon([x, z], &proposal.footprint) {
+                let current = height;
+                if let Some(next) = apply_proposal_over_base(&|_, _| Some(current), proposal, &[[x, z]])
+                    .into_iter()
+                    .next()
+                    .flatten()
+                {
+                    height = next;
+                }
+            }
+        }
+        Some(composite_proposed_height(&composite, height, x, z))
+    };
+    let world_length = (request.b[0] - request.a[0]).hypot(request.b[1] - request.a[1]);
+    match sample_profile(
+        &base,
+        &proposed,
+        request.a,
+        request.b,
+        PROFILE_MAX_SAMPLES,
+        config.effective_world_scale(),
+    ) {
+        Some(profile) => SectionProfileResult {
+            correlation_id: request.correlation_id.clone(),
+            petal_id: request.petal_id.clone(),
+            samples: profile
+                .samples
+                .iter()
+                .map(|sample| [sample.distance, sample.base_y, sample.proposed_y])
+                .collect(),
+            length: profile.length,
+            world_length,
+            step: profile.step,
+            cut_area: profile.cut_area,
+            fill_area: profile.fill_area,
+            scaled: profile.scaled,
+            unavailable: None,
+        },
+        // Fewer than two covered stations: no coverage along the line (yet).
+        None => unavailable_result(request, VolumeUnavailable::NoMap),
     }
 }
 
@@ -95,6 +130,7 @@ fn unavailable_result(
         petal_id: request.petal_id.clone(),
         samples: Vec::new(),
         length: 0.0,
+        world_length: 0.0,
         step: 0.0,
         cut_area: 0.0,
         fill_area: 0.0,
@@ -151,7 +187,7 @@ mod tests {
                 petal_id: Some("petal".into()),
                 config: Some(TerrainConfig {
                     enabled: true,
-                    proposals: vec![raise],
+                    proposals: vec![raise.clone()],
                     ..TerrainConfig::default()
                 }),
                 revision: 1,
@@ -209,5 +245,26 @@ mod tests {
         assert_eq!(no_map.correlation_id, "corr-no-map");
         assert_eq!(no_map.unavailable, Some(VolumeUnavailable::NoMap));
         assert!(no_map.samples.is_empty());
+
+        // The map comes back (new revision): the retained request is re-answered under its id.
+        {
+            let mut active = app.world_mut().resource_mut::<ActivePetalTerrain>();
+            active.config = Some(TerrainConfig {
+                enabled: true,
+                proposals: vec![raise],
+                ..TerrainConfig::default()
+            });
+            active.revision = 2;
+        }
+        app.update();
+        let results = &app.world().resource::<CapturedSections>().0;
+        assert_eq!(results.len(), 4, "one refresh per terrain change");
+        let refreshed = results.last().unwrap();
+        assert_eq!(refreshed.correlation_id, "corr-no-map");
+        assert!(refreshed.unavailable.is_none());
+        assert!((refreshed.fill_area - 20.0).abs() < 1.0);
+        assert!((refreshed.world_length - 20.0).abs() < 1e-6);
+        app.update();
+        assert_eq!(app.world().resource::<CapturedSections>().0.len(), 4, "a quiet frame sends nothing");
     }
 }

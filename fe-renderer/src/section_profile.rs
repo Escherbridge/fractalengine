@@ -25,6 +25,8 @@ pub struct SectionProfileResult {
     pub samples: Vec<[f32; 3]>,
     /// Section length (meters when `scaled`, else world units).
     pub length: f64,
+    /// Requested line length in world units (display factor = `length / world_length`).
+    pub world_length: f32,
     /// Spacing between stations in world units.
     pub step: f32,
     /// Cut area (m2 when `scaled`, else world units squared).

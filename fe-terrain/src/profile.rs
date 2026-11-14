@@ -42,7 +42,8 @@ pub fn sample_profile(
     if !world_length.is_finite() || world_length <= 0.0 {
         return None;
     }
-    let scaled = world_scale.is_finite() && world_scale > 0.0;
+    // Same global range every scale reader applies; out-of-range never claims meters (NFR-4).
+    let scaled = fe_format::scale::is_world_scale_in_range(world_scale);
     let scale = if scaled { world_scale } else { 1.0 };
 
     let cap = max_samples.clamp(2, PROFILE_MAX_SAMPLES);
