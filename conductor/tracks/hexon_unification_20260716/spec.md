@@ -450,3 +450,7 @@ containers for very large petals are explicitly deferred to the delta track
    verse/fractal-level roles that affect the petal are intentionally not
    portable (they belong to the destination's hierarchy). Flag in docs;
    revisit if operator feedback disagrees.
+
+## Open merge gate (round 4, 2026-11-13)
+
+fe-format and fe-hexon still need one decision on which of them owns the shared shape. The open task is in plan.md Phase 1. The rule from crate_consolidation_r2_20260718 FR-2 applies: whichever track executes second inherits the other's landed shape. No code change is made by this note.

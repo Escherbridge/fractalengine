@@ -10,11 +10,22 @@
   "origin": "user grill 2026-10-31 (open-core alignment)",
   "alignment": "Realises public decision D-12 (format and engine stay open) via conductor/open-core.md's rule: anything a self-hoster needs to run, verify, or extend is open. Defines seams S-REGISTRY and S-ENTITLEMENT (open-core.md §Seams, already naming this track id), which downstream services consume one-way: consumers depend on this repo, this repo never names them.",
   "depends_on": [],
-  "blocks": ["plugin_host_revival_20261031 (its Phase 4 / S4 install-from-registry only)"],
-  "related": ["relay_operability_20261031", "plugin_host_revival_20261031", "agent_input_surface_20261031", "release_ci_20260429"],
+  "blocks": [
+    "plugin_host_revival_20261031 (its Phase 4 / S4 install-from-registry only)"
+  ],
+  "related": [
+    "relay_operability_20261031",
+    "plugin_host_revival_20261031",
+    "agent_input_surface_20261031",
+    "release_ci_20260429"
+  ],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 0, "open": 12, "plan": "./plan.md" },
+  "progress": {
+    "done": 4,
+    "open": 8,
+    "plan": "./plan.md"
+  },
   "open_decisions": [
     "OD-1 default-deny escape hatch name/semantics",
     "OD-2 protocol version transport (header vs route prefix vs both)",
@@ -32,31 +43,148 @@
     "Ground truth confirmed by re-grep @f55ca21: every License literal passes encrypted_key: None — 9 sites across fe-hexon/src/{authz,manifest,package,publisher,registry}.rs plus License::default at fe-format/src/license.rs:39 (10 total); fe-hexon-registry has a SEPARATE, simpler License-free auth model (one shared bearer token, no RBAC) from fe-hexon's in-process authz.rs (Manager+/Owner RBAC via fe-policy) — the two must not be conflated in the spec.",
     "2026-10-31: fresh-context review fixes — (1) fe-hexon-registry depends on fe-format with default-features = false, so fe-format::entitlement (and its jsonwebtoken/x25519-dalek/chacha20poly1305 deps) sits behind an opt-in `entitlement` feature or NFR-3 (registry gains no entitlement dependency) is violated; (2) EntitlementVerifier + LocalIssuer live in fe-format::entitlement (S1) so fe-plugin can reuse them without depending on fe-hexon; (3) one revocation model across S-ENTITLEMENT/S-PLUGIN: licence revocation = short TTL + refused reissuance, the S-PLUGIN signed revocation list = package-level kill switch only (spec §3, §4.5); (4) decrypt at load time with ciphertext at rest, otherwise expiry bounds nothing.",
     "2026-10-31: CROSS-TRACK SEQUENCING. fe-ui/src/dialogs/hexon_manager.rs and fe-ui/src/dialogs/AGENTS.md are owned by polish_lane_20261031 (in flight, waves W1-W3 and W6): S4 starts only after those waves close. docs/hexon-format-spec.md: if plugin_host_revival_20261031 OD-9 adopts a HexonType::Plugin, that edit lands after S5's 1.1.0 bump, never concurrently. Root AGENTS.md and conductor/tracks.md are shared append-only with the other 2026-10-31 tracks (last writer rebases).",
-    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place."
+    "2026-10-31: fresh-context spec review — PASS-WITH-FIXES; fixes applied in place.",
+    "ROUND 4 (2026-11-13, T-HEXON): ticked S1 (fe-format/src/entitlement.rs:673 LocalIssuer), S3 (fe-hexon/src/entitlement_gate.rs; wired in fe-hexon/src/registry.rs:809-810,942-949), S5 (docs/hexon-format-spec.md:3 Version 1.1.0, :644 Registry Protocol v1 and Entitlements), S6 (review-turn4/R-HEXON-3.md PASS-WITH-FIXES, security reviewed). Open: S2 protocol-version header, S4 installed-preview/entitlement-required row states, S7 fe-terrain §tileset-entitlement section, gates W1-W3, sweep, retro. Defaults: OD-1 FE_REGISTRY_ALLOW_OPEN=1; OD-5 ed25519 token; OD-8 self-hosted local issuer only, no payment code."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",
     "computed_at_commit": "f55ca21",
     "confidence": "hypothesis",
     "slices": [
-      { "id": "S1", "task": "fe-format entitlement primitives behind a new opt-in `entitlement` cargo feature (fe-hexon-registry uses fe-format with default-features = false and must not pull them in): EntitlementVerifier trait + its reference impl, LocalIssuer::mint (OD-8), EntitlementClaims (ed25519/EdDSA-signed, jti reserved and unused in v1, mirrors fe_identity::api_token::ApiClaims), IssuerKeyring (pinned (kid, pubkey) pairs), seal_paid_entry/open_paid_entry (XChaCha20-Poly1305 over one entry's blob, mirrors fe_canonical_log::crypto::aead::SealingKey's shape), wrap_content_key/unwrap_content_key (X25519 ECDH, mirrors fe_identity::x25519::DeviceKeypair)", "model": "sonnet", "depends_on": [],
-        "owns": [{"path": "fe-format/src/entitlement.rs", "status": "future"}, "fe-format/src/lib.rs", "fe-format/src/license.rs", "fe-format/src/AGENTS.md", "fe-format/Cargo.toml"] },
-      { "id": "S2", "task": "fe-hexon-registry: extract PackageStore trait (list/put_new/open_path, async, dyn-safe) + FsPackageStore reference impl preserving today's scan_dir/read_zip_bytes/publish_lock behavior byte-for-byte; RegistryState holds Arc<dyn PackageStore>; protocol version (OD-2) advertised on /health and a response header; default-deny auth (OD-1: refuse to start with no token unless FE_REGISTRY_ALLOW_OPEN=1)", "model": "sonnet", "depends_on": [],
-        "owns": [{"path": "fe-hexon-registry/src/store.rs", "status": "future"}, "fe-hexon-registry/src/routes.rs", "fe-hexon-registry/src/config.rs", "fe-hexon-registry/src/main.rs", "fe-hexon-registry/src/lib.rs", "fe-hexon-registry/src/index.rs", "fe-hexon-registry/Cargo.toml", "fe-hexon-registry/AGENTS.md"] },
-      { "id": "S3", "task": "fe-hexon consumer wiring: new entitlement_gate module calling fe_format::entitlement::EntitlementVerifier (enables the fe-format `entitlement` feature); remote.rs / load path calls it — free_entries load with no token, non-free entries are decrypted in memory at load time only with a verified token (ciphertext stays at rest), Hexon Manager DTOs gain an EntitlementState", "model": "sonnet", "depends_on": ["S1"],
-        "owns": [{"path": "fe-hexon/src/entitlement_gate.rs", "status": "future"}, "fe-hexon/src/remote.rs", "fe-hexon/src/package.rs", "fe-hexon/src/manifest.rs", "fe-hexon/src/AGENTS.md", "fe-hexon/Cargo.toml"] },
-      { "id": "S4", "task": "fe-ui Hexon Manager states: installed-preview / entitlement-required / entitled badges per tileset/crate row, payment_verification_url rendered as a plain outward link only (OD-7), no payment widget of any kind", "model": "sonnet", "depends_on": ["S3"],
-        "owns": ["fe-ui/src/dialogs/hexon_manager.rs", "fe-ui/src/dialogs/AGENTS.md"] },
-      { "id": "S5", "task": "docs/hexon-format-spec.md version bump 1.0.0 -> 1.1.0: registry protocol v1 section, entitlement token + encrypted-entry wire format, backward-compat note (license: None or license_type: Free is unaffected)", "model": "haiku", "depends_on": ["S1", "S2"],
-        "owns": ["docs/hexon-format-spec.md"] },
-      { "id": "S6", "task": "review-and-fix (opus, fresh context): /code-review high + /security-review (mandatory: crypto, auth, user input) on S1-S4; fixes own findings", "model": "opus", "depends_on": ["S3", "S4", "S5"],
-        "owns": [{"path": "conductor/tracks/hexon_entitlements_20261031/review-s6.md", "status": "future", "note": "plus fix-only edits to any S1-S5 file"}] },
-      { "id": "S7", "task": "docs consolidation + tracks.md row + plan ticks", "model": "haiku", "depends_on": ["S6"],
-        "owns": ["AGENTS.md", "conductor/tracks.md", "conductor/tracks/hexon_entitlements_20261031/plan.md"] }
+      {
+        "id": "S1",
+        "task": "fe-format entitlement primitives behind a new opt-in `entitlement` cargo feature (fe-hexon-registry uses fe-format with default-features = false and must not pull them in): EntitlementVerifier trait + its reference impl, LocalIssuer::mint (OD-8), EntitlementClaims (ed25519/EdDSA-signed, jti reserved and unused in v1, mirrors fe_identity::api_token::ApiClaims), IssuerKeyring (pinned (kid, pubkey) pairs), seal_paid_entry/open_paid_entry (XChaCha20-Poly1305 over one entry's blob, mirrors fe_canonical_log::crypto::aead::SealingKey's shape), wrap_content_key/unwrap_content_key (X25519 ECDH, mirrors fe_identity::x25519::DeviceKeypair)",
+        "model": "sonnet",
+        "depends_on": [],
+        "owns": [
+          {
+            "path": "fe-format/src/entitlement.rs",
+            "status": "future"
+          },
+          "fe-format/src/lib.rs",
+          "fe-format/src/license.rs",
+          "fe-format/src/AGENTS.md",
+          "fe-format/Cargo.toml"
+        ]
+      },
+      {
+        "id": "S2",
+        "task": "fe-hexon-registry: extract PackageStore trait (list/put_new/open_path, async, dyn-safe) + FsPackageStore reference impl preserving today's scan_dir/read_zip_bytes/publish_lock behavior byte-for-byte; RegistryState holds Arc<dyn PackageStore>; protocol version (OD-2) advertised on /health and a response header; default-deny auth (OD-1: refuse to start with no token unless FE_REGISTRY_ALLOW_OPEN=1)",
+        "model": "sonnet",
+        "depends_on": [],
+        "owns": [
+          {
+            "path": "fe-hexon-registry/src/store.rs",
+            "status": "future"
+          },
+          "fe-hexon-registry/src/routes.rs",
+          "fe-hexon-registry/src/config.rs",
+          "fe-hexon-registry/src/main.rs",
+          "fe-hexon-registry/src/lib.rs",
+          "fe-hexon-registry/src/index.rs",
+          "fe-hexon-registry/Cargo.toml",
+          "fe-hexon-registry/AGENTS.md"
+        ]
+      },
+      {
+        "id": "S3",
+        "task": "fe-hexon consumer wiring: new entitlement_gate module calling fe_format::entitlement::EntitlementVerifier (enables the fe-format `entitlement` feature); remote.rs / load path calls it — free_entries load with no token, non-free entries are decrypted in memory at load time only with a verified token (ciphertext stays at rest), Hexon Manager DTOs gain an EntitlementState",
+        "model": "sonnet",
+        "depends_on": [
+          "S1"
+        ],
+        "owns": [
+          {
+            "path": "fe-hexon/src/entitlement_gate.rs",
+            "status": "future"
+          },
+          "fe-hexon/src/remote.rs",
+          "fe-hexon/src/package.rs",
+          "fe-hexon/src/manifest.rs",
+          "fe-hexon/src/AGENTS.md",
+          "fe-hexon/Cargo.toml"
+        ]
+      },
+      {
+        "id": "S4",
+        "task": "fe-ui Hexon Manager states: installed-preview / entitlement-required / entitled badges per tileset/crate row, payment_verification_url rendered as a plain outward link only (OD-7), no payment widget of any kind",
+        "model": "sonnet",
+        "depends_on": [
+          "S3"
+        ],
+        "owns": [
+          "fe-ui/src/dialogs/hexon_manager.rs",
+          "fe-ui/src/dialogs/AGENTS.md"
+        ]
+      },
+      {
+        "id": "S5",
+        "task": "docs/hexon-format-spec.md version bump 1.0.0 -> 1.1.0: registry protocol v1 section, entitlement token + encrypted-entry wire format, backward-compat note (license: None or license_type: Free is unaffected)",
+        "model": "haiku",
+        "depends_on": [
+          "S1",
+          "S2"
+        ],
+        "owns": [
+          "docs/hexon-format-spec.md"
+        ]
+      },
+      {
+        "id": "S6",
+        "task": "review-and-fix (opus, fresh context): /code-review high + /security-review (mandatory: crypto, auth, user input) on S1-S4; fixes own findings",
+        "model": "opus",
+        "depends_on": [
+          "S3",
+          "S4",
+          "S5"
+        ],
+        "owns": [
+          {
+            "path": "conductor/tracks/hexon_entitlements_20261031/review-s6.md",
+            "status": "future",
+            "note": "plus fix-only edits to any S1-S5 file"
+          }
+        ]
+      },
+      {
+        "id": "S7",
+        "task": "docs consolidation + tracks.md row + plan ticks",
+        "model": "haiku",
+        "depends_on": [
+          "S6"
+        ],
+        "owns": [
+          "AGENTS.md",
+          "conductor/tracks.md",
+          "conductor/tracks/hexon_entitlements_20261031/plan.md"
+        ]
+      }
     ],
-    "waves": [["S1", "S2"], ["S3"], ["S4", "S5"], ["S6"], ["S7"]],
+    "waves": [
+      [
+        "S1",
+        "S2"
+      ],
+      [
+        "S3"
+      ],
+      [
+        "S4",
+        "S5"
+      ],
+      [
+        "S6"
+      ],
+      [
+        "S7"
+      ]
+    ],
     "shared_writes": [
-      { "path": "fe-format/src/license.rs", "owner": "S1 only", "reason": "doc-comment pointer to entitlement.rs; fields themselves are unchanged (NFR-2 backward compat)" }
+      {
+        "path": "fe-format/src/license.rs",
+        "owner": "S1 only",
+        "reason": "doc-comment pointer to entitlement.rs; fields themselves are unchanged (NFR-2 backward compat)"
+      }
     ],
     "tripwires": [
       "No payment, pricing, revenue, or payment-provider code or wording in any file this track touches (NFR-1) — a reviewer finding this is a hard fail, not a style nit",

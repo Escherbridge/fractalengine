@@ -110,22 +110,22 @@ setter wrappers around `EntitlementClaims` fields.
 ## 4. Task checklist
 
 ### Phase: Format + registry seam (W1)
-- [ ] S1: `fe-format::entitlement` primitives + `LocalIssuer`
-- [ ] S2: `PackageStore` trait + `FsPackageStore` + default-deny + protocol version
+- [x] S1: `fe-format::entitlement` primitives + `LocalIssuer`
+- [ ] S2: `PackageStore` trait + `FsPackageStore` + default-deny + protocol version _(partial at HEAD: `PackageStore` and `FsPackageStore` exist (fe-hexon-registry/src/store.rs:51,89) and default-deny is in place (config.rs:36); no `X-Hexon-Registry-Protocol` header in fe-hexon-registry/src, so the protocol-version half is open)_
 - [ ] Gate W1 (orchestrator)
 
 ### Phase: Client enforcement (W2)
-- [ ] S3: `entitlement_gate` + `remote.rs`/`package.rs` wiring
+- [x] S3: `entitlement_gate` + `remote.rs`/`package.rs` wiring
 - [ ] Gate W2 (orchestrator)
 
 ### Phase: UI + docs (W3)
-- [ ] S4: Hexon Manager states
-- [ ] S5: format-spec version bump
+- [ ] S4: Hexon Manager states _(partial at HEAD: fe-ui has no `installed-preview` / `entitlement-required` row states in dialogs/hexon_manager.rs; tileset Locked/Licensed badges only)_
+- [x] S5: format-spec version bump
 - [ ] Gate W3 (orchestrator)
 
 ### Close
-- [ ] S6: review-and-fix (opus), mandatory security review, recorded verdict
-- [ ] S7: docs consolidation
+- [x] S6: review-and-fix (opus), mandatory security review, recorded verdict
+- [ ] S7: docs consolidation _(partial at HEAD: fe-hexon/src/AGENTS.md §entitlement exists; the pointer target `fe-terrain/src/AGENTS.md §tileset-entitlement` does not exist yet, NEEDS I-DOC-CORE)_
 - [ ] Full sweep (orchestrator, once)
 - [ ] Retro + archive
 
