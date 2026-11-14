@@ -1322,9 +1322,9 @@ impl EmbeddedRelay {
         }
     }
 
-    /// Test-only: adopt an already-running (self-signed) relay so the reconciler runs against it.
-    #[cfg(test)]
-    fn adopt_test_server(server: relay::Server, gate: Arc<RelayMembershipGate>) -> Self {
+    /// Adopts an already-running relay for harnesses that bring their own TLS server; the reconciler runs against it.
+    #[cfg(any(test, feature = "relay-server"))]
+    pub fn adopt_running_server(server: relay::Server, gate: Arc<RelayMembershipGate>) -> Self {
         Self::start(server, gate, None, BreakerPolicy::WarnOnly)
     }
 
@@ -1616,7 +1616,7 @@ mod tests {
         let (_map, url, server) = iroh::test_utils::run_relay_server_with_access(false, gate.clone())
             .await
             .expect("in-process relay");
-        let relay = EmbeddedRelay::adopt_test_server(server, gate.clone());
+        let relay = EmbeddedRelay::adopt_running_server(server, gate.clone());
 
         let member = relay_client(1, &url).await;
         assert!(is_admitted(&member).await, "explicit Viewer+ member is admitted");
@@ -1768,7 +1768,7 @@ mod tests {
         let (_map, url, server) = iroh::test_utils::run_relay_server_with_access(false, gate.clone())
             .await
             .expect("in-process relay");
-        let relay = EmbeddedRelay::adopt_test_server(server, gate.clone());
+        let relay = EmbeddedRelay::adopt_running_server(server, gate.clone());
 
         let revoked_member = relay_client(11, &url).await;
         assert!(is_admitted(&revoked_member).await);

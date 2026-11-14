@@ -23,7 +23,7 @@ use fe_sync::relay_advertise::{AdvertChange, RelayAdvertisementBook};
 use fe_sync::relay_config::RelayAdvertSignedMode;
 use fe_sync::relay_reconcile::{RelayOp, RelayReconcileInputs, RelayReconciler};
 use fe_sync::relay_server::{
-    GateLimits, GateSettings, RelayMembershipGate, ServedVerses, EVICTION_TARGET, RECONCILE_INTERVAL,
+    EmbeddedRelay, GateLimits, GateSettings, RelayMembershipGate, ServedVerses, EVICTION_TARGET, RECONCILE_INTERVAL,
 };
 use fe_sync::relay_trust::{evaluate_coverage, AdoptionMode};
 use fe_sync::replicator::IrohDocsEngineHolder;
@@ -63,7 +63,7 @@ fn snapshot(seeds: &[u8]) -> RelayAdmissionSnapshot {
 struct RelayLab {
     gate: Arc<RelayMembershipGate>,
     url: RelayUrl,
-    server: iroh_relay::server::Server,
+    relay: EmbeddedRelay,
     _map: iroh::RelayMap,
 }
 
@@ -79,23 +79,19 @@ impl RelayLab {
         let (map, url, server) = iroh::test_utils::run_relay_server_with_access(false, gate.clone())
             .await
             .expect("in-process relay");
-        Self { gate, url, server, _map: map }
+        let relay = EmbeddedRelay::adopt_running_server(server, gate.clone());
+        Self { gate, url, relay, _map: map }
     }
 
     async fn stop(self) {
-        if let Err(error) = self.server.shutdown().await {
-            eprintln!("relay shutdown reported an error: {error}");
-        }
+        self.relay.shutdown().await;
     }
 
-    /// Stand-in for the embedded relay's reconciler: re-issues `disconnect` every tick until the gate saw `on_disconnect`.
-    async fn evict_until_gone(&self, endpoint: &EndpointId) -> Duration {
+    /// Polls the gate until the endpoint has no tracked connection; the production reconciler does the evicting.
+    async fn wait_until_evicted(&self, endpoint: &EndpointId) -> Duration {
         let started = Instant::now();
         while self.gate.tracked_connections(endpoint) > 0 {
             assert!(started.elapsed() <= EVICTION_TARGET, "eviction exceeded the 5 s target");
-            if let Some(service) = self.server.relay_service() {
-                service.clients().disconnect(*endpoint, None);
-            }
             tokio::time::sleep(RECONCILE_INTERVAL).await;
         }
         started.elapsed()
@@ -285,16 +281,16 @@ async fn members_only_relay_denies_strangers_and_evicts_revoked_members() {
     assert_eq!(lab.gate.total_connections(), 2, "a denied connection is never counted");
 
     let generation_before = lab.gate.generation();
-    lab.gate.revoke(&did_of(2));
+    lab.relay.revoke(&did_of(2));
     assert!(lab.gate.generation() > generation_before, "a revoke bumps the generation");
-    let evicted_in = lab.evict_until_gone(&revoked.endpoint.id()).await;
+    let evicted_in = lab.wait_until_evicted(&revoked.endpoint.id()).await;
     assert!(evicted_in <= EVICTION_TARGET, "evicted in {evicted_in:?}");
     assert!(is_denied_with(&revoked.endpoint, "not_member").await, "the revoked member's reconnect is denied");
     assert_eq!(lab.gate.tracked_connections(&kept.endpoint.id()), 1, "revoking one member leaves the others connected");
 
     // A newer snapshot that drops the remaining member evicts it as well.
     lab.gate.apply_snapshot(&snapshot(&[]));
-    lab.evict_until_gone(&kept.endpoint.id()).await;
+    lab.wait_until_evicted(&kept.endpoint.id()).await;
     assert!(is_denied_with(&kept.endpoint, "not_member").await, "a member removed from the snapshot is denied");
 
     for peer in [kept, revoked, default_viewer] {
