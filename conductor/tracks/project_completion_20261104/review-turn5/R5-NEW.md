@@ -20,17 +20,28 @@ Prompted to refute. Security review done in a fresh pass over the scene-write do
 - N10 KEPT (user default) - fe-ui/src/actions/node.rs:374 - uncorrelated writes (for example UpdateNodeTransform) still bypass a backing-off head; N7 policy default accepted.
 - N11 KEPT - fe-ui/src/undo.rs:931 - on Full, reconcile resets `started`, so the read-back retries after SAVE_TIMEOUT (15 s), not sooner; matches the task and the "Checking the saved outcome shortly" advisory.
 
+### Second pass (2026-11-14, after 112084f5)
+
+- N12 FIXED - fe-ui/src/actions/node.rs:1043 - write B was still submitted while the prefill held the channel, so B queued through the full-channel path even with the queue check removed; only C's leg was mutation-sensitive. The prefill is now drained before B, B must be `Waiting` with the channel open and nothing in it, so B itself goes red if the check is removed (the real N7 case: room on the channel, head still backing off).
+- N13 FIXED - fe-ui/src/actions/node.rs:1049 - "uncorrelated reads still bypass" had no assertion; the order leg now submits `LoadHierarchy` behind the queued writes and asserts it is `Sent` and received at once.
+- N14 KEPT (weak, not vacuous overall) - fe-ui/src/node_manager/mod.rs:1064, viewport_pick.rs:882 - the "no busy toast" checks read `active_notice(0.0)` and pass if no notice is active; the red signals for a non-retrying door are `is_pending()` / `selection_promotion.is_some()` plus `edit_error().is_none()`, which do flip.
+- N15 KEPT - fe-ui/src/node_manager/mod.rs:1048 - timing-safe: if the frame drain runs after the release in the same update and retries once (frame over 50 ms), the next backoff is 100 ms from that earlier instant, so `pump_gui_door_after(100 ms)` from a later `now` still lands past it.
+- N16 KEPT - fe-ui/src/actions/node.rs:374 - blocking submitters can now get `Waiting` for a plain correlated write; every caller matches `GuiSend` exhaustively and treats `Waiting` like `Sent` (for example earthwork_volumes.rs:658), as for gated writes.
+- N17 KEPT (deviation accepted) - fe-hexon/tests/remote_registry_test.rs:299 - progress is asserted on the alpine 1.2.0 content fixture, not the sealed plugin fixture the task named; the progress path (`download_with_progress` -> `download_capped_with_progress`) is identical for both, and the plugin fixture's verify is already covered above.
+- N18 KEPT - fe-hexon/tests/remote_registry_test.rs:338 - `capped_events.is_empty()` is stronger than the task's "never above the cap": the registry streams with Content-Length (fe-hexon-registry/src/routes.rs:589), so removing the check at remote.rs:373 emits `(0, total)` and turns the leg red.
+
 ## Security
 
 - S1 PASS - fe-hexon/src/remote.rs:373 - a Content-Length above the cap is refused before `on_bytes` or any allocation; the body loop re-checks the cap before each extend; `download_cap` never exceeds PACKAGE_MAX_BYTES; progress completion never implies install (verification runs after, asserted by the tamper leg).
 - S2 PASS - fe-ui/src/actions/node.rs:374 - queued plain writes are only ever sent on the caller's own sender; a queued write cannot skip the gate (plain path is by definition ungated: no petal or not a scene write); test seams are all `#[cfg(test)]`; no secrets logged; send failures warn.
+- S3 PASS (second pass) - fe-ui/src/undo.rs:913 - reconcile's Disconnected arm keeps the "Database connection closed; saved outcome remains unknown" error; Full never sends and never clears pending; no blocking send remains in undo.rs (flush_hydration uses try_send at :479, :491).
 - SEC-INBOX: no entry in .omc/state/turn4-security-inbox.md names a file this gate owns.
 
 ## Completeness
 
 - NEW5-03 COMPLETE fe-ui/src/actions/node.rs:757 (GUI_DOOR_TEST_LOCK), :765 (pump_gui_door_after), fe-ui/src/node_manager/mod.rs:1048 (retry leg), :1140 (exhaustion leg, fixed by N1)
 - NEW5-04 COMPLETE fe-ui/src/node_manager/viewport_pick.rs:853
-- NEW5-05 COMPLETE fe-ui/src/actions/node.rs:374 (fixed by N2-N4), test leg :1033
+- NEW5-05 COMPLETE fe-ui/src/actions/node.rs:374 (fixed by N2-N4), test leg :1033 (fixed by N12-N13)
 - NEW5-06 COMPLETE fe-ui/src/undo.rs:913, test leg fe-ui/src/node_manager/mod.rs:1177
 - NEW5-07 COMPLETE fe-hexon/tests/remote_registry_test.rs:280, :302 (fixed by N6), :331
 - INT5-11 COMPLETE fe-ui/src/node_manager/mod.rs:1048 (leg a), fe-ui/src/node_manager/viewport_pick.rs:853 (leg b)

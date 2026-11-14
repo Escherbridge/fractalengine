@@ -1037,13 +1037,19 @@ mod tests {
             let base = start + Duration::from_secs(400);
             let a = submit_with(&doors, &door, &tx, property_write("order-a"), false, petal, FullChannel::Retry, base);
             assert_eq!(a, GuiSend::Waiting);
+            // The channel has room again while A still backs off: B and C would overtake it without the queue check.
+            assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
             let b = submit_with(&doors, &door, &tx, property_write("order-b"), false, None, FullChannel::Retry, base);
             assert_eq!(b, GuiSend::Waiting, "a plain correlated write queues behind the backing-off head");
             assert!(write_in_door(&doors, "order-b"));
+            assert!(rx.try_recv().is_err(), "B did not overtake A into the open channel");
             // A reporting caller queues too: it is behind a write, not facing a full channel, so never `Busy`.
             let c = submit_with(&doors, &door, &tx, property_write("order-c"), false, None, FullChannel::Report, base);
             assert_eq!(c, GuiSend::Waiting, "a reporting caller's correlated write keeps submit order");
-            assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
+            // An uncorrelated read still bypasses the queue.
+            let read = submit_with(&doors, &door, &tx, DbCommand::LoadHierarchy, false, None, FullChannel::Report, base);
+            assert_eq!(read, GuiSend::Sent, "a read carries no reply id and never waits behind writes");
+            assert!(matches!(rx.try_recv(), Ok(DbCommand::LoadHierarchy)));
             let settled = pump_scene_door_at(&doors, base + Duration::from_millis(60));
             assert!(matches!(settled.first(), Some(Settled::Sent(_))));
             assert_eq!(received_id(&rx).as_deref(), Some("order-a"));
