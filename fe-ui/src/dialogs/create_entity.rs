@@ -130,7 +130,7 @@ pub fn render_create_dialog(
         let now = ctx.input(|i| i.time);
         if matches!(cmd, DbCommand::CreateNode { .. }) {
             // A node create passes the scene write door (`scene.create` hook); a refusal shows as an advisory.
-            if matches!(try_submit_scene_write_on(db_tx, cmd), GuiSend::Busy | GuiSend::Closed) {
+            if try_submit_scene_write_on(db_tx, cmd).channel_unavailable() {
                 ui_mgr.show_error("Couldn't create it: database unavailable; action was not sent", now);
             }
         } else {

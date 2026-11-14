@@ -1203,7 +1203,7 @@ pub(crate) fn handle_delete_region(
                 node_id,
                 auth: CallerAuth::Local,
             };
-            if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
+            if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
                 bevy::log::warn!("db_sender channel closed — earthwork node tombstone not sent");
             }
         }

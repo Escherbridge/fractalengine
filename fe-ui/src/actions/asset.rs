@@ -577,7 +577,7 @@ pub(crate) fn persist_override(
         value,
         correlation_id: None,
     };
-    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
+    if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — stamp override {key} not persisted");
     }
 }

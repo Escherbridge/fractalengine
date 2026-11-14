@@ -87,7 +87,7 @@ pub(crate) fn set(
         value,
         correlation_id: None,
     };
-    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
+    if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — SetNodeProperty not dispatched");
     }
 }
@@ -98,7 +98,7 @@ pub(crate) fn delete(db_sender: &DbCommandSender, node_id: String, key: String) 
         key,
         correlation_id: None,
     };
-    if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
+    if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — DeleteNodeProperty not dispatched");
     }
 }
@@ -187,7 +187,7 @@ pub(crate) fn finish_clear(
             node_id: node_id.to_string(),
             keys: chunk.to_vec(),
         };
-        if super::node::submit_scene_write(db_sender, command) == super::node::GuiSend::Closed {
+        if super::node::submit_scene_write(db_sender, command).channel_unavailable() {
             bevy::log::warn!("db_sender channel closed — ClearNodeProperties not dispatched");
             return;
         }

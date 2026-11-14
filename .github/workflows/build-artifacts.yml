@@ -392,7 +392,8 @@ jobs:
           # --release has no debug_assertions, so the development-reset permit
           # (fe-database/src/admin.rs) is closed unless FE_DEV_TOOLS=1 is captured.
           FE_DEV_TOOLS: "1"
-        run: cargo test --release -p fe-ui -p fe-terrain -p fractalengine
+        # --no-fail-fast: one failing binary must not hide failures in the binaries after it.
+        run: cargo test --release --no-fail-fast -p fe-ui -p fe-terrain -p fractalengine
 
       # iroh 0.35 -> 1.x store-migration proof (fe-sync/src/AGENTS.md
       # §store-migration). The 0.35 fixture is never committed: a real

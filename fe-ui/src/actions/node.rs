@@ -33,6 +33,13 @@ pub enum GuiSend {
     Closed,
 }
 
+impl GuiSend {
+    /// True when the DB channel did not take the write and no queue owns it (`Busy` or `Closed`).
+    pub fn channel_unavailable(&self) -> bool {
+        matches!(self, GuiSend::Busy | GuiSend::Closed)
+    }
+}
+
 /// Where a queued write stands.
 enum Queued {
     /// The gate is still answering.
@@ -313,7 +320,7 @@ pub(crate) fn create_at(db_sender: &DbCommandSender, petal_id: String, position:
         position,
         correlation_id: None,
     };
-    if submit_scene_write(db_sender, command) == GuiSend::Closed {
+    if submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — CreateNode not sent");
     }
 }
@@ -336,7 +343,7 @@ pub(crate) fn handle_delete(db_sender: &DbCommandSender, node_id: String, cascad
             auth: CallerAuth::Local,
         }
     };
-    if submit_scene_write(db_sender, cmd) == GuiSend::Closed {
+    if submit_scene_write(db_sender, cmd).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — tombstone delete not sent");
     }
 }
@@ -350,7 +357,7 @@ pub(crate) fn handle_duplicate(db_sender: &DbCommandSender, node_id: String) {
         node_id,
         auth: CallerAuth::Local,
     };
-    if submit_scene_write(db_sender, command) == GuiSend::Closed {
+    if submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — DuplicateNode not sent");
     }
 }
@@ -369,7 +376,7 @@ pub(crate) fn handle_rename(db_sender: &DbCommandSender, node_id: String, name: 
         new_name,
         auth: CallerAuth::Local,
     };
-    if submit_scene_write(db_sender, command) == GuiSend::Closed {
+    if submit_scene_write(db_sender, command).channel_unavailable() {
         bevy::log::warn!("db_sender channel closed — RenameNode not sent");
     }
 }

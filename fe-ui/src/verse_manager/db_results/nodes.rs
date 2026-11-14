@@ -75,7 +75,7 @@ pub(super) fn handle_node_created(
                     value,
                     correlation_id: None,
                 },
-            ) == crate::actions::node::GuiSend::Closed
+            ).channel_unavailable()
             {
                 bevy::log::warn!(
                     "db_sender channel closed — earthwork node contract keys not written"
