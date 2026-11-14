@@ -41,7 +41,8 @@ Single workspace sweep at the end per standing policy.
       — AUDIT 2026-10-10: DONE 7bdcfbe — `fe-sync/src/relay_config.rs:14` enum + `:100` EOL warn + `:133` `is_default_infra`; `fe-sync/src/endpoint.rs:72` `SyncEndpoint::new(secret_key, &RelayConfig)`; tests `relay_config.rs:206-276` (incl. `is_default_infra_only_for_default_variant`).
 - [x] Task: Relay health surfaced in `SyncStatus` (TDD: status transitions)
       — AUDIT 2026-10-10: DONE 7bdcfbe — `fe-sync/src/status.rs:30` `health: RelayHealth`, `:104` `SyncEvent::RelayHealthChanged` applied; startup bind + gossip-spawn outcomes only (continuous `home_relay()` watcher still `TODO(ultrapilot)` at `fe-sync/src/sync_thread.rs:586`).
-- [ ] Verification: headless run shows relay mode + health; sweep-deferred [checkpoint]
+- [x] Verification: headless run shows relay mode + health; sweep-deferred [checkpoint]
+      — DONE (NET-39): PAS-P1V run executed 2026-10-25, 12/12 PASS. Evidence: `evidence.md` §6 (`conductor/tracks/p2p_asset_streaming_20260718/evidence.md:188`); log `scripts/relay-health-verify.log:203-209`. The campaign-end sweep stays deferred (user-gated).
       — AUDIT 2026-10-10: OPEN — no recorded headless run showing relay mode/health.
       UPDATE 2026-10-13 (S4 `3d89b60`): `scripts/relay-health-verify.ps1` now
       exists — boots `fe-relay` under Default/Custom/Disabled, captures to

@@ -3,10 +3,10 @@
   "type": "feature",
   "title": "Peer networking support: embedded members-only relay, signed relay advertisements and gossip, network diagnostics",
   "description": "Security-first native networking in fe-sync on iroh 1.3, delivered for self-hosters and verse operators. Six requirements: (FR-1) an embedded iroh-relay server in fe-relay, opt-in at build time and at runtime, off by default, TLS via ACME or an operator-supplied cert, and refusing to start when misconfigured; (FR-2) a relay-capable desktop mode gated by a net_report reachability self-test plus an AutoNAT-style HTTPS dial-back with SSRF-pinned probing; (FR-3) members-only relay access control: an AccessControl gate admitting only explicit Viewer+ declared verse members (never open_to_all), per-endpoint and global connection caps, client_rx bandwidth caps, eviction on revocation via Clients::disconnect, and rate-limited abuse logging; (FR-4) hardening of the S-RELAY-ADVERTISE seam from relay_operability_20261031: inner ed25519 signature, role check at read time, TTL, bounded set, health checks, DialOnly-by-default adoption (hazard B: the iroh home relay is endpoint-global), a refcounted fallback that never removes configured relays, isolation of the operator token, and a peer-address relay-URL filter; (FR-5) per-message gossip signing that closes residual S-1, with replay defence and a compat/require mixed-version rollout using a per-author latch; (FR-6) truthful direct/relayed diagnostics in the GUI, API and MCP, read-only, scope-confined and IP-redacted. Four embedded Fable review gates (F0-F3) each record a verdict file; any FAIL blocks the next wave.",
-  "status": "pending",
+  "status": "in_progress",
   "priority": "P1",
   "created_at": "2026-10-31T00:00:00Z",
-  "updated_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-11-13T00:00:00Z",
   "origin": "user directive 2026-10-31: networking support feature, secure, Fable-reviewed (from NAT/relay research session findings)",
   "alignment": "Open-core public side (conductor/open-core.md): anything a self-hoster needs to run, verify or extend FractalEngine. Consumes and hardens seam S-RELAY-ADVERTISE, which relay_operability_20261031 FR-7 owns. Closes SECURITY.md's gossip-attribution limitation (S-1, fe-sync/src/AGENTS.md §transport-admission-control item 2) and the §write-policy requirement that networked operations be signed. Plugins stay network-less (fe-plugin capability network_scope/external_http are unenforced; the WIT is aspirational), so networking remains native fe-sync work.",
   "depends_on": ["relay_operability_20261031"],
@@ -14,12 +14,12 @@
   "related": ["iroh_1_0_upgrade_20260711", "canonical_data_log_20260808", "role_propagation_20261013", "plugin_host_revival_20261031"],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 1, "open": 25, "plan": "./plan.md" },
+  "progress": { "done": 15, "open": 11, "plan": "./plan.md" },
   "review_gates": [
     { "id": "F0", "model": "fable", "when": "before any code (immediately after drafting)", "file": "./review-fable-design.md", "status": "PASS-WITH-FIXES (2026-10-31)" },
-    { "id": "F1", "model": "fable", "when": "after W2 (access control + advertisement hardening)", "file": "./review-fable-f1.md", "status": "pending" },
-    { "id": "F2", "model": "fable", "when": "after W3 (gossip signing): replay, key rotation, mixed-version downgrade", "file": "./review-fable-f2.md", "status": "pending" },
-    { "id": "F3", "model": "fable", "when": "pre-merge: full networking review + /security-review + two-peer+relay e2e evidence + cargo deny", "file": "./review-fable-f3.md", "status": "pending" }
+    { "id": "F1", "model": "fable", "when": "after W2 (access control + advertisement hardening)", "file": "./review-fable-f1.md", "status": "PASS-WITH-FIXES via R-NET-3 and R-NET-4 (2026-11-13); review-fable-f1.md not written" },
+    { "id": "F2", "model": "fable", "when": "after W3 (gossip signing): replay, key rotation, mixed-version downgrade", "file": "./review-fable-f2.md", "status": "PASS-WITH-FIXES via R-NET-5 (2026-11-13); review-fable-f2.md not written" },
+    { "id": "F3", "model": "fable", "when": "pre-merge: full networking review + /security-review + two-peer+relay e2e evidence + cargo deny", "file": "./review-fable-f3.md", "status": "PASS-WITH-FIXES via R-NET-6 (2026-11-13); relay start unreachable until R6-05, R6-10, R6-11 land; evidence and sweep pending" }
   ],
   "open_decisions": [
     "OD-1 relay server location: fe-sync `relay-server` feature module (recommended) vs new crate",
@@ -49,7 +49,8 @@
     "(h) iroh test-utils provides run_relay_server_with_access (test_utils.rs:51), and Builder::clear_ip_transports (endpoint.rs:510) builds relay-only endpoints. The e2e flows need no docker.",
     "(i) VerseFabric::access_snapshot folds in open_to_all (docs_engine.rs:44-53). Reusing it for the relay gate would create an open relay, so a new relay_admission_snapshot is required.",
     "Spec §8 lists 8 changes required in relay_operability_20261031: OD-6 default → DialOnly; a versioned __relays row; read-time admission with demotion re-evaluation; cross-verse refcount and never removing Configured URLs; no RelayAccessToken on advertised relays; correcting the FR-7 risk text (the residual is gossip-only); one shared URL validator; a cross-reference to this track as the embedded-server phase. All eight were applied to that track at Gate F0.",
-    "2026-10-31: Fable F0 design review — PASS-WITH-FIXES. 16 findings (4 high, 7 medium, 5 low), all fixed in place: OD-4 drops the __peers intersection (bootstrap deadlock for relay-only newcomers); revocation made convergent (on_connect precedes Clients::register, so a one-shot generation check could miss); replay LRU made per-(verse, author); dial-back request names one prober and probers are servers by default; every resolved address must be public; OD-3 verifier contract written (live pin set by exact ServerName, WebPKI delegation incl. signature methods, no pins for Configured/Default hosts); portmapped-address-in-watch_addr confirmed; AC-9 decided as the documented warning path; OD-13 coverage auto-home added (user decision pending); planner gains a Default tier distinct from Configured. Record: ./review-fable-design.md."
+    "2026-10-31: Fable F0 design review — PASS-WITH-FIXES. 16 findings (4 high, 7 medium, 5 low), all fixed in place: OD-4 drops the __peers intersection (bootstrap deadlock for relay-only newcomers); revocation made convergent (on_connect precedes Clients::register, so a one-shot generation check could miss); replay LRU made per-(verse, author); dial-back request names one prober and probers are servers by default; every resolved address must be public; OD-3 verifier contract written (live pin set by exact ServerName, WebPKI delegation incl. signature methods, no pins for Configured/Default hosts); portmapped-address-in-watch_addr confirmed; AC-9 decided as the documented warning path; OD-13 coverage auto-home added (user decision pending); planner gains a Default tier distinct from Configured. Record: ./review-fable-design.md.",
+    "2026-11-13 (T-NET, round 4): P1-P10, P12, P14, P15, P16 code-done at HEAD (NET-13..NET-27, NET-31, NET-32, NET-33, NET-37). P11 and P13 stay open: R-NET-6 R6-05 (net-report feature undeclared, self-test dead), R6-10 and R6-11 (gated start circular, install_gate after start). P15 run, W1-W5 gates and the sweep are user-gated. Gossip signing default flips to require at next minor release or once all hosted-verse peers are latched (spec.md:212)."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",

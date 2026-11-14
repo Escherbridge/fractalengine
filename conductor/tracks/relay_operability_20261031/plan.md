@@ -137,10 +137,10 @@ mandatory on `fe-sync/src/relay_advertise.rs` and the `sharding.rs` admission ho
 surface: a bug here lets a non-Owner/Manager peer redirect other peers' relay traffic). Record one
 verdict line per FR here once done; a phase with no verdict is unreviewed, not done.
 
-- FR-1/2 verdict: _(pending)_
-- FR-3 verdict: _(pending)_
-- FR-4/5/6 (docs) verdict: _(pending)_
-- FR-7 verdict: _(pending)_
+- FR-1/2 verdict: PASS-WITH-FIXES (R-NET-1, `review-turn4/R-NET-1.md`); wiring items R1-24/R1-25 HANDED-OFF to I-API-1, not re-verified here.
+- FR-3 verdict: PASS (R-NET-1); binary wiring HANDED-OFF to I-BIN-1 (R1-26), since landed in `6066a4a0`.
+- FR-4/5/6 (docs) verdict: DEFERRED at R-NET-1 (R1-29); docs landed in `8a7157db` and `4768c059`. No gate re-review of the docs.
+- FR-7 verdict: PASS-WITH-FIXES (R-NET-1 and R-NET-2, `review-turn4/`); dial-site residual (DNS rebind on Pinned relays) HANDED-OFF (R2-07), DialOnly domains reaching the allowlist unresolved (see peer_networking R-NET-3 N3-16 / R-NET-4 N4-25).
 
 ## 5. Cross-track sequencing
 
@@ -154,16 +154,26 @@ concurrently, and the later one re-greps symbols after the earlier one's commit.
 
 ## 6. Task checklist
 
-- [ ] S1: `UsageEvent`/`UsageSink` + no-op and JSON-lines sinks (fe-runtime)
-- [ ] S5: `FE_LOG_FORMAT` toggle in both binaries
-- [ ] S6: `__relays` table + role-gated admission + URL validation (fe-sync)
-- [ ] S2: usage-emit middleware + `usage_sink_from_env()` (fe-api)
-- [ ] S3: opt-in `/metrics` listener (fe-api)
-- [ ] S7: sync-thread `insert_relay`/`remove_relay` reconciliation + `RelayAdvertisePolicy`
-- [ ] S6b: `POST`/`DELETE /api/v1/verses/{verse_id}/relays` route
-- [ ] S4: wire `usage_sink`/`metrics_bind` through both binaries
-- [ ] S8: `docs/relay-operations.md` + compose `iroh-relay` service
+- [x] S1: `UsageEvent`/`UsageSink` + no-op and JSON-lines sinks (fe-runtime)
+  — DONE NET-01 (`7464a5ac`): `fe-runtime/src/usage.rs:32` `pub trait UsageSink`; sinks at `:38` and `:47`.
+- [x] S5: `FE_LOG_FORMAT` toggle in both binaries
+  — DONE NET-02 (`d312649f`): `fe-runtime/src/log_format.rs:8` `LogFormat`; binaries wired in `f0c266e5`.
+- [x] S6: `__relays` table + role-gated admission + URL validation (fe-sync)
+  — DONE NET-05/06/07 (`35e366bc`, `55b64d4d`, `80d44d41`): validator `fe-runtime/src/relay_advertisement.rs:322`; read-time book `fe-sync/src/relay_advertise.rs:329` `admitted()`.
+- [x] S2: usage-emit middleware + `usage_sink_from_env()` (fe-api)
+  — DONE NET-03 (`01905ce0`): env read at `fe-api/src/network_ops.rs:38` `from_env`.
+- [x] S3: opt-in `/metrics` listener (fe-api)
+  — DONE NET-04 (`5e5a585b`): `fe-api/src/metrics.rs:180` `spawn_metrics_listener`; AC-1 journey asserts zero listeners when unset (`metrics.rs:263`).
+- [x] S7: sync-thread `insert_relay`/`remove_relay` reconciliation + `RelayAdvertisePolicy`
+  — DONE NET-08 (`a33cdad7`): policy enum `fe-sync/src/relay_config.rs:259`; DialOnly default; refcounted reconciler in `fe-sync/src/relay_reconcile.rs`.
+- [x] S6b: `POST`/`DELETE /api/v1/verses/{verse_id}/relays` route
+  — DONE NET-09 (`9055c56c`): `fe-api/src/relay_advertise.rs:206` `post_relay`, `:252` `delete_relay`.
+- [x] S4: wire `usage_sink`/`metrics_bind` through both binaries
+  — DONE with NET-03 (absorbed); binary wiring in `6066a4a0` and `f0c266e5`.
+- [x] S8: `docs/relay-operations.md` + compose `iroh-relay` service
+  — DONE NET-10 (`8a7157db`): `docs/relay-operations.md` present at HEAD.
 - [ ] S9: review-and-fix with recorded verdicts; full sweep; `conductor/tracks.md` row
+  — REVIEW DONE: `review-turn4/R-NET-1.md` and `R-NET-2.md`, both PASS-WITH-FIXES (NET-12 is not in this round's tick list; left open). Code done, sweep pending (user-gated: `tools/qa/test_batches.ps1`).
 
 ## 7. Docs + retro (folds into S8/S9)
 
@@ -173,3 +183,11 @@ concurrently, and the later one re-greps symbols after the earlier one's commit.
 - `conductor/tracks.md` row + this plan's `- [ ]` boxes ticked.
 - Retro note: whether OD-1..OD-9 held up as recommended, or the user overrode any — record the
   reversal actually taken if so.
+
+## 8. Retro (T-NET, 2026-11-13)
+
+- **Status.** Nine of ten checklist items are code-done at HEAD (S1-S8 via NET-01..NET-10). S9 is reviewed (R-NET-1, R-NET-2) but its full sweep is user-gated, so it stays open. Run-level evidence (the workspace sweep) is pending the user's order.
+- **ODs.** OD-6 changed from AutoAdopt to DialOnly at the peer_networking F0 review (`../peer_networking_support_20261031/review-fable-design.md:79`), and that reversal is taken. OD-13 (coverage auto-home) took its default, ON: `AppSettings.auto_home_relay = true` in `fe-ui/src/settings.rs:133`. OD-1..OD-5 and OD-7..OD-9 were built as recommended per the slices above; they were not re-audited line by line here.
+- **Gate verdicts.** R-NET-1 PASS-WITH-FIXES, R-NET-2 PASS-WITH-FIXES (`review-turn4/`). Open residuals: R2-07 (DNS rebind between check and iroh's dial on Pinned relays, HANDED-OFF); R2-16 (`RelayReconciler::known()` has no dial allowlist reader, HANDED-OFF).
+- **Hazard B.** F0-5 found that "one call onboards every peer" is not true under DialOnly, because iroh keeps one latency-chosen home relay. The decision is a documented warning path (AC-9), not a code guarantee. The P15 e2e run that would show it is user-gated.
+- **Trigger to flip gossip signing to require.** Next minor release, or once every declared peer in the hosted verses is latched (`../peer_networking_support_20261031/spec.md:212`).

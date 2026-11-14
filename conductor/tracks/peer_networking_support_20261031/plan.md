@@ -56,13 +56,13 @@ partitions_confidence: hypothesis
 
 ### W1: pure foundations (parallel, disjoint new files)
 
-- [ ] **P1** (opus) `fe-sync/src/gossip_auth.rs`:
+- [x] **P1** (opus) `fe-sync/src/gossip_auth.rs`: DONE NET-13 (`9faa69a0`)
   - `SignedGossipFrame` v1 in canonical CBOR, with a byte-exact re-encode check;
   - `sign_domain`/`verify_domain` with domain `"fe-gossip-v1\0"`;
   - `ReplayGuard`: per-(verse, author) HLC window floor (`hlc < hwm − max_age` drops), per-(verse, author) LRU of 256, max age per kind, skew bound, frame-size cap before decode;
   - `SigningMode::{Compat,Require}`.
   - *Acceptance:* round-trip, tamper and replay tables pass; a wrong verse, wrong key or stale frame each yields a named reason.
-- [ ] **P2** (sonnet) `fe-sync/src/relay_trust.rs`:
+- [x] **P2** (sonnet) `fe-sync/src/relay_trust.rs`: DONE NET-14 (`a97864a9`, policy and signed body in the shared `fe-runtime/src/relay_advertisement.rs:388`) and NET-15 (`dcf46934`)
   - `RelayUrlPolicy`;
   - the `RelayAdvertisementV1` canonical body, with sign/verify, expiry and bounded selection;
   - a pure `RelayReconcilePlan` over three source tiers (`Configured`, `Default`, `Advertised(verse)`) that refcounts URLs, never removes a Configured one, demotes `Default` only while a coverage-eligible relay is connected as home, and re-inserts it on any failure signal;
@@ -70,20 +70,20 @@ partitions_confidence: hypothesis
   - a pure peer-address filter;
   - every new `pub mod` line in `fe-sync/src/lib.rs`, with `relay_server` behind a cfg gate.
   - *Acceptance:* a property test proves Configured URLs always survive, that refcount 0 is the only path to removing an Advertised URL, and that `Default` is absent only in states where a covered relay is connected home.
-- [ ] **P3** (opus, auth surface) `fe-sync/src/relay_server.rs`:
+- [x] **P3** (opus, auth surface) `fe-sync/src/relay_server.rs`: DONE NET-17 (`1e60e9b2`)
   - `RelayServeConfig::from_env` with the refuse-to-start rules;
   - `RelayMembershipGate: AccessControl`: snapshot (explicit Viewer+ only, never `__peers`-gated), caps counted only on `Allow`, a gate-side `endpoint_id → {connection_id}` table, generation stamps, rate-limited abuse events, circuit breaker;
   - `EmbeddedRelay::{spawn, revoke}`, revoking via `relay_service().clients().disconnect` inside a 250 ms reconciler that retries until `on_disconnect` has fired for every tracked connection of a revoked DID (closes the `on_connect`-before-`register` race);
   - a OnceLock seam to the sync thread;
   - `fe-sync/Cargo.toml`: feature `relay-server` (optional `iroh-relay/server`), `fe-canonical-log`, iroh `unstable-net-report`, an HTTPS client (reuse a workspace dependency if one exists), and iroh `test-utils` as a dev-dependency.
   - *Acceptance:* an in-process relay admits a member, denies a non-member, and evicts on revoke.
-- [ ] **P4** (sonnet) `fe-sync/src/reachability.rs`:
+- [x] **P4** (sonnet) `fe-sync/src/reachability.rs`: DONE NET-18 (`3a634a49` wiring) and NET-19 (`c498aa8b`, SSRF-pinned prober)
   - `NetReportSummary` and `classify()`, returning a verdict plus remediation text;
   - the `ReachabilityProbe` adapter;
   - the FR-2b dial-back prober (all resolved addresses public, resolver override with hostname verification, fixed path, no redirects, body and time caps, per-requester and global rate limits);
   - a signed `DialbackRecord {prober_did, requester_did, url, at_ms, ok}` under domain `fe-dialback-v1\0`, with the acceptance rule (fresh, `ok`, requester = advertiser, prober ≠ advertiser).
   - *Acceptance:* classifier tables pass (a `Portmapped`-only public address is `BehindNat`); the prober refuses private, loopback, mixed-record, rebinding and redirect targets; a self-attested record is refused.
-- [ ] **P5** (sonnet) `fe-sync/src/net_diagnostics.rs`:
+- [x] **P5** (sonnet) `fe-sync/src/net_diagnostics.rs`: DONE NET-20 (`4789ac31`)
   - `NetworkDiagnostics`;
   - `PeerConnectionKind`, derived from the active addresses in `remote_info`;
   - IP redaction and the downgrade hint.
@@ -92,18 +92,18 @@ partitions_confidence: hypothesis
 
 ### W2: access control and advertisement-hardening integration
 
-- [ ] **P6** (opus, integration):
+- [x] **P6** (opus, integration): DONE NET-21 (`45263c28`), NET-22 (`2d672e88`), NET-23 (`aae59b52`)
   - `VerseFabric::relay_admission_snapshot`;
   - snapshot and revoke pushes to the gate on every role or `__peers` change;
   - hardening the sibling's `__relays` consumer: read-time admission, quarantine, adoption modes, coverage evaluation on every verse join/leave and advertisement change, health loop plus the 30 s `home_relay_status()` trigger, expiry, reconcile plan with `Default` demotion/re-insert;
   - the peer-address filter before `add_peer_addr`.
   - Files: `sync_thread.rs`, `relay_advertise.rs`, `relay_config.rs`, `endpoint.rs`, `sharding.rs`. Fold W1 rationale into the §peer-relay-server, §relay-trust and §reachability sections.
   - *Acceptance:* AC-6, AC-7, AC-8, AC-10 and AC-17.
-- [ ] **P7** (sonnet) `fractalengine-relay`:
+- [x] **P7** (sonnet) `fractalengine-relay`: DONE NET-24 (`93b26355`)
   - a non-default `relay-server` feature;
   - in `main.rs`, an OperatorGate-style opt-in that registers the gate before `spawn_sync_thread`, then spawns `EmbeddedRelay`.
   - *Acceptance:* AC-1 and AC-2.
-- [ ] **P8** (sonnet) `fe-api/src/relay_advertise.rs` (created by the sibling):
+- [x] **P8** (sonnet) `fe-api/src/relay_advertise.rs` (created by the sibling): DONE NET-25 (`0a11e04e`)
   - require `expires_at` and cap it at 30 days;
   - pre-check URLs with `RelayUrlPolicy`, and enforce the set bound;
   - build the signed v1 row;
@@ -114,7 +114,7 @@ partitions_confidence: hypothesis
 
 ### Gate F1: adversarial security review of access control and advertisement hardening (fable)
 
-- [ ] **F1** (fable): scope is the P2, P3 and P4 diff plus all of W2.
+- [ ] **F1** (fable): scope is the P2, P3 and P4 diff plus all of W2. OPEN: the security part ran as R-NET-3 and R-NET-4 (PASS-WITH-FIXES, `review-turn4/`); `review-fable-f1.md` was not written.
   - Run `/security-review` on `relay_server.rs`, `relay_trust.rs`, `reachability.rs` and the `__relays` admission path.
   - Attack the gate: Sybil peers, the revoke race, an `open_to_all` leak.
   - Attack the planner: removal of a Configured URL, a token leak.
@@ -124,19 +124,19 @@ partitions_confidence: hypothesis
 
 ### W3: gossip signing
 
-- [ ] **P9** (opus):
+- [x] **P9** (opus): DONE NET-26 (`18f246c4`)
   - sign at every broadcast site: `distributed_query.rs` ×2, and `sync_thread.rs` tileset advertisements, batched;
   - verify in the pump before `handle_gossip_incoming`, keeping the F23 direct check and adding inner-claim equality;
   - add the `PeerDeclaration.gossip_sig` latch in `sharding.rs`, the verse setting `gossip_signing: required`, and `FE_SYNC_GOSSIP_SIGNING`;
   - write the §gossip-signing section.
   - *Acceptance:* AC-11 and AC-12.
-- [ ] **P10** (sonnet) `virtual_transport.rs`: the sim hub carries byte-identical signed frames.
+- [x] **P10** (sonnet) `virtual_transport.rs`: the sim hub carries byte-identical signed frames. DONE NET-27 (contract at `fe-sync/src/virtual_transport.rs:113`); the signing-on test run is pending (user-gated).
   - *Acceptance:* the existing sim gossip tests pass with signing on.
 - [ ] **Gate W3** (orchestrator): serial fe-sync check and tests.
 
 ### Gate F2: gossip protocol review (fable)
 
-- [ ] **F2** (fable): attack the protocol.
+- [ ] **F2** (fable): attack the protocol. OPEN: ran as R-NET-5 (PASS-WITH-FIXES); `review-fable-f2.md` was not written.
   - Replay across a restart with an empty LRU, and within the max-age window.
   - Key rotation and revoked DIDs.
   - Mixed-version downgrade: a legacy frame from a latched author, a bad signature behind the magic, a fresh peer that has no latch yet.
@@ -147,24 +147,24 @@ partitions_confidence: hypothesis
 
 ### W4: relay-capable desktop and diagnostics surfaces
 
-- [ ] **P13** (sonnet, W4a):
+- [ ] **P13** (sonnet, W4a): OPEN. Command and responder landed (NET-28 `f8191254`, NET-29 `ccd1a19c`). The self-test is dead code: `fe-sync/src/net_diagnostics.rs:113` gates on feature `net-report`, which `fe-sync/Cargo.toml` does not declare (R6-05 HANDED-OFF).
   - `SyncCommand::GetNetworkDiagnostics` → `SyncEvent::NetworkDiagnostics`;
   - the self-test, run on demand and on network change;
   - the dial-back responder: signed `reach_probe` frames, FR-2b controls;
   - files: `sync_thread.rs`, `messages.rs`, `status.rs`, plus the §net-diagnostics section.
   - *Acceptance:* AC-13, and the responder half of AC-15.
-- [ ] **P11** (sonnet, W4b):
+- [ ] **P11** (sonnet, W4b): OPEN. Code landed (NET-30, `75256acc` and `6066a4a0`; `fe-ui/src/settings.rs:110-133`), but the gated start cannot pass: R-NET-6 R6-05, R6-10, R6-11 are HANDED-OFF and the gate fails closed.
   - a non-default `relay-server` feature in `fractalengine`;
   - `AppSettings.serve_relay`, default false; `AppSettings.act_as_prober`, default false; `AppSettings.auto_home_relay`, default true (OD-13 toggle);
   - a toggle and consent dialog in `ui_shell/right_sidebar.rs`;
   - the relay starts only after the self-test and dial-back pass.
   - *Acceptance:* the toggle is inert without the feature, and refuses to start without a passing self-test.
-- [ ] **P12** (sonnet, W4b) Network panel in `fe-ui/src/dialogs/peer_debug.rs`:
+- [x] **P12** (sonnet, W4b) Network panel in `fe-ui/src/dialogs/peer_debug.rs`: DONE NET-31 (`1e4f6634`)
   - per peer: Direct, Relayed or Mixed, plus the relay used;
   - portmapper state, reachability verdict, relay-server state, downgrade hint;
   - update `fe-ui/src/dialogs/AGENTS.md`.
   - *Acceptance:* renders from a fixture and shows no IPs by default.
-- [ ] **P14** (sonnet, W4b):
+- [x] **P14** (sonnet, W4b): DONE NET-32 (`ed35b534`, `2b82f6fd`)
   - `GET /api/v1/network/diagnostics` in `fe-api/src/network.rs`, plus the MCP tool `get_network_diagnostics`;
   - peers filtered to the caller's Viewer+ verses;
   - full IPs only for an Owner with `FE_API_NETWORK_DETAIL=1` (OperatorGate).
@@ -173,7 +173,7 @@ partitions_confidence: hypothesis
 
 ### W5: end-to-end evidence
 
-- [ ] **P15** (sonnet) `fe-sync/tests/peer_relay_e2e_test.rs`: real endpoints, in-process members-only relay. It covers:
+- [x] **P15** (sonnet) `fe-sync/tests/peer_relay_e2e_test.rs`: real endpoints, in-process members-only relay. DONE NET-33 code (`c836d2ee`); the run is pending (user-gated). It covers:
   - two relay-only peers syncing through a peer-run relay (AC-3);
   - a non-member denied (AC-4);
   - eviction on revoke (AC-5);
@@ -186,7 +186,7 @@ partitions_confidence: hypothesis
 
 ### Gate F3: pre-merge full networking security review (fable)
 
-- [ ] **F3** (fable): full-diff review, including `/security-review`.
+- [ ] **F3** (fable): full-diff review, including `/security-review`. OPEN: ran as R-NET-6 (PASS-WITH-FIXES, and the relay start stays unreachable until R6-05, R6-10, R6-11 land); evidence and sweep are user-gated.
   - Evidence is the P15 e2e run log: two peers plus a relay.
   - Run `cargo deny check` over the `iroh-relay/server` dependency tree.
   - Check AC-1 to AC-16 against the code, and the tripwires mechanically.
@@ -196,7 +196,7 @@ partitions_confidence: hypothesis
 
 ### W6: docs and retro
 
-- [ ] **P16** (haiku) docs:
+- [x] **P16** (haiku) docs: DONE NET-37 (`4768c059`)
   - consolidate `fe-sync/src/AGENTS.md`;
   - in `docs/relay-operations.md`: the embedded-relay env table, ACME and manual recipes, firewall guidance against floods, restart-on-revoke for the standalone binary, desktop guidance;
   - in `SECURITY.md`: S-1 closed, plus residuals (metadata, upstream `accept_conn_limit`);
@@ -223,3 +223,11 @@ partitions_confidence: hypothesis
 - **Rationale placement.** Each slice writes its rationale to a named `fe-sync/src/AGENTS.md` section, with a one-line pointer in code: §peer-relay-server, §relay-trust, §reachability, §gossip-signing, §net-diagnostics. P16 consolidates them.
 - **Sibling follow-up.** P17 records whether `relay_operability_20261031` adopted spec §8 items 1-8. Any refused item becomes an explicit residual in `SECURITY.md`.
 - **Retro content.** Record the OD outcomes, the F0-F3 verdicts, whether DialOnly alone held for hazard B, and the trigger for flipping gossip signing to `require`.
+
+## 5. Retro (T-NET, 2026-11-13)
+
+- **Verdicts.** F0 PASS-WITH-FIXES (2026-10-31, `review-fable-design.md`). F1 is covered by R-NET-3 and R-NET-4, both PASS-WITH-FIXES. F2 is covered by R-NET-5, PASS-WITH-FIXES. F3 is covered by R-NET-6, PASS-WITH-FIXES, and it fails closed for the relay start. Each of `review-fable-f1.md`, `review-fable-f2.md` and `review-fable-f3.md` is still unwritten.
+- **Hazard B.** F0-5 found that "one call onboards every peer" is not true under DialOnly. AC-9 was decided as a documented warning path (F0 ruling), not a code guarantee. P15 covers the coverage rule, and the run is pending.
+- **Spec 8 items.** relay_operability adopted the eight F0 section 8 changes (the F0 entry in section 4 says so), and OD-6 moved to DialOnly. That is the default it ships with.
+- **Open residuals.** R-NET-3 N3-16 and R-NET-4 N4-25: DialOnly advertised domains reach the peer-address allowlist unresolved (HANDED-OFF to the `sync_thread.rs` owner). R-NET-6 R6-05, R6-10, R6-11: P11 and P13 stay open until these land.
+- **Trigger to flip gossip signing to require.** Next minor release, or once every declared peer in the hosted verses is latched (`spec.md:212`).
