@@ -1586,7 +1586,7 @@ impl SignedGossipIngress {
     pub fn from_env() -> Self {
         Self {
             env_mode: SigningMode::from_env(),
-            guard: ReplayGuard::new(),
+            guard: ReplayGuard::starting_at(unix_now_ms()),
         }
     }
 
@@ -1654,22 +1654,21 @@ impl SignedGossipIngress {
 }
 
 /// Every identity an unsigned message speaks for: the direct sender, a compute `from_did`, a tileset ad's provider.
+/// Claims come from the same typed decoders the handlers dispatch with, so no spelling reads differently here.
 fn legacy_claimed_authors(incoming: &GossipIncoming) -> Vec<String> {
     let mut claimed = Vec::with_capacity(3);
     if incoming.direct {
         claimed.push(crate::replicator::peer_did_key(&incoming.from));
     }
-    let Ok(serde_json::Value::Object(fields)) =
-        serde_json::from_slice::<serde_json::Value>(&incoming.content)
-    else {
-        return claimed;
-    };
-    if let Some(from_did) = fields.get("from_did").and_then(|value| value.as_str()) {
-        claimed.push(from_did.to_owned());
+    match decode_envelope(&incoming.content) {
+        Some(ComputeEnvelope::Request { from_did, .. } | ComputeEnvelope::Response { from_did, .. }) => {
+            claimed.push(from_did);
+        }
+        None => {}
     }
     // `publisher_did` is deliberately not a claim: a re-seeding peer advertises another publisher's tileset.
-    if let Some(provider_addr) = fields.get("provider_addr").and_then(|value| value.as_str()) {
-        let provider = fe_runtime::blob_transport::ProviderRef::new(provider_addr.to_owned());
+    if let Some(provider_addr) = crate::sync_thread::legacy_tileset_ad_provider(&incoming.content) {
+        let provider = fe_runtime::blob_transport::ProviderRef::new(provider_addr);
         if let Ok(address) = crate::blob_transport::IrohBlobTransport::parse_provider(&provider) {
             claimed.push(crate::replicator::peer_did_key(&address.id));
         }
@@ -3230,6 +3229,32 @@ mod tests {
             });
             assert_eq!(outcome, expected, "{case}");
         }
+
+        // Row legacy_claim_uses_the_handlers_decoder (SEC-INBOX 10): a JSON-array spelling the typed decoder
+        // accepts still names its latched author, so it cannot slip past the latch.
+        let array_spelled = |claimed_from: &str| -> GossipIncoming {
+            let env = request_envelope("req-array", "v-1", claimed_from, agg_spec(0, 60_000), agg_shards());
+            let serde_json::Value::Object(fields) = serde_json::to_value(&env).expect("envelope json") else {
+                panic!("a compute envelope serializes as an object");
+            };
+            let order = ["type", "request_id", "verse_id", "from_did", "spec", "shards", "timeout_ms", "row_cap"];
+            let array = serde_json::Value::Array(order.iter().map(|key| fields[*key].clone()).collect());
+            GossipIncoming {
+                verse_id: "v-1".into(),
+                from: relayed_via,
+                direct: false,
+                content: bytes::Bytes::from(serde_json::to_vec(&array).expect("array json")),
+            }
+        };
+        let array_frame = array_spelled(&requester_did);
+        assert!(
+            matches!(decode_envelope(&array_frame.content), Some(ComputeEnvelope::Request { ref from_did, .. }) if *from_did == requester_did),
+            "the handlers' typed decoder reads the array spelling as a request from the latched signer"
+        );
+        assert_eq!(
+            compat.admit(&fabrics, array_frame, NOW_MS).map(|_| ()),
+            Err(gossip_auth::refusal::FORGED_SENDER_LEGACY)
+        );
 
         // Row require_mode_drops_all_legacy_frames: by env, or by the verse manifest.
         let mut require = SignedGossipIngress {

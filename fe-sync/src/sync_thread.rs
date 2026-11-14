@@ -1088,7 +1088,7 @@ pub fn spawn_sync_thread_with_sources(
                             scene_assets.close(&verse_id);
                             handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
                             unsubscribe_from_verse_gossip_topic(&mut gossip_senders, &mut gossip_pumps, &verse_id);
-                            gossip_ingress.guard.forget_verse(&verse_id);
+                            // Replay windows (and latches) outlive the close, so a reopen cannot replay in-age frames.
                             if let Some(stack) = &docs_stack {
                                 stack.blob_access_gate().forget_verse(&verse_id);
                             }
@@ -1233,7 +1233,7 @@ pub fn spawn_sync_thread_with_sources(
                                     continue;
                                 }
                                 Some((GossipFrameKind::ReachResult, author_did)) => {
-                                    dialback_requester.accept_result(&local_did, &author_did, &incoming.content, unix_now_ms());
+                                    handle_reach_result(&mut dialback_requester, &fabrics, &incoming, &local_did, &author_did);
                                     continue;
                                 }
                                 Some((kind, _)) => {
@@ -1493,7 +1493,7 @@ pub fn spawn_sync_thread_with_sources(
                                     &mut gossip_pumps,
                                     &verse_id,
                                 );
-                                gossip_ingress.guard.forget_verse(&verse_id);
+                                // Replay windows (and latches) outlive the close, so a reopen cannot replay in-age frames.
                                 // RP-5 step 6 / OF-6b: the blob-ALPN filter
                                 // drops this verse's access snapshot — a
                                 // closed verse's role view is no longer
@@ -3826,6 +3826,11 @@ fn decode_tileset_ad(bytes: &[u8]) -> Option<TilesetAd> {
     (ad.kind == TILESET_AD_KIND).then_some(ad)
 }
 
+/// The `provider_addr` an unsigned tileset ad claims, read with the handler's own decoder (the legacy latch check).
+pub(crate) fn legacy_tileset_ad_provider(bytes: &[u8]) -> Option<String> {
+    decode_tileset_ad(bytes).map(|ad| ad.provider_addr)
+}
+
 /// Most tileset ids the provider map tracks at once (ad-storm bound).
 const MAX_TRACKED_TILESETS: usize = 1024;
 /// Most provider entries kept per tileset id (ad-storm bound).
@@ -4153,6 +4158,26 @@ fn handle_reach_probe(
     }
 }
 
+/// NET-29: deliver a verified `reach_result` only when its prober is a declared Viewer+ peer of the arrival verse.
+fn handle_reach_result(
+    requester: &mut DialbackRequester,
+    fabrics: &HashMap<String, VerseFabric>,
+    incoming: &GossipIncoming,
+    local_did: &str,
+    author_did: &str,
+) {
+    let Some(fabric) = fabrics.get(&incoming.verse_id) else {
+        return;
+    };
+    let declared = fabric.peers.contains_key(author_did);
+    let role = fabric.role_at(author_did, &fe_policy::build_scope(&incoming.verse_id, None, None));
+    if let Err(refusal) = DialbackResponder::authorize(declared, role) {
+        tracing::debug!(verse_id = %incoming.verse_id, ?refusal, "Dial-back result from an unauthorized prober ignored");
+        return;
+    }
+    requester.accept_result(local_did, author_did, &incoming.content, unix_now_ms());
+}
+
 /// NET-29: sign and broadcast a local dial-back request on up to a few joined verse topics.
 async fn broadcast_dialback_request(
     requester: &mut DialbackRequester,
@@ -4165,6 +4190,11 @@ async fn broadcast_dialback_request(
         let _ = reply.send(None);
         return;
     };
+    // A full table answers at once instead of broadcasting a probe nobody will wait for.
+    if requester.is_full() {
+        let _ = reply.send(None);
+        return;
+    }
     let mut sent = 0usize;
     for (topic_key, sender) in gossip_senders {
         if sent >= dialback_responder::MAX_REQUEST_VERSES {

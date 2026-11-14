@@ -73,6 +73,8 @@ pub mod refusal {
     pub const REPLAYED: &str = "signed frame was already seen";
     /// Frame is at or below a clock whose nonces were evicted, so a replay cannot be ruled out.
     pub const REPLAY_WINDOW_EVICTED: &str = "signed frame predates the remembered replay window";
+    /// Frame is clocked before this guard started, so its nonce may have been seen by an earlier process.
+    pub const PREDATES_SESSION: &str = "signed frame predates this session's replay window";
     /// Unsigned frame refused because signing is required.
     pub const LEGACY_REFUSED: &str = "unsigned gossip refused: signing is required";
     /// Unsigned frame claims an author already latched to signed frames.
@@ -424,12 +426,23 @@ pub struct ReplayGuard {
     verses: HashMap<String, HashMap<String, AuthorWindow>>,
     tracked_authors: usize,
     touch_counter: u64,
+    session_floor_ms: u64,
+    /// Highest clock of any evicted window; an author with no window must be newer than it.
+    untracked_floor_ms: u64,
 }
 
 impl ReplayGuard {
-    /// An empty guard.
+    /// An empty guard with no session floor.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty guard that refuses frames clocked before `now_ms` (nonces seen before a restart are not remembered).
+    pub fn starting_at(now_ms: u64) -> Self {
+        Self {
+            session_floor_ms: now_ms,
+            ..Self::default()
+        }
     }
 
     /// Read-only window check for a verified frame at the receiver's `now_ms`.
@@ -441,7 +454,14 @@ impl ReplayGuard {
         if now_ms.saturating_sub(frame.hlc_ms) > max_age_ms {
             return Err(refusal::STALE);
         }
+        if frame.hlc_ms < self.session_floor_ms {
+            return Err(refusal::PREDATES_SESSION);
+        }
         let Some(window) = self.window(&frame.verse_id, &frame.author_did) else {
+            // The author's window may have been evicted, so its nonces are unknown below the eviction floor.
+            if frame.hlc_ms <= self.untracked_floor_ms {
+                return Err(refusal::REPLAY_WINDOW_EVICTED);
+            }
             return Ok(());
         };
         // Window floor, not strict monotone: gossip hops reorder frames.
@@ -503,6 +523,8 @@ impl ReplayGuard {
     pub fn forget_verse(&mut self, verse_id: &str) {
         if let Some(authors) = self.verses.remove(verse_id) {
             self.tracked_authors -= authors.len();
+            let highest = authors.values().map(|window| window.high_water_ms).max().unwrap_or(0);
+            self.untracked_floor_ms = self.untracked_floor_ms.max(highest);
         }
     }
 
@@ -525,8 +547,9 @@ impl ReplayGuard {
             return;
         };
         if let Some(authors) = self.verses.get_mut(&verse_id) {
-            if authors.remove(&author_did).is_some() {
+            if let Some(evicted) = authors.remove(&author_did) {
                 self.tracked_authors -= 1;
+                self.untracked_floor_ms = self.untracked_floor_ms.max(evicted.high_water_ms);
             }
             if authors.is_empty() {
                 self.verses.remove(&verse_id);
@@ -715,5 +738,17 @@ mod tests {
 
         guard.forget_verse(VERSE);
         assert!(!guard.has_verified_author(VERSE, &first_frame.author_did));
+        assert_eq!(
+            admit(&first, &mut guard, NOW_MS),
+            Err(refusal::REPLAY_WINDOW_EVICTED),
+            "a dropped window leaves a floor, so its in-age frames do not become replayable"
+        );
+
+        // A restarted process remembers no nonces: an in-age frame from before it started is refused, fresh ones pass.
+        let restart_ms = NOW_MS + 60_000;
+        let mut restarted = ReplayGuard::starting_at(restart_ms);
+        assert_eq!(admit(&first, &mut ReplayGuard::new(), restart_ms).map(|_| ()), Ok(()), "no floor: replayable");
+        assert_eq!(admit(&first, &mut restarted, restart_ms), Err(refusal::PREDATES_SESSION));
+        admit(&seal_at(GossipFrameKind::TilesetAd, restart_ms), &mut restarted, restart_ms).expect("fresh frame admitted");
     }
 }

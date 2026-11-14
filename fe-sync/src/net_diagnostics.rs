@@ -175,7 +175,7 @@ pub async fn collect_peer_rows(
             Some(info) => active_addrs(&info),
             None => Vec::new(),
         };
-        rows.push(peer_diagnostics(id.to_string(), verse_ids, &active, detail));
+        rows.push(peer_diagnostics(crate::replicator::peer_did_key(&id), verse_ids, &active, detail));
     }
     rows
 }

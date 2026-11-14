@@ -197,12 +197,17 @@ pub struct DialbackRequester {
 impl DialbackRequester {
     /// Holds `reply` until a record for `url` arrives; false when the table is full.
     pub fn register(&mut self, url: String, reply: oneshot::Sender<Option<DialbackRecord>>) -> bool {
-        self.pending.retain(|entry| !entry.reply.is_closed());
-        if self.pending.len() >= MAX_PENDING_REQUESTS {
+        if self.is_full() {
             return false;
         }
         self.pending.push(PendingDialback { url, reply });
         true
+    }
+
+    /// True when [`MAX_PENDING_REQUESTS`] callers are still waiting (abandoned entries are dropped first).
+    pub fn is_full(&mut self) -> bool {
+        self.pending.retain(|entry| !entry.reply.is_closed());
+        self.pending.len() >= MAX_PENDING_REQUESTS
     }
 
     /// Delivers a verified record addressed to `local_did`; returns how many waiters it completed.
@@ -211,6 +216,7 @@ impl DialbackRequester {
             return 0;
         };
         let bound = record.prober_did == author_did
+            && record.prober_did != local_did
             && record.requester_did == local_did
             && record.at_ms <= now_ms.saturating_add(DIALBACK_FUTURE_SKEW_MS)
             && now_ms.saturating_sub(record.at_ms) <= DIALBACK_MAX_AGE_MS
@@ -353,6 +359,16 @@ mod tests {
         assert!(requester.register(url.to_owned(), reply));
         assert_eq!(requester.accept_result("did:key:someone-else", &frame.author_did, &frame.payload, NOW_MS), 0);
         assert!(answer.try_recv().is_err(), "a result for another requester delivers nothing");
+        let self_attested = DialbackRecord::sign(
+            &SigningKey::from_bytes(&requester_secret.to_bytes()),
+            &requester_did,
+            url,
+            NOW_MS,
+            true,
+        );
+        let self_attested = serde_json::to_vec(&self_attested).unwrap();
+        assert_eq!(requester.accept_result(&requester_did, &requester_did, &self_attested, NOW_MS), 0);
+        assert!(answer.try_recv().is_err(), "a node never vouches for its own reachability");
         assert_eq!(requester.accept_result(&requester_did, &frame.author_did, &frame.payload, NOW_MS), 1);
         let record = answer.try_recv().expect("delivered").expect("record");
         assert!(record.ok && record.requester_did == requester_did);
