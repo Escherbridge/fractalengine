@@ -3167,7 +3167,7 @@ mod tests {
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(1000.0, 800.0),
+                        egui::vec2(1000.0, 2400.0),
                     )),
                     time: Some(time),
                     events,
@@ -3199,8 +3199,13 @@ mod tests {
         };
         frame(None);
         let observed = frame(None);
+        // Park the pointer off-panel between controls so the previous control's tooltip
+        // (one per layer, first wins) is closed before the next control is hovered.
+        let parked = egui::pos2(4.0, 4.0);
         for control in observed.controls {
             let center = control.rect.center();
+            frame(Some(parked));
+            frame(Some(parked));
             frame(Some(center));
             frame(Some(center));
         }

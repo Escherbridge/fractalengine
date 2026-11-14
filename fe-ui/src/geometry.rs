@@ -140,7 +140,9 @@ mod tests {
 
     #[test]
     fn meters_to_world_preserves_nonzero_at_tiny_positive_scale() {
-        let radius = meters_to_world(0.1, f64::MIN_POSITIVE);
+        // Smallest in-range scale (fe_format::scale::MIN_WORLD_SCALE); a below-range
+        // scale now sanitizes to 1.0, so underflow is reached via a tiny meters input.
+        let radius = meters_to_world(1e-33, fe_format::scale::MIN_WORLD_SCALE);
         assert!(radius.is_finite() && radius > 0.0);
         assert_eq!(radius, f32::MIN_POSITIVE);
     }

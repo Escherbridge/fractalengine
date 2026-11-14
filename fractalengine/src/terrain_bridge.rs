@@ -2972,7 +2972,9 @@ mod tests {
             .collect();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].starts_with("Could not install tampered.hexon: "), "{notices:?}");
-        assert!(!notices[0].contains(std::path::MAIN_SEPARATOR), "{notices:?}");
+        // The reason may name archive-internal entries ("terrain/tiles/..."), so a bare
+        // separator check is wrong on Linux; assert the host directory never leaks instead.
+        assert!(!notices[0].contains(tmp.path().to_string_lossy().as_ref()), "{notices:?}");
         assert!(
             tileset_registry.store().list_installed().is_empty(),
             "a tampered install must leave the store untouched"

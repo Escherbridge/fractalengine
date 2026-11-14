@@ -630,7 +630,14 @@ mod tests {
         );
         flat.insert_resource(field);
         press(&mut flat, 10.0, 10.0);
-        assert_eq!(flat.world().resource::<RoadBuilderState>().anchor, Some([10.0, 4.0, 10.0]));
+        // Bilinear weights do not sum to exactly 1.0 in f32 (FMA vs not differs by platform), so compare Y within a tolerance.
+        let anchor = flat
+            .world()
+            .resource::<RoadBuilderState>()
+            .anchor
+            .expect("the press places an anchor");
+        assert_eq!([anchor[0], anchor[2]], [10.0, 10.0]);
+        assert!((anchor[1] - 4.0).abs() < 1e-3, "height rides the field: {}", anchor[1]);
 
         let mut bare = road_app(Tool::Road);
         press(&mut bare, 10.0, 10.0);

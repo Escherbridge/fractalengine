@@ -2977,7 +2977,9 @@ mod tests {
             let reasons = tree
                 .iter()
                 .filter(|(_, node)| {
-                    node.label() == Some(PROPERTY_EDIT_DENIED) || node.value() == Some(PROPERTY_EDIT_DENIED)
+                    // egui also emits a TextRun child per label row carrying the same text; count widgets, not runs.
+                    node.role() != egui::accesskit::Role::TextRun
+                        && (node.label() == Some(PROPERTY_EDIT_DENIED) || node.value() == Some(PROPERTY_EDIT_DENIED))
                 })
                 .count();
             assert_eq!(reasons, 1, "exactly one reason line, not one per control");

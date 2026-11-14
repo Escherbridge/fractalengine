@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(
             export_url(DEFAULT_API_BASE, "petal-1", &sql, ExportFormat::Parquet),
             "http://localhost:8765/api/v1/petals/petal-1/export.parquet?query=\
-             SELECT%20%2A%20FROM%20node%20WHERE%20petal_id%20%3D%20%27petal-1%27",
+             SELECT%20%2A%20FROM%20node%20WHERE%20petal_id%20%3D%20%27petal-1%27%20AND%20tombstone%20%3D%20NONE",
         );
     }
 

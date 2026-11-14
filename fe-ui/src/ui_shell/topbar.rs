@@ -33,7 +33,8 @@ pub const RESIZE_BAND: f32 = 5.0;
 /// Caption-button size (minimize / maximize / close), platform-sized.
 const CAPTION_BUTTON_SIZE: egui::Vec2 = egui::vec2(46.0, 28.0);
 const BRAND_ICON_SIZE: f32 = 22.0;
-const COMPACT_TOPBAR_WIDTH: f32 = 1248.0;
+/// Below this the tool and section clusters collapse into menus; the left cluster (with Deselect) plus the right cluster (Extensions toggle included) need ~1380 points.
+const COMPACT_TOPBAR_WIDTH: f32 = 1408.0;
 
 /// A window action the title bar asks for; `apply_window_chrome` performs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
