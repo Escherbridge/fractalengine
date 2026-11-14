@@ -111,7 +111,27 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
-- **2026-11-14 04:30 MST — ROUND 5 CODE COMPLETE (uncompiled); FINISH WORKFLOW RUNNING.** The resume
+- **2026-11-14 05:15 MST — ROUND 5 COMPILED, CI TESTS FIXED, RE-AUDITED AND PUSHED.** Finish workflow
+  `wf_650905e2-c2c` (17 agents, 1.56M tokens, 27 min): refine green on all twelve steps (5 errors fixed);
+  the seven CI failures fixed in one commit (six stale or brittle tests: a tiny-scale test below the new global
+  scale range, an export URL missing the tombstone filter, an exact f32 equality on a bilinear sample, an
+  accessibility-node count, a tampered-install notice assertion, a hover-tooltip harness step whose root cause
+  is NOT proven (60% confidence); one product fix: the topbar's two button clusters overlapped at width 1248);
+  sonnet security re-audit of `ab007037..HEAD`: **no regression of any round-4 fix, inbox entry 16 fixed,
+  no push blockers**, three LOW findings logged as inbox entries 17-19 (DNS-rebinding residual on DialOnly
+  relays, a blob-rollback race between concurrent snapshot imports, a two-statement uninstall outside a
+  transaction). The audit did not read the 25 fe-ui files of the diff and found no dead-letter code in it.
+  **Leak caught at the orchestrator's pre-push gate:** round-5 slice T5-NET had committed
+  `conductor/.conductor_session_log` (it logs private repo and track paths). The ten unpushed commits from that
+  one on were rewritten with `git filter-branch --index-filter` to drop the file change (backup branch
+  `backup/pre-sessionlog-fix`, also `refs/original/refs/heads/main`; tree otherwise identical), and the file is
+  now `git update-index --skip-worktree` in this clone so `git add` ignores it. **Decide:** untrack the file and
+  ignore it in the repo (it is tracked upstream with older content). SHAs quoted earlier in this file for
+  commits after `28a00ad3` are pre-rewrite (the test-fix commit is now `91a30782`, was `02d4c65f`).
+  **Pushed** with `git push -4 origin main`; a background shell watches the CI run and saves the job log to
+  `.omc/research/`. **Next:** read the CI verdict (every `test result:` line); §7 step 3 whole-surface review;
+  tests when the user names batches; the user's open decisions (below and `.omc/plans/turn5-plan.md` §9).
+- **2026-11-14 04:30 MST — ROUND 5 CODE COMPLETE; FINISH WORKFLOW (done 05:00, see above).** The resume
   (`wsiach6kq`) ended with **0 blocked / skipped / failed**: every one of the 100 slices has run (46 done, 6
   partial, 48 no-op on the second pass). **It did NOT replay from cache:** resume is prefix-cached, so changing
   the one blocked slice's prompt re-ran the whole swarm (147 agents, 15.3M tokens, 46 min, on top of the first
