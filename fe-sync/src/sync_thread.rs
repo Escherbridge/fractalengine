@@ -31,6 +31,7 @@ use crate::distributed_query::{
     unix_now_ms, AdmittedGossip, DistributedTransport, GossipIncoming, SignedGossipIngress,
     TopicSender,
 };
+use crate::dialback_responder::{self, DialbackRequest, DialbackRequester, DialbackResponder, ReplySink};
 use crate::gossip_auth::GossipFrameKind;
 
 use crate::docs_engine::{p2p_data_dir, BlobAccessGate, DocsStack};
@@ -1000,6 +1001,10 @@ pub fn spawn_sync_thread_with_sources(
             };
             // NET-26: verify-then-unwrap state for inbound gossip (mode + replay guard).
             let mut gossip_ingress = SignedGossipIngress::from_env();
+            // NET-29: dial-back responder (needs a signing key) and the local request table.
+            let dialback_responder = transport.signing_key().cloned().map(|secret| Arc::new(DialbackResponder::new(secret)));
+            let mut dialback_requester = DialbackRequester::default();
+            let mut dialback_request_rx = dialback_responder::install_request_channel();
 
             // crossbeam's receiver has no async readiness API — bridge the
             // command channel into a tokio channel so the select! below can
@@ -1217,6 +1222,20 @@ pub fn spawn_sync_thread_with_sources(
                                     );
                                     continue;
                                 }
+                                Some((GossipFrameKind::ReachProbe, author_did)) => {
+                                    handle_reach_probe(
+                                        dialback_responder.as_ref(),
+                                        &fabrics,
+                                        &gossip_senders,
+                                        &incoming,
+                                        &author_did,
+                                    );
+                                    continue;
+                                }
+                                Some((GossipFrameKind::ReachResult, author_did)) => {
+                                    dialback_requester.accept_result(&local_did, &author_did, &incoming.content, unix_now_ms());
+                                    continue;
+                                }
                                 Some((kind, _)) => {
                                     tracing::debug!(verse_id, kind = kind.as_wire(), "signed gossip frame has no handler in this build");
                                     continue;
@@ -1254,6 +1273,15 @@ pub fn spawn_sync_thread_with_sources(
                                 }
                             }
                         }
+                    }
+                    Some(request) = dialback_request_rx.recv() => {
+                        broadcast_dialback_request(
+                            &mut dialback_requester,
+                            &gossip_senders,
+                            transport.signing_key(),
+                            request,
+                        )
+                        .await;
                     }
                     maybe_cmd = async_cmd_rx.recv() => {
                         match maybe_cmd {
@@ -4101,6 +4129,61 @@ fn handle_inbound_tileset_ad(
     ad: TilesetAd,
 ) -> Option<Hash32> {
     record_tileset_ad(providers, evt_tx, incoming, ad, None)
+}
+
+/// NET-29: answer a verified `reach_probe` frame when this node acts as a prober and the author is a declared Viewer+.
+fn handle_reach_probe(
+    responder: Option<&Arc<DialbackResponder>>,
+    fabrics: &HashMap<String, VerseFabric>,
+    gossip_senders: &HashMap<String, TopicSender>,
+    incoming: &GossipIncoming,
+    author_did: &str,
+) {
+    let (Some(responder), Some(fabric)) = (responder, fabrics.get(&incoming.verse_id)) else {
+        return;
+    };
+    let Some(sender) = gossip_senders.get(&derive_gossip_topic(&incoming.verse_id)) else {
+        return;
+    };
+    let declared = fabric.peers.contains_key(author_did);
+    let role = fabric.role_at(author_did, &fe_policy::build_scope(&incoming.verse_id, None, None));
+    let sink: Arc<dyn ReplySink> = Arc::new(sender.clone());
+    if let Err(refusal) = responder.dispatch(&incoming.verse_id, author_did, &incoming.content, declared, role, sink) {
+        tracing::debug!(verse_id = %incoming.verse_id, ?refusal, "Dial-back request refused");
+    }
+}
+
+/// NET-29: sign and broadcast a local dial-back request on up to a few joined verse topics.
+async fn broadcast_dialback_request(
+    requester: &mut DialbackRequester,
+    gossip_senders: &HashMap<String, TopicSender>,
+    signer: Option<&iroh::SecretKey>,
+    request: DialbackRequest,
+) {
+    let DialbackRequest { url, reply } = request;
+    let Some(secret) = signer else {
+        let _ = reply.send(None);
+        return;
+    };
+    let mut sent = 0usize;
+    for (topic_key, sender) in gossip_senders {
+        if sent >= dialback_responder::MAX_REQUEST_VERSES {
+            break;
+        }
+        let Some(verse_id) = verse_of_gossip_topic(topic_key) else {
+            continue;
+        };
+        match dialback_responder::build_request_frame(secret, verse_id, &url) {
+            Ok(frame) => match sender.broadcast(frame.into()).await {
+                Ok(()) => sent += 1,
+                Err(error) => tracing::warn!(verse_id, "Failed to broadcast dial-back request: {error}"),
+            },
+            Err(error) => tracing::warn!(verse_id, "Failed to seal dial-back request: {error}"),
+        }
+    }
+    if sent == 0 || !requester.register(url, reply) {
+        tracing::debug!("Dial-back request not sent or the pending table is full");
+    }
 }
 
 /// Most tileset ads one signed frame carries (keeps a batch under the frame-size cap).
