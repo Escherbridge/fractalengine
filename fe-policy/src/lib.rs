@@ -19,8 +19,9 @@ pub use policies::{
     TokenScopePolicy,
 };
 pub use role_grants::{
-    latest_per_grantor, materialize, materialize_at, validate_statement, CacheRow, ChangedDids, EffectiveRoles,
-    GrantedRole, RejectReason, RoleStatement, RoleStatementPayload, StatementKey,
+    held_at, latest_per_grantor, materialize, materialize_at, validate_statement, CacheRow, ChangedDids,
+    EffectiveRoles, GrantWindow, GrantedRole, RejectReason, RoleStatement, RoleStatementPayload,
+    StatementKey, MAX_GRANT_WINDOWS,
 };
 pub use role_level::RoleLevel;
 // Scope-string parser — single home (W5b, OF-3); fe-database's `scope` module

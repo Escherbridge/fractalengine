@@ -621,6 +621,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let statements = [grant(MANAGER, GrantedRole::Manager), grant(LOCAL, GrantedRole::Editor)];
         materialize(OWNER, statements.iter())

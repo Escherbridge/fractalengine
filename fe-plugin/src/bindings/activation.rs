@@ -1326,6 +1326,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let statements = [manager(LOCAL), manager(OTHER)];
         materialize(OWNER, statements.iter())

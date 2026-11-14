@@ -80,6 +80,20 @@ pub struct RoleStatement {
     /// HLC since which this key has granted Manager without a break (`None` = `hlc`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manager_since: Option<u64>,
+    /// Closed past grants of this key, oldest first (QA-0165) — AGENTS.md §role-grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<GrantWindow>,
+}
+
+/// Most closed grant windows one statement key carries; the oldest is dropped past it.
+pub const MAX_GRANT_WINDOWS: usize = 8;
+
+/// A closed past grant `[since, until)` at `role` (Editor or Manager).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantWindow {
+    pub role: GrantedRole,
+    pub since: u64,
+    pub until: u64,
 }
 
 impl RoleStatement {
@@ -101,24 +115,77 @@ impl RoleStatement {
 
     /// This NEWER version of a key, carrying the continuity of `prior` (the
     /// key's previous live version): a raise or lower that stays at Editor+
-    /// (or Manager) keeps its original `since`; a break restarts it.
-    pub fn continuing(mut self, prior: Option<&RoleStatement>) -> Self {
-        let prior = prior.filter(|prior| prior.hlc < self.hlc);
-        let editor = prior
-            .and_then(|prior| prior.granted_since(GrantedRole::Editor))
-            .filter(|_| self.granted_since(GrantedRole::Editor).is_some());
-        let manager = prior
-            .and_then(|prior| prior.granted_since(GrantedRole::Manager))
-            .filter(|_| self.granted_since(GrantedRole::Manager).is_some());
-        self.editor_since = editor;
-        self.manager_since = manager;
+    /// (or Manager) keeps its original `since`; a break restarts it and closes
+    /// the broken span as a [`GrantWindow`].
+    pub fn continuing(self, prior: Option<&RoleStatement>) -> Self {
+        self.continuing_with_frontier(prior, None)
+    }
+
+    /// [`Self::continuing`], also carrying `prior.windows` and closing each level this
+    /// version breaks as a window ending at `min(hlc, frontier.max(since))`.
+    pub fn continuing_with_frontier(
+        mut self,
+        prior: Option<&RoleStatement>,
+        frontier: Option<u64>,
+    ) -> Self {
+        let Some(prior) = prior.filter(|prior| prior.hlc < self.hlc) else {
+            self.editor_since = None;
+            self.manager_since = None;
+            return self;
+        };
+        let editor_now = self.granted_since(GrantedRole::Editor).is_some();
+        let manager_now = self.granted_since(GrantedRole::Manager).is_some();
+        let editor_before = prior.granted_since(GrantedRole::Editor);
+        let manager_before = prior.granted_since(GrantedRole::Manager);
+        self.editor_since = editor_before.filter(|_| editor_now);
+        self.manager_since = manager_before.filter(|_| manager_now);
+
+        let mut windows = prior.windows.clone();
+        let end = frontier.map_or(self.hlc, |frontier| frontier.min(self.hlc));
+        let mut close = |role: GrantedRole, since: u64, until: u64| {
+            let since = windows.last().map_or(since, |last| since.max(last.until));
+            let until = until.max(since);
+            if since < until {
+                windows.push(GrantWindow { role, since, until });
+            }
+        };
+        match (manager_before.filter(|_| !manager_now), editor_before) {
+            // Manager broke: an Editor span before the promotion closes too, unless Editor continues.
+            (Some(manager_since), Some(editor_since)) => {
+                if !editor_now && editor_since < manager_since {
+                    close(GrantedRole::Editor, editor_since, manager_since.min(end));
+                }
+                close(GrantedRole::Manager, manager_since, end);
+            }
+            (None, Some(editor_since)) if !editor_now => {
+                close(GrantedRole::Editor, editor_since, end);
+            }
+            _ => {}
+        }
+        if windows.len() > MAX_GRANT_WINDOWS {
+            windows.drain(..windows.len() - MAX_GRANT_WINDOWS);
+        }
+        self.windows = windows;
         self
     }
 
-    /// What this key granted at HLC `at`, as far as its continuity shows: an
-    /// Editor+ grant counts from its `since`, anything else from its `hlc`;
-    /// `None` when the statement is not known to have applied at `at`.
+    /// What this key granted at HLC `at`, as far as its continuity shows: a closed
+    /// window covering `at` grants its role; otherwise an Editor+ grant counts from
+    /// its `since`, anything else from its `hlc`; `None` when not known to apply.
     fn as_of(&self, at: u64) -> Option<RoleStatement> {
+        if at < self.hlc {
+            let window = self
+                .windows
+                .iter()
+                .find(|window| window.since <= at && at < window.until);
+            if let Some(window) = window {
+                return Some(RoleStatement {
+                    role: window.role,
+                    revoked: false,
+                    ..self.clone()
+                });
+            }
+        }
         let Some(editor_since) = self.granted_since(GrantedRole::Editor) else {
             return (self.hlc <= at).then(|| self.clone());
         };
@@ -179,6 +246,8 @@ pub struct RoleStatementPayload {
     pub editor_since: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manager_since: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<GrantWindow>,
 }
 
 /// Why [`validate_statement`] denied a statement. Every variant is a
@@ -286,6 +355,7 @@ pub fn validate_statement(
         hlc: payload.hlc,
         editor_since: payload.editor_since,
         manager_since: payload.manager_since,
+        windows: payload.windows.clone(),
     };
     for (since, level) in [
         (statement.editor_since, GrantedRole::Editor),
@@ -297,7 +367,22 @@ pub fn validate_statement(
             return Err(RejectReason::InvalidContinuity);
         }
     }
+    if !windows_are_valid(&statement.windows, statement.hlc) {
+        return Err(RejectReason::InvalidContinuity);
+    }
     Ok(statement)
+}
+
+/// Windows are at most [`MAX_GRANT_WINDOWS`], Editor or Manager, non-empty, sorted,
+/// non-overlapping and closed no later than the statement's `hlc`.
+fn windows_are_valid(windows: &[GrantWindow], hlc: u64) -> bool {
+    windows.len() <= MAX_GRANT_WINDOWS
+        && windows.iter().all(|window| {
+            matches!(window.role, GrantedRole::Editor | GrantedRole::Manager)
+                && window.since < window.until
+                && window.until <= hlc
+        })
+        && windows.windows(2).all(|pair| pair[0].until <= pair[1].since)
 }
 
 /// Collapses statements for the same `(scope, peer_did, grantor_did)` key
@@ -350,6 +435,9 @@ fn canonical_bytes(stmt: &RoleStatement) -> Vec<u8> {
     }
     if let Some(since) = stmt.manager_since {
         bytes.push_str(&format!("|m{since}"));
+    }
+    for window in &stmt.windows {
+        bytes.push_str(&format!("|w{}:{}-{}", window.role.as_str(), window.since, window.until));
     }
     bytes.into_bytes()
 }
@@ -626,6 +714,25 @@ where
     materialize(owner_did, as_of.iter())
 }
 
+/// True when `author` held at least `level` at `scope` at HLC `at` — the write-time-only
+/// judge (QA-0165), no conjunction with the current role; AGENTS.md §role-grants.
+pub fn held_at<'a, I>(
+    owner_did: &str,
+    statements: I,
+    author: &str,
+    scope: &str,
+    level: RoleLevel,
+    at: u64,
+) -> bool
+where
+    I: IntoIterator<Item = &'a RoleStatement>,
+{
+    author == owner_did
+        || materialize_at(owner_did, statements, at)
+            .role_at(author, scope)
+            .is_at_least(level)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,6 +754,7 @@ mod tests {
             hlc,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         }
     }
 
@@ -731,6 +839,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let result = validate_statement("v1", None, &key, "did:key:actual-author", &payload);
         assert_eq!(result, Err(RejectReason::GrantorMismatch));
@@ -752,6 +861,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let result = validate_statement("v1", None, &key, "did:key:grantor", &payload);
         assert_eq!(result, Err(RejectReason::CrossVerseScope));
@@ -773,6 +883,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let result = validate_statement("v1", Some(OWNER), &key, "did:key:some-manager", &payload);
         assert_eq!(result, Err(RejectReason::InvalidRole));
@@ -794,6 +905,7 @@ mod tests {
             hlc: 1,
             editor_since: None,
             manager_since: None,
+            windows: Vec::new(),
         };
         let result = validate_statement("v1", Some(OWNER), &key, "did:key:some-manager", &payload);
         assert_eq!(result, Err(RejectReason::TargetsOwner));
@@ -1299,7 +1411,8 @@ mod tests {
         assert_eq!(at(&[m_regrant.clone(), x_editor.clone()], 3), RoleLevel::None);
         assert_eq!(at(&[m_regrant.clone(), x_editor.clone()], 5), RoleLevel::Editor);
         // A raise that stays at Editor+ keeps continuity (X's row at 5 survives
-        // X's promotion at 9); a break — revoke, then re-grant — restarts it.
+        // X's promotion at 9); a break — revoke, then re-grant — restarts it, and the
+        // broken span survives as closed windows (QA-0165: Editor [2,9), Manager [9,10)).
         let x_promoted = stmt(scope, x, "did:key:m1", GrantedRole::Manager, false, 9)
             .continuing(Some(&x_editor));
         assert_eq!((x_promoted.editor_since, x_promoted.manager_since), (Some(2), None));
@@ -1309,7 +1422,15 @@ mod tests {
         let x_regranted = stmt(scope, x, "did:key:m1", GrantedRole::Editor, false, 11)
             .continuing(Some(&x_revoked));
         assert_eq!((x_revoked.editor_since, x_regranted.editor_since), (None, None));
-        assert_eq!(at(&[m_regrant, x_regranted], 5), RoleLevel::None);
+        assert_eq!(
+            x_regranted.windows,
+            vec![
+                GrantWindow { role: GrantedRole::Editor, since: 2, until: 9 },
+                GrantWindow { role: GrantedRole::Manager, since: 9, until: 10 },
+            ]
+        );
+        assert_eq!(at(&[m_regrant.clone(), x_regranted.clone()], 5), RoleLevel::Editor);
+        assert_eq!(at(&[m_regrant, x_regranted], 10), RoleLevel::None);
         // A continuity field the statement does not back is a permanent deny.
         let key = StatementKey::parse(&format!("{scope}/{x}/did:key:m1")).unwrap();
         let mut payload = RoleStatementPayload {
@@ -1321,6 +1442,7 @@ mod tests {
             hlc: 12,
             editor_since: Some(3),
             manager_since: None,
+            windows: Vec::new(),
         };
         assert_eq!(
             validate_statement("v1", Some(OWNER), &key, "did:key:m1", &payload),
@@ -1332,6 +1454,78 @@ mod tests {
                 .map(|statement| statement.granted_since(GrantedRole::Editor)),
             Ok(Some(3))
         );
+
+        // QA-0165 grant windows: a revoke closes the grant as a window, so a row the
+        // author stamped while it held the role stays admissible after the revoke.
+        let (y, verse) = ("did:key:y", "VERSE#v1");
+        let held = |statements: &[RoleStatement], at| {
+            held_at(OWNER, statements, y, verse, RoleLevel::Editor, at)
+        };
+        let y_editor = stmt(verse, y, OWNER, GrantedRole::Editor, false, 10);
+        let y_revoked = stmt(verse, y, OWNER, GrantedRole::Editor, true, 50)
+            .continuing(Some(&y_editor));
+        assert_eq!(
+            y_revoked.windows,
+            vec![GrantWindow { role: GrantedRole::Editor, since: 10, until: 50 }]
+        );
+        let at_y = |statements: &[RoleStatement], hlc| {
+            materialize_at(OWNER, statements, hlc).role_at(y, verse)
+        };
+        assert_eq!(at_y(&[y_revoked.clone()], 30), RoleLevel::Editor);
+        assert_eq!(at_y(&[y_revoked.clone()], 60), RoleLevel::None);
+        // The revoker's frontier (40) cuts the window: a write stamped past it is refused.
+        let y_cut = stmt(verse, y, OWNER, GrantedRole::Editor, true, 50)
+            .continuing_with_frontier(Some(&y_editor), Some(40));
+        assert!(!held(&[y_cut.clone()], 45));
+        assert!(held(&[y_cut.clone()], 35));
+        // A re-grant carries the closed window forward; the gap stays closed.
+        let y_regranted = stmt(verse, y, OWNER, GrantedRole::Editor, false, 70)
+            .continuing(Some(&y_cut));
+        assert!(held(&[y_regranted.clone()], 35));
+        assert!(!held(&[y_regranted.clone()], 45));
+        assert!(held(&[y_regranted.clone()], 70));
+        // Windows travel on the wire and are re-validated; one past the hlc is a permanent deny.
+        let y_key = StatementKey::parse(&format!("{verse}/{y}/{OWNER}")).unwrap();
+        let mut y_payload = RoleStatementPayload {
+            scope: verse.into(),
+            peer_did: y.into(),
+            grantor_did: OWNER.into(),
+            role: "editor".into(),
+            revoked: false,
+            hlc: 70,
+            editor_since: None,
+            manager_since: None,
+            windows: y_regranted.windows.clone(),
+        };
+        assert_eq!(
+            validate_statement("v1", Some(OWNER), &y_key, OWNER, &y_payload),
+            Ok(y_regranted.clone())
+        );
+        y_payload.windows[0].until = 71;
+        assert_eq!(
+            validate_statement("v1", Some(OWNER), &y_key, OWNER, &y_payload),
+            Err(RejectReason::InvalidContinuity)
+        );
+        // Two versions differing only in windows still order deterministically.
+        let mut y_bare = y_regranted.clone();
+        y_bare.windows.clear();
+        assert_eq!(
+            latest_per_grantor(&[y_bare.clone(), y_regranted.clone()]),
+            latest_per_grantor(&[y_regranted.clone(), y_bare])
+        );
+        // A ninth break drops the oldest window: writes from inside it stop being admissible.
+        let mut y_cycle = y_regranted;
+        for cycle in 0..8u64 {
+            let base = 100 + cycle * 20;
+            let revoked = stmt(verse, y, OWNER, GrantedRole::Editor, true, base)
+                .continuing(Some(&y_cycle));
+            y_cycle = stmt(verse, y, OWNER, GrantedRole::Editor, false, base + 10)
+                .continuing(Some(&revoked));
+        }
+        assert_eq!(y_cycle.windows.len(), MAX_GRANT_WINDOWS);
+        assert_eq!(y_cycle.windows[0], GrantWindow { role: GrantedRole::Editor, since: 70, until: 100 });
+        assert!(!held(&[y_cycle.clone()], 35), "the oldest window was dropped");
+        assert!(held(&[y_cycle], 75));
     }
 
     #[test]
