@@ -86,6 +86,8 @@ pub struct TransferLimits {
     pub max_download_bytes: u64,
     /// Disk budget shared by every streamed-bundle cache (see `src/AGENTS.md` §tileset-security).
     pub max_streamed_cache_bytes: u64,
+    /// Download bandwidth cap in bytes/sec (`None` or 0 = unlimited); see `src/AGENTS.md` §tileset-security.
+    pub max_download_rate_bytes_per_sec: Option<u64>,
 }
 
 impl Default for TransferLimits {
@@ -95,7 +97,68 @@ impl Default for TransferLimits {
             max_index_bytes: MAX_INDEX_BYTES,
             max_download_bytes: MAX_DOWNLOAD_BYTES,
             max_streamed_cache_bytes: MAX_STREAMED_CACHE_BYTES,
+            max_download_rate_bytes_per_sec: None,
         }
+    }
+}
+
+/// Env name shared with fe-hexon's `P2pConfig` (fe-sync cannot depend on fe-hexon).
+pub const MAX_DOWNLOAD_RATE_ENV: &str = "FE_MAX_DOWNLOAD_RATE";
+
+impl TransferLimits {
+    /// Defaults plus the `FE_MAX_DOWNLOAD_RATE` cap when set to a valid integer.
+    pub fn from_env() -> Self {
+        let rate = std::env::var(MAX_DOWNLOAD_RATE_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
+        Self {
+            max_download_rate_bytes_per_sec: rate,
+            ..Self::default()
+        }
+    }
+}
+
+/// Idle gap after which the pacing window restarts (mirrors fe-hexon's `FetchStrategy::pace`).
+const PACING_IDLE_RESET: Duration = Duration::from_secs(1);
+
+/// Rate window for one download: owed delay = bytes / rate minus elapsed.
+struct DownloadPacer {
+    rate: Option<u64>,
+    window_start: tokio::time::Instant,
+    bytes: u64,
+}
+
+impl DownloadPacer {
+    fn new(rate: Option<u64>) -> Self {
+        Self {
+            rate: rate.filter(|r| *r > 0),
+            window_start: tokio::time::Instant::now(),
+            bytes: 0,
+        }
+    }
+
+    fn owed(&self, bytes: u64, elapsed: Duration) -> Duration {
+        let Some(rate) = self.rate else {
+            return Duration::ZERO;
+        };
+        let target_nanos = u128::from(bytes) * 1_000_000_000 / u128::from(rate);
+        let target = Duration::from_nanos(u64::try_from(target_nanos).unwrap_or(u64::MAX));
+        target.saturating_sub(elapsed)
+    }
+
+    /// Account `bytes` just stored; the delay to sleep before fetching more.
+    fn record(&mut self, bytes: u64) -> Duration {
+        if self.rate.is_none() {
+            return Duration::ZERO;
+        }
+        let now = tokio::time::Instant::now();
+        let idle_limit = self.owed(self.bytes, Duration::ZERO) + PACING_IDLE_RESET;
+        if now.duration_since(self.window_start) > idle_limit {
+            self.window_start = now;
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.owed(self.bytes, now.duration_since(self.window_start))
     }
 }
 
@@ -716,9 +779,9 @@ impl TilesetTransfer {
         self.limits
     }
 
-    /// Service keeping downloads under `<p2p_dir>/downloads`.
+    /// Service keeping downloads under `<p2p_dir>/downloads`, honouring `FE_MAX_DOWNLOAD_RATE`.
     pub fn for_p2p_dir(transport: Arc<dyn BlobTransport>, p2p_dir: &Path) -> Self {
-        Self::new(transport, p2p_dir.join(DOWNLOADS_DIR))
+        Self::new(transport, p2p_dir.join(DOWNLOADS_DIR)).with_limits(TransferLimits::from_env())
     }
 
     /// The download root directory.
@@ -1180,6 +1243,7 @@ impl TilesetTransfer {
         let cap = self.limits.max_download_bytes;
         let mut over_cap = stored_bytes > cap;
         let mut in_flight = tokio::task::JoinSet::new();
+        let mut pacer = DownloadPacer::new(self.limits.max_download_rate_bytes_per_sec);
         loop {
             while !over_cap && in_flight.len() < MAX_CONCURRENT_CHUNK_FETCHES {
                 let Some(seq) = missing.next() else { break };
@@ -1203,11 +1267,16 @@ impl TilesetTransfer {
                     received[seq as usize] = true;
                     stored_bytes = stored_bytes.saturating_add(chunk.byte_len);
                     over_cap = stored_bytes > cap;
+                    let owed = pacer.record(chunk.byte_len);
                     report.stored.push(seq);
                     emit(TransferEvent::ChunkStored {
                         tileset_id: tileset_id.to_string(),
                         chunk,
                     });
+                    // Pay the rate debt before the next chunk fetch is spawned.
+                    if !owed.is_zero() {
+                        tokio::time::sleep(owed).await;
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(tileset_id, seq, %error, "Tileset bundle failed");

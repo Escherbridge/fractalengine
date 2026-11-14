@@ -133,6 +133,34 @@ async fn a_published_tileset_downloads_verified_and_complete() {
     }
     assert_eq!(stored_events, 5);
     assert!(saw_complete);
+
+    // Rate-cap leg (PAS-P5-P2P-POLICY): the same tileset under a download cap
+    // takes at least bytes/rate; the lower bound is a floor, never an upper bound.
+    let capped_dir = TempDir::new().unwrap();
+    let rate: u64 = 1_000_000;
+    let capped = service(&network.transport("carol"), capped_dir.path()).with_limits(
+        TransferLimits {
+            max_download_rate_bytes_per_sec: Some(rate),
+            ..TransferLimits::default()
+        },
+    );
+    let capped_meta = capped
+        .request_download_meta(&[alice.provider_ref()], "valley", entry.root)
+        .await
+        .unwrap();
+    capped
+        .confirm("valley", &capped_meta.chunk_hashes)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let capped_report = capped.download("valley", None).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(capped_report.complete.is_some());
+    let floor = std::time::Duration::from_nanos((entry.bytes as u128 * 1_000_000_000 / rate as u128) as u64);
+    assert!(
+        elapsed + std::time::Duration::from_millis(50) >= floor,
+        "capped download took {elapsed:?}, floor {floor:?}"
+    );
 }
 
 #[tokio::test]
