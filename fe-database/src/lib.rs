@@ -1165,6 +1165,10 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::RenameEntity { entity_type, entity_id, new_name }) => {
                         match handlers::entity::rename_entity_handler(&db, entity_type, &entity_id, &new_name, &local_did).await {
                             Ok(()) => {
+                                // Re-clock the renamed key and replicate the row; a publish failure never fails the reply.
+                                if let Err(error) = handlers::local_catalog::publish_entity(&db, &blob_store, repl_tx.as_ref(), &local_did, entity_type, &entity_id).await {
+                                    tracing::warn!(?entity_type, entity_id, "renamed entity was not published to peers: {error:#}");
+                                }
                                 // EntityType has no Node variant, so no node-scoped scene change exists.
                                 send_result(&tx, DbResult::EntityRenamed { entity_type, entity_id, new_name });
                             }
@@ -1213,7 +1217,12 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::UpdateFractalDescription { fractal_id, description }) => {
                         match handlers::entity::update_fractal_description_handler(&db, &fractal_id, &description, &local_did).await {
-                            Ok(()) => send_result(&tx, DbResult::FractalDescriptionUpdated { fractal_id, description }),
+                            Ok(()) => {
+                                if let Err(error) = handlers::local_catalog::publish_entity(&db, &blob_store, repl_tx.as_ref(), &local_did, fe_runtime::messages::EntityType::Fractal, &fractal_id).await {
+                                    tracing::warn!(fractal_id, "fractal description was not published to peers: {error:#}");
+                                }
+                                send_result(&tx, DbResult::FractalDescriptionUpdated { fractal_id, description });
+                            }
                             Err(e) => send_result(&tx, DbResult::Error(format!("{e}"))),
                         }
                     }
@@ -1238,6 +1247,7 @@ pub fn spawn_db_thread_shared(
                         if result.is_ok() {
                             if let Some(verse) = role_grants::verse_of_scope(&source.target.scope) {
                                 handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await).await;
+                                handlers::send_removed_nodes(&mut admissions, &tx);
                             }
                         }
                         send_result(&tx,DbResult::JoinInviteIssued {request_id,result:result.map_err(|error|error.to_string())});
@@ -1264,6 +1274,7 @@ pub fn spawn_db_thread_shared(
                             && matches!(action,fe_runtime::entity_access::EntityAccessAction::Assign {..} | fe_runtime::entity_access::EntityAccessAction::Revoke {..}) {
                                 if let Some(verse)=role_grants::verse_of_scope(&target.scope) {
                                     handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions.retry_author_roles(&db,&verse,entity_change_tx.as_ref()).await).await;
+                                    handlers::send_removed_nodes(&mut admissions, &tx);
                                 }
                             }
                         send_result(&tx,DbResult::EntityAccessFinished { target,request_id,result:result.map_err(|error| error.to_string()) });
@@ -1280,6 +1291,7 @@ pub fn spawn_db_thread_shared(
                                 // A local grant can unblock deferred inbound content rows.
                                 if let Some(verse) = verse {
                                     handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions.retry_author_roles(&db, &verse, entity_change_tx.as_ref()).await).await;
+                                    handlers::send_removed_nodes(&mut admissions, &tx);
                                 }
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Assign role failed: {e}"))),
@@ -1302,6 +1314,7 @@ pub fn spawn_db_thread_shared(
                                 // inherited role, so deferred rows are retried here too.
                                 if let Some(verse) = verse {
                                     handlers::scene_publication::echo_applied(&db,&blob_store,&local_did,&tx,admissions.retry_author_roles(&db, &verse, entity_change_tx.as_ref()).await).await;
+                                    handlers::send_removed_nodes(&mut admissions, &tx);
                                 }
                             }
                             Err(e) => send_result(&tx, DbResult::Error(format!("Revoke role failed: {e}"))),
@@ -1822,7 +1835,7 @@ pub fn spawn_db_thread_shared(
                             &db, &local_did, petal_id, groups, auth, correlation_id,
                         ).await;
                         if let DbResult::PetalVisibilityGroupsLoaded { petal_id, .. } = &reply {
-                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, petal_id).await;
+                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, &local_did, petal_id).await;
                         }
                         send_result(&tx, reply);
                     }
@@ -1833,7 +1846,7 @@ pub fn spawn_db_thread_shared(
                     Ok(DbCommand::ComparePetalVisibilityGroups {petal_id,expected,groups,auth,correlation_id}) => {
                         let reply=handlers::visibility_groups::set_petal_visibility_groups_checked_reply(&db,&local_did,petal_id,groups,auth,correlation_id,Some(expected)).await;
                         if let DbResult::PetalVisibilityGroupsLoaded { petal_id, .. } = &reply {
-                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, petal_id).await;
+                            handlers::visibility_groups::publish_registry(&db, repl_tx.as_ref(), &blob_store, &local_did, petal_id).await;
                         }
                         send_result(&tx,reply);
                     }
@@ -2085,7 +2098,7 @@ pub fn spawn_db_thread_shared(
                                 }
                                 // QA-0123: a group create/delete/undo also changed the petal's registry.
                                 if writes_registry {
-                                    handlers::visibility_groups::publish_registry(&db,repl_tx.as_ref(),&blob_store,&receipt.petal_id).await;
+                                    handlers::visibility_groups::publish_registry(&db,repl_tx.as_ref(),&blob_store,&local_did,&receipt.petal_id).await;
                                 }
                                 DbResult::EditorBatchCommitted {receipt,correlation_id}
                             },
@@ -2411,6 +2424,7 @@ pub fn spawn_db_thread_shared(
                             );
                         }
                         handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, reports).await;
+                        handlers::send_removed_nodes(&mut admissions, &tx);
                     }
                     Ok(DbCommand::RejudgeReplicatedNodes { verse_id, nodes, restore_only }) => {
                         use handlers::scene_publication::Rejudged;

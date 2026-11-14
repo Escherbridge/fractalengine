@@ -66,6 +66,16 @@ pub fn send_result(tx: &Sender<DbResult>, result: DbResult) {
     }
 }
 
+/// Send `NodeDeleted` for every node a role-change re-judge removed since the last drain.
+pub(crate) fn send_removed_nodes(
+    admissions: &mut inbound_admissions::InboundAdmissions,
+    tx: &Sender<DbResult>,
+) {
+    for (node_id, petal_id) in admissions.take_removed_nodes() {
+        send_result(tx, DbResult::NodeDeleted { node_id, petal_id });
+    }
+}
+
 /// A failed command's reply: `RequestFailed` echoing a correlated (API)
 /// caller's id, the legacy wildcard `Error` for an uncorrelated (GUI) one.
 /// See fe-runtime src/AGENTS.md §api-reply-correlation.

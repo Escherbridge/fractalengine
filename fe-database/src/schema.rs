@@ -522,7 +522,7 @@ define_table! {
 }
 
 define_table! {
-    /// Hexon crate registry — tracks locally installed .fecrate packages.
+    /// Hexon registry — one row per installed hexon (hexon_id@version) per petal; keyed by `(hexon_uri, petal_id)`.
     table "crate_registry" => CrateRegistry (id: hexon_uri) {
         hexon_uri:       String => "TYPE string",
         manifest_hash:   String => "TYPE string",
@@ -539,7 +539,7 @@ define_table! {
 }
 
 define_table! {
-    /// Individual asset entries within an installed hexon crate.
+    /// Asset entries of an installed hexon; keyed by `(hexon_uri, entry_id)` (entry ids repeat across hexons).
     table "crate_entry" => CrateEntry (id: entry_id) {
         entry_id:   String                    => "TYPE string",
         hexon_uri:  String                    => "TYPE string",
@@ -1008,6 +1008,22 @@ pub async fn apply_all(db: &crate::repo::Db) -> anyhow::Result<()> {
         .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_registry_hexon_uri: {e}"))?;
     db.query("DEFINE INDEX IF NOT EXISTS idx_crate_entry_hexon_uri ON TABLE crate_entry FIELDS hexon_uri")
         .await?.check().map_err(|e| anyhow::anyhow!("idx_crate_entry_hexon_uri: {e}"))?;
+    // Composite keys of the hexon registry, storage-enforced; a store with duplicate pairs keeps
+    // running on the handlers' delete-then-create (logged), like the iot_reading fallback above.
+    for (index, statement) in [
+        (
+            "idx_crate_registry_pair",
+            "DEFINE INDEX IF NOT EXISTS idx_crate_registry_pair ON TABLE crate_registry FIELDS hexon_uri, petal_id UNIQUE",
+        ),
+        (
+            "idx_crate_entry_pair",
+            "DEFINE INDEX IF NOT EXISTS idx_crate_entry_pair ON TABLE crate_entry FIELDS hexon_uri, entry_id UNIQUE",
+        ),
+    ] {
+        if let Err(error) = db.query(statement).await.and_then(|response| response.check()) {
+            tracing::error!(index, "hexon registry UNIQUE pair index rejected ({error}); the store holds duplicate pairs");
+        }
+    }
 
     // Canonical-log indexes. The two UNIQUE ones are load-bearing, not tuning:
     // exactly-once append (SPEC-4 §3.1) and one apply marker per projection
