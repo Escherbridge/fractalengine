@@ -67,13 +67,49 @@ fn own_relay_host() -> Option<String> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AdvertRequestError(pub String);
 
-/// Validated, signed v1 row bytes for `body`; the per-verse bound is enforced by the sync gate, not here.
+/// True when `prober_did` owns the verse or holds an explicit Viewer+ role at its scope (spec FR-4: no throwaway-key prober).
+async fn prober_is_verse_member(state: &ApiState, verse_id: &str, prober_did: &str) -> bool {
+    let Some(db) = state.db_reader.as_ref() else {
+        tracing::warn!(verse_id, "dial-back prober membership unknown: no direct DB reader; refusing");
+        return false;
+    };
+    let response = db
+        .query(
+            "SELECT role FROM role WHERE peer_did = $prober AND scope = $scope; \
+             SELECT created_by FROM verse WHERE verse_id = $verse LIMIT 1",
+        )
+        .bind(("prober", prober_did.to_string()))
+        .bind(("scope", fe_database::build_scope(verse_id, None, None)))
+        .bind(("verse", verse_id.to_string()))
+        .await;
+    let mut response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(verse_id, %error, "dial-back prober membership query failed; refusing");
+            return false;
+        }
+    };
+    let roles: Vec<serde_json::Value> = response.take(0).unwrap_or_default();
+    let owners: Vec<serde_json::Value> = response.take(1).unwrap_or_default();
+    let holds_role = roles.iter().any(|row| {
+        row.get("role")
+            .and_then(|role| role.as_str())
+            .is_some_and(|role| fe_database::RoleLevel::from(role).is_at_least(fe_database::RoleLevel::Viewer))
+    });
+    let owns_verse = owners
+        .iter()
+        .any(|row| row.get("created_by").and_then(|owner| owner.as_str()) == Some(prober_did));
+    holds_role || owns_verse
+}
+
+/// Validated, signed v1 row bytes for `body`; `prober_is_member` vets a dial-back prober; the per-verse bound is enforced by the sync gate.
 pub(crate) fn prepare_signed_row(
     body: &PostRelayBody,
     verse_id: &str,
     signer: &NodeKeypair,
     own_host: Option<&str>,
     now_ms: u64,
+    prober_is_member: &dyn Fn(&str) -> bool,
 ) -> Result<(AdvertisedRelayUrl, Vec<u8>), AdvertRequestError> {
     let bad = |message: String| AdvertRequestError(message);
     let url = RelayUrlPolicy::default()
@@ -100,6 +136,10 @@ pub(crate) fn prepare_signed_row(
             .ok_or_else(|| bad("a peer-run relay needs a dialback record".into()))?;
         dialback::accept(record, &advertiser_did, &url.to_string(), now_ms)
             .map_err(|refusal| bad(format!("dialback refused: {refusal:?}")))?;
+        // `accept` proves only that SOME key signed; a fresh key minted by the advertiser must not count.
+        if !prober_is_member(&record.prober_did) {
+            return Err(bad("dialback prober is not a member of this verse".into()));
+        }
         Some(serde_json::to_value(record).map_err(|error| bad(error.to_string()))?)
     } else {
         None
@@ -180,11 +220,23 @@ pub async fn post_relay(
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "relay advertisement signer not configured");
     };
     let own_host = own_relay_host();
-    let (url, bytes) =
-        match prepare_signed_row(&body, &verse_id, &signer, own_host.as_deref(), unix_now_ms()) {
-            Ok(prepared) => prepared,
-            Err(AdvertRequestError(message)) => return error_response(StatusCode::BAD_REQUEST, &message),
-        };
+    let prober_member = match body.dialback.as_ref() {
+        Some(record) => prober_is_verse_member(&state, &verse_id, &record.prober_did).await,
+        None => false,
+    };
+    let prober_is_member = |_: &str| prober_member;
+    let prepared = prepare_signed_row(
+        &body,
+        &verse_id,
+        &signer,
+        own_host.as_deref(),
+        unix_now_ms(),
+        &prober_is_member,
+    );
+    let (url, bytes) = match prepared {
+        Ok(prepared) => prepared,
+        Err(AdvertRequestError(message)) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
     let relay_id = ulid::Ulid::new().to_string();
     if let Err(response) = store_and_replicate(&state, &verse_id, &relay_id, &bytes) {
         return response;
@@ -246,15 +298,28 @@ mod tests {
     #[test]
     fn relay_advertise_row_is_v1_signed_with_bounded_expiry_and_dialback() {
         let signer = NodeKeypair::generate();
+        let prober = NodeKeypair::generate();
+        let prober_did = prober.to_did_key();
+        let member = |did: &str| did == prober_did;
         let prepare = |request: &PostRelayBody, own: Option<&str>| {
-            prepare_signed_row(request, "verse1", &signer, own, NOW)
+            prepare_signed_row(request, "verse1", &signer, own, NOW, &member)
         };
         let good = "https://relay.example.org";
         assert!(prepare(&body(good, None), None).is_err(), "missing expiry");
         assert!(prepare(&body(good, Some(NOW - 1)), None).is_err(), "expired");
         assert!(prepare(&body(good, Some(NOW + MAX_ADVERT_TTL_MS + 1)), None).is_err(), "ttl too long");
-        assert!(prepare(&body("http://relay.example.org", Some(NOW + 1000)), None).is_err(), "http");
-        assert!(prepare(&body("https://10.0.0.1", Some(NOW + 1000)), None).is_err(), "private literal");
+        // Steer 21:40 item 8: the API never signs an advert other peers would dial into a refused range.
+        for refused in [
+            "http://relay.example.org",
+            "https://10.0.0.1",
+            "https://127.0.0.1",
+            "https://169.254.169.254",
+            "https://[::1]",
+            "https://localhost",
+            "https://relay.example.org:8443",
+        ] {
+            assert!(prepare(&body(refused, Some(NOW + 1000)), None).is_err(), "{refused} must be refused");
+        }
 
         let (_, bytes) = prepare(&body(good, Some(NOW + 1000)), None).expect("valid row");
         let RowParse::Row(row) = parse_row(&bytes) else { panic!("expected Row") };
@@ -264,7 +329,16 @@ mod tests {
 
         let mut self_relay = body(good, Some(NOW + 1000));
         assert!(prepare(&self_relay, Some("relay.example.org")).is_err(), "self relay needs dialback");
-        let prober = NodeKeypair::generate();
+        // A prober key the advertiser minted itself is not a verse member: refused (FR-4, AC-16).
+        let throwaway = NodeKeypair::generate();
+        self_relay.dialback = Some(DialbackRecord::sign(
+            &SigningKey::from_bytes(&throwaway.seed_bytes()),
+            &signer.to_did_key(),
+            "https://relay.example.org/",
+            NOW - 1000,
+            true,
+        ));
+        assert!(prepare(&self_relay, Some("relay.example.org")).is_err(), "non-member prober refused");
         let prober_key = SigningKey::from_bytes(&prober.seed_bytes());
         self_relay.dialback = Some(DialbackRecord::sign(
             &prober_key,
@@ -273,6 +347,6 @@ mod tests {
             NOW - 1000,
             true,
         ));
-        assert!(prepare(&self_relay, Some("relay.example.org")).is_ok(), "third-party dialback accepted");
+        assert!(prepare(&self_relay, Some("relay.example.org")).is_ok(), "member prober's dialback accepted");
     }
 }

@@ -98,14 +98,14 @@ pub enum RelayAdvertSignedMode {
 }
 
 impl RelayAdvertSignedMode {
-    /// Parse `compat` | `require`; anything else warns and yields `Compat`.
+    /// Parse `compat` | `require`; anything else warns and fails closed to `Require`.
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "compat" => Self::Compat,
             "require" | "required" => Self::Require,
             other => {
-                tracing::warn!(value = other, "Invalid {RELAY_ADVERT_SIGNED_ENV_VAR}; using compat");
-                Self::Compat
+                tracing::warn!(value = other, "Invalid {RELAY_ADVERT_SIGNED_ENV_VAR}; refusing unsigned adverts (require)");
+                Self::Require
             }
         }
     }
@@ -629,12 +629,12 @@ mod tests {
             );
         }
 
-        // Signed-advert mode: compat unless the operator says require.
+        // Signed-advert mode: compat when unset, require when asked; a typo fails closed.
         for (raw, expected) in [
             ("", RelayAdvertSignedMode::Compat),
             ("COMPAT", RelayAdvertSignedMode::Compat),
             (" require ", RelayAdvertSignedMode::Require),
-            ("strict", RelayAdvertSignedMode::Compat),
+            ("strict", RelayAdvertSignedMode::Require),
         ] {
             assert_eq!(RelayAdvertSignedMode::parse(raw), expected, "mode {raw:?}");
         }

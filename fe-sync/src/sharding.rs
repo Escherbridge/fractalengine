@@ -1572,6 +1572,12 @@ impl VerseFabric {
         std::mem::take(&mut self.pending_relay_changes)
     }
 
+    /// Withdraw every relay advert expired at `now_ms` (NET-22 expiry timer); changes queue for the reconciler.
+    pub fn expire_relay_adverts(&mut self, now_ms: u64) {
+        let changes = self.relay_adverts.expire(now_ms);
+        self.pending_relay_changes.extend(changes);
+    }
+
     /// Normalized admitted relay URLs per verse (read-time role-gated).
     pub fn advertised_relay_urls(&self) -> BTreeMap<String, BTreeSet<String>> {
         self.relay_adverts.urls_by_verse()
@@ -1640,9 +1646,18 @@ impl VerseFabric {
         author_id: &str,
         data: &[u8],
     ) {
+        // One entry per (kind, record, author): a re-sent row replaces its pending copy.
+        if let Some(index) = self.quarantine.iter().position(|held| {
+            held.kind == kind && held.record_id == record_id && held.author_id == author_id
+        }) {
+            self.quarantine.remove(index);
+        }
         if self.quarantine.len() >= QUARANTINE_CAP {
-            self.quarantine.pop_front();
-            self.quarantine_evicted += 1;
+            // Fair eviction (steer 22:10 item 4): the author holding the most rows loses its oldest, so a flooder cannot flush others.
+            if let Some(index) = self.largest_holders_oldest_index() {
+                self.quarantine.remove(index);
+                self.quarantine_evicted += 1;
+            }
         }
         self.quarantine.push_back(QuarantinedRow {
             kind,
@@ -1650,6 +1665,21 @@ impl VerseFabric {
             author_id: author_id.to_string(),
             data: data.to_vec(),
         });
+    }
+
+    /// Index of the oldest held row of the author with the most held rows (ties: the earliest such row); runs only at the cap.
+    fn largest_holders_oldest_index(&self) -> Option<usize> {
+        let mut per_author: HashMap<&str, (usize, usize)> = HashMap::new();
+        for (index, held) in self.quarantine.iter().enumerate() {
+            per_author
+                .entry(held.author_id.as_str())
+                .and_modify(|(count, _)| *count += 1)
+                .or_insert((1, index));
+        }
+        per_author
+            .into_values()
+            .max_by_key(|(count, first_index)| (*count, std::cmp::Reverse(*first_index)))
+            .map(|(_, first_index)| first_index)
     }
 
     /// Re-attempt every quarantined row against the current role/petal
@@ -2599,8 +2629,8 @@ mod tests {
         fabric.note_entry("v1", &shard_change("p1/a1/1", editor, &[editor]));
         assert_eq!(fabric.quarantine_len(), 1);
 
-        // Flood past the cap with strangers' rows on OTHER shards — the
-        // legit row is evicted (drop-oldest).
+        // Flood past the cap with a stranger's rows: at the cap the largest
+        // holder (the flooder) loses its own oldest row, never the editor's.
         for i in 0..QUARANTINE_CAP + 10 {
             let shard_key = format!("p1/a{i}/1");
             fabric.note_entry(
@@ -2611,13 +2641,20 @@ mod tests {
         assert_eq!(fabric.quarantine_len(), QUARANTINE_CAP);
         assert!(fabric.quarantine_evicted() > 0);
         assert!(!fabric.shards.contains_key("p1/a1/1"));
+        assert!(
+            fabric.quarantine.iter().any(|held| held.author_id == editor),
+            "the editor's pending row survives the flood"
+        );
+        // A re-sent row replaces its pending copy instead of growing the hold.
+        fabric.note_entry("v1", &shard_change("p1/a1/1", editor, &[editor]));
+        assert_eq!(
+            fabric.quarantine.iter().filter(|held| held.author_id == editor).count(),
+            1
+        );
 
-        // The owner grants Editor — this fabric-level re-materialization
-        // cannot recover an already-evicted row by itself (it only
-        // re-walks what is STILL quarantined); the sync thread's re-read on
-        // empowerment (fed from `drain_reread_queue`) is what pulls it back
-        // from the replica. Confirm the queue carries the editor's DID so
-        // that mechanism has what it needs.
+        // The owner grants Editor: the re-materialization admits the held row,
+        // and the editor is queued for the §2.5 re-read (which recovers any row
+        // that was never held).
         fabric.note_entry(
             "v1",
             &role_change(
@@ -2629,6 +2666,8 @@ mod tests {
                 1,
             ),
         );
+        assert!(fabric.shards.contains_key("p1/a1/1"), "the held row is admitted on the grant");
+        assert!(!fabric.quarantine.iter().any(|held| held.author_id == editor));
         assert!(
             fabric.drain_reread_queue().contains(&editor.to_string()),
             "the newly-empowered editor must be queued for the re-read"

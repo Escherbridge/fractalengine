@@ -14,8 +14,8 @@ use fe_runtime::relay_advertisement::{
 
 /// Fixed probe path on the relay (iroh-relay answers `/ping`); the requested URL's path is ignored.
 pub const PROBE_PATH: &str = "/ping";
-/// Response body cap.
-pub const MAX_PROBE_BODY_BYTES: usize = 4 * 1024;
+/// Response body cap (spec FR-2b: 1 KiB).
+pub const MAX_PROBE_BODY_BYTES: usize = 1024;
 /// Total request budget (connect, TLS, response).
 pub const PROBE_TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// One probe per requester per window.
@@ -185,19 +185,22 @@ impl DialbackProber {
         target.set_fragment(None);
 
         let ok = fetch_pinned(&host, &pinned, target.as_str()).await;
+        // Signed in normalized form, the same string the REST layer compares against.
+        let normalized_url = accepted.to_string();
         Ok(DialbackRecord::sign(
             &self.signing_key,
             requester_did,
-            url,
+            &normalized_url,
             now_ms,
             ok,
         ))
     }
 }
 
-/// Builds the client: connects only to the checked addresses, TLS still verifies the hostname.
+/// Builds the client: connects only to the checked addresses (no proxy may re-resolve), TLS still verifies the hostname.
 fn build_pinned_client(host: &str, pinned: &[SocketAddr]) -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
+        .no_proxy()
         .resolve_to_addrs(host, pinned)
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)

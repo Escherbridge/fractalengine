@@ -30,6 +30,8 @@ impl EmbeddedRelayHandle {
     pub fn shutdown(mut self) {
         if let Some(relay) = self.relay.take() {
             self.runtime.block_on(relay.shutdown());
+            // `Drop` sees `None` after the take, so the listener is released here.
+            BOUND_RELAY_LISTENERS.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -91,7 +93,10 @@ fn spawn_from_config(
     );
     // Gate must be installed before the sync thread starts so it never misses a snapshot.
     let gate = RelayMembershipGate::for_config(&config);
-    install_gate(gate.clone());
+    // A second gate would never receive snapshots and would deny every member: refuse instead.
+    if !install_gate(gate.clone()) {
+        anyhow::bail!("embedded relay refused to start: a relay membership gate is already installed in this process");
+    }
     let relay = rt_handle
         .block_on(EmbeddedRelay::spawn(config, gate))
         .map_err(refused)?;

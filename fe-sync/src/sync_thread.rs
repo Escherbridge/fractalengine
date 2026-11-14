@@ -1083,6 +1083,13 @@ pub fn spawn_sync_thread_with_sources(
                             relay_adoption.check_adopted(&adoption_probe_tx, std::time::Instant::now());
                         }
                         relay_adoption.on_tick(std::time::Instant::now());
+                        // Expiry timer: an expired advert becomes a Withdrawn change, not just a read-time skip.
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |elapsed| elapsed.as_millis() as u64);
+                        for fabric in fabrics.values_mut() {
+                            fabric.expire_relay_adverts(now_ms);
+                        }
                     }
                     Some((relay, healthy)) = adoption_probe_rx.recv() => {
                         relay_adoption.record_probe(&relay, healthy, std::time::Instant::now());

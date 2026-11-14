@@ -15,6 +15,9 @@ pub use fe_runtime::relay_advertisement::{
 use crate::relay_config::RelayAdvertSignedMode;
 use crate::relay_trust::select_bounded;
 
+/// Tolerated clock skew for `issued_at_ms` (spec §4.4 item 5: `issued_at <= now + 60 s`).
+pub const ADVERT_ISSUED_SKEW_MS: u64 = 60_000;
+
 /// Bound on quarantined advertisements across all verses (same posture as `__shards`).
 pub const RELAY_QUARANTINE_CAP: usize = 1024;
 
@@ -438,7 +441,7 @@ impl RelayAdvertisementBook {
         }
     }
 
-    /// Unexpired eligible rows cut to `MAX_ADVERTS_PER_VERSE` by `relay_trust::select_bounded` (oldest issued first).
+    /// Unexpired eligible rows cut to `MAX_ADVERTS_PER_VERSE` by `relay_trust::select_bounded`: signed rows first, compat rows fill what is left.
     fn select_visible(&self, verse_id: &str, now_ms: u64) -> BTreeMap<String, String> {
         let Some(records) = self.admitted.get(verse_id) else {
             return BTreeMap::new();
@@ -447,8 +450,15 @@ impl RelayAdvertisementBook {
             .iter()
             .filter(|(_, advert)| !is_expired(&advert.row, now_ms))
             .collect();
-        let rows = live.iter().map(|(_, advert)| advert.row.clone()).collect();
-        let (kept, _held_back) = select_bounded(rows, MAX_ADVERTS_PER_VERSE);
+        // An unsigned row has no `issued_at_ms` (sorts as 0), so it must not outrank signed rows.
+        let (signed, unsigned): (Vec<RelayAdvertisementRow>, Vec<RelayAdvertisementRow>) = live
+            .iter()
+            .map(|(_, advert)| advert.row.clone())
+            .partition(|row| row.sig.is_some());
+        let (mut kept, _held_back) = select_bounded(signed, MAX_ADVERTS_PER_VERSE);
+        let room = MAX_ADVERTS_PER_VERSE.saturating_sub(kept.len());
+        let (compat_kept, _compat_held_back) = select_bounded(unsigned, room);
+        kept.extend(compat_kept);
         // The sort is stable, so identical rows keep record-id order: take the first unused match.
         let mut used = vec![false; live.len()];
         let mut visible = BTreeMap::new();
@@ -638,6 +648,13 @@ fn check_authenticity(
 ) -> Result<(), &'static str> {
     if row.verse_id.as_deref().is_some_and(|bound| bound != verse_id) {
         return Err(AdvertRefusal::VerseMismatch.name());
+    }
+    // A future issue time would stretch the 30-day lifetime cap past its intent.
+    if row
+        .issued_at_ms
+        .is_some_and(|issued| issued > now_ms.saturating_add(ADVERT_ISSUED_SKEW_MS))
+    {
+        return Err("issued_in_future");
     }
     if row.sig.is_some() {
         let key = fe_identity::did_key::public_key_from_did_key(author_did)
@@ -899,6 +916,10 @@ mod tests {
             ("ttl over 30 d", signed_row(&signer, "https://relay-0.example.org", now, |row| row.expires_at_ms = Some(now + MAX_ADVERT_TTL_MS))),
             ("expired", signed_row(&signer, "https://relay-0.example.org", now, |row| row.expires_at_ms = Some(now - 1))),
             ("port policy", signed_row(&signer, "https://relay-0.example.org:8443", now, |_| {})),
+            ("issued in the future", signed_row(&signer, "https://relay-0.example.org", now, |row| {
+                row.issued_at_ms = Some(now + 2 * ADVERT_ISSUED_SKEW_MS);
+                row.expires_at_ms = Some(now + 3 * ADVERT_ISSUED_SKEW_MS);
+            })),
         ];
         for (case, refused) in refused_rows {
             assert!(observe(&mut strict, "r-refused", &wire(&refused)).is_empty(), "{case} must be refused");
