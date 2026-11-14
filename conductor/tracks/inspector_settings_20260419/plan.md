@@ -189,7 +189,7 @@ Tasks:
   - Role changes go through `RoleManager::assign_role` with scope `VERSE#<id>-FRACTAL#<id>-PETAL#<id>`.
   - Run tests.
 
-- [ ] Task 4.6: Implement invite link UI (TDD Red -> Green)
+- [x] Task 4.6: Implement invite link UI (TDD Red -> Green) — invite controls as built (entity_access.rs:704); EXT-18 local-only reason not yet wired (R-UI-3-06, HANDED-OFF I-UI-1)
   - Write tests: "Generate Invite" button calls `RoleManager::generate_invite` with correct scope and role.
   - Implement invite dialog: role dropdown, expiry dropdown (1h/24h/7d/30d/never), generated link with "Copy" button.
   - Privilege check: only users with manager/owner at current scope see the "Generate Invite" button.
@@ -208,7 +208,7 @@ Tasks:
   - Add "History" link to Access tab that queries recent op_log entries for the current scope.
   - Run tests.
 
-- [ ] Task 4.9: Refactor and polish
+- [ ] Task 4.9: Refactor and polish — code done via R-UI-3 fixes (5389b01f); polish pass not separately verified
   - Add loading state indicator while peer roles are being fetched.
   - Add error handling for failed role changes.
   - Ensure Access tab updates reactively when roles change (not requiring manual refresh).

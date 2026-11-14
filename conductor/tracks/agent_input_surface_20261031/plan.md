@@ -79,18 +79,18 @@ Each name is the test to write; each asserts an observable outcome, not an inter
 ## 4. Task checklist
 
 ### Bridge + gate + wiring
-- [ ] S1: `fe-runtime` input message types (+ §input-bridge doc)
-- [ ] S2: `fe-api` gate + surface + REST handler
-- [ ] S3: `fe-api` wiring (ApiState field, route, MCP table/seam/assert, §agent-input-surface doc)
-- [ ] Gate W3 (orchestrator)
+- [x] S1: `fe-runtime` input message types (+ §input-bridge doc)
+- [x] S2: `fe-api` gate + surface + REST handler
+- [x] S3: `fe-api` wiring (ApiState field, route, MCP table/seam/assert, §agent-input-surface doc)
+- [x] Gate W3 (orchestrator) — gate recorded 2026-11-01 (metadata runs.input.gate)
 
 ### Bevy translation + tests
-- [ ] S4: `input_bridge.rs` + `screenshot_bridge.rs` visibility change + `main.rs` wiring (+ §agent-input-surface doc)
-- [ ] S5: `input_test.rs` fake-responder flows
-- [ ] Gate W4 (orchestrator)
+- [x] S4: `input_bridge.rs` + `screenshot_bridge.rs` visibility change + `main.rs` wiring (+ §agent-input-surface doc)
+- [x] S5: `input_test.rs` fake-responder flows — I5 ccc397a (flows named differently; see metadata runs.input)
+- [x] Gate W4 (orchestrator) — gate recorded 2026-11-01 (metadata runs.input.gate)
 
 ### Close
-- [ ] S6: review-and-fix (opus) with recorded verdict, mutation-risk lens first
+- [x] S6: review-and-fix (opus) with recorded verdict, mutation-risk lens first
 - [ ] S7: docs consolidation
 - [ ] Full sweep (orchestrator, once)
 - [ ] In-app verify (user-gated): enable env, inject a real click, confirm via screenshot

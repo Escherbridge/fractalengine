@@ -290,18 +290,18 @@ Use `/security-review` plus `/code-review high`. Fix findings and record the ver
 
 ## 5. Task checklist
 
-- [ ] V1: vision wire contract
-- [ ] V2: default-on gate + POST/camera REST + MCP (`TOOLS` 38)
-- [ ] G1
-- [ ] V3: pose math + camera lock + markers
-- [ ] V4: multi-focus streaming + query narrowing
-- [ ] G2
-- [ ] V5: Bevy capture orchestrator + wiring
-- [ ] G3
-- [ ] I1, I2, I3 (`TOOLS` 39), I4 ∥ I5
-- [ ] G4
-- [ ] ADVOCATE (verdict recorded)
-- [ ] CRITIC (verdict recorded, security depth)
+- [x] V1: vision wire contract
+- [x] V2: default-on gate + POST/camera REST + MCP (`TOOLS` 38)
+- [x] G1 — gate recorded 2026-11-01 (metadata runs.vision.gate)
+- [x] V3: pose math + camera lock + markers
+- [x] V4: multi-focus streaming + query narrowing
+- [x] G2 — gate recorded 2026-11-01 (metadata runs.vision.gate)
+- [x] V5: Bevy capture orchestrator + wiring
+- [x] G3 — gate recorded 2026-11-01 (metadata runs.vision.gate)
+- [x] I1, I2, I3 (`TOOLS` 39), I4 ∥ I5
+- [x] G4 — gate recorded 2026-11-01 (metadata runs.vision.gate)
+- [x] ADVOCATE (verdict recorded)
+- [x] CRITIC (verdict recorded, security depth)
 - [ ] CLOSE
 - [ ] Full sweep (once)
 - [ ] In-app verify AC-11 (user-gated), including minimized-window scene capture

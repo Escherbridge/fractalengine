@@ -3,10 +3,10 @@
   "type": "chore",
   "title": "Polish lane — finish stubs, complete features, close seams, usability of every feature",
   "description": "Recon-driven polish program (Lane A of the 2026-10-31 directive). Six waves of disjoint leaf slices, each followed by a serial gate, an ADVOCATE review-and-fix (design patterns) and a CRITIC review-and-fix (defects / anti-patterns / tests that cannot fail), then a re-gate. W1 builds the feedback spine (notice severity queue, humanized DB/role-denial errors, petal-map rollback via correlated SetPetalTerrain, typed JoinVerseFailed, shared role_gated/confirm_button widgets) plus OF-13a/b/c; W2 role gating + destructive safety; W3 Lane-B integration surfaces (needs Lane B landed); W4 tool/report/context/data-window completion; W5 F7 ScopedQuery + undo/redo + stale cleanup; W6 library seams, dead code, copy sweep.",
-  "status": "pending",
+  "status": "done-pending-inapp-verify",
   "priority": "P0",
   "created_at": "2026-10-31T00:00:00Z",
-  "updated_at": "2026-10-31T00:00:00Z",
+  "updated_at": "2026-11-13T00:00:00Z",
   "origin": "user directive 2026-10-31 (polish program; conductor/accountability-log.md 'Polish program launch'); inputs .omc/research/polish-stubs-20261031.md (R1) + .omc/research/polish-ux-20261031.md (R2)",
   "alignment": "Roadmap §3 cross-cutting hardening + sleeker UX; product success metric 'operator completes upload → place → set role → invite without reading documentation'.",
   "depends_on": [],
@@ -24,10 +24,24 @@
   "spec": "./spec.md",
   "plan": "./plan.md",
   "progress": {
-    "done": 0,
-    "open": 6,
+    "done": 1,
+    "open": 5,
     "unit": "waves",
-    "plan": "./plan.md"
+    "plan": "./plan.md",
+    "verified_by_review": [
+      "W1"
+    ],
+    "code_landed_review_pending": [
+      "W2",
+      "W3",
+      "W4",
+      "W5",
+      "W6"
+    ],
+    "user_verify": [
+      "VISUAL W3",
+      "VISUAL W6 (OD-17 items 3,4,7,9,10,11,12,16,17,18)"
+    ]
   },
   "open_decisions": [
     "OD-1 notice durations/queue (default Info 2.5s / Advisory 4s / Error 7s, hover-hold, cap 4, history 20)",
@@ -99,7 +113,8 @@
     "fe-test-harness/src/scenarios/api_db_sync_cross_thread.rs"
   ],
   "notes": [
-    "2026-10-31: track planned (docs only) by the Lane A opus planner from R1 + R2; partitions computed and disjointness/existence/Lane-B-avoidance machine-checked at 6531d19 (scratch script build_polish_metadata.py). Waves are a derived view of depends_on."
+    "2026-10-31: track planned (docs only) by the Lane A opus planner from R1 + R2; partitions computed and disjointness/existence/Lane-B-avoidance machine-checked at 6531d19 (scratch script build_polish_metadata.py). Waves are a derived view of depends_on.",
+    "2026-11-13 (round 4, T-UI): UI-01, UI-02, UI-09, UI-10, UI-11 landed; R-UI-1 PASS-WITH-FIXES (review-turn4/R-UI-1.md). R2 coverage matrix (plan §4) is NOT fully re-mapped to commits this round: only the residuals are closed (UI-01/UI-09/UI-10); per-id closed@commit rows remain DEFERRED to the campaign close. Ticks follow verified code only; wave gates, advocate and critic passes stay unticked."
   ],
   "partitions": {
     "computed_at": "2026-10-31T00:00:00Z",
@@ -1402,5 +1417,13 @@
       "Never push"
     ],
     "integration_slice": "W3-S1 (standing NEEDS-WIRING receiver for panels/mod.rs and dialog call sites); each wave's GATE reconciles CONTRACT-DRIFT"
+  },
+  "verified_waves": {
+    "W1": "verified by review (review-turn4/R-UI-1.md is round 4; W1 review under reviews/)",
+    "W2": "code landed, wave review passes not run",
+    "W3": "code landed, wave review passes not run",
+    "W4": "code landed, wave review passes not run",
+    "W5": "code landed, wave review passes not run",
+    "W6": "code landed, wave review passes not run"
   }
 }

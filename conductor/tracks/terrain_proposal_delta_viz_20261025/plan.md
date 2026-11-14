@@ -126,12 +126,12 @@ Each name is the test to write. Each asserts an observable outcome.
 ### Close
 - [x] S7: review-and-fix (opus) with recorded verdict — W4 9165f75
 - [x] S8: docs consolidation — W4 (in progress)
-- [ ] Full sweep (orchestrator, once)
-- [ ] In-app verify F5 (user-gated): see the cut/fill delta live before commit; select a region and read the true volumes
+- [ ] Full sweep (orchestrator, once) — campaign-gated, not run
+- [ ] In-app verify F5 (user-gated): see the cut/fill delta live before commit; select a region and read the true volumes — user-gated, not run
 - [ ] Retro + archive
 
 ### Phase 3 (deferable, OD-12)
-- [ ] S9 profile sampler
+- [x] S9 profile sampler
 - [ ] S10 section tool + profile panel
 
 ### Phase 4 (future)

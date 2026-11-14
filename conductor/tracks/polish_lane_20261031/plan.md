@@ -703,6 +703,8 @@ retro to `conductor/accountability-log.md`. Owns: those four files plus this pla
 
 ## §4 R2 coverage matrix (every id is assigned; W6-S4 marks the commits)
 
+> **Round 4 status (2026-11-13, T-UI):** residual evidence anchors UI-01, UI-09 and UI-10 are closed at HEAD (commits c61099e4, 52943f1f, 67a67756); the steer-listed symbols are closed. Per-id `closed@<commit>` rows for the remaining ids are DEFERRED to the campaign close (no re-grep done this round). OUT per spec: peer blob fetch, T28, S-1, D-23, CANON-WS, CDL-NET, INTENT items, DW-04 mint (D-64).
+
 | Ids | Slice(s) |
 |---|---|
 | X-01 | W1-S1, W1-S2, W3-S1 |
@@ -757,11 +759,11 @@ T28, S-1, D-23, CANON-WS, CDL-NET and the INTENT items are OUT (spec.md).
 ## §5 Progress
 
 - [x] W1 leaves · [x] W1 gate · [x] W1 advocate · [x] W1 critic · [x] W1 re-gate
-- [ ] W2 leaves · [ ] W2 gate · [ ] W2 advocate · [ ] W2 critic · [ ] W2 re-gate
-- [ ] W3 (Lane B landed?) leaves · [ ] gate · [ ] advocate · [ ] critic + security-review · [ ] re-gate · [ ] visual
-- [ ] W4 leaves · [ ] W4 gate · [ ] W4 advocate · [ ] W4 critic · [ ] W4 re-gate
-- [ ] W5 leaves · [ ] W5 gate · [ ] W5 advocate · [ ] W5 critic + security-review · [ ] W5 re-gate
-- [ ] W6 leaves · [ ] W6 gate · [ ] W6 advocate · [ ] W6 critic · [ ] W6 re-gate · [ ] visual
+- [x] W2 leaves · [ ] W2 gate · [ ] W2 advocate · [ ] W2 critic · [ ] W2 re-gate
+- [x] W3 (Lane B landed?) leaves · [ ] gate · [ ] advocate · [ ] critic + security-review · [ ] re-gate · [ ] visual
+- [x] W4 leaves · [ ] W4 gate · [ ] W4 advocate · [ ] W4 critic · [ ] W4 re-gate
+- [x] W5 leaves · [ ] W5 gate · [ ] W5 advocate · [ ] W5 critic + security-review · [ ] W5 re-gate
+- [x] W6 leaves · [ ] W6 gate · [ ] W6 advocate · [ ] W6 critic · [ ] W6 re-gate · [ ] visual
 - [ ] CLOSE (ledger, board, retro) · [ ] user in-app look (user-gated, OUT of agent scope)
 
 ## §QA-intake
