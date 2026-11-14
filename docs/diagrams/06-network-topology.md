@@ -2,30 +2,24 @@
 
 ## Peer Discovery
 
+WAN peers are found through the Kademlia DHT, with the iroh relay as fallback. LAN auto-discovery is not implemented.
+
 ```mermaid
 graph TB
-    subgraph LAN["Local Network"]
-        Node_A[Node A] ---|mDNS| Node_B[Node B]
-        Node_A ---|mDNS| Node_C[Node C]
-    end
-
     subgraph WAN["Wide Area Network"]
+        Node_A[Node A]
         Node_D[Node D]
         Node_E[Node E]
     end
 
     subgraph Discovery["libp2p Discovery"]
         DHT[Kademlia DHT<br/>Peer routing + Petal metadata]
-        MDNS[mDNS<br/>LAN auto-discovery]
         QUIC[QUIC Transport<br/>Noise encryption + Yamux mux]
     end
 
     Node_A --> DHT
     Node_D --> DHT
     Node_E --> DHT
-
-    Node_A --> MDNS
-    Node_B --> MDNS
 
     subgraph Relay["NAT Traversal"]
         IrohRelay[iroh relay<br/>Stateless encrypted relay<br/>Croquet TeaTime pattern]

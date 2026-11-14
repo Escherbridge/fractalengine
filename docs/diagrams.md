@@ -24,7 +24,7 @@ Visual guide to FractalEngine's architecture, data flows, and component interact
 
 **File:** [diagrams/01-system-overview.md](diagrams/01-system-overview.md)
 
-The three-thread topology — T1 (Bevy + wry), T2 (libp2p + iroh), T3 (SurrealDB) — connected by bounded crossbeam channels. Shows all major subsystems and their thread affinity.
+The seven-thread topology: T1 main (Bevy + wry + egui), T2 network (libp2p Kademlia), T3 database (SurrealDB + RBAC), T4 sync (iroh blobs/gossip/docs), T5 replication bridge, T6 API gateway, T7 plugin host. T1 reaches T2 and T3 over bounded crossbeam channels; the other threads are linked by the relays in diagram 01.
 
 ```mermaid
 graph TB
@@ -33,7 +33,7 @@ graph TB
     end
 
     subgraph T2["T2 — Network"]
-        Net[libp2p + iroh<br/>Tokio runtime]
+        Net[libp2p Kademlia + QUIC<br/>Tokio runtime]
     end
 
     subgraph T3["T3 — Database"]
@@ -94,7 +94,7 @@ Entity-relationship diagram for all SurrealDB tables: `petal`, `room`, `model`, 
 **File:** [diagrams/06-network-topology.md](diagrams/06-network-topology.md)
 
 Three diagrams covering:
-- **Peer discovery** — Kademlia DHT (WAN) + mDNS (LAN) + iroh relay fallback
+- **Peer discovery** — Kademlia DHT (WAN) + iroh relay fallback (no LAN auto-discovery)
 - **Data distribution layers** — iroh-blobs (assets), iroh-gossip (events), iroh-docs (state)
 - **Peer connection lifecycle** — from DHT lookup to authenticated real-time sync
 
@@ -106,7 +106,7 @@ Three diagrams covering:
 
 Three diagrams covering:
 - **GLTF ingestion** — validation, BLAKE3 hashing, storage, iroh-blobs publication
-- **P2P distribution** — content-addressed fetch with local cache (2GB, LRU, 7-day eviction)
+- **P2P distribution** — content-addressed fetch with a local BlobStore (no size cap or eviction)
 - **Dead-reckoning** — transform prediction for 60-90% bandwidth reduction
 
 ---
@@ -128,7 +128,7 @@ Three diagrams covering:
 
 Three diagrams covering:
 - **Petal replication** — iroh-docs range reconciliation (delta only)
-- **Caching architecture** — per-Petal SurrealDB namespace, BLAKE3-indexed assets, persistence tiers
+- **Caching architecture** — per-verse iroh-docs replica under FE_P2P_DIR, BLAKE3-addressed blobs, SurrealDB for offline reads; no size cap or eviction
 - **Reconnection reconciliation** — Lamport clock comparison, delta application
 
 ---
@@ -165,3 +165,9 @@ Three end-to-end flows:
 | Dashed arrow | Fallback / optional path |
 | `PK` / `FK` / `UK` | Primary key / Foreign key / Unique key |
 | Subgraph | Logical grouping or thread boundary |
+
+---
+
+## diagram-truth
+
+Source anchors for the seven-thread diagrams (verified 2026-11-13): thread list `README.md:209-232`; network thread `fractalengine/src/main.rs:138` (Kademlia over MemoryStore, `fe-network/src/swarm.rs`, no mDNS behaviour); db thread `main.rs:293`; sync thread `main.rs:409` (iroh lives in T4, not T2); replication service `main.rs:446`; API gateway `main.rs:767`; plugin host `fractalengine/src/plugin_bridge.rs:4510`. RBAC is deny-by-default in fe-policy at the DB thread, with no SurrealDB `PERMISSIONS` clauses (`fe-database/src/handlers/replicated_row.rs:261`). Replica persistence and replay: `README.md:244-252`. A scan of `fe-sync/src` and `fe-database/src` found no ephemeral/cached/replicated tiers and no 2 GB cap for the replica or blob store (the LRU hits are the peer book, the replay guard and the streamed-tileset cache).

@@ -17,7 +17,7 @@ sequenceDiagram
     B-->>Docs: Delta updates
     Docs-->>A: Merged state
 
-    A->>Cache: Write to local SurrealDB<br/>(per-Petal namespace)
+    A->>Cache: Write to local SurrealDB<br/>(rows judged by RBAC)
     A->>Cache: Cache assets by BLAKE3 hash
 
     loop While connected
@@ -29,32 +29,37 @@ sequenceDiagram
 
 ## Caching Architecture
 
+There is no size cap or eviction policy on the verse replica or the blob store.
+
 ```mermaid
 graph TD
-    subgraph Cache["Local Cache (per Node)"]
-        DB_Cache["SurrealDB Replica<br/>Per-visited-Petal namespace"]
-        Asset_Cache["Asset File Cache<br/>BLAKE3-indexed GLB files"]
-        Limit["2 GB default limit<br/>LRU eviction after 7 days"]
-    end
-
-    subgraph Tiers["Persistence Tiers (per Petal)"]
-        Ephemeral["EPHEMERAL<br/>No local caching"]
-        Cached["CACHED<br/>Cache on visit, evict on LRU"]
-        Replicated["REPLICATED<br/>Full local replica maintained"]
+    subgraph Local["Local State (per Node)"]
+        Replica["Per-verse iroh-docs replica<br/>persisted under FE_P2P_DIR"]
+        BlobStore["iroh-blobs store<br/>content-addressed by BLAKE3 hash"]
+        DB_Cache["SurrealDB<br/>local source for offline reads"]
     end
 
     subgraph Online["Online Mode"]
-        Sync[iroh-docs sync<br/>+ iroh-gossip events]
+        Sync["iroh-docs sync<br/>+ iroh-gossip events"]
+    end
+
+    subgraph Open["Replica Open"]
+        Replay["Rows replayed through the<br/>same inbound path as live writes"]
+        Judge["RBAC verdict at the DB thread"]
     end
 
     subgraph Offline["Offline Mode"]
-        Local[Load from local<br/>SurrealDB + asset cache]
+        LocalRead["Load from local SurrealDB<br/>+ blob store"]
         Stale["Stale indicator<br/>shown in UI"]
     end
 
-    Tiers --> Cache
-    Online --> Cache
-    Cache --> Offline
+    Online --> Replica
+    Replica --> Replay
+    Replay --> Judge
+    Judge --> DB_Cache
+    Online --> BlobStore
+    DB_Cache --> Offline
+    BlobStore --> Offline
 ```
 
 ## Reconnection Reconciliation

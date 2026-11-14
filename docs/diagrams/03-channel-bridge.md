@@ -1,6 +1,6 @@
 # Channel Bridge
 
-All typed crossbeam channels that connect the three threads. Every channel is bounded at 256 to provide backpressure.
+The net and db channels connect T1 to T2 and T3; the other seven-thread relays (T3 to T5 to T4 replication, the T6 API command channel, the T7 plugin bridge) are not drawn here. The net and db channels are bounded at 256 to provide backpressure.
 
 ```mermaid
 graph LR
