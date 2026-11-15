@@ -12,8 +12,12 @@ use crate::{repo::Db, BlobStoreHandle, ReplicationEvent, ReplicationSender};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Rows per recovery page and per recovery batch.
 const RECOVERY_LIMIT: usize = 1024;
+/// Prepared wire bytes (rows plus dependencies) per recovery batch.
 const RECOVERY_BYTES: usize = 8 * 1024 * 1024;
+/// Longest a later recovery batch waits for the replication bridge to drain below half capacity.
+const BATCH_DRAIN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 pub(crate) const PUBLICATION_ASSET_COLUMNS: &str =
     "asset_id, name, content_type, size_bytes, content_hash, created_at, owner_did, petal_id, publication_provenance";
 
@@ -27,6 +31,8 @@ pub(crate) struct RecoveryReport {
     pub dependency_deferred: usize,
     /// Proven scene uploads no node references yet (QA-0158).
     pub uploads_enqueued: usize,
+    /// Node batches sent (AGENTS.md §recovery-batches); zero when nothing was publishable.
+    pub batches: usize,
 }
 
 #[derive(Debug)]
@@ -40,6 +46,18 @@ pub(crate) struct PreparedSceneRow {
     bindings: Vec<(String, Value)>,
     dependencies: Vec<(String, String, Vec<u8>)>,
     deferred_dependencies: usize,
+    /// DID of the local edit (journal fact or tombstone operation) this row publishes.
+    cause: String,
+}
+
+/// One node row a commit enqueued, for the write budget (handlers/AGENTS.md §write-budget).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Published {
+    pub verse_id: String,
+    /// DID of the edit the row publishes (its journal `source_did`).
+    pub cause: String,
+    /// Wire bytes stored in the canonical blob store and sent to peers.
+    pub bytes: usize,
 }
 
 /// A local journal snapshot is publication provenance, never a claim of historical replication.
@@ -131,13 +149,25 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         (hlc,"IF (SELECT * OMIT id FROM op_log WHERE op_type='NodeTombstoned' AND lamport_clock=$scene_original_hlc) != [$scene_proof] { THROW 'local tombstone proof changed'; }",op.clone(),false)
     };
     crate::op_log::admit_scene_hlc(hlc)?;
+    let cause = proof_binding["source_did"]
+        .as_str()
+        .or_else(|| proof_binding["payload"]["source_did"].as_str())
+        .unwrap_or(actor)
+        .to_owned();
     let clock = SceneClock {
         hlc,
         publisher: actor.into(),
     };
     let clocks = read_clock(db, id).await?;
     let known = clock_of(&clocks)?;
-    let stamped = stamp_own_versions(stored, id, &verse, actor, hlc, &row)?;
+    // Over a stale cached winner only a key an unpublished local fact changed is stamped (§rejudge-pending).
+    let local_writes: BTreeSet<String> = if journaled {
+        let published: BTreeSet<u64> = stored.versions.iter().map(|version| version.hlc).collect();
+        super::inbound::local_writes(db, id, &scope, &published).await?.into_keys().collect()
+    } else {
+        BTreeSet::new()
+    };
+    let stamped = stamp_own_versions(stored, id, &verse, actor, hlc, &row, Some(&local_writes))?;
     // Per-key rule: below a known later clock a journaled edit still publishes while it holds a winning key;
     // a tombstone keeps the strict rule. See AGENTS.md §Wire and ordering "Per-key clock".
     anyhow::ensure!(
@@ -202,7 +232,102 @@ pub(crate) async fn prepare(db: &Db, id: &str, actor: &str) -> anyhow::Result<Pr
         bindings,
         dependencies,
         deferred_dependencies,
+        cause,
     })
+}
+
+/// Hypothetical HLC for a projected row: the widest positive stored HLC, so the projection is never short.
+const PROJECTED_HLC: u64 = i64::MAX as u64;
+
+/// The complete wire row `publisher` would emit for `snapshot` (journal form) over `stored`, as the publisher builds it.
+fn projected_row(stored: &StoredClock, id: &str, publisher: &str, snapshot: &Value) -> anyhow::Result<(Value, usize)> {
+    let mut row = snapshot.clone();
+    // The journal snapshot carries `[x, y, z]`; the stored row a point plus `elevation`.
+    let point = match row["position"].as_array().map(Vec::as_slice) {
+        Some([x, _, z]) => Some(json!({"type": "Point", "coordinates": [x, z]})),
+        _ => None,
+    };
+    if let Some(point) = point {
+        row["position"] = point;
+    }
+    let stamped = stamp_own_versions(stored.clone(), id, "", publisher, PROJECTED_HLC, &row, None)?;
+    wire::normalize_optional_columns(&mut row);
+    row[wire::MARKER] = SceneClock { hlc: PROJECTED_HLC, publisher: publisher.into() }.marker();
+    row[field_clock::CLOCK_COLUMN] = field_clock::encode_own(publisher, &stamped.own);
+    let keys = stamped.own.len();
+    Ok((row, keys))
+}
+
+/// Why a projected row could not be published: over the key cap, over the row bound, or an unclockable key.
+fn projection_failure(row: &Value, keys: usize, publisher: &str) -> Option<String> {
+    let max_keys = field_clock::wire::MAX_OWN_KEYS;
+    if keys > max_keys {
+        return Some(format!(
+            "{}: it would carry {keys} replicated keys (properties plus name, transform, interactive, asset and deleted properties); the limit is {max_keys}",
+            wire::UNPUBLISHABLE
+        ));
+    }
+    let bytes = serde_json::to_vec(row).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+    if bytes > wire::WRITE_ROW_BYTES {
+        return Some(format!(
+            "{}: its replicated row would be {bytes} bytes; the limit is {} (node plus own-version copy)",
+            wire::UNPUBLISHABLE,
+            wire::WRITE_ROW_BYTES
+        ));
+    }
+    field_clock::parse_own("node", row, publisher)
+        .err()
+        .map(|error| format!("{}: {error:#}", wire::UNPUBLISHABLE))
+}
+
+/// Refuse a local write whose future published row could never be emitted, measured with the
+/// publisher's own projection (AGENTS.md §row-bound "write-time check"). `before` is the current
+/// journal snapshot (`None` for a new node); a write that does not make an already unpublishable
+/// row worse is let through, so a node over the bound can still shrink.
+pub(crate) async fn check_publishable(
+    db: &Db,
+    id: &str,
+    publisher: &str,
+    before: Option<&Value>,
+    after: &Value,
+) -> anyhow::Result<()> {
+    let stored = match before {
+        Some(_) => load_stored_clock(db, id).await?,
+        None => StoredClock { versions: Vec::new(), cached: Vec::new(), winners: BTreeMap::new() },
+    };
+    let (row, keys) = projected_row(&stored, id, publisher, after)?;
+    let Some(failure) = projection_failure(&row, keys, publisher) else {
+        return Ok(());
+    };
+    if let Some(before) = before {
+        let (previous, previous_keys) = projected_row(&stored, id, publisher, before)?;
+        let size = |row: &Value| serde_json::to_vec(row).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        if projection_failure(&previous, previous_keys, publisher).is_some()
+            && keys <= previous_keys
+            && size(&row) <= size(&previous)
+        {
+            return Ok(());
+        }
+    }
+    anyhow::bail!(failure)
+}
+
+/// [`check_publishable`] for journal changes not yet applied to the stored node (property writes).
+pub(crate) async fn check_changes_publishable(
+    db: &Db,
+    id: &str,
+    publisher: &str,
+    scope: &str,
+    changes: &[(String, Value, Value)],
+) -> anyhow::Result<()> {
+    let before = super::super::node_history::snapshot(db, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("node not found"))?;
+    let mut after = before.clone();
+    for (op, data, schema_versions) in changes {
+        after = super::super::node_history::prepare_change(after, None, scope, op, data.clone(), schema_versions.clone())?.after;
+    }
+    check_publishable(db, id, publisher, Some(&before), &after).await
 }
 
 /// The node's cached per-key winners must be the ones the stamp was computed from (order-independent).
@@ -222,6 +347,7 @@ struct StampedOwnVersions {
 }
 
 /// One node's stored per-key versions and cached winners, read once per publication.
+#[derive(Clone)]
 struct StoredClock {
     versions: Vec<FieldVersion>,
     cached: Vec<Value>,
@@ -247,7 +373,7 @@ async fn load_stored_clock(db: &Db, id: &str) -> anyhow::Result<StoredClock> {
         ) else {
             anyhow::bail!("stored field clock row is invalid");
         };
-        // A cached winner without its version is stale; the stamp below treats the key as unwon.
+        // A cached winner without its version is stale; the stamp below claims the key only over a local write.
         if let Some(version) = versions.iter().find(|version| {
             version.field == field && version.author == author && version.hlc == winner_hlc
         }) {
@@ -288,7 +414,9 @@ fn journal_covers(
         if field == "tombstone" {
             return false;
         }
-        let held = winners.get(field).is_some_and(|winner| {
+        // A key a re-judge demoted (no committed value, no winner left) was merged away; it is never stamped.
+        let demoted = value.is_none() && !committed.contains_key(field) && !winners.contains_key(field);
+        let held = demoted || winners.get(field).is_some_and(|winner| {
             !winner.is_legacy_floor()
                 && match committed.get(field) {
                     Some(stored) => {
@@ -314,6 +442,7 @@ fn journal_covers(
 
 /// Stamp every key whose committed value is not its cached winner as `actor`'s version at `hlc`;
 /// unchanged keys keep their versions (never restamped). See AGENTS.md §Wire and ordering "Per-key clock".
+/// With `local_writes`, a key whose cached winner is stale is stamped only if listed (§rejudge-pending).
 fn stamp_own_versions(
     stored: StoredClock,
     id: &str,
@@ -321,6 +450,7 @@ fn stamp_own_versions(
     actor: &str,
     hlc: u64,
     row: &Value,
+    local_writes: Option<&BTreeSet<String>>,
 ) -> anyhow::Result<StampedOwnVersions> {
     let StoredClock { versions, cached, mut winners } = stored;
     let mut own: BTreeMap<String, FieldVersion> = versions
@@ -348,7 +478,11 @@ fn stamp_own_versions(
                 && !winner.deleted
                 && winner.value.as_ref().map(canonical_value) == Some(canonical_value(value))
         });
-        if !unchanged {
+        // A stale cached winner proves nothing was published; an unwritten value there is not the host's.
+        let stale = !winners.contains_key(field)
+            && cached.iter().any(|entry| entry["field_key"].as_str() == Some(field.as_str()));
+        let unwritten = stale && local_writes.is_some_and(|keys| !keys.contains(field));
+        if !unchanged && !unwritten {
             // Canonical so a retry re-reading the stored version emits identical bytes.
             candidates.push(stamp(field.as_str(), Some(canonical_value(value))));
         }
@@ -493,12 +627,30 @@ async fn dependencies(
 }
 
 impl PreparedSceneRow {
+    /// Wire bytes this row and its dependencies enqueue.
+    fn wire_bytes(&self) -> anyhow::Result<usize> {
+        self.dependencies
+            .iter()
+            .try_fold(self.bytes.len(), |sum, (_, _, bytes)| sum.checked_add(bytes.len()))
+            .ok_or_else(|| anyhow::anyhow!("scene recovery size overflow"))
+    }
+
     pub(crate) async fn emit(
         self,
         db: &Db,
         blobs: &BlobStoreHandle,
         sender: &ReplicationSender,
     ) -> anyhow::Result<usize> {
+        Ok(self.emit_hashed(db, blobs, sender).await?.0)
+    }
+
+    /// [`Self::emit`], also returning the node row's canonical blob hash.
+    async fn emit_hashed(
+        self,
+        db: &Db,
+        blobs: &BlobStoreHandle,
+        sender: &ReplicationSender,
+    ) -> anyhow::Result<(usize, crate::BlobHash)> {
         run_fences(db, &self.statements, self.bindings, &self.guard_labels).await?;
         for (table, id, bytes) in self.dependencies {
             enqueue(
@@ -511,7 +663,7 @@ impl PreparedSceneRow {
                 &bytes,
             )?;
         }
-        enqueue(
+        let hash = enqueue(
             blobs,
             sender,
             &self.verse_id,
@@ -524,7 +676,7 @@ impl PreparedSceneRow {
             tracing::warn!(node_id=self.node_id,deferred_dependencies=self.deferred_dependencies,
                 "scene row enqueued; model/schema, unanchored or locally unproven asset dependencies remain deferred; blob delivery is not certified");
         }
-        Ok(self.deferred_dependencies)
+        Ok((self.deferred_dependencies, hash))
     }
 }
 
@@ -536,7 +688,7 @@ fn enqueue(
     table: &str,
     id: &str,
     bytes: &[u8],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::BlobHash> {
     let content_hash = blobs.add_blob(bytes)?;
     match sender.try_send(ReplicationEvent {
         verse_id: verse.into(),
@@ -545,7 +697,7 @@ fn enqueue(
         content_hash,
         petal_id: Some(petal.into()),
     }) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(content_hash),
         Err(crossbeam::channel::TrySendError::Full(_)) => {
             crate::note_replication_drop();
             anyhow::bail!("scene replication bridge full; committed source remains recoverable")
@@ -685,20 +837,38 @@ pub(crate) async fn recover_uploaded_assets(
 }
 
 /// Commit success stays success when publication fails; the durable source is retried on open.
+/// Once the new row is enqueued, the node's previous row blob is reclaimed (AGENTS.md §publish-reclaim).
 pub(crate) async fn publish_after_commit(
     db: &Db,
     blobs: &BlobStoreHandle,
     sender: Option<&ReplicationSender>,
     actor: &str,
     id: &str,
-) {
-    let Some(sender) = sender else { return };
-    let result = async { prepare(db, id, actor).await?.emit(db, blobs, sender).await }.await;
-    if let Err(error) = result {
-        tracing::warn!(
-            node_id = id,
-            "committed scene publication deferred: {error:#}"
-        );
+) -> Option<Published> {
+    let sender = sender?;
+    let result = async {
+        let prepared = prepare(db, id, actor).await?;
+        let published = Published {
+            verse_id: prepared.verse_id.clone(),
+            cause: prepared.cause.clone(),
+            bytes: prepared.bytes.len(),
+        };
+        let (_, hash) = prepared.emit_hashed(db, blobs, sender).await?;
+        Ok::<_, anyhow::Error>((published, hash))
+    }
+    .await;
+    match result {
+        Ok((published, hash)) => {
+            super::reclaim::superseded(db, blobs, id, hash).await;
+            Some(published)
+        }
+        Err(error) => {
+            tracing::warn!(
+                node_id = id,
+                "committed scene publication deferred: {error:#}"
+            );
+            None
+        }
     }
 }
 
@@ -709,13 +879,17 @@ pub(crate) async fn publish_deferred(
     sender: Option<&ReplicationSender>,
     actor: &str,
     ids: Vec<String>,
-) {
+) -> Vec<(String, Published)> {
     let started = std::time::Instant::now();
     let count = ids.len();
+    let mut published = Vec::with_capacity(count);
     for id in ids {
-        publish_after_commit(db, blobs, sender, actor, &id).await;
+        if let Some(row) = publish_after_commit(db, blobs, sender, actor, &id).await {
+            published.push((id, row));
+        }
     }
     tracing::debug!(count, elapsed_ms = started.elapsed().as_millis() as u64, "deferred scene publications sent");
+    published
 }
 
 /// Recover every row stamped by this exact committed delete, including direct waypoint cascades;
@@ -754,10 +928,11 @@ pub(crate) async fn publish_tombstones_after_commit(
             let id = row["node_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("invalid delete member"))?;
-            prepare(db, id, actor)
+            let (_, hash) = prepare(db, id, actor)
                 .await?
-                .emit(db, blobs, sender.unwrap())
+                .emit_hashed(db, blobs, sender.unwrap())
                 .await?;
+            super::reclaim::superseded(db, blobs, id, hash).await;
         }
         Ok::<_, anyhow::Error>(())
     }
@@ -770,8 +945,9 @@ pub(crate) async fn publish_tombstones_after_commit(
     }
 }
 
-/// Refuse over-limit recovery before emitting any prefix; never infer local provenance from author names.
-/// Existing own versions are re-emitted as stored (never restamped); only uncommitted gaps are stamped.
+/// Re-publish every stored node of a Verse in bounded batches (AGENTS.md §recovery-batches);
+/// never infer local provenance from author names. Existing own versions are re-emitted as
+/// stored (never restamped); only uncommitted gaps are stamped.
 pub(crate) async fn recover(
     db: &Db,
     blobs: &BlobStoreHandle,
@@ -782,63 +958,57 @@ pub(crate) async fn recover(
     let Some(sender) = sender else {
         return Ok(RecoveryReport::default());
     };
-    let mut response=db.query("SELECT node_id FROM node WHERE petal_id IN (SELECT VALUE petal_id FROM petal WHERE fractal_id IN (SELECT VALUE fractal_id FROM fractal WHERE verse_id=$scene_verse)) ORDER BY node_id LIMIT 1025 TIMEOUT 5s")
-        .bind(("scene_verse",verse.to_owned())).await?.check()?;
-    let rows: Vec<Value> = response.take(0)?;
-    anyhow::ensure!(
-        rows.len() <= RECOVERY_LIMIT,
-        "scene recovery exceeds 1024 rows; no prefix published"
-    );
-    let mut report = RecoveryReport {
-        examined: rows.len(),
-        ..Default::default()
-    };
-    let mut prepared = Vec::new();
-    let mut bytes = 0usize;
-    for row in rows {
-        let id = row["node_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("invalid stored scene identity"))?;
-        match prepare(db, id, actor).await {
-            Ok(row) => {
-                anyhow::ensure!(row.verse_id == verse, "scene recovery ancestry changed");
-                bytes = bytes
-                    .checked_add(
-                        row.bytes.len()
-                            + row
-                                .dependencies
-                                .iter()
-                                .map(|(_, _, bytes)| bytes.len())
-                                .sum::<usize>(),
-                    )
-                    .ok_or_else(|| anyhow::anyhow!("scene recovery size overflow"))?;
-                anyhow::ensure!(
-                    bytes <= RECOVERY_BYTES,
-                    "scene recovery exceeds 8 MiB; no prefix published"
-                );
-                prepared.push(row);
-            }
-            Err(error) => {
-                report.deferred += 1;
-                if format!("{error:#}").contains(wire::ROW_TOO_LARGE) {
-                    report.oversized += 1;
-                    tracing::warn!(node_id = id, "scene row is over the row bound and cannot be published");
-                } else {
-                    tracing::debug!(node_id = id, "scene recovery row deferred: {error:#}");
+    let mut report = RecoveryReport::default();
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0usize;
+    // Keyset pagination: each page starts strictly after the last examined id, so every page progresses.
+    let mut after = String::new();
+    loop {
+        let mut response=db.query("SELECT node_id FROM node WHERE node_id > $scene_after AND petal_id IN (SELECT VALUE petal_id FROM petal WHERE fractal_id IN (SELECT VALUE fractal_id FROM fractal WHERE verse_id=$scene_verse)) ORDER BY node_id LIMIT 1024 TIMEOUT 5s")
+            .bind(("scene_verse",verse.to_owned())).bind(("scene_after",after.clone())).await?.check()?;
+        let rows: Vec<Value> = response.take(0)?;
+        let page = rows.len();
+        for row in rows {
+            let id = row["node_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("invalid stored scene identity"))?
+                .to_owned();
+            report.examined += 1;
+            match prepare(db, &id, actor).await {
+                Ok(prepared) => {
+                    anyhow::ensure!(prepared.verse_id == verse, "scene recovery ancestry changed");
+                    let size = prepared.wire_bytes()?;
+                    if size > RECOVERY_BYTES {
+                        // Unreachable while the row bound is far below the batch budget; never loops.
+                        report.deferred += 1;
+                        report.oversized += 1;
+                        tracing::warn!(node_id = %id, size, "scene row exceeds the recovery batch budget and cannot be published");
+                    } else {
+                        if batch.len() == RECOVERY_LIMIT || batch_bytes + size > RECOVERY_BYTES {
+                            emit_batch(db, blobs, sender, &mut batch, &mut report).await?;
+                            batch_bytes = 0;
+                        }
+                        batch_bytes += size;
+                        batch.push(prepared);
+                    }
+                }
+                Err(error) => {
+                    report.deferred += 1;
+                    if format!("{error:#}").contains(wire::ROW_TOO_LARGE) {
+                        report.oversized += 1;
+                        tracing::warn!(node_id = %id, "scene row is over the row bound and cannot be published");
+                    } else {
+                        tracing::debug!(node_id = %id, "scene recovery row deferred: {error:#}");
+                    }
                 }
             }
+            after = id;
+        }
+        if page < RECOVERY_LIMIT {
+            break;
         }
     }
-    for row in prepared {
-        let dependencies = row.emit(db, blobs, sender).await.map_err(|error| {
-            anyhow::anyhow!(
-                "scene recovery stopped after {} rows enqueued; not complete: {error:#}",
-                report.enqueued
-            )
-        })?;
-        report.enqueued += 1;
-        report.dependency_deferred += dependencies;
-    }
+    emit_batch(db, blobs, sender, &mut batch, &mut report).await?;
     match recover_uploaded_assets(db, blobs, sender, actor, verse).await {
         Ok((enqueued, deferred)) => {
             report.uploads_enqueued = enqueued;
@@ -850,4 +1020,47 @@ pub(crate) async fn recover(
         }
     }
     Ok(report)
+}
+
+/// Emit one prepared recovery batch in id order; each row re-runs its own fences at emission.
+async fn emit_batch(
+    db: &Db,
+    blobs: &BlobStoreHandle,
+    sender: &ReplicationSender,
+    batch: &mut Vec<PreparedSceneRow>,
+    report: &mut RecoveryReport,
+) -> anyhow::Result<()> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    if report.batches > 0 {
+        drain_pause(sender).await;
+    }
+    for row in batch.drain(..) {
+        let node_id = row.node_id.clone();
+        let (dependencies, hash) = row.emit_hashed(db, blobs, sender).await.map_err(|error| {
+            anyhow::anyhow!(
+                "scene recovery stopped after {} rows enqueued in batch {}; not complete: {error:#}",
+                report.enqueued,
+                report.batches + 1
+            )
+        })?;
+        // Recovery only remembers what it re-sent; the next local publish reclaims it (AGENTS.md §publish-reclaim).
+        super::reclaim::record(blobs, &node_id, hash);
+        report.enqueued += 1;
+        report.dependency_deferred += dependencies;
+    }
+    report.batches += 1;
+    Ok(())
+}
+
+/// Bounded wait for the replication bridge to fall below half capacity before the next batch.
+async fn drain_pause(sender: &ReplicationSender) {
+    let Some(capacity) = sender.capacity() else {
+        return;
+    };
+    let deadline = tokio::time::Instant::now() + BATCH_DRAIN_WAIT;
+    while sender.len() > capacity / 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 }

@@ -407,12 +407,152 @@ fn fan_out(incoming: &Incoming, stored: &BTreeMap<(String, String), FieldVersion
         .collect()
 }
 
-/// Keys whose local, still-unpublished value (journal fact at `hlc` by `publisher`) outranks the merge winner.
+/// A key's latest unpublished local journal write: the fact's actor and HLC.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LocalWrite {
+    pub author: String,
+    pub hlc: u64,
+}
+
+/// Most journal facts read while walking back for unpublished local writes (an atomic save is at most 201).
+const LOCAL_WRITE_FACTS: usize = 512;
+/// Most commit segments walked back; older local writes are not found (AGENTS.md §rejudge-pending).
+const LOCAL_WRITE_SEGMENTS: usize = 32;
+
+/// One run of journal facts committed together: same HLC and actor, or one `baseline`.
+struct JournalSegment {
+    hlc: u64,
+    author: String,
+    /// A local write (ordinary fact or the object-created baseline); any other baseline is a non-local jump.
+    local: bool,
+    /// Newest and oldest row versions of the run.
+    end: i64,
+    start: i64,
+}
+
+/// Keys the unpublished local journal facts of `id` CHANGED, each with its latest local writer (AGENTS.md §rejudge-pending).
+pub(super) async fn local_writes(
+    db: &Db,
+    id: &str,
+    scope: &str,
+    published: &BTreeSet<u64>,
+) -> anyhow::Result<BTreeMap<String, LocalWrite>> {
+    let mut response = db
+        .query("SELECT row_version, hlc_timestamp, source_did, op, payload.journal_version AS journal_version, payload.scope AS scope, payload.coverage_reason AS coverage_reason FROM node_log WHERE node_id=$scene_id ORDER BY row_version DESC LIMIT $scene_fact_limit TIMEOUT 5s")
+        .bind(("scene_id", id.to_owned()))
+        .bind(("scene_fact_limit", LOCAL_WRITE_FACTS))
+        .await?
+        .check()?;
+    let facts: Vec<Value> = response.take(0)?;
+    let journal_version = super::super::node_history::JOURNAL_VERSION;
+    // Newest first; `base` is the fact whose after-state the walk starts from (None: the empty state before a creation).
+    let mut segments: Vec<JournalSegment> = Vec::new();
+    let mut base: Option<i64> = None;
+    let mut exhausted = true;
+    for fact in &facts {
+        let (Some(version), Some(hlc)) = (fact["row_version"].as_i64(), fact["hlc_timestamp"].as_u64()) else {
+            exhausted = false;
+            break;
+        };
+        let continuous = segments.last().is_none_or(|segment| segment.start == version + 1);
+        if fact["journal_version"] != journal_version || fact["scope"].as_str() != Some(scope) || !continuous {
+            exhausted = false;
+            break;
+        }
+        // A fact whose HLC a stored version carries was published: the walk starts at its state.
+        if published.contains(&hlc) {
+            base = Some(version);
+            exhausted = false;
+            break;
+        }
+        let author = fact["source_did"].as_str().unwrap_or_default();
+        let baseline = fact["op"] == "baseline";
+        if let Some(segment) = segments
+            .last_mut()
+            .filter(|segment| !baseline && segment.local && segment.hlc == hlc && segment.author == author)
+        {
+            segment.start = version;
+            continue;
+        }
+        if segments.len() == LOCAL_WRITE_SEGMENTS {
+            base = Some(version);
+            exhausted = false;
+            break;
+        }
+        let created = baseline && version == 1 && fact["coverage_reason"] == "object_created";
+        segments.push(JournalSegment {
+            hlc,
+            author: author.to_owned(),
+            local: (!baseline || created) && hlc > 0 && !author.is_empty(),
+            end: version,
+            start: version,
+        });
+    }
+    // Without a known prior state the oldest run only provides the starting state, unless it created the object.
+    if base.is_none() {
+        let created = exhausted
+            && segments
+                .last()
+                .is_some_and(|segment| segment.start == 1 && segment.local && facts.last().is_some_and(|fact| fact["op"] == "baseline"));
+        if !created {
+            base = segments.pop().map(|segment| segment.end);
+        }
+    }
+    if segments.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let wanted: Vec<i64> = segments.iter().map(|segment| segment.end).chain(base).collect();
+    let mut response = db
+        .query("SELECT row_version, payload.after_state AS after_state FROM node_log WHERE node_id=$scene_id AND row_version IN $scene_fact_versions TIMEOUT 5s")
+        .bind(("scene_id", id.to_owned()))
+        .bind(("scene_fact_versions", wanted))
+        .await?
+        .check()?;
+    let rows: Vec<Value> = response.take(0)?;
+    let states: BTreeMap<i64, Value> = rows
+        .into_iter()
+        .filter_map(|mut row| Some((row["row_version"].as_i64()?, row.get_mut("after_state")?.take())))
+        .collect();
+    let keys = |version: i64| -> anyhow::Result<BTreeMap<String, Value>> {
+        let state = states
+            .get(&version)
+            .ok_or_else(|| anyhow::anyhow!("local journal fact {version} has no state"))?;
+        Ok(keys_of("node", state)
+            .into_iter()
+            .map(|(field, value)| (field, canonical_value(&value)))
+            .collect())
+    };
+    let mut state = base.map(|version| keys(version)).transpose()?.unwrap_or_default();
+    let mut writes = BTreeMap::new();
+    for segment in segments.iter().rev() {
+        let next = keys(segment.end)?;
+        let changed: BTreeSet<String> = state
+            .keys()
+            .chain(next.keys())
+            .filter(|field| state.get(*field) != next.get(*field))
+            .cloned()
+            .collect();
+        for field in changed {
+            if segment.local {
+                writes.insert(field, LocalWrite { author: segment.author.clone(), hlc: segment.hlc });
+            } else {
+                // A baseline jump is a change no local fact made.
+                writes.remove(&field);
+            }
+        }
+        state = next;
+    }
+    Ok(writes)
+}
+
+/// Keys a local journal fact wrote (`writes`) whose value is not the published winner and outranks the merge
+/// winner as `publisher`'s version at `hlc`. `stored` is the version set before this merge's fold.
 fn pending_local_keys(
     old: &Value,
     cached: &[FieldVersion],
-    versions: &BTreeMap<(String, String), FieldVersion>,
+    stored: &BTreeMap<(String, String), FieldVersion>,
     winners: &BTreeMap<String, FieldVersion>,
+    writes: &BTreeMap<String, LocalWrite>,
     publisher: &str,
     hlc: u64,
 ) -> BTreeSet<String> {
@@ -420,25 +560,25 @@ fn pending_local_keys(
         .into_iter()
         .map(|(field, value)| (field, canonical_value(&value)))
         .collect();
-    let published = |field: &str| -> Option<Option<Value>> {
-        let cached = cached.iter().find(|winner| winner.field == field)?;
-        let version = versions
-            .get(&(field.to_owned(), cached.author.clone()))
-            .filter(|version| version.hlc == cached.hlc)?;
-        Some(version.value.as_ref().filter(|_| !version.deleted).map(canonical_value))
-    };
-    let fields: BTreeSet<&str> = local
-        .keys()
-        .map(String::as_str)
-        .chain(cached.iter().map(|winner| winner.field.as_str()))
-        .collect();
     let mut pending = BTreeSet::new();
-    for field in fields {
+    for field in writes.keys().map(String::as_str) {
         let value = local.get(field).cloned();
-        let in_cache = cached.iter().any(|winner| winner.field == field);
-        // A key the local row never had is not a local deletion unless it was a published winner.
-        if (value.is_none() && !in_cache) || published(field) == Some(value.clone()) {
-            continue;
+        match cached.iter().find(|winner| winner.field == field) {
+            Some(cached) => {
+                // A cached winner whose version is gone is stale; nothing proves what was published.
+                let Some(version) = stored
+                    .get(&(field.to_owned(), cached.author.clone()))
+                    .filter(|version| version.hlc == cached.hlc)
+                else {
+                    continue;
+                };
+                if version.value.as_ref().filter(|_| !version.deleted).map(canonical_value) == value {
+                    continue;
+                }
+            }
+            // A key the local row never had is not a local deletion unless it was a published winner.
+            None if value.is_none() => continue,
+            None => {}
         }
         let local_version = FieldVersion {
             field: field.to_owned(),
@@ -556,6 +696,8 @@ async fn merge_once(
         .into_iter()
         .map(|version| ((version.field.clone(), version.author.clone()), version))
         .collect();
+    // What was published before this fold: the pending-key proof never reads the incoming versions.
+    let published_versions = versions.clone();
     let mut written = Vec::new();
     if let Some(incoming) = incoming {
         let offered = match &incoming.own {
@@ -606,24 +748,43 @@ async fn merge_once(
     let incoming_deleted = incoming.is_some_and(|incoming| is_tombstoned(&incoming.row));
     let local_deleted = before.first().is_some_and(is_tombstoned);
     let mut pending = BTreeSet::new();
-    if let (false, Some(old), Some(fact)) = (rejudge, before.first(), local_fact.as_ref()) {
+    if let (Some(old), Some(fact)) = (before.first(), local_fact.as_ref()) {
         if fact["payload"]["journal_version"] == super::super::node_history::JOURNAL_VERSION
             && fact["payload"]["scope"].as_str() == Some(scope)
             && fact["payload"]["after_state"] == super::super::node_history::normalize_snapshot(old.clone())?
         {
             if let Some(hlc) = fact["hlc_timestamp"].as_u64().filter(|hlc| *hlc > 0) {
-                match local_publisher {
-                    Some(publisher) => {
-                        pending = pending_local_keys(old, &cached, &versions, &overlay, publisher, hlc);
+                // Ordered as the version the next publish stamps: re-judge as the journal author, merge as the publisher.
+                let ordering_author = if rejudge {
+                    fact["source_did"].as_str().filter(|did| !did.is_empty())
+                } else {
+                    local_publisher
+                };
+                if rejudge || local_publisher.is_some() {
+                    // Pending = a key an unpublished local fact CHANGED; a re-judge also needs its actor's level then (§rejudge-pending).
+                    if let Some(author) = ordering_author {
+                        let published_hlcs: BTreeSet<u64> = published_versions.values().map(|version| version.hlc).collect();
+                        let writes: BTreeMap<String, LocalWrite> = local_writes(db, id, scope, &published_hlcs)
+                            .await?
+                            .into_iter()
+                            .filter(|(field, write)| {
+                                !rejudge
+                                    || view.admits_at(
+                                        "node",
+                                        scope,
+                                        &FieldVersion { field: field.clone(), author: write.author.clone(), hlc: write.hlc, value: None, deleted: true },
+                                    )
+                            })
+                            .collect();
+                        pending = pending_local_keys(old, &cached, &published_versions, &overlay, &writes, author, hlc);
                     }
-                    None => {
-                        let stored_clock = clock_of(&read_clock(db, id).await?)?;
-                        if stored_clock.as_ref().is_none_or(|clock| clock.hlc < hlc)
-                            && incoming.is_some_and(|incoming| hlc >= incoming.clock.hlc)
-                            && (!incoming_deleted || local_deleted)
-                        {
-                            return outcome(ReplicatedRowOutcome::NotApplicable);
-                        }
+                } else {
+                    let stored_clock = clock_of(&read_clock(db, id).await?)?;
+                    if stored_clock.as_ref().is_none_or(|clock| clock.hlc < hlc)
+                        && incoming.is_some_and(|incoming| hlc >= incoming.clock.hlc)
+                        && (!incoming_deleted || local_deleted)
+                    {
+                        return outcome(ReplicatedRowOutcome::NotApplicable);
                     }
                 }
             }
@@ -636,10 +797,27 @@ async fn merge_once(
         (false, Some(old)) => old.clone(),
         _ => identity_of(identity_source.unwrap_or(&Value::Null)),
     };
+    // A re-judge rebuilds from identity, so pending local keys are carried over from the stored row (§rejudge-pending).
+    let kept_local: Vec<FieldVersion> = match (rejudge, before.first()) {
+        (true, Some(old)) if !pending.is_empty() => {
+            let local: BTreeMap<String, Value> = keys_of("node", old).into_iter().collect();
+            pending
+                .iter()
+                .map(|field| FieldVersion {
+                    field: field.clone(),
+                    author: String::new(),
+                    hlc: 0,
+                    deleted: !local.contains_key(field),
+                    value: local.get(field).cloned(),
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let mut merged = apply_keys(
         "node",
         &base,
-        overlay.values().filter(|winner| !pending.contains(&winner.field)),
+        overlay.values().filter(|winner| !pending.contains(&winner.field)).chain(kept_local.iter()),
     );
     let merged_deleted = is_tombstoned(&merged);
     if !rejudge && local_deleted {

@@ -5,12 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use fe_runtime::messages::{DeferralReason, ReplicatedRowOutcome};
 
 use crate::handlers::replicated_row::{
     apply_replicated_row_reporting_with_publisher, ApplyReport, SceneChangeSender,
 };
+use crate::handlers::scene_publication::budget::{inbound_node_budget_for_verse, ByteBudgets, ByteRate};
 use crate::repo::Db;
 use crate::role_grants::ROLE_DOC_TABLE;
 
@@ -18,6 +20,10 @@ use crate::role_grants::ROLE_DOC_TABLE;
 pub const DEFERRED_PER_VERSE: usize = 4096;
 /// Deferred content rows held per (verse, author) before that author's oldest is dropped (A4).
 pub const DEFERRED_PER_AUTHOR: usize = 512;
+/// Deferred row bytes held per verse before the oldest is dropped (handlers/AGENTS.md §write-budget).
+pub const DEFERRED_BYTES_PER_VERSE: usize = 64 * 1024 * 1024;
+/// Deferred row bytes held per (verse, author) before that author's oldest is dropped.
+pub const DEFERRED_BYTES_PER_AUTHOR: usize = 16 * 1024 * 1024;
 /// Re-judge-removed nodes held for the DB loop's `NodeDeleted` send before the oldest is dropped.
 const REMOVED_NODES_CAP: usize = 4096;
 /// Bug guard on one call's retry worklist (it terminates anyway — see §inbound-admissions).
@@ -65,12 +71,19 @@ pub struct InboundAdmissions {
     local_publisher: Option<String>,
     per_verse_cap: usize,
     per_author_cap: usize,
+    per_verse_bytes_cap: usize,
+    per_author_bytes_cap: usize,
     next_seq: u64,
     rows: BTreeMap<u64, HeldRow>,
     seq_of: HashMap<RowKey, u64>,
     by_wait: HashMap<Trigger, BTreeSet<u64>>,
     by_verse: HashMap<String, BTreeSet<u64>>,
     by_author: HashMap<(String, String), BTreeSet<u64>>,
+    bytes_by_verse: HashMap<String, usize>,
+    bytes_by_author: HashMap<(String, String), usize>,
+    /// Applied inbound node bytes per (verse, author): the receiver-side write budget.
+    budget: ByteBudgets,
+    clock: Box<dyn Fn() -> Instant + Send + Sync>,
     /// Nodes a role-change re-judge removed locally, (node id, petal id), until the DB loop takes them.
     removed_nodes: Vec<(String, String)>,
 }
@@ -97,14 +110,99 @@ impl InboundAdmissions {
             local_publisher: None,
             per_verse_cap: per_verse_cap.max(1),
             per_author_cap: per_author_cap.max(1),
+            per_verse_bytes_cap: DEFERRED_BYTES_PER_VERSE,
+            per_author_bytes_cap: DEFERRED_BYTES_PER_AUTHOR,
             next_seq: 0,
             rows: BTreeMap::new(),
             seq_of: HashMap::new(),
             by_wait: HashMap::new(),
             by_verse: HashMap::new(),
             by_author: HashMap::new(),
+            bytes_by_verse: HashMap::new(),
+            bytes_by_author: HashMap::new(),
+            budget: ByteBudgets::new(inbound_node_budget_for_verse),
+            clock: Box::new(Instant::now),
             removed_nodes: Vec::new(),
         }
+    }
+
+    /// Replace the inbound node budget, its clock and the byte caps (tests inject all four).
+    pub(crate) fn with_inbound_budget(
+        mut self,
+        rate_of: fn(&str) -> ByteRate,
+        clock: Box<dyn Fn() -> Instant + Send + Sync>,
+        per_verse_bytes_cap: usize,
+        per_author_bytes_cap: usize,
+    ) -> Self {
+        self.budget = ByteBudgets::new(rate_of);
+        self.clock = clock;
+        self.per_verse_bytes_cap = per_verse_bytes_cap.max(1);
+        self.per_author_bytes_cap = per_author_bytes_cap.max(1);
+        self
+    }
+
+    /// When the earliest node row held for its author's byte budget may be retried; `None` when none waits.
+    pub fn budget_retry_due(&mut self) -> Option<Instant> {
+        let now = (self.clock)();
+        let waiting: Vec<(String, String)> = self.budget_waits().collect();
+        waiting
+            .into_iter()
+            .map(|(verse, author)| now + self.budget.wait(&verse, &author, now).unwrap_or_default())
+            .min()
+    }
+
+    /// Retry the node rows held for a byte budget that has refilled (handlers/AGENTS.md §write-budget).
+    pub async fn retry_budget(
+        &mut self,
+        db: &Db,
+        entity_change_tx: Option<&SceneChangeSender>,
+    ) -> Vec<RowReport> {
+        let now = (self.clock)();
+        let waiting: Vec<(String, String)> = self.budget_waits().collect();
+        let mut triggers = VecDeque::new();
+        for (verse, author) in waiting {
+            if self.budget.wait(&verse, &author, now).is_none() {
+                triggers.push_back((verse, budget_reason(&author)));
+            }
+        }
+        let mut reports = Vec::new();
+        if !triggers.is_empty() {
+            self.drain(db, triggers, entity_change_tx, &mut reports).await;
+        }
+        reports
+    }
+
+    /// Every (verse, author) with a node row held for its byte budget.
+    fn budget_waits(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.by_wait.keys().filter_map(|(verse, reason)| match reason {
+            DeferralReason::AuthorBudget { did } => Some((verse.clone(), did.clone())),
+            _ => None,
+        })
+    }
+
+    /// Apply one row unless it is a node row over its author's inbound budget; charge an applied node row.
+    async fn run_budgeted(
+        &mut self,
+        db: &Db,
+        key: &RowKey,
+        bytes: &[u8],
+        entity_change_tx: Option<&SceneChangeSender>,
+    ) -> ApplyReport {
+        let node = key.table == "node";
+        if node && self.budget.wait(&key.verse_id, &key.author_did, (self.clock)()).is_some() {
+            return ApplyReport::of(ReplicatedRowOutcome::Deferred(budget_reason(&key.author_did)));
+        }
+        let report = run(db, key, bytes, self.local_publisher.as_deref(), entity_change_tx).await;
+        if node
+            && matches!(
+                report.outcome,
+                ReplicatedRowOutcome::Applied | ReplicatedRowOutcome::AppliedTombstone
+            )
+        {
+            let now = (self.clock)();
+            self.budget.charge(&key.verse_id, &key.author_did, bytes.len(), now);
+        }
+        report
     }
 
     /// Take the nodes a role-change re-judge removed since the last call (the DB loop sends `NodeDeleted` for each).
@@ -203,7 +301,7 @@ impl InboundAdmissions {
             record_id: record_id.to_string(),
             author_did: author_did.to_string(),
         };
-        let mut report = run(db, &key, row_bytes, self.local_publisher.as_deref(), entity_change_tx).await;
+        let mut report = self.run_budgeted(db, &key, row_bytes, entity_change_tx).await;
         let mut reports = vec![row_report(&key, &report.outcome)];
         self.collect_rejudged(&mut report, &mut reports);
         let mut triggers = VecDeque::new();
@@ -272,7 +370,7 @@ impl InboundAdmissions {
                     continue;
                 };
                 retries += 1;
-                let mut report = run(db, &row.key, &row.bytes, self.local_publisher.as_deref(), entity_change_tx).await;
+                let mut report = self.run_budgeted(db, &row.key, &row.bytes, entity_change_tx).await;
                 if !matches!(report.outcome, ReplicatedRowOutcome::Deferred(_)) {
                     reports.push(row_report(&row.key, &report.outcome));
                 }
@@ -356,6 +454,8 @@ impl InboundAdmissions {
             .or_default()
             .insert(seq);
         self.seq_of.insert(key.clone(), seq);
+        *self.bytes_by_verse.entry(verse_id.clone()).or_default() += bytes.len();
+        *self.bytes_by_author.entry(author.clone()).or_default() += bytes.len();
         self.rows.insert(seq, HeldRow { key, bytes, reason });
 
         while self.by_author.get(&author).map_or(0, BTreeSet::len) > self.per_author_cap {
@@ -368,6 +468,19 @@ impl InboundAdmissions {
                 .get(&verse_id)
                 .and_then(|s| s.first().copied());
             self.drop_oldest(oldest, "per-verse");
+        }
+        // Byte caps beside the entry caps: same drop-oldest policy and counter.
+        while self.bytes_by_author.get(&author).copied().unwrap_or(0) > self.per_author_bytes_cap {
+            let Some(oldest) = self.by_author.get(&author).and_then(|s| s.first().copied()) else {
+                break;
+            };
+            self.drop_oldest(Some(oldest), "per-author bytes");
+        }
+        while self.bytes_by_verse.get(&verse_id).copied().unwrap_or(0) > self.per_verse_bytes_cap {
+            let Some(oldest) = self.by_verse.get(&verse_id).and_then(|s| s.first().copied()) else {
+                break;
+            };
+            self.drop_oldest(Some(oldest), "per-verse bytes");
         }
     }
 
@@ -402,7 +515,27 @@ impl InboundAdmissions {
         remove_from(&mut self.by_verse, &row.key.verse_id, seq);
         let author = (row.key.verse_id.clone(), row.key.author_did.clone());
         remove_from(&mut self.by_author, &author, seq);
+        subtract_bytes(&mut self.bytes_by_verse, &row.key.verse_id, row.bytes.len());
+        subtract_bytes(&mut self.bytes_by_author, &author, row.bytes.len());
         Some(row)
+    }
+}
+
+/// The deferral a node row over its author's inbound byte budget waits on.
+fn budget_reason(author: &str) -> DeferralReason {
+    DeferralReason::AuthorBudget { did: author.to_owned() }
+}
+
+fn subtract_bytes<K, Q>(index: &mut HashMap<K, usize>, key: &Q, bytes: usize)
+where
+    K: std::borrow::Borrow<Q> + std::hash::Hash + Eq,
+    Q: std::hash::Hash + Eq + ?Sized,
+{
+    if let Some(total) = index.get_mut(key) {
+        *total = total.saturating_sub(bytes);
+        if *total == 0 {
+            index.remove(key);
+        }
     }
 }
 
@@ -562,5 +695,62 @@ mod tests {
             )
             .await;
         assert_eq!(queue.len_for_verse("v-cap"), 6);
+
+        // Byte caps beside the entry caps: same drop-oldest policy and the same counter.
+        let row_bytes = node_row("node-c0").len();
+        let mut bytes_capped = InboundAdmissions::with_caps(6, 4).with_inbound_budget(
+            crate::handlers::scene_publication::budget::inbound_node_budget_for_verse,
+            Box::new(std::time::Instant::now),
+            100 * row_bytes,
+            2 * row_bytes + row_bytes / 2,
+        );
+        let before_bytes = deferred_admission_drop_count();
+        for i in 0..3 {
+            let id = format!("node-c{i}");
+            bytes_capped.apply(&db, "v-cap", "node", &id, &node_row(&id), "did:key:a", None).await;
+        }
+        assert_eq!(bytes_capped.len(), 2, "the per-author byte cap holds two rows, not the entry cap's four");
+        assert!(bytes_capped.waiting_reason("v-cap", "node", "node-c0", "did:key:a").is_none());
+        assert!(deferred_admission_drop_count() > before_bytes, "a byte-cap drop is counted");
+
+        // §write-budget receiver side: an Editor's node rows over its inbound byte budget are deferred,
+        // not dropped, and applied once the budget refills (injected clock).
+        let verse_scope = crate::build_scope("v-cap", None, None);
+        crate::rbac::assign_role(&db, "did:key:ed", &verse_scope, "editor").await.expect("editor role");
+        fn tiny_budget(_verse: &str) -> crate::handlers::scene_publication::budget::ByteRate {
+            crate::handlers::scene_publication::budget::ByteRate { burst_bytes: 400, bytes_per_second: 100 }
+        }
+        let start = std::time::Instant::now();
+        let elapsed = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+        let clock = {
+            let elapsed = elapsed.clone();
+            Box::new(move || start + *elapsed.lock().unwrap())
+        };
+        let mut budgeted = InboundAdmissions::with_caps(DEFERRED_PER_VERSE, DEFERRED_PER_AUTHOR).with_inbound_budget(
+            tiny_budget,
+            clock,
+            DEFERRED_BYTES_PER_VERSE,
+            DEFERRED_BYTES_PER_AUTHOR,
+        );
+        let mut outcomes = Vec::new();
+        for i in 0..3 {
+            let id = format!("node-e{i}");
+            let reports = budgeted.apply(&db, "v-cap", "node", &id, &node_row(&id), "did:key:ed", None).await;
+            outcomes.push(reports[0].outcome.clone());
+        }
+        assert_eq!(&outcomes[..2], &[ReplicatedRowOutcome::Applied, ReplicatedRowOutcome::Applied], "the burst applies");
+        assert_eq!(
+            outcomes[2],
+            ReplicatedRowOutcome::Deferred(DeferralReason::AuthorBudget { did: "did:key:ed".into() }),
+            "an over-budget row waits for its author's budget"
+        );
+        let due = budgeted.budget_retry_due().expect("a budget wait is scheduled");
+        assert!(due > start, "the retry is in the future");
+        assert!(budgeted.retry_budget(&db, None).await.is_empty(), "nothing is retried before the budget refills");
+        *elapsed.lock().unwrap() += due - start;
+        let retried = budgeted.retry_budget(&db, None).await;
+        assert_eq!(retried.len(), 1);
+        assert_eq!((retried[0].record_id.as_str(), &retried[0].outcome), ("node-e2", &ReplicatedRowOutcome::Applied));
+        assert!(budgeted.is_empty() && budgeted.budget_retry_due().is_none(), "the delayed row was applied, not lost");
     }
 }

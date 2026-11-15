@@ -1495,6 +1495,12 @@ host CPU < 50 %). `command_lane::CommandLane` keeps the queue FIFO except for th
 it drains up to 128 commands into a local lookahead and hands a Serve admission out ahead of
 the transparent commands queued before it.
 
+- **Byte gate release (2026-11-14).** The lane is the DB thread's only receive point
+  (`next` blocks in `rx.recv`, `fill` drains with `try_recv`), so it releases each command's
+  `payload_bytes()` on the channel's `DbCommandBytes` when it hands the command out (`next`,
+  `next_inbound_row`), and `supersede` releases a replaced node version's bytes when a newer one
+  absorbs it. Release at hand-out, not at drain, keeps the lookahead inside the gate. Built with
+  `CommandLane::with_bytes` by `spawn_db_thread_gated`; fe-runtime `src/AGENTS.md` §db-command-bytes.
 - **Why only Serve.** It is a bounded read that answers a remote request. Fetch and Publish
   admissions depend on rows queued BEFORE them (the prefetch is triggered by the row that is
   still being applied), so they stay FIFO.

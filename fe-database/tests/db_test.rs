@@ -1117,10 +1117,135 @@ fn test_rename_entity_omits_node_scene_change() {
         birth && properties,
         "GUI receives actual post-commit materialization and property data"
     );
+    // Node-sized plugin I/O, relative to the node limit (fe-database/src/handlers/AGENTS.md §plugin-host bounds):
+    // a near-full value commits and reads back whole, a batch over the transaction budget is refused whole,
+    // and a query over big rows stops by bytes and pages on with `after` until every row was seen.
+    {
+        use fe_sdk::plugin_host::{cut_query_page, NodeQuery, MAX_QUERY_PAGE_BYTES};
+        use fe_runtime::plugin_host::PluginRefusal;
+        let big_admission = PluginAdmission::new(
+            "big-plugin".into(),
+            sibling.clone(),
+            vec![
+                fe_sdk::CAP_STORAGE_READ.into(),
+                fe_sdk::CAP_STORAGE_WRITE.into(),
+                fe_sdk::CAP_QUERY_SELECT.into(),
+            ],
+            vec!["qa.*".into()],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        let send = |admission: &PluginAdmission, request: Option<PluginRead>, ops: Vec<PendingOp>| {
+            let (reply, rx) = crossbeam::channel::bounded(1);
+            let command = match request {
+                Some(request) => DbCommand::PluginRead { admission: admission.clone(), request, reply },
+                None => DbCommand::PluginCommit { admission: admission.clone(), ops, readings: vec![], reply },
+            };
+            db.cmd_tx.send(command).unwrap();
+            let answer = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            while db.res_rx.try_recv().is_ok() {}
+            answer
+        };
+        let scope = match send(&big_admission, Some(PluginRead::PetalScope), vec![]).unwrap() {
+            PluginReply::Scope(scope) => scope,
+            other => panic!("unexpected scope reply: {other:?}"),
+        };
+        let big_admission = big_admission.bind_scope(scope).unwrap();
+        // Room for the row's own columns: the value is as large as the node limit allows.
+        let near_full = "x".repeat(fe_sdk::property_schema::MAX_NODE_BYTES - 4096);
+        let blob = |node_id: &str| PendingOp::SetProperty {
+            node_id: node_id.to_string(),
+            key: "qa.blob".into(),
+            value: serde_json::json!(near_full),
+        };
+        let big: Vec<String> = (0..5)
+            .map(|_| create_node(&db.cmd_tx, &db.res_rx, &sibling))
+            .collect();
+        let refused = send(&big_admission, None, big.iter().map(|id| blob(id)).collect());
+        assert!(
+            matches!(&refused, Err(PluginRefusal::InvalidInput(detail)) if detail.contains("plugin transaction exceeds")),
+            "five near-full values pass the transaction budget: {refused:?}"
+        );
+        let read_blob = |node_id: &str| match send(&big_admission, Some(PluginRead::Node(node_id.into())), vec![]).unwrap() {
+            PluginReply::Node(Some(node)) => node.properties.get("qa.blob").cloned(),
+            other => panic!("unexpected node reply: {other:?}"),
+        };
+        assert_eq!(read_blob(&big[0]), None, "a refused batch changes nothing");
+        assert!(matches!(
+            send(&big_admission, None, big[..4].iter().map(|id| blob(id)).collect()),
+            Ok(PluginReply::Committed(receipt)) if receipt.op_count == 4
+        ));
+        assert!(matches!(
+            send(&big_admission, None, vec![blob(&big[4])]),
+            Ok(PluginReply::Committed(_))
+        ));
+        assert_eq!(
+            read_blob(&big[4]),
+            Some(fe_sdk::PropertyValue::String(near_full.clone())),
+            "a near-full node reads back whole"
+        );
+        // A stored row a guest cannot be shown (zero-length rotation quaternion) is omitted, never failing the page.
+        let broken = create_node(&db.cmd_tx, &db.res_rx, &sibling);
+        let set_rotation = |rotation: serde_json::Value, tag: &str| {
+            let mut vars = std::collections::HashMap::new();
+            vars.insert("broken".to_string(), serde_json::json!(broken));
+            vars.insert("rotation".to_string(), rotation);
+            db.cmd_tx
+                .send(DbCommand::ElevatedQuery {
+                    statements: vec!["UPDATE node SET rotation = $rotation WHERE node_id = $broken TIMEOUT 5s".into()],
+                    vars,
+                    write_tables: vec!["node".into()],
+                    actor_did: "did:key:qa-elevated".into(),
+                    correlation_id: tag.into(),
+                })
+                .unwrap();
+            loop {
+                match db.res_rx.recv_timeout(Duration::from_secs(10)).expect("elevated reply") {
+                    DbResult::ElevatedQueryResult { correlation_id, changed_rows, .. } if correlation_id == tag => {
+                        assert_eq!(changed_rows, 1, "{tag}");
+                        break;
+                    }
+                    DbResult::RequestFailed { correlation_id, error } if correlation_id == tag => panic!("{tag}: {error}"),
+                    _ => {}
+                }
+            }
+        };
+        set_rotation(serde_json::json!([0.0, 0.0, 0.0, 0.0]), "corrupt-rotation");
+        let mut after = None;
+        let mut seen = Vec::new();
+        let mut omitted = Vec::new();
+        for round in 0.. {
+            let query = NodeQuery { limit: 200, after: after.clone(), ..NodeQuery::default() };
+            let rows = match send(&big_admission, Some(PluginRead::Nodes(query)), vec![]).unwrap() {
+                PluginReply::Nodes(rows) => rows,
+                other => panic!("unexpected query reply: {other:?}"),
+            };
+            let page = cut_query_page(rows, 200, MAX_QUERY_PAGE_BYTES);
+            if round == 0 {
+                let first_big = page.nodes.iter().filter(|node| big.contains(&node.node_id)).count();
+                assert!(first_big < big.len() && page.next.is_some(), "the first page stops by bytes, detectably");
+            }
+            seen.extend(page.nodes.into_iter().map(|node| node.node_id));
+            omitted.extend(page.omitted);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+            assert!(round < 16, "paging terminates");
+        }
+        for id in &big {
+            assert_eq!(seen.iter().filter(|seen| *seen == id).count(), 1, "every big node is paged exactly once");
+        }
+        assert_eq!(omitted, vec![broken.clone()], "the malformed row is listed as omitted, once");
+        assert!(!seen.contains(&broken));
+        assert!(seen.contains(&surviving_node), "the rest of the petal still pages");
+        set_rotation(serde_json::json!([0.0, 0.0, 0.0]), "restore-rotation");
+    }
     let (reply, rx) = crossbeam::channel::bounded(1);
     db.cmd_tx
         .send(DbCommand::PluginCommit {
-            admission,
+            admission: admission.clone(),
             ops: vec![PendingOp::DeleteNode {
                 node_id: created.clone(),
             }],
@@ -1243,6 +1368,77 @@ fn test_rename_entity_omits_node_scene_change() {
             assert_eq!(receipt.reading_count, 8);
         }
         other => panic!("unexpected J3 reply: {other:?}"),
+    }
+    // Write-time publishable check: a plugin batch that pushes a node past the 512 own-key limit is refused whole,
+    // naming the node; at the limit a rename still commits and a property write is refused once (not twice).
+    {
+        let limit_node = create_node(&db.cmd_tx, &db.res_rx, &sibling);
+        let commit = |ops: Vec<PendingOp>| {
+            let (reply, rx) = crossbeam::channel::bounded(1);
+            db.cmd_tx
+                .send(DbCommand::PluginCommit { admission: admission.clone(), ops, readings: vec![], reply })
+                .unwrap();
+            let outcome = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            while db.res_rx.try_recv().is_ok() {}
+            outcome
+        };
+        let set = |index: usize| PendingOp::SetProperty {
+            node_id: limit_node.clone(),
+            key: format!("qa.k{index:03}"),
+            value: serde_json::json!(index),
+        };
+        let mut refusal = None;
+        for chunk in (0..520).collect::<Vec<usize>>().chunks(60) {
+            match commit(chunk.iter().map(|index| set(*index)).collect()) {
+                Ok(_) => {}
+                Err(fe_runtime::plugin_host::PluginRefusal::InvalidInput(reason)) => {
+                    refusal = Some(reason);
+                    break;
+                }
+                Err(other) => panic!("unexpected plugin refusal: {other:?}"),
+            }
+        }
+        let reason = refusal.expect("520 properties pass the 512 own-key limit");
+        assert!(
+            reason.contains("could never be published") && reason.contains(&limit_node),
+            "the refused batch names the node and the marker: {reason}"
+        );
+        let stored = |node_id: &str| {
+            db.cmd_tx
+                .send(DbCommand::GetNodeProperties { node_id: node_id.to_string(), correlation_id: Some("limit-read".into()) })
+                .unwrap();
+            match db.res_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                DbResult::NodePropertiesLoaded { properties, .. } => properties.as_object().map_or(0, |bag| bag.len()),
+                other => panic!("expected the node's properties, got {other:?}"),
+            }
+        };
+        assert_eq!(stored(&limit_node), 480, "the refused batch wrote nothing; the eight before it stay");
+        // Climb to the exact limit one property at a time.
+        let mut next = 480;
+        while commit(vec![set(next)]).is_ok() {
+            next += 1;
+        }
+        assert_eq!(stored(&limit_node), next, "the refused property was not stored");
+        db.cmd_tx
+            .send(DbCommand::RenameNode { node_id: limit_node.clone(), new_name: "renamed at the limit".into(), auth: CallerAuth::Local })
+            .unwrap();
+        assert!(
+            matches!(db.res_rx.recv_timeout(Duration::from_secs(5)).unwrap(), DbResult::NodeRenamed { .. }),
+            "a write that adds no key still commits at the limit"
+        );
+        db.cmd_tx
+            .send(DbCommand::SetNodeProperty {
+                node_id: limit_node.clone(),
+                key: "one.more".into(),
+                value: serde_json::json!(1),
+                correlation_id: None,
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            DbResult::Error(text) => assert_eq!(text.matches("could never be published").count(), 1, "one refusal text: {text}"),
+            other => panic!("a property past the limit is refused, got {other:?}"),
+        }
+        assert_eq!(stored(&limit_node), next, "nothing was written");
     }
     // R-X-29: a decoded reading lands linked to its device payload and filed under the decoder class.
     let request = |command: DbCommand| {
@@ -1375,5 +1571,66 @@ fn test_rename_entity_omits_node_scene_change() {
             }
         }
         other => panic!("expected the decoded reading row, got {other:?}"),
+    }
+    // Last leg (it spends this verse's local write budget): an extension commit is charged to the local DID it writes
+    // as, through the node write door, so a writing extension is refused whole with the retryable budget error
+    // (fe-database/src/handlers/AGENTS.md §write-budget) and the refused batch changes nothing.
+    let writer = PluginAdmission::new(
+        "budget-plugin".into(),
+        sibling.clone(),
+        vec![fe_sdk::CAP_STORAGE_READ.into(), fe_sdk::CAP_STORAGE_WRITE.into()],
+        vec!["qa.*".into()],
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    let plugin = |admission: &PluginAdmission, request: Option<PluginRead>, ops: Vec<PendingOp>| {
+        let (reply, rx) = crossbeam::channel::bounded(1);
+        let command = match request {
+            Some(request) => DbCommand::PluginRead { admission: admission.clone(), request, reply },
+            None => DbCommand::PluginCommit { admission: admission.clone(), ops, readings: vec![], reply },
+        };
+        db.cmd_tx.send(command).unwrap();
+        let answer = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        while db.res_rx.try_recv().is_ok() {}
+        answer
+    };
+    let writer = match plugin(&writer, Some(PluginRead::PetalScope), vec![]).unwrap() {
+        PluginReply::Scope(scope) => writer.bind_scope(scope).unwrap(),
+        other => panic!("unexpected scope reply: {other:?}"),
+    };
+    let targets: Vec<String> = (0..4).map(|_| create_node(&db.cmd_tx, &db.res_rx, &sibling)).collect();
+    let fill = |round: usize| -> Vec<PendingOp> {
+        let value = std::iter::repeat_n(if round % 2 == 0 { 'a' } else { 'b' }, fe_sdk::property_schema::MAX_NODE_BYTES - 4096)
+            .collect::<String>();
+        targets
+            .iter()
+            .map(|id| PendingOp::SetProperty { node_id: id.clone(), key: "qa.fill".into(), value: serde_json::json!(value) })
+            .collect()
+    };
+    let mut refused = None;
+    let mut last_committed = None;
+    for round in 0..48 {
+        match plugin(&writer, None, fill(round)) {
+            Ok(PluginReply::Committed(_)) => last_committed = Some(round),
+            Err(refusal) => {
+                refused = Some(refusal);
+                break;
+            }
+            Ok(other) => panic!("unexpected commit reply: {other:?}"),
+        }
+    }
+    let refusal = refused.expect("an extension spending past the local budget is refused");
+    assert!(
+        refusal.detail().contains(fe_database::NODE_WRITE_BUDGET_EXCEEDED) && refusal.detail().contains("retry after"),
+        "the retryable budget error: {refusal:?}"
+    );
+    let expected = if last_committed.expect("the burst admits some batches") % 2 == 0 { 'a' } else { 'b' };
+    match plugin(&writer, Some(PluginRead::Node(targets[0].clone())), vec![]).unwrap() {
+        PluginReply::Node(Some(node)) => assert!(
+            matches!(node.properties.get("qa.fill"), Some(fe_sdk::PropertyValue::String(value)) if value.starts_with(expected)),
+            "the refused batch changed nothing"
+        ),
+        other => panic!("unexpected node reply: {other:?}"),
     }
 }

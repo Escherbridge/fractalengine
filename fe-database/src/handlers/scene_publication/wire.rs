@@ -3,10 +3,20 @@
 use serde_json::{json, Value};
 
 pub(crate) const MARKER: &str = "_fe_scene";
-/// Row bound derived from the node write limit: a full-size node plus its own values again in `_fe_clock` (AGENTS.md §row-bound).
-pub(crate) const MAX_ROW_BYTES: usize = 2 * fe_sdk::property_schema::MAX_PROPERTY_BYTES + 16 * 1024;
+/// Bytes one `_fe_clock.own` entry adds over the same key in the node: 50 measured (AGENTS.md §row-bound), plus margin.
+pub(crate) const OWN_KEY_OVERHEAD_BYTES: usize = 64;
+/// Row bound derived from the node write limit and the own-key cap (AGENTS.md §row-bound).
+pub(crate) const MAX_ROW_BYTES: usize = 2 * fe_sdk::property_schema::MAX_NODE_BYTES
+    + crate::field_clock::wire::MAX_OWN_KEYS * OWN_KEY_OVERHEAD_BYTES
+    + 16 * 1024;
+/// Worst-case growth of a row from one transform-only write (the transform key in the node and in `own`).
+pub(crate) const TRANSFORM_SLACK_BYTES: usize = 1024;
+/// Write-time ceiling on a projected row, so a later transform-only write still fits the bound.
+pub(crate) const WRITE_ROW_BYTES: usize = MAX_ROW_BYTES - TRANSFORM_SLACK_BYTES;
 /// Marker recovery uses to count a row that can never be published at its current size.
 pub(crate) const ROW_TOO_LARGE: &str = "scene snapshot exceeds the row bound";
+/// Stable prefix of a write refused because its published row could never be emitted (AGENTS.md §row-bound).
+pub(crate) const UNPUBLISHABLE: &str = "object could never be published";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SceneClock {

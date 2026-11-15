@@ -1,9 +1,11 @@
 //! Committed scene publication and bounded recovery; see AGENTS.md.
 
+pub(crate) mod budget;
 mod current;
 mod diagnostics;
 mod inbound;
 mod publisher;
+mod reclaim;
 pub(crate) mod wire;
 
 pub(crate) use current::{echo_applied, read_current_and_need};
@@ -19,7 +21,7 @@ pub(crate) use publisher::{
     capture_publication_asset_metadata, publication_asset_metadata_fence, PUBLICATION_ASSET_COLUMNS,
 };
 pub(crate) use publisher::{
-    publish_after_commit, publish_deferred, publish_tombstones_after_commit,
+    check_changes_publishable, check_publishable, publish_after_commit, publish_tombstones_after_commit,
     publish_uploaded_asset, recover,
 };
 #[cfg(test)]

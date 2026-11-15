@@ -35,14 +35,16 @@ pub(crate) async fn rejudge_authors(
     dids: &[String],
     changes: Option<&SceneChangeSender>,
 ) -> anyhow::Result<Vec<RowReport>> {
-    Ok(rejudge_authors_detailed(db, verse_id, dids, changes).await?.reports)
+    Ok(rejudge_authors_detailed(db, verse_id, dids, None, changes).await?.reports)
 }
 
 /// [`rejudge_authors`] keeping the removed nodes (the GUI drops them by `DbResult::NodeDeleted`).
+/// `local_did` judges unstamped local hierarchy values (AGENTS.md §rejudge-pending); `None` keeps them.
 pub(crate) async fn rejudge_authors_detailed(
     db: &Db,
     verse_id: &str,
     dids: &[String],
+    local_did: Option<&str>,
     changes: Option<&SceneChangeSender>,
 ) -> anyhow::Result<Rejudge> {
     let mut rejudged = Rejudge::default();
@@ -78,7 +80,7 @@ pub(crate) async fn rejudge_authors_detailed(
                     }
                 }),
             "verse" | "fractal" | "petal" => {
-                crate::handlers::clocked_row::rematerialize(db, verse_id, table, rid, &view)
+                crate::handlers::clocked_row::rematerialize(db, verse_id, table, rid, &view, local_did)
                     .await
                     .map(|applied| matches!(applied, ReplicatedRowOutcome::Applied).then_some(applied))
             }
@@ -112,8 +114,14 @@ pub(crate) async fn rejudge_authors_detailed(
 static LOCAL_OUTBOX: Mutex<Vec<(String, Rejudge)>> = Mutex::new(Vec::new());
 
 /// Re-judge after a local role statement and hold the result for [`take_local`] (the caller has no echo channel).
-pub(crate) async fn rejudge_local(db: &Db, verse_id: &str, dids: &[String]) -> anyhow::Result<()> {
-    let rejudged = rejudge_authors_detailed(db, verse_id, dids, None).await?;
+/// `local_did` is the DB thread's identity, which judges unstamped local values (AGENTS.md §rejudge-pending).
+pub(crate) async fn rejudge_local(
+    db: &Db,
+    verse_id: &str,
+    dids: &[String],
+    local_did: Option<&str>,
+) -> anyhow::Result<()> {
+    let rejudged = rejudge_authors_detailed(db, verse_id, dids, local_did, None).await?;
     if rejudged.reports.is_empty() && rejudged.removed_nodes.is_empty() {
         return Ok(());
     }

@@ -4,6 +4,7 @@
 
 use crate::handlers::scene_publication::wire::live_snapshot_of;
 use crossbeam::channel::{Receiver, RecvError};
+use fe_runtime::channels::DbCommandBytes;
 use fe_runtime::messages::DbCommand;
 use fe_runtime::scene_asset::SceneAssetTransferPurpose;
 use std::collections::VecDeque;
@@ -24,11 +25,26 @@ pub(crate) struct CommandLane {
     jumped: bool,
     /// Inbound node versions absorbed by [`CommandLane::supersede`], for the slow-command log.
     superseded: usize,
+    /// The channel's byte gate: a command's payload is released when the lane hands it out (src/AGENTS.md §command-lane).
+    bytes: DbCommandBytes,
 }
 
 impl CommandLane {
+    /// A lane releasing handed-out commands' payload bytes on `bytes`.
+    pub(crate) fn with_bytes(bytes: DbCommandBytes) -> Self {
+        Self { bytes, ..Self::default() }
+    }
+
     /// The next command to handle, blocking while none is queued.
     pub(crate) fn next(&mut self, rx: &Receiver<DbCommand>) -> Result<DbCommand, RecvError> {
+        let command = self.take_next(rx);
+        if let Ok(command) = &command {
+            self.bytes.release(command.payload_bytes());
+        }
+        command
+    }
+
+    fn take_next(&mut self, rx: &Receiver<DbCommand>) -> Result<DbCommand, RecvError> {
         self.fill(rx);
         if !std::mem::take(&mut self.jumped) {
             // QA-0154: a Serve admission never overtakes a command that could change what
@@ -56,7 +72,11 @@ impl CommandLane {
     pub(crate) fn next_inbound_row(&mut self, rx: &Receiver<DbCommand>) -> Option<DbCommand> {
         self.fill(rx);
         if matches!(self.queued.front(), Some(DbCommand::ApplyReplicatedRow { .. })) {
-            self.queued.pop_front()
+            let command = self.queued.pop_front();
+            if let Some(command) = &command {
+                self.bytes.release(command.payload_bytes());
+            }
+            command
         } else {
             None
         }
@@ -105,6 +125,8 @@ impl CommandLane {
                     .then(|| live_snapshot_of(queued_bytes, queued_author))
                     .flatten();
                 if older.is_some_and(|(older_clock, older_petal)| older_clock < clock && older_petal == petal) {
+                    // The replaced version leaves the lane now; the slot's new bytes release when it is handed out.
+                    self.bytes.release(queued_bytes.len() as u64);
                     *queued_bytes = row_bytes.clone();
                     self.superseded += 1;
                     return None;

@@ -33,6 +33,9 @@ pub(crate) async fn set_entity_property_granted(
         ("val".into(), value.clone()),
     ]);
     let data = serde_json::json!({"key":key,"value":value});
+    let changes = vec![("property_set".to_string(), data, schema_versions)];
+    // Accepted locally only if its published row can be emitted (scene_publication/AGENTS.md §row-bound).
+    super::scene_publication::check_changes_publishable(db, node_id, actor, &scope, &changes).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
@@ -47,7 +50,7 @@ pub(crate) async fn set_entity_property_granted(
         statements,
         bindings,
         actor,
-        vec![("property_set".into(), data, schema_versions)],
+        changes,
         scope,
     )
     .await?;
@@ -103,7 +106,9 @@ pub(crate) async fn delete_entity_property_granted(
     require_node_exists(db, node_id, "DeleteNodeProperty").await?;
     let scope = super::node_history::authorized_node_scope(db, node_id, grant, actor).await?;
 
-    let data = serde_json::json!({"key":key});
+    let changes = vec![("property_deleted".to_string(), serde_json::json!({"key":key}), serde_json::json!({}))];
+    // A delete adds a deleted entry to `own`, so it is measured too (scene_publication/AGENTS.md §row-bound).
+    super::scene_publication::check_changes_publishable(db, node_id, actor, &scope, &changes).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),
@@ -115,7 +120,7 @@ pub(crate) async fn delete_entity_property_granted(
     super::node_history::commit_mutations_in_scope(db, entry,
         vec!["UPDATE node SET properties = object::remove(properties ?? {}, $key) WHERE node_id = $node_id".into()],
         vec![("node_id".into(), serde_json::json!(node_id)), ("key".into(), serde_json::json!(key))],
-        actor, vec![("property_deleted".into(), data, serde_json::json!({}))], scope).await?;
+        actor, changes, scope).await?;
     Ok(())
 }
 
@@ -149,6 +154,7 @@ pub(crate) async fn delete_entity_properties_as(
             serde_json::json!({}),
         ));
     }
+    super::scene_publication::check_changes_publishable(db, node_id, actor, &scope, &changes).await?;
     let entry = OpLogEntry {
         lamport_clock: 0,
         hlc_timestamp: String::new(),

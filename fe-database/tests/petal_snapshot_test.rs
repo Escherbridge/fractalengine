@@ -2,9 +2,14 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::sync::Arc;
+
 use fe_database::handlers::petal_snapshot::{
-    export_petal_snapshot, import_petal_snapshot, import_petal_snapshot_as, import_petal_snapshot_reply, ImportError,
+    export_petal_snapshot, export_petal_snapshot_with, import_petal_snapshot, import_petal_snapshot_as,
+    import_petal_snapshot_publishable, import_petal_snapshot_reply, publish_imported_petal, recover_verse_scene_rows,
+    ImportError, ImportWriteBudget, SnapshotExportOptions, EXPORT_NOT_IMPORTABLE, IMPORT_COVERAGE_REASON,
 };
+use fe_runtime::blob_store::mock::MockBlobStore;
 use fe_database::op_log::commit_operation;
 use fe_database::space_manager::SpaceManager;
 use fe_database::{ModelMetadataUpdate, RoomMetadata};
@@ -346,6 +351,27 @@ async fn petal_snapshot_export_then_import_journey() {
 
     assert!(export_petal_snapshot(&db, "petal-missing").await.is_err(), "an unknown petal is refused");
 
+    // Bounded export leg: history is optional and byte-budgeted, and an archive the import would refuse is
+    // refused at export, before its ExportPetal audit entry is written.
+    let without_history = export_petal_snapshot_with(&db, PETAL, SnapshotExportOptions { history_per_node: 0, ..Default::default() })
+        .await
+        .expect("export without history");
+    assert!(without_history.node_log.is_empty(), "no history requested, none exported");
+    assert_eq!(without_history.nodes, snapshot.nodes, "state rows do not depend on the history option");
+    let one_fact = serde_json::to_vec(&snapshot.node_log[0]).expect("fact json").len();
+    let starved = export_petal_snapshot_with(&db, PETAL, SnapshotExportOptions { history_bytes: one_fact, ..Default::default() })
+        .await
+        .expect("export with a history budget below one fact");
+    assert!(starved.node_log.is_empty(), "a fact that does not fit the history budget is left out");
+    const EXPORT_AUDITS: &str = "SELECT * FROM op_log WHERE op_type = 'ExportPetal'";
+    let audits_before = select(&db, EXPORT_AUDITS).await.len();
+    let nodes_member = serde_json::to_vec(&snapshot.nodes).expect("nodes json").len() as u64;
+    let refused = export_petal_snapshot_with(&db, PETAL, SnapshotExportOptions { member_limit_bytes: nodes_member - 1, ..Default::default() })
+        .await
+        .expect_err("a nodes member over the import's member limit is refused");
+    assert!(refused.to_string().contains(EXPORT_NOT_IMPORTABLE), "{refused}");
+    assert_eq!(select(&db, EXPORT_AUDITS).await.len(), audits_before, "a refused export writes no audit entry");
+
     // Import leg: restore into a fresh DB whose hierarchy already holds the parent fractal.
     let restored_db = fresh_db().await;
     seed_fractal(&restored_db).await;
@@ -401,7 +427,31 @@ async fn petal_snapshot_export_then_import_journey() {
     assert_eq!(stamped.len(), a_rows.oplog.len(), "every quarantined row carries the stamp");
     assert!(stamped.iter().all(|value| value == &json!("did:key:z6MkActor")), "the actor overwrites the forged value: {stamped:?}");
     let c_rows = export_petal_snapshot(&c_db, PETAL).await.expect("re-export from the fresh DB");
-    assert_eq!(state_row_sets(&c_rows), state_row_sets(&a_rows), "every state table equal as a row set");
+    // An attributed import adds exactly its own facts: one importer journal fact per node (the publication proof),
+    // and the importer as owner and the petal as anchor of the assets it introduced. Everything else is verbatim.
+    let mut c_rows = c_rows;
+    let import_facts: Vec<Value> = c_rows
+        .node_log
+        .iter()
+        .filter(|entry| entry["payload"]["coverage_reason"] == json!(IMPORT_COVERAGE_REASON))
+        .cloned()
+        .collect();
+    assert_eq!(import_facts.len(), c_rows.nodes.len(), "one import fact per node: {import_facts:?}");
+    assert!(
+        import_facts.iter().all(|fact| fact["source_did"] == json!("did:key:z6MkActor")
+            && fact["payload"]["after_state"]["node_id"] == fact["node_id"]
+            && fact["payload"]["after_state"] == fact["payload"]["state"]),
+        "the importer is the journal actor and the fact states the stored row: {import_facts:?}"
+    );
+    c_rows.node_log.retain(|entry| entry["payload"]["coverage_reason"] != json!(IMPORT_COVERAGE_REASON));
+    for asset in &mut c_rows.assets {
+        assert_eq!(asset["owner_did"], json!("did:key:z6MkActor"), "the importer uploaded the assets it introduced: {asset}");
+        assert_eq!(asset["petal_id"], json!(PETAL), "anchored to the imported petal: {asset}");
+        let object = asset.as_object_mut().expect("asset object");
+        object.remove("owner_did");
+        object.remove("petal_id");
+    }
+    assert_eq!(state_row_sets(&c_rows), state_row_sets(&a_rows), "every other state table equal as a row set");
     assert!(c_rows.roles.is_empty(), "roles are a signed-statement cache and are not restored");
     let carried = a_rows.oplog.len();
     assert_eq!(&c_rows.oplog[..carried], &a_rows.oplog[..], "op-log identical in count and order");
@@ -571,6 +621,27 @@ async fn petal_snapshot_export_then_import_journey() {
         let outcome = import_petal_snapshot(&refused_db, rows).await;
         assert!(matches!(outcome, Err(ImportError::Invalid(_))), "{case}: {outcome:?}");
     }
+    // A node over the live node bound is refused at import, naming the node: never stored, never deferred by recovery.
+    let mut oversized = snapshot.clone();
+    assert_eq!(oversized.nodes[1]["node_id"], json!("node-a2"));
+    oversized.nodes[1]["properties"] = json!({"blob": "x".repeat(fe_sdk::property_schema::MAX_NODE_BYTES)});
+    match import_petal_snapshot(&refused_db, oversized).await {
+        Err(ImportError::Invalid(reason)) => assert!(
+            reason.contains("node-a2") && reason.contains("exceeds the node size limit"),
+            "the refusal names the node and the bound: {reason}"
+        ),
+        other => panic!("an oversized node is refused before any write: {other:?}"),
+    }
+    // A node whose published row could never be sent (over the 512 own-key limit) is refused the same way, naming it.
+    let mut unpublishable = snapshot.clone();
+    unpublishable.nodes[1]["properties"] = Value::Object((0..520).map(|index| (format!("k{index}"), json!(index))).collect());
+    match import_petal_snapshot(&refused_db, unpublishable).await {
+        Err(ImportError::Invalid(reason)) => assert!(
+            reason.contains("node-a2") && reason.contains("could never be published"),
+            "the refusal names the node and the marker: {reason}"
+        ),
+        other => panic!("an unpublishable node is refused before any write: {other:?}"),
+    }
     let mut corrupted = snapshot.clone();
     // A field the import does not validate, so the SCHEMAFULL rejection happens mid-transaction.
     corrupted.nodes[1]["interactive"] = json!("yes");
@@ -643,4 +714,143 @@ async fn petal_snapshot_export_then_import_journey() {
     assert!(anchors.iter().all(|anchor| anchor == &json!(PETAL)), "a forged anchor is pinned to the imported petal: {anchors:?}");
     let credited = select(&asset_db, "SELECT VALUE math::sum(size_bytes) FROM asset WHERE owner_did = 'did:key:victim' GROUP ALL").await;
     assert!(credited.is_empty() || credited[0] == json!(0), "the victim's quota sum is untouched: {credited:?}");
+
+    // Replication leg: an attributed import is publishable as this host (the only wire author), with the importer as
+    // journal actor and a fresh import clock; the petal row is clocked in the import transaction; role rows never travel.
+    const HOST: &str = "did:key:owner";
+    let pub_db = fresh_db().await;
+    run(&pub_db, "CREATE verse CONTENT { verse_id: $vid, name: 'V', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"vid": VERSE})).await;
+    seed_fractal(&pub_db).await;
+    assert_eq!(snapshot.roles.len(), 1, "the snapshot carries a petal-scope role row");
+    let mut budget = ImportWriteBudget::frozen();
+    let imported = import_petal_snapshot_publishable(&pub_db, &mut budget, snapshot.clone(), "did:key:z6MkImporter", HOST)
+        .await
+        .expect("publishable import");
+    assert_eq!(imported.node_ids, ["node-a1", "node-a2"]);
+    assert_eq!(imported.roles_not_imported, 1, "the role row is reported as not imported");
+    assert!(select(&pub_db, "SELECT * FROM role").await.is_empty(), "no grant comes out of a file");
+    let petal_clock = select(&pub_db, "SELECT author, hlc, field_key FROM row_field_version WHERE tbl = 'petal'").await;
+    assert!(
+        !petal_clock.is_empty()
+            && petal_clock.iter().all(|version| version["author"] == json!(HOST) && version["hlc"].as_u64().is_some_and(|hlc| hlc > 0)),
+        "every petal key is this host's own version at the import clock: {petal_clock:?}"
+    );
+    let mock = Arc::new(MockBlobStore::new());
+    let blobs: fe_database::BlobStoreHandle = mock.clone();
+    let (repl_tx, repl_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(64);
+    let publication = publish_imported_petal(&pub_db, &mut budget, &blobs, Some(&repl_tx), HOST, &imported).await;
+    assert!(publication.petal_enqueued, "the petal row is enqueued: {publication:?}");
+    assert_eq!((publication.nodes_attempted, publication.nodes_deferred), (2, 0), "{publication:?}");
+    let events: Vec<fe_database::ReplicationEvent> = repl_rx.try_iter().collect();
+    let published = |table: &str| -> Vec<Value> {
+        events
+            .iter()
+            .filter(|event| event.table == table)
+            .map(|event| serde_json::from_slice(&mock.bytes_for(&event.content_hash).expect("published bytes")).expect("row json"))
+            .collect()
+    };
+    assert!(published("role").is_empty(), "role rows are never published");
+    let petals = published("petal");
+    assert_eq!(petals.len(), 1, "one petal row");
+    assert_eq!(petals[0]["_fe_clock"]["author"], json!(HOST), "{}", petals[0]);
+    assert!(petals[0]["_fe_clock"]["own"].get("name").is_some(), "the petal name travels as an own version: {}", petals[0]);
+    let nodes = published("node");
+    let mut node_ids: Vec<&str> = nodes.iter().filter_map(|row| row["node_id"].as_str()).collect();
+    node_ids.sort_unstable();
+    assert_eq!(node_ids, ["node-a1", "node-a2"], "every imported node is emitted");
+    for row in &nodes {
+        assert_eq!(row["_fe_scene"]["publisher"], json!(HOST), "{row}");
+        assert_eq!(row["_fe_clock"]["author"], json!(HOST), "{row}");
+    }
+    let facts = select(&pub_db, "SELECT VALUE source_did FROM node_log WHERE payload.coverage_reason = 'petal_imported'").await;
+    assert_eq!(facts, [json!("did:key:z6MkImporter"), json!("did:key:z6MkImporter")], "the importer is the journal actor");
+
+    // Archive-proof leg: an archive's own journal is never publication proof. Exporting the import above yields an
+    // archive whose newest node_log row per node is a proof-shaped fact (the import fact, after_state = the stored row).
+    let archived = export_petal_snapshot(&pub_db, PETAL).await.expect("export the replicated import");
+    assert!(
+        archived.node_log.iter().any(|fact| fact["payload"]["coverage_reason"] == json!(IMPORT_COVERAGE_REASON)),
+        "the archive carries proof-shaped import facts: {:?}", archived.node_log
+    );
+    let archive_db = fresh_db().await;
+    run(&archive_db, "CREATE verse CONTENT { verse_id: $vid, name: 'V', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"vid": VERSE})).await;
+    seed_fractal(&archive_db).await;
+    let mut unattributed = ImportWriteBudget::frozen();
+    let refused = import_petal_snapshot_publishable(&archive_db, &mut unattributed, archived.clone(), "", HOST).await;
+    assert!(matches!(refused, Err(ImportError::Unattributed)), "a replicating import needs the importer: {refused:?}");
+    assert!(select(&archive_db, "SELECT * FROM petal").await.is_empty(), "the refused import wrote nothing");
+    // The local, unattributed helper writes no import fact, so the archive's facts stay the newest ones.
+    import_petal_snapshot(&archive_db, archived.clone()).await.expect("a local unattributed import");
+    let marks = select(&archive_db, "SELECT VALUE payload.archive_import_id FROM node_log").await;
+    assert!(!marks.is_empty() && marks.iter().all(Value::is_string), "every restored fact is marked as archive history: {marks:?}");
+    let (recovery_tx, recovery_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(64);
+    let recovered = recover_verse_scene_rows(&archive_db, &blobs, Some(&recovery_tx), HOST, VERSE).await.expect("recovery runs");
+    assert_eq!(recovered, (2, 0), "recovery examines both imported nodes and signs neither");
+    assert!(recovery_rx.try_iter().all(|event| event.table != "node"), "no archive-proven node row is published");
+    // Mutation check: the marker alone keeps the same archive fact from being signed as local proof.
+    run(&archive_db, "UPDATE node_log UNSET payload.archive_import_id", json!({})).await;
+    recover_verse_scene_rows(&archive_db, &blobs, Some(&recovery_tx), HOST, VERSE).await.expect("recovery runs");
+    assert!(
+        recovery_rx.try_iter().any(|event| event.table == "node" && event.record_id == "node-a2"),
+        "without the marker the archive fact would be accepted as publication proof"
+    );
+
+    // Budget leg (handlers/AGENTS.md §write-budget "Imports"). Imported property values pass the destination's enforced
+    // schemas first; then an import larger than the 8 MiB burst is admitted and charged in full, leaving its importer in
+    // debt, and that importer's next import is refused with the retryable budget error before anything is written.
+    const BULK_IMPORTER: &str = "did:key:z6MkBulk";
+    const BULK_PETAL: &str = "petal-bulk";
+    let bulk_db = fresh_db().await;
+    run(&bulk_db, "CREATE verse CONTENT { verse_id: $vid, name: 'V', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z' }",
+        json!({"vid": VERSE})).await;
+    seed_fractal(&bulk_db).await;
+    let template = snapshot.nodes.iter().find(|node| node["node_id"] == json!("node-a2")).expect("node-a2 has no asset").clone();
+    let mut bulk = PetalSnapshotRows { petal: snapshot.petal.clone(), ..Default::default() };
+    bulk.petal["petal_id"] = json!(BULK_PETAL);
+    bulk.petal["id"] = json!("petal:bulk");
+    bulk.nodes = (0..100)
+        .map(|index| {
+            let mut node = template.clone();
+            node["id"] = json!(format!("node:bulk_{index}"));
+            node["node_id"] = json!(format!("node-bulk-{index}"));
+            node["petal_id"] = json!(BULK_PETAL);
+            node["properties"] = json!({"payload": "b".repeat(50_000)});
+            node
+        })
+        .collect();
+    let mut bulk_budget = ImportWriteBudget::frozen();
+    run(&bulk_db, "CREATE field_def CONTENT { field_def_id: 'bulk-rule', scope: $scope, entity_type: 'node', key: 'payload', value_type: 'json', created_by: 'did:key:owner', created_at: '2026-11-13T00:00:00Z', enforced_schema: { version: 1, schema: { type: 'number' } } }",
+        json!({"scope": format!("VERSE#{VERSE}")})).await;
+    match import_petal_snapshot_publishable(&bulk_db, &mut bulk_budget, bulk.clone(), BULK_IMPORTER, HOST).await {
+        Err(ImportError::Invalid(reason)) => assert!(
+            reason.contains("node-bulk-0") && reason.contains("payload"),
+            "a value a live write would refuse is refused at import, naming node and key: {reason}"
+        ),
+        other => panic!("a verse rule refuses the imported values: {other:?}"),
+    }
+    assert!(select(&bulk_db, "SELECT * FROM node").await.is_empty(), "the schema refusal wrote nothing");
+    run(&bulk_db, "DELETE field_def WHERE field_def_id = 'bulk-rule'", json!({})).await;
+    let bulk_imported = import_petal_snapshot_publishable(&bulk_db, &mut bulk_budget, bulk, BULK_IMPORTER, HOST)
+        .await
+        .expect("an import larger than the burst is admitted while the importer has budget");
+    let (bulk_tx, _bulk_rx) = crossbeam::channel::bounded::<fe_database::ReplicationEvent>(256);
+    let bulk_publication = publish_imported_petal(&bulk_db, &mut bulk_budget, &blobs, Some(&bulk_tx), HOST, &bulk_imported).await;
+    assert_eq!(bulk_publication.nodes_attempted, 100, "{bulk_publication:?}");
+    let debt = bulk_budget.balance(VERSE, BULK_IMPORTER);
+    assert!(debt < 0, "100 facts of ~100 KB plus their rows overdraw the 8 MiB burst: balance {debt}");
+    let again = import_petal_snapshot_publishable(&bulk_db, &mut bulk_budget, snapshot.clone(), BULK_IMPORTER, HOST).await;
+    match &again {
+        Err(error @ ImportError::WriteBudget(_)) => assert!(
+            fe_database::node_write_retry_after_ms(&error.to_string()).is_some(),
+            "the refusal is the retryable budget error: {error}"
+        ),
+        other => panic!("an importer in debt is refused: {other:?}"),
+    }
+    assert!(select(&bulk_db, "SELECT * FROM petal WHERE petal_id = 'petal-a'").await.is_empty(), "the refused import wrote no petal");
+    assert!(select(&bulk_db, "SELECT * FROM node_log WHERE node_id = 'node-a1'").await.is_empty(), "nor any journal fact");
+    import_petal_snapshot_publishable(&bulk_db, &mut bulk_budget, snapshot.clone(), "did:key:z6MkOther", HOST)
+        .await
+        .expect("another importer keeps its own budget");
 }

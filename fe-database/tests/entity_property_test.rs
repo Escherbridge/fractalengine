@@ -523,6 +523,64 @@ fn a_dimension_callout_node_round_trips_through_the_property_store() {
             other => panic!("historical state: {other:?}"),
         }
     }
+
+    // Byte-paged history: half-node-limit values make every fact carry ~2x that (data + after_state), so a
+    // 200-entry request ends early by bytes; the pages cover every version once and state_at returns each
+    // commit's stored state without replaying from the baseline.
+    let bulky = create_node(&db, &petal_id, "Bulky history", [1.0, 0.0, 1.0]);
+    let value_bytes = fe_sdk::property_schema::MAX_NODE_BYTES / 2;
+    let page_budget = fe_database::handlers::node_history::HISTORY_PAGE_BYTES;
+    let commits = page_budget / (2 * value_bytes) + 4;
+    let bulk_value = |commit: usize| serde_json::json!(format!("{commit:06}{}", "x".repeat(value_bytes - 64)));
+    for commit in 0..commits {
+        set_property(&db, &bulky, "bulk", bulk_value(commit));
+    }
+    let read_bulky = |after_version: i64, at_version: Option<i64>, tag: String| {
+        db.cmd_tx
+            .send(DbCommand::ReadNodeHistory {
+                node_id: bulky.clone(),
+                after_version,
+                limit: 200,
+                at_version,
+                grant: fe_runtime::node_history::NodeAccessGrant::Local,
+                correlation_id: Some(tag),
+            })
+            .unwrap();
+        match db.res_rx.recv_timeout(CMD_TIMEOUT).unwrap() {
+            DbResult::NodeHistoryLoaded { page, .. } => serde_json::to_value(page).unwrap(),
+            DbResult::NodeStateAtVersionLoaded { state, .. } => serde_json::to_value(state).unwrap(),
+            other => panic!("bulky history read: {other:?}"),
+        }
+    };
+    let (mut after, mut pages, mut versions, mut stored) = (0i64, 0, Vec::new(), std::collections::BTreeMap::new());
+    loop {
+        let page = read_bulky(after, None, format!("bulky-page-{after}"));
+        let entries = page["entries"].as_array().unwrap();
+        assert!(!entries.is_empty(), "a page always carries at least one entry");
+        let entry_bytes: usize = entries.iter().map(|entry| entry.to_string().len()).sum();
+        assert!(entries.len() == 1 || entry_bytes <= page_budget + 64 * entries.len(), "page within the byte budget: {entry_bytes}");
+        for entry in entries {
+            let version = entry["row_version"].as_i64().unwrap();
+            versions.push(version);
+            stored.insert(version, entry["payload"]["after_state"].clone());
+        }
+        pages += 1;
+        match page["next_after_version"].as_i64() {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    let current = versions.last().copied().unwrap();
+    assert!(pages > 1, "{commits} large facts must not fit one page");
+    assert_eq!(versions, (1..=current).collect::<Vec<_>>(), "pages cover every version once, in order");
+    for version in [2, current / 2, current] {
+        let state = read_bulky(0, Some(version), format!("bulky-state-{version}"));
+        assert_eq!(state["availability"], "available", "{version}");
+        // state_at is typed (absent optionals serialize as null); read the stored fact through the same type.
+        let stored_typed = serde_json::from_value::<fe_runtime::node_history::NodeRowSnapshot>(stored[&version].clone()).unwrap();
+        assert_eq!(state["state"], serde_json::to_value(stored_typed).unwrap(), "state_at {version} is the commit's stored state");
+    }
+    assert_eq!(read_bulky(0, Some(current), "bulky-latest".into())["state"]["properties"], get_properties(&db, &bulky));
     let other_node = create_node(&db, &petal_id, "Other measurement anchor", [20.0, 0.0, 0.0]);
     let mut readings = [(2, 12.0), (0, 10.0), (1, 11.0)]
         .into_iter()

@@ -10,12 +10,20 @@ use fe_runtime::messages::{IotReadingInput, SceneChange};
 use fe_runtime::plugin_host::{PluginAdmission, PluginRead, PluginRefusal, PluginReply};
 use fe_sdk::manifest_v2::SceneWrite;
 use fe_sdk::plugin_host::{
-    PendingOp, StagedReading, StagedTimestamp, TransactionReceipt, MAX_HOST_BYTES,
+    PendingOp, StagedReading, StagedTimestamp, TransactionReceipt, MAX_QUERY_PAGE_BYTES,
 };
+use fe_sdk::property_schema::MAX_NODE_BYTES;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Candidate ids one query lists past its cursor; only ids, never rows or their encodings.
 const PLUGIN_QUERY_CANDIDATES: usize = 1024;
+/// Rows one phase-two read loads; the loader measures each as read and stops once past the page budget.
+const PLUGIN_QUERY_CHUNK_ROWS: usize = 16;
+/// The columns a plugin snapshot reads (`NodeRowSnapshot`), never the rest of the row.
+const PLUGIN_NODE_COLUMNS: &str = "node_id, petal_id, display_name, asset_id, position, elevation, rotation, scale, interactive, created_at, edit_seq, properties, tombstone";
+/// Loaded rows, history and journal facts one plugin batch may build before it is refused: 32 full-size nodes.
+const MAX_EXPANDED_BATCH_BYTES: usize = 32 * MAX_NODE_BYTES;
 
 /// Tag a failure with its typed refusal so the reply keeps its WIT class.
 fn refuse(kind: fn(String) -> PluginRefusal, detail: impl Into<String>) -> anyhow::Error {
@@ -131,10 +139,14 @@ pub(crate) async fn read(
         return Ok(PluginReply::Scope(scope));
     }
     let (mut guards, mut bindings) = permission.into_parts();
-    let mut sql = "SELECT * OMIT id FROM node WHERE petal_id=$plugin_read_petal AND tombstone=NONE"
-        .to_string();
-    bindings.push(("plugin_read_petal".into(), json!(admission.petal_id())));
     let is_single = matches!(request, PluginRead::Node(_));
+    // A single read loads one row; a query first lists bounded ids only (handlers/AGENTS.md §plugin-host-bounds).
+    let mut sql = if is_single {
+        format!("SELECT {PLUGIN_NODE_COLUMNS} FROM node WHERE petal_id=$plugin_read_petal AND tombstone=NONE")
+    } else {
+        "SELECT node_id FROM node WHERE petal_id=$plugin_read_petal AND tombstone=NONE".to_string()
+    };
+    bindings.push(("plugin_read_petal".into(), json!(admission.petal_id())));
     match &request {
         PluginRead::Node(id) => {
             fe_sdk::storage::validate_node_id(id).map_err(anyhow::Error::msg)?;
@@ -161,6 +173,14 @@ pub(crate) async fn read(
                         "plugin property capability denied",
                     ));
                 }
+                // A superset of the exact Rust predicate (SurrealQL may coerce numbers); `matches` decides.
+                sql.push_str(" AND properties[$plugin_read_key] = $plugin_read_value");
+                bindings.push(("plugin_read_key".into(), json!(property.key)));
+                bindings.push(("plugin_read_value".into(), property.value.clone()));
+            }
+            if let Some(after) = &query.after {
+                sql.push_str(" AND node_id > $plugin_read_after");
+                bindings.push(("plugin_read_after".into(), json!(after)));
             }
             sql.push_str(" ORDER BY node_id LIMIT $plugin_read_limit");
             bindings.push(("plugin_read_limit".into(), json!(PLUGIN_QUERY_CANDIDATES + 1)));
@@ -178,27 +198,15 @@ pub(crate) async fn read(
     }
     let mut response = query.await?.check()?;
     let rows: Vec<Value> = response.take(result_slot)?;
-    anyhow::ensure!(!is_single || rows.len() <= 1, "ambiguous node identity");
-    anyhow::ensure!(
-        is_single || rows.len() <= PLUGIN_QUERY_CANDIDATES,
-        "plugin query candidate bound exceeded; narrow the name or petal"
-    );
-    anyhow::ensure!(
-        serde_json::to_vec(&rows)?.len() <= 2 * 1024 * 1024,
-        "plugin query candidates exceed 2 MiB"
-    );
-    let mut nodes: Vec<_> = rows
-        .into_iter()
-        .map(|row| snapshot_for_plugin(row, admission))
-        .collect::<anyhow::Result<_>>()?;
-    if let PluginRead::Nodes(query) = &request {
-        nodes.retain(|node| query.matches(node));
-        nodes.truncate(query.limit);
-    }
-    anyhow::ensure!(
-        serde_json::to_vec(&nodes)?.len() <= MAX_HOST_BYTES,
-        "plugin read exceeds 65536 bytes"
-    );
+    let nodes: Vec<_> = match &request {
+        PluginRead::Nodes(query) => load_query_rows(db, admission, query, rows).await?,
+        _ => {
+            anyhow::ensure!(rows.len() <= 1, "ambiguous node identity");
+            rows.into_iter()
+                .map(|row| snapshot_for_plugin(row, admission))
+                .collect::<anyhow::Result<_>>()?
+        }
+    };
     authorize_as(
         db,
         admission,
@@ -218,8 +226,71 @@ pub(crate) async fn read(
     })
 }
 
+/// Load a query's candidate rows in fixed-count chunks, measuring each as read: stop at `limit` matches or once the
+/// delivered rows pass [`MAX_QUERY_PAGE_BYTES`] (the context detects that and cuts exactly). A row that cannot be
+/// presented is delivered as `unreadable_snapshot`, so the page lists it in `omitted` and keeps the rest; see
+/// handlers/AGENTS.md §plugin-host-bounds.
+async fn load_query_rows(
+    db: &Db,
+    admission: &PluginAdmission,
+    query: &fe_sdk::plugin_host::NodeQuery,
+    candidates: Vec<Value>,
+) -> anyhow::Result<Vec<fe_sdk::NodeSnapshot>> {
+    let scan_full = candidates.len() > PLUGIN_QUERY_CANDIDATES;
+    let candidates: Vec<String> = candidates
+        .into_iter()
+        .take(PLUGIN_QUERY_CANDIDATES)
+        .filter_map(|row| row["node_id"].as_str().map(str::to_owned))
+        .collect();
+    let mut nodes: Vec<fe_sdk::NodeSnapshot> = Vec::new();
+    let mut delivered = 0usize;
+    let mut next = 0usize;
+    // Stop early only after delivering more than the page budget: the soundness rule `cut_query_page` relies on.
+    while next < candidates.len() && nodes.len() < query.limit && delivered <= MAX_QUERY_PAGE_BYTES {
+        let take = PLUGIN_QUERY_CHUNK_ROWS.min(query.limit - nodes.len());
+        let chunk = &candidates[next..(next + take).min(candidates.len())];
+        next += chunk.len();
+        let mut response = db
+            .query(format!(
+                "SELECT {PLUGIN_NODE_COLUMNS} FROM node WHERE node_id IN $plugin_read_ids AND petal_id=$plugin_read_petal AND tombstone=NONE ORDER BY node_id"
+            ))
+            .bind(("plugin_read_ids", json!(chunk)))
+            .bind(("plugin_read_petal", json!(admission.petal_id())))
+            .await?
+            .check()?;
+        let rows: Vec<Value> = response.take(0)?;
+        for row in rows {
+            if nodes.len() == query.limit || delivered > MAX_QUERY_PAGE_BYTES {
+                break;
+            }
+            let node_id = row["node_id"].as_str().unwrap_or_default().to_owned();
+            let node = match snapshot_for_plugin(row, admission) {
+                Ok(node) => node,
+                // A malformed stored row (e.g. an invalid rotation) is omitted like an oversized one.
+                Err(error) => {
+                    tracing::debug!(%node_id, error = %format!("{error:#}"), "plugin query: unreadable node omitted");
+                    fe_sdk::plugin_host::unreadable_snapshot(node_id, admission.petal_id().to_owned())
+                }
+            };
+            if query.matches(&node) {
+                delivered = delivered
+                    .saturating_add(fe_sdk::plugin_host::snapshot_wire_len(&node))
+                    .saturating_add(usize::from(!nodes.is_empty()));
+                nodes.push(node);
+            }
+        }
+    }
+    anyhow::ensure!(
+        !scan_full || nodes.len() == query.limit || next < candidates.len() || delivered > MAX_QUERY_PAGE_BYTES,
+        "plugin query candidate bound exceeded; narrow the name or page with after"
+    );
+    Ok(nodes)
+}
+
 struct StagedNode {
     state: Value,
+    /// The stored state the batch started from (`None` for a created node), for the publishable check.
+    before: Option<Value>,
     previous: Option<Value>,
     created: bool,
     deleted: bool,
@@ -376,6 +447,16 @@ pub(crate) async fn commit(
     let mut facts: Vec<(String, String, i64, Value)> = Vec::new();
     let mut created_node_ids = Vec::new();
     let mut changes = Vec::new();
+    // Running size of what this batch holds (loaded rows, history, facts): refused as soon as it passes the bound.
+    let mut expanded = 0usize;
+    let mut charge = |bytes: usize| -> anyhow::Result<()> {
+        expanded += bytes;
+        anyhow::ensure!(
+            expanded <= MAX_EXPANDED_BATCH_BYTES,
+            "expanded plugin batch exceeds {MAX_EXPANDED_BATCH_BYTES} bytes"
+        );
+        Ok(())
+    };
     for (index, op) in ops.iter().enumerate() {
         let node_id = match op {
             PendingOp::CreateNode { petal_id, name } => {
@@ -394,6 +475,7 @@ pub(crate) async fn commit(
                     id.clone(),
                     StagedNode {
                         state,
+                        before: None,
                         previous: Some(json!({"row_version":1,"payload":payload})),
                         created: true,
                         deleted: false,
@@ -429,6 +511,7 @@ pub(crate) async fn commit(
             guards.push(format!("IF array::len((SELECT VALUE node_id FROM node WHERE node_id=${prefix}_id AND position=<geometry<point>> [${prefix}_x,${prefix}_z])) != 1 {{ THROW 'plugin node position changed'; }}"));
             let previous = node_history::latest(db, &node_id).await?;
             let previous_rows: Vec<Value> = previous.iter().cloned().collect();
+            charge(serde_json::to_vec(&raw)?.len() + serde_json::to_vec(&previous_rows)?.len())?;
             guards.push(format!("IF (SELECT * OMIT id FROM node_log WHERE node_id=${prefix}_id ORDER BY row_version DESC LIMIT 1) != ${prefix}_history {{ THROW 'plugin history changed'; }}"));
             bindings.extend([
                 (format!("{prefix}_id"), json!(node_id)),
@@ -441,6 +524,7 @@ pub(crate) async fn commit(
             staged.insert(
                 node_id.clone(),
                 StagedNode {
+                    before: Some(state.clone()),
                     state,
                     previous,
                     created: false,
@@ -563,6 +647,7 @@ pub(crate) async fn commit(
             payload["plugin_id"] = json!(admission.plugin_id());
             stamp_provenance(&mut payload, admission);
             node.previous = Some(json!({"row_version":version,"payload":payload}));
+            charge(serde_json::to_vec(&payload)?.len())?;
             facts.push((node_id.clone(), operation, version, payload));
         }
     }
@@ -590,9 +675,18 @@ pub(crate) async fn commit(
             .iter()
             .sum::<usize>();
     anyhow::ensure!(
-        expanded_bytes <= 2 * 1024 * 1024,
-        "expanded plugin batch exceeds 2 MiB"
+        expanded_bytes <= MAX_EXPANDED_BATCH_BYTES,
+        "expanded plugin batch exceeds {MAX_EXPANDED_BATCH_BYTES} bytes"
     );
+    // A node whose published row could never be sent refuses the whole batch, naming it (§row-bound).
+    for (id, node) in &staged {
+        if node.deleted || !(node.created || node.properties_changed) {
+            continue;
+        }
+        super::scene_publication::check_publishable(db, id, local_did, node.before.as_ref(), &node.state)
+            .await
+            .map_err(|error| refuse(PluginRefusal::InvalidInput, format!("node {id}: {error:#}")))?;
+    }
     let mut intention = json!({"plugin_id":admission.plugin_id(),"petal_id":admission.petal_id(),"scope":scope,"source_did":local_did,"ops":ops});
     // Local attribution; scene provenance stays local under OD-E1 (governance.md §Provenance).
     if let Some(package) = admission.package() {
@@ -798,8 +892,43 @@ pub(crate) async fn flush(
     local_did: &str,
     sinks: FlushSinks<'_>,
 ) -> Result<TransactionReceipt, PluginRefusal> {
+    flush_charged(db, admission, ops, readings, local_did, sinks, None).await
+}
+
+/// [`flush`] through the local node write door: the batch is admitted against, and charged to, the per-author
+/// budget of the local DID the extension writes as; over budget it is refused whole with the retryable budget
+/// error (handlers/AGENTS.md §write-budget, §plugin-host-flush).
+pub(crate) async fn flush_through_door(
+    db: &Db,
+    admission: &PluginAdmission,
+    ops: &[PendingOp],
+    readings: &[StagedReading],
+    local_did: &str,
+    sinks: FlushSinks<'_>,
+    door: &mut super::scene_publication::budget::NodeWriteDoor,
+) -> Result<TransactionReceipt, PluginRefusal> {
+    flush_charged(db, admission, ops, readings, local_did, sinks, Some(door)).await
+}
+
+async fn flush_charged(
+    db: &Db,
+    admission: &PluginAdmission,
+    ops: &[PendingOp],
+    readings: &[StagedReading],
+    local_did: &str,
+    sinks: FlushSinks<'_>,
+    mut write_door: Option<&mut super::scene_publication::budget::NodeWriteDoor>,
+) -> Result<TransactionReceipt, PluginRefusal> {
     admission.require_active().map_err(PluginRefusal::Revoked)?;
     fe_sdk::plugin_host::validate_commit(ops, readings).map_err(PluginRefusal::InvalidInput)?;
+    // A scene batch is a node write by the local DID: admitted before any work, charged after the commit.
+    if let Some(door) = write_door.as_deref_mut() {
+        if !ops.is_empty() {
+            door.admit_petal(db, admission.petal_id(), local_did)
+                .await
+                .map_err(|error| PluginRefusal::Backend(format!("{error:#}")))?;
+        }
+    }
     // R6 whole-flush rule: a reading anchored on a node this batch deletes would pass the door,
     // then fail the insert after the scene batch landed, so refuse the flush up front (G1-C8).
     if let Some(reading) = readings.iter().find(|reading| {
@@ -821,17 +950,26 @@ pub(crate) async fn flush(
     let outcome = committed.map_err(refusal)?;
     // Past the commit admission boundary: everything below runs even if the lease is revoked now.
     for node in &outcome.nodes {
-        if node.created || node.deleted || node.properties_changed {
-            super::scene_publication::publish_after_commit(
-                db,
-                sinks.blobs,
-                sinks.replication,
-                local_did,
-                &node.node_id,
-            )
-            .await;
-        } else {
-            sinks.deferred.defer(node.node_id.clone());
+        let publish_now = node.created || node.deleted || node.properties_changed;
+        match write_door.as_deref_mut() {
+            Some(door) if publish_now => {
+                door.publish(db, sinks.blobs, sinks.replication, local_did, &node.node_id).await;
+            }
+            Some(door) => {
+                door.charge_deferred(db, &node.node_id).await;
+                sinks.deferred.defer(node.node_id.clone());
+            }
+            None if publish_now => {
+                super::scene_publication::publish_after_commit(
+                    db,
+                    sinks.blobs,
+                    sinks.replication,
+                    local_did,
+                    &node.node_id,
+                )
+                .await;
+            }
+            None => sinks.deferred.defer(node.node_id.clone()),
         }
     }
     publish(&outcome, sinks.effects);

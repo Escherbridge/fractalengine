@@ -98,6 +98,8 @@ pub mod verse;
 
 pub use atlas::*;
 pub use handlers::seed::seed_default_data;
+/// Node write budget refusal text and its retry-after parser (handlers/AGENTS.md §write-budget).
+pub use handlers::scene_publication::budget::{node_write_retry_after_ms, NODE_WRITE_BUDGET_EXCEEDED};
 pub use model_url_meta::ModelUrlMeta;
 pub use replication_mode::ReplicationMode;
 pub use role_level::RoleLevel;
@@ -614,6 +616,35 @@ pub fn spawn_db_thread_shared(
     db_path: Option<String>,
     lifecycle_tx: Option<LifecycleEventSender>,
 ) -> Result<DbThread, DbInitError> {
+    spawn_db_thread_gated(
+        rx,
+        tx,
+        blob_store,
+        repl_tx,
+        keypair,
+        secret_store,
+        entity_change_tx,
+        db_path,
+        lifecycle_tx,
+        fe_runtime::channels::DbCommandBytes::default(),
+    )
+}
+
+/// [`spawn_db_thread_shared`] that releases each handed-out command's payload bytes on
+/// `command_bytes`, the byte gate its senders charge (fe-runtime src/AGENTS.md §db-command-bytes).
+#[allow(clippy::too_many_arguments, clippy::result_large_err)] // thread-spawn seam; see spawn_db_thread
+pub fn spawn_db_thread_gated(
+    rx: crossbeam::channel::Receiver<DbCommand>,
+    tx: crossbeam::channel::Sender<DbResult>,
+    blob_store: BlobStoreHandle,
+    repl_tx: Option<ReplicationSender>,
+    keypair: Option<fe_identity::NodeKeypair>,
+    secret_store: Option<std::sync::Arc<dyn fe_identity::SecretStore>>,
+    entity_change_tx: Option<tokio::sync::broadcast::Sender<fe_runtime::messages::SceneChange>>,
+    db_path: Option<String>,
+    lifecycle_tx: Option<LifecycleEventSender>,
+    command_bytes: fe_runtime::channels::DbCommandBytes,
+) -> Result<DbThread, DbInitError> {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
         "spawn_db_thread must not be called from within a Tokio runtime"
@@ -767,9 +798,11 @@ pub fn spawn_db_thread_shared(
             // RP-3: the deferred-admission queue for inbound content rows — lives for the
             // loop, retried in-line (src/AGENTS.md §inbound-admissions).
             let mut admissions = handlers::inbound_admissions::InboundAdmissions::for_local_publisher(&local_did);
+            // Per-author node byte budget at the local write door (handlers/AGENTS.md §write-budget).
+            let mut write_door = handlers::scene_publication::budget::NodeWriteDoor::default();
 
             // QA-0143: FIFO except a peer's Serve admission (src/AGENTS.md §command-lane).
-            let mut lane = command_lane::CommandLane::default();
+            let mut lane = command_lane::CommandLane::with_bytes(command_bytes);
             // QA-0161: transform publications wait for an idle lane (src/AGENTS.md §command-lane).
             let mut deferred = command_lane::DeferredPublications::default();
             #[allow(clippy::while_let_loop)]
@@ -778,11 +811,31 @@ pub fn spawn_db_thread_shared(
                 // meanwhile waits for one publication, not for all of them (src/AGENTS.md §command-lane).
                 while deferred.due(lane.is_idle(&rx)) {
                     let nodes = if deferred.overdue() { deferred.take() } else { deferred.take_one() };
-                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,nodes).await;
+                    write_door.publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,nodes).await;
+                }
+                // Inbound node rows held for their author's byte budget retry once it refills; the
+                // loop waits for that only while the lane is idle (handlers/AGENTS.md §write-budget).
+                let mut budget_retried = false;
+                while let Some(due) = admissions.budget_retry_due() {
+                    let now = std::time::Instant::now();
+                    if due <= now {
+                        if budget_retried {
+                            break;
+                        }
+                        budget_retried = true;
+                        let reports = admissions.retry_budget(&db, entity_change_tx.as_ref()).await;
+                        handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, reports).await;
+                        handlers::send_removed_nodes(&mut admissions, &tx);
+                    } else if lane.is_idle(&rx) {
+                        tokio::time::sleep((due - now).min(std::time::Duration::from_millis(20))).await;
+                        budget_retried = false;
+                    } else {
+                        break;
+                    }
                 }
                 let cmd = lane.next(&rx);
                 if deferred.due_before(cmd.as_ref().ok()) {
-                    handlers::scene_publication::publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
+                    write_door.publish_deferred(&db,&blob_store,repl_tx.as_ref(),&local_did,deferred.take()).await;
                 }
                 let cmd_start = std::time::Instant::now();
                 // QA-0164: an inbound apply names its table, so the slow log says which rows cost.
@@ -803,7 +856,7 @@ pub fn spawn_db_thread_shared(
                             replication:repl_tx.as_ref(),
                             deferred:&mut deferred,
                         };
-                        let result=handlers::plugin_host::flush(&db,&admission,&ops,&readings,&local_did,sinks).await
+                        let result=handlers::plugin_host::flush_through_door(&db,&admission,&ops,&readings,&local_did,sinks,&mut write_door).await
                             .map(fe_runtime::plugin_host::PluginReply::Committed);
                         if let Err(error)=reply.send(result) {tracing::warn!(%error,"plugin commit receiver closed; outcome may require reconciliation");}
                     }
@@ -897,9 +950,9 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CreateNode { petal_id, name, position, correlation_id }) => {
-                        match handlers::crud::create_node_as(&db, &petal_id, &name, position, &local_did).await {
+                        match async { write_door.admit_petal(&db, &petal_id, &local_did).await?; handlers::crud::create_node_as(&db, &petal_id, &name, position, &local_did).await }.await {
                             Ok((id, applied_scale)) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
                                         node: fe_runtime::messages::NodeDto {
@@ -990,9 +1043,9 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::CreateNodeWithAsset { petal_id, name, asset_id, position, rotation, scale, correlation_id }) => {
-                        match handlers::crud::create_node_with_asset_as(&db, &petal_id, &name, &asset_id, position, rotation, scale, &local_did).await {
+                        match async { write_door.admit_petal(&db, &petal_id, &local_did).await?; handlers::crud::create_node_with_asset_as(&db, &petal_id, &name, &asset_id, position, rotation, scale, &local_did).await }.await {
                             Ok((node_id, asset_path, materialization)) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     let _ = ect.send(fe_runtime::messages::SceneChange::NodeAdded {
                                         node: materialization.node.clone(),
@@ -1068,9 +1121,10 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::UpdateNodeTransform { node_id, position, rotation, scale }) => {
-                        match handlers::transform::update_node_transform_as(&db, &node_id, position, rotation, scale, &local_did).await {
+                        match async { write_door.admit_node(&db, &node_id, &local_did).await?; handlers::transform::update_node_transform_as(&db, &node_id, position, rotation, scale, &local_did).await }.await {
                             Ok(()) => {
                                 deferred.defer(node_id.clone());
+                                write_door.charge_deferred(&db, &node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(Some(petal_id)) => {
@@ -1094,6 +1148,8 @@ pub fn spawn_db_thread_shared(
                             }
                             Err(e) => {
                                 tracing::error!("UpdateNodeTransform failed for {node_id}: {e}");
+                                // A budget refusal names its retry-after, so clients can tell "wait" from "refused".
+                                let retry_after_ms = node_write_retry_after_ms(&format!("{e:#}"));
                                 // Emit rollback with last-known-good values from DB
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
@@ -1106,6 +1162,7 @@ pub fn spawn_db_thread_shared(
                                                         position: pos,
                                                         rotation: rot,
                                                         scale: sc,
+                                                        retry_after_ms,
                                                     }
                                                 }
                                                 _ => {
@@ -1116,6 +1173,7 @@ pub fn spawn_db_thread_shared(
                                                         position: [0.0; 3],
                                                         rotation: [0.0; 3],
                                                         scale: [1.0, 1.0, 1.0],
+                                                        retry_after_ms,
                                                     }
                                                 }
                                             };
@@ -1129,12 +1187,12 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::UpdateNodeUrl { node_id, url, request_id, expected_scope }) => {
-                        let (outcome, asset_id) = match handlers::transform::update_node_url_handler(&db, &node_id, url, &expected_scope, &local_did).await {
+                        let (outcome, asset_id) = match async { write_door.admit_node(&db, &node_id, &local_did).await?; handlers::transform::update_node_url_handler(&db, &node_id, url, &expected_scope, &local_did).await }.await {
                             Ok(row) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 (Ok(row["external_url"].as_str().map(str::to_owned)), row["asset_id"].as_str().map(str::to_owned))
                             }
-                            Err(error) => { tracing::warn!(node_id, %error, "UpdateNodeUrl refused or failed"); (Err("The URL was not confirmed: this model is missing, shared, changed, or you no longer have Editor access. Reload before retrying.".to_owned()), None) }
+                            Err(error) => { tracing::warn!(node_id, %error, "UpdateNodeUrl refused or failed"); (Err(if handlers::scene_publication::budget::node_write_retry_after_ms(&error.to_string()).is_some() { error.to_string() } else { "The URL was not confirmed: this model is missing, shared, changed, or you no longer have Editor access. Reload before retrying.".to_owned() }), None) }
                         };
                         send_result(&tx, DbResult::NodeUrlUpdated { node_id, request_id, expected_scope, outcome, asset_id });
                     }
@@ -1411,9 +1469,9 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::SetNodeProperty { node_id, key, value , correlation_id }) => {
-                        match handlers::entity_property::set_entity_property_as(&db, &node_id, &key, &value, &local_did).await {
+                        match async { write_door.admit_node(&db, &node_id, &local_did).await?; handlers::entity_property::set_entity_property_as(&db, &node_id, &key, &value, &local_did).await }.await {
                             Ok(()) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(Some(petal_id)) => {
@@ -1441,9 +1499,9 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::DeleteNodeProperty { node_id, key , correlation_id }) => {
-                        match handlers::entity_property::delete_entity_property_as(&db, &node_id, &key, &local_did).await {
+                        match async { write_door.admit_node(&db, &node_id, &local_did).await?; handlers::entity_property::delete_entity_property_as(&db, &node_id, &key, &local_did).await }.await {
                             Ok(()) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(Some(petal_id)) => {
@@ -1465,10 +1523,10 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     Ok(DbCommand::ClearNodeProperties { node_id, keys }) => {
-                        match handlers::entity_property::delete_entity_properties_as(&db, &node_id, &keys, &local_did).await {
+                        match async { write_door.admit_node(&db, &node_id, &local_did).await?; handlers::entity_property::delete_entity_properties_as(&db, &node_id, &keys, &local_did).await }.await {
                             Ok(()) => {
                                 // One commit, one published row version: peers never see a partial bag (QA-0129).
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 let petal_id = match &entity_change_tx {
                                     Some(_) => match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(petal_id) => petal_id,
@@ -1646,9 +1704,9 @@ pub fn spawn_db_thread_shared(
                                 continue;
                             }
                         };
-                        match handlers::crud::promote_instance_handler(&db, &petal_id, &path_id, instance_index, &local_did, actor, &scope).await {
+                        match async { write_door.admit_scope(&scope, actor)?; handlers::crud::promote_instance_handler(&db, &petal_id, &path_id, instance_index, &local_did, actor, &scope).await }.await {
                             Ok((node_id, newly_promoted)) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 // FR-6: emit NodePromoted only when a row was actually materialized
                                 // (an idempotent no-op is not an op, so it emits nothing).
                                 if newly_promoted {
@@ -1689,9 +1747,9 @@ pub fn spawn_db_thread_shared(
                             )));
                             continue;
                         }
-                        match handlers::crud::rename_node_handler(&db, &node_id, &new_name, &local_did, &ctx.subject_label()).await {
+                        match async { write_door.admit_scope(&scope, &ctx.subject_label())?; handlers::crud::rename_node_handler(&db, &node_id, &new_name, &local_did, &ctx.subject_label()).await }.await {
                             Ok(()) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     match handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
                                         Ok(Some(petal_id)) => {
@@ -1731,9 +1789,9 @@ pub fn spawn_db_thread_shared(
                             )));
                             continue;
                         }
-                        match handlers::crud::duplicate_node_handler(&db, &node_id, &local_did, &ctx.subject_label()).await {
+                        match async { write_door.admit_scope(&scope, &ctx.subject_label())?; handlers::crud::duplicate_node_handler(&db, &node_id, &local_did, &ctx.subject_label()).await }.await {
                             Ok(copy) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&copy.node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&copy.node_id).await;
                                 // Mirror the CreateNode side effects so subscribers treat the
                                 // copy as an ordinary new node (zero UI changes).
                                 if let Some(ref ect) = entity_change_tx {
@@ -1799,9 +1857,9 @@ pub fn spawn_db_thread_shared(
                             }
                             let view_grant = if matches!(auth,fe_runtime::messages::CallerAuth::Local) {fe_runtime::node_history::NodeAccessGrant::Local} else {fe_runtime::node_history::NodeAccessGrant::Scoped(scope)};
                             let view_actor = ctx.subject_label();
-                            match handlers::node_view::set_node_view_handler(&db, &node_id, state.as_deref(), groups.as_deref(),&view_actor,&view_grant).await {
+                            match async { write_door.admit_petal(&db, &petal_id, &view_actor).await?; handlers::node_view::set_node_view_handler(&db, &node_id, state.as_deref(), groups.as_deref(),&view_actor,&view_grant).await }.await {
                                 Ok(view) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                     if let Some(ref ect) = entity_change_tx {
                                         let written = [
                                             (state.is_some(), handlers::node_view::VIEW_STATE_KEY, serde_json::json!(view.state)),
@@ -1984,11 +2042,14 @@ pub fn spawn_db_thread_shared(
                             continue;
                         }
                         let actor = object_command_actor(&grant,&local_did,&actor_did);
-                        let outcome = handlers::node_history::create_object_granted(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
-                            input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, actor,&grant).await;
+                        let outcome = match write_door.admit_petal(&db, &petal_id, actor).await {
+                            Err(refused) => Err(refused),
+                            Ok(()) => handlers::node_history::create_object_granted(&db, &petal_id, &input.name, input.asset_id.as_deref(), input.position,
+                                input.rotation.iter().map(|v|f64::from(*v)).collect(), input.scale.iter().map(|v|f64::from(*v)).collect(), input.properties, actor,&grant).await,
+                        };
                         match outcome {
                             Ok((node_id, asset_path)) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     let quat = bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ, input.rotation[0], input.rotation[1], input.rotation[2]);
                                     if ect.send(fe_runtime::messages::SceneChange::NodeAdded { node: fe_runtime::messages::NodeDto {
@@ -2013,12 +2074,13 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::PromoteCheckedStamp {capture,correlation_id}) => {
                         let outcome=async {
+                            write_door.admit_scope(&capture.scope,&local_did)?;
                             let prepared=handlers::stamp_promotion::prepare(&db,&capture,&correlation_id,&local_did).await?;
                             handlers::stamp_promotion::commit(&db,prepared).await
                         }.await;
                         match outcome {
                             Ok((node_id,properties,newly_promoted))=>{
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if newly_promoted {
                                     if let Some(address)=lifecycle_uri(&capture.scope,&node_id) {
                                         emit_lifecycle(&lifecycle_tx,fe_runtime::messages::LifecycleEvent::NodePromoted {
@@ -2033,12 +2095,13 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::CommitStampOverrides {edit,correlation_id}) => {
                         let outcome=async {
+                            write_door.admit_scope(&edit.scope,&local_did)?;
                             let prepared=handlers::stamp_overrides::prepare(&db,&edit,&correlation_id,&local_did).await?;
                             handlers::stamp_overrides::commit(&db,prepared).await
                         }.await;
                         match outcome {
                             Ok(receipt)=>{
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&receipt.node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&receipt.node_id).await;
                                 if let Some(ref ect)=entity_change_tx {
                                     for key in ["stamp.override.scale","stamp.override.rotation","stamp.override.arc_m"] {
                                         if ect.send(fe_runtime::messages::SceneChange::PropertyChanged {node_id:receipt.node_id.clone(),petal_id:receipt.state.petal_id.clone(),key:key.into(),value:receipt.state.properties[key].clone()}).is_err() {
@@ -2092,6 +2155,7 @@ pub fn spawn_db_thread_shared(
                     }
                     Ok(DbCommand::CommitCheckedEditorBatch {request,correlation_id}) => {
                         let result=async {
+                            write_door.admit_scope(&request.capture.scope,&local_did)?;
                             let prepared=handlers::editor_batch::prepare(&db,&request,&correlation_id,&local_did).await?;
                             let writes_registry=prepared.writes_registry();
                             handlers::editor_batch::commit(&db,prepared).await.map(|receipt|(receipt,writes_registry))
@@ -2099,7 +2163,7 @@ pub fn spawn_db_thread_shared(
                         let reply=match result {
                             Ok((receipt,writes_registry))=>{
                                 for member in &receipt.members {
-                                    handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&member.node_id).await;
+                                    write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&member.node_id).await;
                                 }
                                 // QA-0123: a group create/delete/undo also changed the petal's registry.
                                 if writes_registry {
@@ -2119,9 +2183,9 @@ pub fn spawn_db_thread_shared(
                         send_result(&tx,reply);
                     }
                     Ok(DbCommand::CommitCheckedNodeMutation {node_id,mutation,expected,correlation_id}) => {
-                        match handlers::checked_mutation::commit(&db,&node_id,&mutation,&expected,&correlation_id,&local_did).await {
+                        match async { write_door.admit_scope(&expected.scope,&local_did)?; handlers::checked_mutation::commit(&db,&node_id,&mutation,&expected,&correlation_id,&local_did).await }.await {
                             Ok(receipt)=>{
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 if let Some(ref ect)=entity_change_tx {
                                     let change=match &mutation {
                                         fe_runtime::messages::NodeMutation::FullTransform {position,rotation,scale}=>fe_runtime::messages::SceneChange::NodeTransform {node_id:node_id.clone(),petal_id:receipt.state.petal_id.clone(),position:*position,rotation:*rotation,scale:*scale},
@@ -2149,14 +2213,17 @@ pub fn spawn_db_thread_shared(
                         }
                         let actor = object_command_actor(&grant,&local_did,&actor_did);
                         use fe_runtime::messages::NodeMutation;
-                        let outcome = match &mutation {
-                            NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_granted(&db, &node_id, key, value, actor,&grant).await,
-                            NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_granted(&db, &node_id, key, actor,&grant).await,
-                            NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_granted(&db, &node_id, *position, *rotation, *scale, actor,&grant).await,
+                        let outcome = match write_door.admit_node(&db, &node_id, actor).await {
+                            Err(refused) => Err(refused),
+                            Ok(()) => match &mutation {
+                                NodeMutation::PropertySet { key, value } => handlers::entity_property::set_entity_property_granted(&db, &node_id, key, value, actor,&grant).await,
+                                NodeMutation::PropertyDeleted { key } => handlers::entity_property::delete_entity_property_granted(&db, &node_id, key, actor,&grant).await,
+                                NodeMutation::FullTransform { position, rotation, scale } => handlers::transform::update_node_transform_granted(&db, &node_id, *position, *rotation, *scale, actor,&grant).await,
+                            },
                         };
                         match outcome {
                             Ok(()) => {
-                                handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
+                                write_door.publish(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
                                 let receipt = handlers::node_history::receipt(&db, &node_id).await;
                                 if let Some(ref ect) = entity_change_tx {
                                     if let Ok(Some(petal_id)) = handlers::crud::resolve_node_petal_id_handler(&db, &node_id).await {
@@ -2385,16 +2452,28 @@ pub fn spawn_db_thread_shared(
                         }
                     }
                     // --- Petal snapshots (HEXON-09/10; refuse-on-existing import) ---
-                    Ok(DbCommand::ExportPetalSnapshot { petal_id, correlation_id }) => {
-                        let reply = handlers::petal_snapshot::export_petal_snapshot_reply(&db, petal_id, correlation_id).await;
+                    Ok(DbCommand::ExportPetalSnapshot { petal_id, correlation_id, history_per_node }) => {
+                        use handlers::petal_snapshot::{export_petal_snapshot_with, SnapshotExportOptions, EXPORT_HISTORY_PER_NODE};
+                        // A caller's depth is clamped here too; the API refuses one above the max (handlers/AGENTS.md §petal-snapshot).
+                        let options = SnapshotExportOptions {
+                            history_per_node: history_per_node
+                                .unwrap_or(EXPORT_HISTORY_PER_NODE)
+                                .min(fe_runtime::messages::EXPORT_HISTORY_PER_NODE_MAX),
+                            ..Default::default()
+                        };
+                        let reply = match export_petal_snapshot_with(&db, &petal_id, options).await {
+                            Ok(rows) => DbResult::PetalSnapshotExported { petal_id, rows: Box::new(rows), correlation_id },
+                            Err(error) => handlers::correlated_failure(&correlation_id, format!("ExportPetalSnapshot {petal_id} failed: {error:#}")),
+                        };
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::ImportPetalSnapshot { rows, correlation_id, actor }) => {
-                        let reply = handlers::petal_snapshot::import_petal_snapshot_reply(&db, *rows, correlation_id, actor).await;
-                        let imported = matches!(reply, DbResult::PetalSnapshotImported { .. });
+                        // The importer passes the write door before the restore and is charged after it (handlers/AGENTS.md §write-budget "Imports").
+                        let (reply, imported) = handlers::petal_snapshot::import_petal_snapshot_reply_as(&db, Some(&mut write_door), Some(local_did.as_str()), *rows, correlation_id, actor).await;
                         send_result(&tx, reply);
-                        // Local-only import: refresh the GUI tree, never publish restored rows.
-                        if imported {
+                        // Imports replicate after commit (handlers/AGENTS.md §petal-snapshot-replication); recovery republishes what the queue refused.
+                        if let Some(imported) = imported {
+                            handlers::petal_snapshot::publish_imported_petal_through(&db, &mut write_door, &blob_store, repl_tx.as_ref(), &local_did, &imported).await;
                             match handlers::crud::load_hierarchy_handler(&db, &blob_store).await {
                                 Ok(verses) => send_result(&tx, DbResult::HierarchyLoaded { verses }),
                                 Err(e) => tracing::warn!("Hierarchy refresh after petal snapshot import failed: {e}"),
@@ -2445,6 +2524,7 @@ pub fn spawn_db_thread_shared(
                                     .await,
                             );
                         }
+                        reports.extend(admissions.retry_budget(&db, entity_change_tx.as_ref()).await);
                         handlers::scene_publication::echo_applied(&db, &blob_store, &local_did, &tx, reports).await;
                         handlers::send_removed_nodes(&mut admissions, &tx);
                     }
@@ -2475,8 +2555,8 @@ pub fn spawn_db_thread_shared(
                             Err(error) => tracing::warn!(verse_id, "local Verse catalog recovery refused or failed: {error:#}"),
                         }
                         match handlers::scene_publication::recover(&db,&blob_store,repl_tx.as_ref(),&local_did,&verse_id).await {
-                            Ok(report) if report.deferred==0 && report.dependency_deferred==0 => tracing::info!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,"stored scene recovery enqueued; peer delivery is not certified"),
-                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,uploads_enqueued=report.uploads_enqueued,deferred=report.deferred,oversized=report.oversized,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies, oversized or locally unproven rows remain deferred"),
+                            Ok(report) if report.deferred==0 && report.dependency_deferred==0 => tracing::info!(verse_id,examined=report.examined,enqueued=report.enqueued,batches=report.batches,uploads_enqueued=report.uploads_enqueued,"stored scene recovery enqueued; peer delivery is not certified"),
+                            Ok(report) => tracing::warn!(verse_id,examined=report.examined,enqueued=report.enqueued,batches=report.batches,uploads_enqueued=report.uploads_enqueued,deferred=report.deferred,oversized=report.oversized,dependency_deferred=report.dependency_deferred,"stored scene recovery incomplete; dependencies, oversized or locally unproven rows remain deferred"),
                             Err(error) => tracing::warn!(verse_id,"stored scene recovery refused or incomplete: {error:#}"),
                         }
                     }

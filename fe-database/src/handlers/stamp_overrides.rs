@@ -242,6 +242,8 @@ pub(crate) async fn prepare(
             .map(|(_, version, payload)| json!({"row_version":version,"payload":payload}));
         facts.extend(prepared.facts);
     }
+    // Refuse an override that leaves the stamp row unpublishable (a shrinking write passes).
+    super::scene_publication::check_publishable(db, &edit.node_id, actor, Some(&node_state), &state).await?;
     bindings.push((
         "stamp_scopes".into(),
         json!(field_def::property_rule_scopes(&scope)),

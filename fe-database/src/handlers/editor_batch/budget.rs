@@ -350,6 +350,6 @@ pub(super) fn reserve(
         future_proofs,
         future_bindings,
     ))?;
-    anyhow::ensure!(reserved_bytes <= MAX_EDITOR_BATCH_BYTES, "Group save exceeds the complete 4 MiB Undo/Redo lifecycle reservation; use fewer objects or smaller stored property bags");
+    anyhow::ensure!(reserved_bytes <= MAX_EDITOR_BATCH_BYTES, "Group save exceeds the complete 4 MiB {BUDGET_REFUSAL_MARKER}; use fewer objects or smaller stored property bags");
     Ok(reserved_bytes)
 }

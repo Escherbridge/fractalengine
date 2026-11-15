@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 const DIGEST: &str = "crypto::blake3(encoding::base64::encode(encoding::cbor::encode($this)))";
-const ROW_CAP: usize = 96 * 1024;
+/// Per-row CBOR bound on witnessed rows; follows the node limit (a referencing node is read whole).
+const ROW_CAP: usize = fe_sdk::property_schema::MAX_NODE_BYTES + 32 * 1024;
 
 /// Query construction uses only private constants, never caller SQL or selectors.
 fn witness(fields: &str) -> String {

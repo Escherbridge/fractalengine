@@ -226,7 +226,8 @@ async fn issue_local_statement(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    if let Err(error) = crate::field_clock::rejudge::rejudge_local(db, verse_id, &dids).await {
+    // A local statement's grantor is the DB thread's own DID (`rbac` handlers, addressed joins pass `local_did`).
+    if let Err(error) = crate::field_clock::rejudge::rejudge_local(db, verse_id, &dids, Some(caller_did)).await {
         tracing::warn!(verse_id, "clocked row re-judge after a local role statement failed: {error:#}");
     }
     role_grants::publish_statement(repl_tx, blob_store, verse_id, &stmt);

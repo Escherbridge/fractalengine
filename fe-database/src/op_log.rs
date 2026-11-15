@@ -1975,6 +1975,16 @@ mod tests {
                 _=>{db.query("REMOVE EVENT fail_stamp_fact ON TABLE node_log").await.unwrap().check().unwrap();}
             }
         }
+        // Write-time publishable check: an override that pushes the stamp past the own-key limit is refused, nothing written.
+        let mut crowded=stamp_before.as_object().unwrap().clone();
+        for index in 0..520 {crowded.insert(format!("crowd{index}"),serde_json::json!(index));}
+        db.query("UPDATE node SET properties=$p WHERE node_id=$id").bind(("p",serde_json::Value::Object(crowded))).bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();
+        let crowded_input=fe_runtime::messages::StampOverrideEdit{before_properties:crate::handlers::entity_property::get_entity_properties_handler(&db,&stamp_node).await.unwrap(),..stamp_input.clone()};
+        let (ops_before_crowd,history_before_crowd)=(op_log_count(&db).await,crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap());
+        let crowd_refusal=match crate::handlers::stamp_overrides::prepare(&db,&crowded_input,"qa-stamp-crowded","did:qa").await {Ok(prepared)=>crate::handlers::stamp_overrides::commit(&db,prepared).await.map(|_|()).expect_err("over-limit stamp override must be refused"),Err(error)=>error};
+        assert!(format!("{crowd_refusal:#}").contains(crate::handlers::scene_publication::wire::UNPUBLISHABLE),"refusal names the marker: {crowd_refusal:#}");
+        assert_eq!((op_log_count(&db).await,crate::handlers::node_history::latest(&db,&stamp_node).await.unwrap()),(ops_before_crowd,history_before_crowd),"refused override writes nothing");
+        db.query("UPDATE node SET properties=$p WHERE node_id=$id").bind(("p",stamp_before.clone())).bind(("id",stamp_node.clone())).await.unwrap().check().unwrap();
         let prepared=crate::handlers::stamp_overrides::prepare(&db,&stamp_input,"qa-stamp-success","did:qa").await.unwrap();
         let stamp_saved=crate::handlers::stamp_overrides::commit(&db,prepared).await.unwrap();
         assert_eq!(stamp_saved.history_version,4,"one initial baseline and three atomic property facts");
@@ -2364,6 +2374,24 @@ mod tests {
                 serde_json::to_value(&unchanged).unwrap(),
                 serde_json::to_value(&initial).unwrap()
             );
+            // Write-time publishable check: one crowded member past the own-key limit refuses the whole batch, nothing written.
+            let first_before = crate::handlers::entity_property::get_entity_properties_handler(&db, &ids[0]).await.unwrap();
+            let original: Vec<serde_json::Value> = db.query("SELECT VALUE properties FROM node WHERE node_id=$id").bind(("id", ids[1].clone())).await.unwrap().take(0).unwrap();
+            let mut crowded = original[0].as_object().unwrap().clone();
+            for index in 0..520 {
+                crowded.insert(format!("crowd{index}"), serde_json::json!(index));
+            }
+            db.query("UPDATE node SET properties=$p WHERE node_id=$id").bind(("p", serde_json::Value::Object(crowded))).bind(("id", ids[1].clone())).await.unwrap().check().unwrap();
+            let crowded_capture = editor_batch::read(&db, &plugin_scope, "tree-other-petal", &ids, "did:qa").await.unwrap();
+            let operations_before_crowd = op_log_count(&db).await;
+            let crowd_refusal = editor_batch::prepare(&db, &request_for(crowded_capture), "qa-selection-crowded", "did:qa")
+                .await
+                .expect_err("a member past the own-key limit refuses the batch");
+            assert!(format!("{crowd_refusal:#}").contains(crate::handlers::scene_publication::wire::UNPUBLISHABLE), "marker: {crowd_refusal:#}");
+            assert_eq!(op_log_count(&db).await, operations_before_crowd);
+            let first_properties = crate::handlers::entity_property::get_entity_properties_handler(&db, &ids[0]).await.unwrap();
+            assert_eq!(first_properties, first_before, "the healthy member is untouched too");
+            db.query("UPDATE node SET properties=$p WHERE node_id=$id").bind(("p", original[0].clone())).bind(("id", ids[1].clone())).await.unwrap().check().unwrap();
             let prepared = editor_batch::prepare(&db, &request, "qa-selection-properties", "did:qa")
                 .await
                 .unwrap();
@@ -6036,6 +6064,144 @@ mod tests {
             let kept = node_history::snapshot(&source, &judged).await.unwrap().unwrap();
             assert_eq!(kept["properties"]["revoked_wrote"], json!(1), "a post-revoke version never wins: {kept}");
 
+            // database-r2-2: a committed local edit with no stamped version survives a re-judge that demotes
+            // ANOTHER author, and the next publish stamps it (scene_publication/AGENTS.md §rejudge-pending).
+            let (pending_id, _) = node_history::create_object_granted(
+                &source,
+                "scene-p",
+                "Pending",
+                None,
+                [0.0; 3],
+                vec![0.0; 3],
+                vec![1.0; 3],
+                serde_json::Map::new(),
+                "did:qa",
+                &NodeAccessGrant::Local,
+            )
+            .await
+            .unwrap();
+            scene::prepare(&source, &pending_id, "did:qa").await.unwrap().emit(&source, &blobs, &tx).await.unwrap();
+            let mut by_rd: serde_json::Value =
+                serde_json::from_slice(&concrete.bytes_for(&rx.try_recv().unwrap().content_hash).unwrap()).unwrap();
+            let created_hlc: u64 = by_rd["_fe_scene"]["hlc"].as_str().unwrap().parse().unwrap();
+            crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rd", false, 1, Vec::new()))
+                .await
+                .unwrap();
+            by_rd["_fe_scene"]["hlc"] = json!((created_hlc + 50).to_string());
+            by_rd["_fe_scene"]["publisher"] = json!("did:rd");
+            by_rd["properties"]["by_rd"] = json!(1);
+            by_rd["_fe_clock"] = crate::field_clock::wire::encode_own(
+                "did:rd",
+                &[crate::field_clock::wire::FieldVersion {
+                    field: "properties/by_rd".into(),
+                    author: "did:rd".into(),
+                    hlc: created_hlc + 50,
+                    value: Some(json!(1)),
+                    deleted: false,
+                }],
+            );
+            let reports = admissions
+                .apply(&source, "scene-v", "node", &pending_id, &serde_json::to_vec(&by_rd).unwrap(), "did:rd", None)
+                .await;
+            assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied, "{reports:?}");
+            // No sender: the edit is committed and journaled, never stamped.
+            crate::handlers::entity_property::set_entity_property_as(&source, &pending_id, "local_pending", &json!(7), "did:qa")
+                .await
+                .unwrap();
+            // A revoke that predates did:rd's write arrives late, so the re-judge demotes did:rd's key.
+            let window = fe_policy::GrantWindow { role: fe_policy::GrantedRole::Editor, since: 1, until: created_hlc + 45 };
+            crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rd", true, created_hlc + 45, vec![window]))
+                .await
+                .unwrap();
+            assert_eq!(
+                scene::rejudge(&source, "scene-v", &pending_id, &[], "did:qa", None, false).await.unwrap(),
+                scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
+            );
+            let rejudged = node_history::snapshot(&source, &pending_id).await.unwrap().unwrap();
+            assert_eq!(rejudged["properties"]["local_pending"], json!(7), "the unstamped local edit survives: {rejudged}");
+            assert!(rejudged["properties"].get("by_rd").is_none(), "the demoted author's key is dropped: {rejudged}");
+            scene::prepare(&source, &pending_id, "did:qa").await.unwrap().emit(&source, &blobs, &tx).await.unwrap();
+            let republished: serde_json::Value =
+                serde_json::from_slice(&concrete.bytes_for(&rx.try_recv().unwrap().content_hash).unwrap()).unwrap();
+            assert_eq!(republished["properties"]["local_pending"], json!(7));
+            assert!(
+                republished["_fe_clock"]["own"].get("properties/local_pending").is_some(),
+                "the next publish stamps the kept key: {republished}"
+            );
+            // Laundering: a remote key that only appears in a local fact's full after-state is not pending. did:rx's key
+            // wins, the owner edits ANOTHER key, did:rx overwrites its own version unauthorized (stale cached winner).
+            {
+                let (laundered_id, _) = node_history::create_object_granted(
+                    &source,
+                    "scene-p",
+                    "Laundered",
+                    None,
+                    [0.0; 3],
+                    vec![0.0; 3],
+                    vec![1.0; 3],
+                    serde_json::Map::new(),
+                    "did:qa",
+                    &NodeAccessGrant::Local,
+                )
+                .await
+                .unwrap();
+                scene::prepare(&source, &laundered_id, "did:qa").await.unwrap().emit(&source, &blobs, &tx).await.unwrap();
+                let mut by_rx: serde_json::Value =
+                    serde_json::from_slice(&concrete.bytes_for(&rx.try_recv().unwrap().content_hash).unwrap()).unwrap();
+                let laundered_hlc: u64 = by_rx["_fe_scene"]["hlc"].as_str().unwrap().parse().unwrap();
+                crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rx", false, 1, Vec::new()))
+                    .await
+                    .unwrap();
+                let rx_row = |row: &mut serde_json::Value, hlc: u64, value: i64| {
+                    row["_fe_scene"]["hlc"] = json!(hlc.to_string());
+                    row["_fe_scene"]["publisher"] = json!("did:rx");
+                    row["properties"]["by_rx"] = json!(value);
+                    row["_fe_clock"] = crate::field_clock::wire::encode_own(
+                        "did:rx",
+                        &[crate::field_clock::wire::FieldVersion {
+                            field: "properties/by_rx".into(),
+                            author: "did:rx".into(),
+                            hlc,
+                            value: Some(json!(value)),
+                            deleted: false,
+                        }],
+                    );
+                };
+                rx_row(&mut by_rx, laundered_hlc + 50, 1);
+                let reports = admissions
+                    .apply(&source, "scene-v", "node", &laundered_id, &serde_json::to_vec(&by_rx).unwrap(), "did:rx", None)
+                    .await;
+                assert_eq!(reports[0].outcome, ReplicatedRowOutcome::Applied, "{reports:?}");
+                crate::handlers::entity_property::set_entity_property_as(&source, &laundered_id, "local_kept", &json!(9), "did:qa")
+                    .await
+                    .unwrap();
+                let window = fe_policy::GrantWindow { role: fe_policy::GrantedRole::Editor, since: 1, until: laundered_hlc + 60 };
+                crate::role_grants::submit_statement(&source, "scene-v", &editor_statement("did:rx", true, laundered_hlc + 60, vec![window]))
+                    .await
+                    .unwrap();
+                rx_row(&mut by_rx, laundered_hlc + 70, 2);
+                let reports = admissions
+                    .apply(&source, "scene-v", "node", &laundered_id, &serde_json::to_vec(&by_rx).unwrap(), "did:rx", None)
+                    .await;
+                assert_eq!(reports[0].outcome, ReplicatedRowOutcome::NotApplicable, "an unauthorized version never wins: {reports:?}");
+                assert_eq!(
+                    scene::rejudge(&source, "scene-v", &laundered_id, &[], "did:qa", None, false).await.unwrap(),
+                    scene::Rejudged::Restored(ReplicatedRowOutcome::Applied)
+                );
+                let rejudged = node_history::snapshot(&source, &laundered_id).await.unwrap().unwrap();
+                assert!(rejudged["properties"].get("by_rx").is_none(), "no admissible version, no local write: dropped: {rejudged}");
+                assert_eq!(rejudged["properties"]["local_kept"], json!(9), "the local edit survives: {rejudged}");
+                scene::prepare(&source, &laundered_id, "did:qa").await.unwrap().emit(&source, &blobs, &tx).await.unwrap();
+                let republished: serde_json::Value =
+                    serde_json::from_slice(&concrete.bytes_for(&rx.try_recv().unwrap().content_hash).unwrap()).unwrap();
+                let own = &republished["_fe_clock"]["own"];
+                assert!(own.get("properties/local_kept").is_some(), "the local key is stamped: {republished}");
+                assert!(
+                    own.get("properties/by_rx").is_none() && republished["properties"].get("by_rx").is_none(),
+                    "the demoted key is never re-signed by the host: {republished}"
+                );
+            }
+
             // QA-0131: judged by the role held WHEN WRITTEN. did:rc is granted,
             // revoked, writes while revoked, then re-granted: that row stays
             // refused on receipt, on the retry after the re-grant and in a
@@ -7357,27 +7523,49 @@ mod tests {
                 assert!(transferable(third()).await, "a live placement keeps it Verse content");
             }
 
-            // The 1025th candidate refuses before any node prefix is emitted.
+            // Recovery pages past 1024 candidates instead of refusing: every row is examined, none enqueued
+            // here because raw CREATEs carry no local journal proof (§recovery-batches).
             let oversized = probe_db().await;
             crate::schema::apply_all(&oversized).await.unwrap();
             oversized.query("CREATE verse CONTENT {verse_id:'scene-v',name:'v',created_by:'did:qa',created_at:'2026-11-02'}; CREATE fractal CONTENT {fractal_id:'scene-f',verse_id:'scene-v',owner_did:'did:qa',name:'f',created_at:'2026-11-02'}; CREATE petal CONTENT {petal_id:'scene-p',fractal_id:'scene-f',name:'p',node_id:'p',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
             let statements=(0..1025).map(|index|format!("CREATE node SET node_id='limit-{index}',petal_id='scene-p',position=<geometry<point>> [0.0,0.0],rotation=[0.0,0.0,0.0],scale=[1.0,1.0,1.0],created_at='2026-11-02';")).collect::<String>();
             oversized.query(statements).await.unwrap().check().unwrap();
-            assert!(
-                scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("1024")
+            let report = scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
+                .await
+                .unwrap();
+            assert_eq!(
+                (report.examined, report.enqueued, report.deferred, report.batches),
+                (1025, 0, 1025, 0),
+                "the 1025th candidate is paged, not refused; unproven rows stay deferred"
             );
             assert!(rx.try_recv().is_err());
-            // The byte cap is checked across the whole eligible recovery plan before enqueue.
             oversized
                 .query("DELETE node")
                 .await
                 .unwrap()
                 .check()
                 .unwrap();
+            // The node limit: just under it is accepted and published, just over it is refused at write time.
+            let node_limit = fe_sdk::property_schema::MAX_NODE_BYTES;
+            let near_limit = |payload: usize| {
+                json!({"payload":"x".repeat(payload)}).as_object().unwrap().clone()
+            };
+            let refused = node_history::create_object(
+                &oversized, "scene-p", "over-limit", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3],
+                near_limit(node_limit - 16), "did:qa",
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                format!("{refused:#}").contains(node_history::NODE_TOO_LARGE),
+                "a node over the limit is refused before commit: {refused:#}"
+            );
+            node_history::create_object(
+                &oversized, "scene-p", "near-limit", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3],
+                near_limit(node_limit - 4096), "did:qa",
+            )
+            .await
+            .unwrap();
             for index in 0..145 {
                 node_history::create_object(
                     &oversized,
@@ -7387,7 +7575,7 @@ mod tests {
                     [0.0; 3],
                     vec![0.0; 3],
                     vec![1.0; 3],
-                    // 60 KB doubles into _fe_clock (~121 KB row): a near-limit node must fit the row bound; 145 rows pass 8 MiB.
+                    // 60 KB doubles into _fe_clock (~121 KB row); 145 rows plus the near-limit node pass 8 MiB twice.
                     json!({"payload":"x".repeat(60_000)})
                         .as_object()
                         .unwrap()
@@ -7397,16 +7585,160 @@ mod tests {
                 .await
                 .unwrap();
             }
-            assert!(
-                scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("8 MiB")
+            // A verse over the 8 MiB batch budget re-publishes every row across several batches.
+            let report = scene::recover(&oversized, &blobs, Some(&tx), "did:qa", "scene-v")
+                .await
+                .unwrap();
+            assert_eq!(
+                (report.examined, report.enqueued, report.deferred, report.oversized),
+                (146, 146, 0, 0),
+                "nothing is refused or deferred: {report:?}"
             );
+            assert!(report.batches > 1, "more than 8 MiB is sent in more than one batch: {report:?}");
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), 146);
+            assert!(events.iter().all(|event| event.table == "node"));
+            let largest = events
+                .iter()
+                .map(|event| concrete.bytes_for(&event.content_hash).unwrap().len())
+                .max()
+                .unwrap();
             assert!(
-                rx.try_recv().is_err(),
-                "oversized plans never enqueue a misleading prefix"
+                largest > 2 * (node_limit - 4096),
+                "the near-limit node is published with its own-version copy ({largest} bytes)"
+            );
+
+            // Row headroom (§row-bound): a node at the limit made of 500 small properties carries ~50 bytes
+            // more per key in `_fe_clock.own`; it is accepted AND published, its row over the former 2N + 16 KiB.
+            let many: serde_json::Map<String, serde_json::Value> =
+                (0..500).map(|index| (format!("k{index:03}"), json!("y".repeat(118)))).collect();
+            let (many_id, _) = node_history::create_object(
+                &oversized, "scene-p", "many-keys", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3], many, "did:qa",
+            )
+            .await
+            .unwrap();
+            scene::prepare(&oversized, &many_id, "did:qa").await.unwrap().emit(&oversized, &blobs, &tx).await.unwrap();
+            let many_row = concrete.bytes_for(&rx.try_recv().unwrap().content_hash).unwrap();
+            assert!(
+                many_row.len() > 2 * node_limit + 16 * 1024
+                    && many_row.len() <= crate::handlers::scene_publication::wire::MAX_ROW_BYTES,
+                "a many-key node at the limit fits the derived bound ({} bytes)",
+                many_row.len()
+            );
+            // More than 512 replicated keys could never publish: refused at write time, not deferred forever.
+            let too_many: serde_json::Map<String, serde_json::Value> =
+                (0..520).map(|index| (format!("k{index}"), json!(index))).collect();
+            let refused = node_history::create_object(
+                &oversized, "scene-p", "too-many-keys", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3], too_many, "did:qa",
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                format!("{refused:#}").contains(crate::handlers::scene_publication::wire::UNPUBLISHABLE)
+                    && format!("{refused:#}").contains("512"),
+                "a node over the own-key cap is refused before commit: {refused:#}"
+            );
+            assert!(rx.try_recv().is_err());
+
+            // §publish-reclaim: the post-commit publisher drops the node's superseded row blob once the new row is enqueued.
+            let (reclaim_id, _) = node_history::create_object(
+                &oversized, "scene-p", "reclaimed", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3],
+                json!({"color":"red"}).as_object().unwrap().clone(), "did:qa",
+            )
+            .await
+            .unwrap();
+            scene::publish_after_commit(&oversized, &blobs, Some(&tx), "did:qa", &reclaim_id).await.unwrap();
+            let first = rx.try_recv().unwrap().content_hash;
+            crate::handlers::entity_property::set_entity_property_as(&oversized, &reclaim_id, "color", &json!("blue"), "did:qa")
+                .await
+                .unwrap();
+            scene::publish_after_commit(&oversized, &blobs, Some(&tx), "did:qa", &reclaim_id).await.unwrap();
+            let second = rx.try_recv().unwrap().content_hash;
+            assert_ne!(first, second);
+            assert!(!blobs.has_blob(&first), "the superseded row blob is reclaimed");
+            assert!(blobs.has_blob(&second), "the current row blob stays");
+            // Identical content republished: same hash, never deleted.
+            scene::publish_after_commit(&oversized, &blobs, Some(&tx), "did:qa", &reclaim_id).await.unwrap();
+            assert_eq!(rx.try_recv().unwrap().content_hash, second);
+            assert!(blobs.has_blob(&second), "an identical republish keeps its blob");
+            // A hash an asset row also names survives being superseded.
+            oversized
+                .query("CREATE asset CONTENT {asset_id:'reclaim-shared',name:'shared.glb',content_type:'model/gltf-binary',size_bytes:1,content_hash:$hash,created_at:'2026-11-14'}")
+                .bind(("hash", crate::hash_to_hex(&second)))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            crate::handlers::entity_property::set_entity_property_as(&oversized, &reclaim_id, "color", &json!("green"), "did:qa")
+                .await
+                .unwrap();
+            scene::publish_after_commit(&oversized, &blobs, Some(&tx), "did:qa", &reclaim_id).await.unwrap();
+            let third = rx.try_recv().unwrap().content_hash;
+            assert!(blobs.has_blob(&second) && blobs.has_blob(&third), "an asset-referenced hash is never reclaimed");
+
+            // §write-budget at the local door, on an injected clock: a burst passes, sustained large writes are
+            // refused with a retry-after, another author is unaffected, and the window recovers.
+            use crate::handlers::scene_publication::budget::{self, ByteRate, NodeWriteDoor};
+            fn small_budget(_verse: &str) -> ByteRate {
+                ByteRate { burst_bytes: 256 * 1024, bytes_per_second: 32 * 1024 }
+            }
+            let start = std::time::Instant::now();
+            let elapsed = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+            let clock = {
+                let elapsed = elapsed.clone();
+                Box::new(move || start + *elapsed.lock().unwrap())
+            };
+            let mut door = NodeWriteDoor::with(small_budget, clock);
+            let large_write = |index: usize| json!("x".repeat(60_000 - index));
+            for index in 0..2 {
+                door.admit_node(&oversized, &reclaim_id, "did:qa").await.expect("the burst passes");
+                crate::handlers::entity_property::set_entity_property_as(&oversized, &reclaim_id, "payload", &large_write(index), "did:qa")
+                    .await
+                    .unwrap();
+                door.publish(&oversized, &blobs, Some(&tx), "did:qa", &reclaim_id).await;
+                assert_eq!(rx.try_recv().unwrap().record_id, reclaim_id);
+            }
+            let throttled = door.admit_node(&oversized, &reclaim_id, "did:qa").await.unwrap_err();
+            let retry_after = budget::node_write_retry_after_ms(&format!("{throttled:#}"))
+                .expect("a budget refusal carries its retry-after hint");
+            assert!(
+                retry_after > 1_000,
+                "two ~240 KB writes overdraw a 256 KiB burst by seconds at 32 KiB/s: {throttled:#}"
+            );
+            door.admit_node(&oversized, &reclaim_id, "did:other").await.expect("another author keeps its own budget");
+            *elapsed.lock().unwrap() += std::time::Duration::from_millis(retry_after);
+            door.admit_node(&oversized, &reclaim_id, "did:qa").await.expect("the window recovers after the hint");
+            // Production defaults: a ~2 KiB node dragged at 5 writes/s never drains the budget.
+            let (drag_id, _) = node_history::create_object(
+                &oversized, "scene-p", "dragged", None, [0.0; 3], vec![0.0; 3], vec![1.0; 3],
+                json!({"label":"z".repeat(1800)}).as_object().unwrap().clone(), "did:qa",
+            )
+            .await
+            .unwrap();
+            let drag_elapsed = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+            let drag_clock = {
+                let drag_elapsed = drag_elapsed.clone();
+                Box::new(move || start + *drag_elapsed.lock().unwrap())
+            };
+            let mut drag_door = NodeWriteDoor::with(budget::node_write_budget_for_verse, drag_clock);
+            let mut balances = Vec::new();
+            for step in 0..40u16 {
+                drag_door.admit_node(&oversized, &drag_id, "did:qa").await.expect("a drag is never throttled");
+                crate::handlers::transform::update_node_transform_as(
+                    &oversized, &drag_id, [f32::from(step) * 0.01, 0.0, 0.0], [0.0; 3], [1.0; 3], "did:qa",
+                )
+                .await
+                .unwrap();
+                drag_door.charge_deferred(&oversized, &drag_id).await;
+                drag_door.publish_deferred(&oversized, &blobs, Some(&tx), "did:qa", vec![drag_id.clone()]).await;
+                assert_eq!(rx.try_recv().unwrap().record_id, drag_id);
+                *drag_elapsed.lock().unwrap() += std::time::Duration::from_millis(200);
+                balances.push(drag_door.balance("scene-v", "did:qa"));
+            }
+            assert!(
+                balances[39] >= balances[0],
+                "a 2 KiB drag at 5/s is charged less than the sustained rate refills: {:?}",
+                (balances[0], balances[39])
             );
         }
 

@@ -9,7 +9,7 @@ use crate::repo::Db;
 use fe_policy::RoleLevel;
 use fe_runtime::messages::{DeferralReason, ReplicatedRowOutcome};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Attempts of one apply when a fence finds the row's clock state moved underneath it.
 pub(super) const FENCE_ATTEMPTS: usize = 3;
@@ -552,12 +552,14 @@ impl ColumnWrites {
 
 /// Re-judge one stored verse/fractal/petal row from its stored versions alone; see field_clock/AGENTS.md §rejudge.
 /// `Applied` when a column changed; winners may be demoted, but a required column never loses its last value.
+/// `local_did` judges unstamped local values (field_clock/AGENTS.md §rejudge-pending); `None` keeps them.
 pub(crate) async fn rematerialize(
     db: &Db,
     verse_id: &str,
     table: &str,
     rid: &str,
     view: &VerseView,
+    local_did: Option<&str>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     let Some(shape) = TableShape::of(table) else {
         anyhow::bail!("{table} is not a clocked hierarchy table");
@@ -565,7 +567,7 @@ pub(crate) async fn rematerialize(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        match rematerialize_once(db, verse_id, table, &shape, rid, view).await {
+        match rematerialize_once(db, verse_id, table, &shape, rid, view, local_did).await {
             Err(error) if attempt < FENCE_ATTEMPTS && is_fence_error(&error) => {
                 tracing::debug!(verse_id, table, rid, attempt, "clocked row moved under the re-judge; re-reading");
             }
@@ -588,6 +590,35 @@ async fn stored_scope(db: &Db, verse_id: &str, table: &str, rid: &str) -> anyhow
     Ok(scope.filter(|scope| crate::scope::parse_scope(scope).is_ok_and(|parts| parts.verse_id == verse_id)))
 }
 
+/// Clock keys whose committed column differs from its cached winner's value: a local write no publish has stamped yet.
+fn unstamped_local_keys(
+    table: &str,
+    row: &Value,
+    cached: &[FieldVersion],
+    versions: &BTreeMap<(String, String), FieldVersion>,
+) -> BTreeSet<String> {
+    let local: BTreeMap<String, Value> = wire::keys_of(table, row)
+        .into_iter()
+        .filter(|(field, _)| wire::is_clock_key(table, field))
+        .map(|(field, value)| (field, merge::canonical_value(&value)))
+        .collect();
+    let mut pending = BTreeSet::new();
+    for winner in cached {
+        // A cached winner whose version is gone is stale; nothing proves what was published.
+        let Some(version) = versions
+            .get(&(winner.field.clone(), winner.author.clone()))
+            .filter(|version| version.hlc == winner.hlc)
+        else {
+            continue;
+        };
+        let published = version.value.as_ref().filter(|_| !version.deleted).map(merge::canonical_value);
+        if local.get(&winner.field) != published.as_ref() {
+            pending.insert(winner.field.clone());
+        }
+    }
+    pending
+}
+
 /// One read-judge-write re-judge pass under the same fences as [`apply_once`].
 async fn rematerialize_once(
     db: &Db,
@@ -596,10 +627,11 @@ async fn rematerialize_once(
     shape: &TableShape,
     rid: &str,
     view: &VerseView,
+    local_did: Option<&str>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
-    if lookup_row(db, table, shape.id_field, rid, "* OMIT id").await?.is_none() {
+    let Some(stored_row) = lookup_row(db, table, shape.id_field, rid, "* OMIT id").await? else {
         return Ok(ReplicatedRowOutcome::NotApplicable);
-    }
+    };
     let Some(scope) = stored_scope(db, verse_id, table, rid).await? else {
         return Ok(ReplicatedRowOutcome::NotApplicable);
     };
@@ -640,10 +672,26 @@ async fn rematerialize_once(
     if changed.is_empty() && winners.len() == cached.len() {
         return Ok(ReplicatedRowOutcome::NotApplicable);
     }
+    // An unstamped local value keeps its column for the next publish to stamp, unless the local author
+    // could not stamp it now (the stamp is its write; field_clock/AGENTS.md §rejudge-pending).
+    // Judged at the current statements: hierarchy writes record no (actor, HLC) to judge instead (same section, Residual).
+    let pending: BTreeSet<String> = unstamped_local_keys(table, &stored_row, &cached, &versions)
+        .into_iter()
+        .filter(|field| {
+            local_did.is_none_or(|did| {
+                view.admits_at(
+                    table,
+                    &scope,
+                    &FieldVersion { field: field.clone(), author: did.to_owned(), hlc: u64::MAX, value: None, deleted: true },
+                )
+            })
+        })
+        .collect();
+    let changed: Vec<&FieldVersion> = changed.into_iter().filter(|winner| !pending.contains(&winner.field)).collect();
     let mut writes = ColumnWrites::default();
     writes.add_winners(shape, &changed, &versions);
     // A demoted key (no admissible version left) loses its column.
-    for old in cached.iter().filter(|old| !winners.contains_key(&old.field)) {
+    for old in cached.iter().filter(|old| !winners.contains_key(&old.field) && !pending.contains(&old.field)) {
         if is_plain_identifier(&old.field) && !writes.unset.contains(&old.field) {
             writes.unset.push(old.field.clone());
         }

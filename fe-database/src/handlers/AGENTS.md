@@ -19,11 +19,11 @@ Prepared writes check it again immediately before invoking the ordinary atomic
 commit helper. That check admits the transaction; later revocation does not
 pretend to cancel an already committing transaction or change its true receipt.
 
-Structured queries read at most 1,025 candidates in deterministic node-ID order,
-with optional exact name narrowing. More than 1,024 candidates or 2 MiB refuses
-explicitly. The shared NodeQuery.matches predicate runs before the final page
-limit; Surreal numeric equality cannot admit float/int mismatches or hide a
-later exact match behind a coerced first result. Overflow returns no partial page.
+Structured queries are two-phase and byte-bounded (§plugin-host-bounds): phase one lists
+at most 1,025 candidate ids, never rows or their encodings; phase two loads only the
+snapshot columns in fixed-count chunks, measured as read. The shared NodeQuery.matches
+predicate decides every row (SurrealQL equality is only a superset prefilter), so
+numeric coercion cannot admit a float/int mismatch.
 
 ## local-catalog
 
@@ -203,6 +203,79 @@ every peer replicates the row, so no client-side Euler convention can diverge be
 snapshot never mixes rows from two moments. The snapshot document layout is owned by the format crate (see
 `fe-format/src/AGENTS.md` §petal-snapshot when that section lands); Hexon-side readers reach this seam through
 `fe-hexon/src/AGENTS.md` §unified-format.
+
+## export-bound
+
+`export_petal_snapshot` used to read every `node_log` row of every petal node (each fact carries a full node state; a
+baseline twice), so 100 nodes at the 64 KiB node limit with 50 edits each were ~640 MiB of history, far past what
+import reads (`fe_format::limits`: 64 MiB per member, 1 GiB total, and fe-api's 256 MiB upload). Now
+(`export_petal_snapshot_with` + `SnapshotExportOptions`):
+
+- The transaction's journal slot reads only `{node_id, max(row_version)}` per node (`JOURNAL_CEILINGS`), or nothing
+  (`JOURNAL_NONE`, a record lookup) when `history_per_node` is 0. After commit, `collect_bounded_history` reads each
+  node's newest `history_per_node` facts at or below that ceiling (one indexed query per node, nodes in id order),
+  stopping at `history_bytes`; facts newer than the snapshot never enter it. Default 8 per node within 32 MiB
+  (`EXPORT_HISTORY_PER_NODE`, `EXPORT_HISTORY_BYTES`); kept facts are sorted `node_id, row_version` as before.
+  `DbCommand::ExportPetalSnapshot { history_per_node }` overrides the depth: the `lib.rs` arm passes
+  `history_per_node.unwrap_or(EXPORT_HISTORY_PER_NODE)` clamped to `fe_runtime::messages::EXPORT_HISTORY_PER_NODE_MAX`
+  (256) into `export_petal_snapshot_with` (fe-api's `?history=N`, which refuses more with 400).
+- `importable_size` refuses, before the `ExportPetal` audit is written, an archive whose state table or op-log member
+  exceeds `member_limit_bytes` or whose members plus asset `size_bytes` exceed `total_limit_bytes`; the error starts
+  with `EXPORT_NOT_IMPORTABLE`, which fe-api maps to 413.
+- **Is old history needed?** Not for correctness. An attributed import writes one fresh baseline fact per node
+  (§petal-snapshot-replication), which is the publication proof and the start of the node's new coverage; undo never
+  reaches across an import (its guard compares the latest fact); imported facts only serve `state_at`/history reads of
+  pre-import versions. The smallest correct default is therefore 0 facts. The default keeps a short recent tail (8)
+  for audit continuity because it costs at most 32 MiB and stays importable.
+- **Still unbounded:** the node rows themselves. `nodes.json` passes the 64 MiB member limit at ~1 000 nodes of the
+  64 KiB limit, so such a petal is refused at export with a clear error instead of producing an unimportable file.
+
+## hierarchy-projection
+
+`load_hierarchy_handler` (GUI tree, `GET /api/v1/hierarchy` and MCP `get_hierarchy` via `ReadHierarchy`, the relay,
+`asset_backfill`) reads `node_id, petal_id, display_name, asset_id, position, elevation, rotation, scale, created_at`
+for nodes, `fractal_id, verse_id, name, view_hidden, created_at` for fractals and `petal_id, fractal_id, name,
+view_hidden, render_distance, created_at` for petals; verses keep `SELECT *` (few rows; `from_verse_row` reads the
+`ts_*` columns). Every consumer receives the typed `VerseHierarchyData` built inside the handler, so no consumer
+can read a dropped column (`properties`, `_fe_clock`, `terrain`, `bounds`, …). `created_at` is selected because
+SurrealDB 3 refuses an ORDER BY field the projection lacks. `load_nodes_by_petal_handler` (WS lag snapshots,
+`format.rs` scene reads) projects the `NodeDto` columns the same way. Worst case for 10 000 nodes at the node
+limit: before ≈ 640 MiB of properties per load, now ≈ 2–3 MB.
+
+## history-paging
+
+`read_granted` (page mode) fills a page in `HISTORY_FETCH_ROWS` (8) reads and ends it at `limit` entries or once the
+serialized rows reach `HISTORY_PAGE_BYTES` (4 MiB), always with at least one entry; `next_after_version` then names
+the last returned version. Before: up to 200 rows of ~128 KiB each (≈ 25 MiB) per page, over the API's 8 MiB cap.
+
+## history-replay
+
+Every journal fact stores the full state after it (`payload.after_state`; a baseline also `payload.state`). `replay`
+no longer reduces each fact: it still walks `(baseline, target]` to keep every availability outcome (scope,
+contiguity, journal version, atomic batches, supported operation), but reads light facts (`LIGHT_FACT_SELECT`:
+identity, scope and receipt fields, payload key presence via `object::keys(payload)`, no states or change data;
+`light_fact` rebuilds the payload with the same key presence) and then returns the target's stored `after_state`
+(one row; the baseline's own `state` when the target is the baseline). The old reducer only ever returned
+`available` when each step's reduced state equalled that stored `after_state`, so results are identical for
+every journal the writers produce; a hand-edited fact whose `after_state` disagrees with its change is no longer
+detected (`incomplete_interval` is now only a missing target state). `atomic_save` reads its ≤ 201 batch facts
+the same light way. Cost of one `state_at` over 10 000 facts: before ≈ 10 000 × 128 KiB ≈ 1.25 GB on the DB
+thread; now ≈ 10 000 × ~400 B ≈ 4 MB plus one state.
+
+**Journal retention (report only; no rule exists).** Every edit stores a full after-state (≤ 64 KiB) plus its
+change (≤ 64 KiB) forever: 10 000 nodes × 50 edits is up to ~64 GB at the node limit (~1 GB at 1 KiB nodes). What
+each reader needs from old rows:
+- **Publication proof** (`scene_publication::prepare`, `node_history::latest`): only the latest fact per node
+  (10 000 × ≤ 128 KiB ≈ 1.25 GB worst).
+- **Undo** (`checked_mutation`, `editor_batch/capture`, `plugin_host`): the latest fact per node (its guard compares
+  it) and the facts of the edits still on the GUI undo stack (`fe-ui/src/undo.rs` `MAX_ENTRIES` = 50 per session),
+  found by `editor_request_id`.
+- **`state_at` / history pages:** the target fact and every fact back to its newest baseline (light reads); anything
+  older is only needed to answer for older versions. Trimming must leave a fresh baseline at the cut, or reads
+  report `incomplete_interval`/`before_coverage` for the rest.
+- **Snapshot export:** the newest 8 per node within 32 MiB by default (§export-bound).
+So a retention rule of "newest baseline + the facts after it, never fewer than the latest fact and the undo
+window" keeps every current consumer working; anything older is audit history only.
 
 ## atomic-replay
 
@@ -577,7 +650,7 @@ so different imports with one digest cannot borrow proofs or starve one another.
 
 scene_asset_audit is a fixed read-only node-bound witness, independent of adoption review/apply and current-read/transfer demand. No file IO, BlobStore, publish/repair, journal, operation commit or migration helper is called. The actual serialized DB owner resolves local DID. Both the verified API subject and actual local DID must currently be stored Owners at the target's actual complete ancestry; token scope must contain it and the token ceiling must be Owner. Disjoint sealed scope/role guards are checked in the final transaction. All asset node references, including retained tombstones, must share the same Petal; exact node-identity guards reject duplicate IDs elsewhere. This yields a point-in-time authority/state witness at the final read transaction, not continuous authority after return.
 
-Fixed statements use bound IDs, node/asset singleton probes2, complete node-reference probe257 (256 maximum), model/operation probes2 (one maximum), and payload existence probe1. Native type::is_none/type::is_null flags are captured alongside row digests, before JSON conversion. The private witness projection refuses native CBOR rows over96KiB before projecting their allowlisted values. Whole-row BLAKE3(base64(native CBOR)) digests remain server-typed strings; only digest/string sets cross final equality guards, avoiding NONE/NULL and numeric-type loss in JSON binds. Unknown full-row fields affect the digest but never the public projection. All queries check every result/error before interpreting absence. SQL data reads have2s statement timeouts, authority/ancestry calls and the final fence query have2s await bounds, and the whole handler shares the original8s deadline. The assembled final script+bindings cannot exceed4MiB; the serialized DTO cannot exceed256KiB. Overflow refuses without a prefix.
+Fixed statements use bound IDs, node/asset singleton probes2, complete node-reference probe257 (256 maximum), model/operation probes2 (one maximum), and payload existence probe1. Native type::is_none/type::is_null flags are captured alongside row digests, before JSON conversion. The private witness projection refuses native CBOR rows over `ROW_CAP` (`MAX_NODE_BYTES` + 32 KiB = 96 KiB, so a full-size referencing node is still witnessed) before projecting their allowlisted values. Whole-row BLAKE3(base64(native CBOR)) digests remain server-typed strings; only digest/string sets cross final equality guards, avoiding NONE/NULL and numeric-type loss in JSON binds. Unknown full-row fields affect the digest but never the public projection. All queries check every result/error before interpreting absence. SQL data reads have2s statement timeouts, authority/ancestry calls and the final fence query have2s await bounds, and the whole handler shares the original8s deadline. The assembled final script+bindings cannot exceed4MiB; the serialized DTO cannot exceed256KiB. Overflow refuses without a prefix.
 
 No operation ID means a strict baseline: owner/anchor/provenance must each be native NONE and the complete asset SceneAssetAdopted set must be empty. NULL is different evidence and refuses that baseline. With an ID, exactly one asset adoption must match it, the captured reference set must include its origin node, and stored asset/provenance/op scope/hash/MIME/size/kind/op/adopter/RFC3339 time must agree. The origin can be another reference. The asset owner remains native absent and anchor equals the actual Petal. Full native provenance digests also agree, including unexposed fields/types. Missing/duplicate/malformed/mismatched proof refuses without a reconstructed receipt. Final guards cover target/asset/full reference and semantic-identity sets/model/payload absence/complete operation set plus authority and ancestry. No durable writes or op/history counters are part of this GET.
 
@@ -663,8 +736,299 @@ notes:
 
 `petal_snapshot.rs` exports and imports only data op types (`IMPORTABLE_OP_TYPES`); role, session, audit and elevated-query rows never travel, so an archive cannot plant a grant. Imported `node_id`s are bounded to 128 chars of `[A-Za-z0-9_#.:-]` (ULIDs and `<path>#inst-<n>` stamp ids). Creation and local/API terrain writes are strict on scale (`> 0`, finite after the f32 cast, `world_scale` in the global range); inbound terrain reads stay tolerant.
 
-**Quarantine.** Live op_log rows are authority: group-lifecycle receipts (`visibility_groups`, `editor_batch/groups`), tombstone proofs looked up by `lamport_clock` alone (`scene_publication/publisher`), request-id and adoption markers. `EditorTransaction` and `NodeTombstoned` are both ordinary data and proofs, so no op-type allow-list can separate them. Imported history therefore lands in `op_log_imported` (original row plus `source_id`, `import_petal_id`, `import_id`, `correlation_id`, `imported_by`), which no proof or marker lookup reads; export merges it back by lamport with `id = source_id`, so export → import → export stays a fixed point (FR-9). Op-log marker collision guards were dropped (nothing live to shadow); node and reading identity guards stay. Leftover quarantined rows for a petal id refuse a re-import like any other orphan row. `imported_by` is the importing API token's DID (`DbCommand::ImportPetalSnapshot.actor`, `petal_snapshot.rs` ~607-609); any value the archive carries is removed first, an empty or over-long actor is not stored, and the column is dropped on export (`QUARANTINE_COLUMNS`, `petal_snapshot.rs` ~175). The `ImportPetalSnapshot` arm (`lib.rs` ~2392) refreshes the GUI hierarchy with a local read after a successful import and never publishes the restored rows.
+**Quarantine.** Live op_log rows are authority: group-lifecycle receipts (`visibility_groups`, `editor_batch/groups`), tombstone proofs looked up by `lamport_clock` alone (`scene_publication/publisher`), request-id and adoption markers. `EditorTransaction` and `NodeTombstoned` are both ordinary data and proofs, so no op-type allow-list can separate them. Imported history therefore lands in `op_log_imported` (original row plus `source_id`, `import_petal_id`, `import_id`, `correlation_id`, `imported_by`), which no proof or marker lookup reads; export merges it back by lamport with `id = source_id`, so export → import → export stays a fixed point (FR-9). Op-log marker collision guards were dropped (nothing live to shadow); node and reading identity guards stay. Leftover quarantined rows for a petal id refuse a re-import like any other orphan row. `imported_by` is the importing API token's DID (`DbCommand::ImportPetalSnapshot.actor`, `petal_snapshot.rs` ~607-609); any value the archive carries is removed first, an empty or over-long actor is not stored, and the column is dropped on export (`QUARANTINE_COLUMNS`, `petal_snapshot.rs` ~175). The `ImportPetalSnapshot` arm (`lib.rs` ~2392) refreshes the GUI hierarchy with a local read after a successful import; publication is §petal-snapshot-replication.
 
 **Snapshot import trust (round 4/5 review).** (1) `field_def_id` is a guarded identity like node and reading ids: an import whose field_def_id already exists locally is refused, and a duplicate inside the archive is invalid. The table has no unique index, and `field_def.rs` updates by that id, so a planted twin could be rewritten from another verse. `field_def.rs` (`unique_field_def_row`) additionally refuses an id held by several rows and pins every UPDATE/DELETE with `AND scope = <the row's stored scope>`. (2) Imported `asset` rows drop archive `owner_did`, `publication_provenance` and the scene-asset marker (the replicated-asset rule, `replicated_row.rs`: the upload quota sums `size_bytes` by `owner_did`), and a negative or non-integer `size_bytes` becomes 0; the archive carries no blob length to re-derive it from. A positive size is kept as the replicated-asset path keeps it (`replicated_row.rs` rejects only absent or negative sizes); it is informational for an ownerless row and no quota sums it. A present `petal_id` anchor is overwritten with the imported petal (an archive could otherwise attach its bytes to another petal's asset reach); overwrite rather than refuse, because a legitimate asset may be anchored to the petal it was uploaded from. (3) Export dedups op-log rows by record id with the live row winning, so a re-imported petal never yields equal adjacent lamports from its own live and quarantined copies; equal lamports on distinct ids stay possible and are refused by the format check. A store that already holds two rows with one field_def_id from before this fix refuses updates to both until the imported petal is deleted (its delete cleans its scope).
 
 **Import bounds.** Every imported node passes `object_creation::is_admissible_transform`, the same rule creation applies (position and elevation finite after the f32 cast, finite 3/4-component rotation, three positive f32-finite scale components): the hierarchy loader casts with a bare `as f32`, and an infinite transform in a `panic=abort` app is a crash.
+
+## admission-basis
+
+Invariant (database-r2-1): **an inbound replicated write is applied only if some stage positively judged its
+author's authority for that write; no stage assumes another stage did.** `replicated_row.rs` makes this a
+value: `admit_inbound_row` returns `Admission::Allow(Basis)`, and every writer checks the basis it needs.
+
+| Basis | Produced by | Writers that accept it |
+|---|---|---|
+| `RoleGate` | `role_gate` (the author's current role at every gated scope) | every writer, including the legacy node merge (`apply_node_row`, `legacy_node_row_provable`) |
+| `Intrinsic` | first manifest (TOFU), self-signed enrolment, no-op entries | their own writers; never the legacy node merge |
+| `MembershipFloor` | `clocked_membership_floor` (owner, or named in an admitted or held statement) | per-key judges only: `apply_clocked_static_row`, or `apply_complete` for a node row; `dispatch_by_mode` denies it everywhere else |
+
+Which gate a row takes (`clock_shape`, using the per-key judge's own reader `field_clock::parse_own`):
+
+- No `_fe_clock` (or `null`): `role_gate`. Pre-upgrade peers' markerless rows stay here, as before.
+- `_fe_clock` the strictest reader refuses (not a `{v:1, author, own}` object, an `author` other than the
+  transport-attested entry author, a bad key or HLC): **denied** at admission.
+- A valid clock with an empty `own`, or a node row without the `_fe_scene` marker key: `role_gate`. A markerless
+  node row reaches `apply_complete`'s legacy `None` (every tombstone, and a live row of a node with no stored scene
+  clock), and the legacy merge judges nothing itself: `authorized_at_write` deliberately passes a sub-Editor author
+  and leaves that case to the current-role gate. A Viewer is therefore `Deferred(AuthorRole)`, an Editor applies.
+- A valid non-empty clock on a verse/fractal/petal row, or on a node row carrying `_fe_scene`: the membership
+  floor. `apply_complete` never returns `None` once the marker key is present (a bad marker is denied), so the
+  per-key write-time judge (QA-0165) decides every version, and a demoted author's earlier versions still reach it
+  (CLOCK-07).
+
+The marker rule duplicates the first line of `SceneClock::from_marker`; if the two ever drift, the basis check in
+`legacy_node_row_provable` and `apply_row_mode` still denies a floor-admitted row at the legacy writer.
+
+## write-budget
+
+**Extensions.** An extension's tick flush writes as the local DID, so it is the local author's write:
+`plugin_host::flush_through_door` admits a batch with ops through `NodeWriteDoor::admit_petal(petal, local DID)`
+before any work (over budget: the whole batch is refused, `PluginRefusal::Backend("node write budget exceeded; retry
+after N ms")`, which the guest sees as `host-error::backend` with the retry hint) and after the commit charges each
+node through `publish` / `charge_deferred` exactly like a GUI write. A readings-only flush is not a node write and is
+not admitted. `plugin_host::flush` (no door) is the uncharged form kept until `lib.rs`'s `PluginCommit` arm switches.
+
+Before 2026-11-14 nothing limited how fast an authorized user wrote node data: one 64 KiB node rewritten five
+times a second grew the writer's disk (journal plus one published row blob per edit) and every peer's by
+gigabytes per hour. Code: `scene_publication/budget.rs`; reclaim of published row blobs is
+`scene_publication/AGENTS.md` §publish-reclaim.
+
+**Door.** `NodeWriteDoor` lives on the DB thread (`lib.rs`, next to `InboundAdmissions`), in memory, no table.
+Every local user node-data command passes it whatever its source (GUI, REST, MCP, WebSocket): `CreateNode`,
+`CreateNodeWithAsset`, `CreateObject`, `UpdateNodeTransform` (the WebSocket 200 ms save), `UpdateNodeUrl`,
+`SetNodeProperty`, `DeleteNodeProperty`, `ClearNodeProperties`, `CommitNodeMutation`, `CommitCheckedNodeMutation`,
+`CommitCheckedEditorBatch`, `CommitStampOverrides`, `PromoteCheckedStamp`, `PromoteInstance`, `RenameNode`,
+`DuplicateNode`, `SetNodeView`. Before the handler runs, `admit_*` refuses when the author's bucket for that verse
+is not positive. After the commit, `publish` charges what the commit actually cost, measured, never a flat fee:
+- the journal facts of that commit (every `node_log` row at the latest HLC, CBOR size as stored), to each fact's
+  `source_did`;
+- the published wire row (`Published.bytes`, the bytes put in the blob store and sent), to the edit's cause (the
+  journal `source_did` the row publishes).
+A transform's publication is deferred by the lane (QA-0161): `charge_deferred` charges its journal fact now and
+`publish_deferred` charges the row when it is sent. Because charges are measured, any later saving in what an
+edit stores or sends (for example a smaller transform-only row) lowers its charge with no budget change.
+Not measured: the commit's `op_log` intention (it repeats a property set's value; `op_log` has no index on
+`lamport_clock`, so reading it back per write would scan the table). The arithmetic below undercounts a
+property set by that copy.
+
+**Bucket.** A token bucket in bytes per (verse, author DID): `burst_bytes` available at once, refilled at
+`bytes_per_second`. A write is admitted while the balance is positive and charged afterwards, so the balance may
+go negative by one write; the refusal's retry-after is the time to refill above zero.
+
+| Constant | Value |
+|---|---|
+| `LOCAL_BURST_BYTES` | 8 MiB |
+| `LOCAL_RATE_BYTES_PER_SECOND` | 64 KiB/s |
+| `INBOUND_BURST_BYTES` | 16 MiB |
+| `INBOUND_RATE_BYTES_PER_SECOND` | 256 KiB/s |
+| `inbound_admissions::DEFERRED_BYTES_PER_VERSE` / `_PER_AUTHOR` | 64 MiB / 16 MiB |
+
+Arithmetic (per write: journal fact = after-state + data + ~0.4 KiB; wire row = node + own copy + ~0.5 KiB):
+- A ~2 KiB node dragged at 5 writes/s: ~2.5 KiB journal + ~4.9 KiB row = ~7.4 KiB per write, ~37 KiB/s, under
+  the 64 KiB/s refill: passes indefinitely (the op_log journey drives 40 drag writes and checks the balance
+  does not fall).
+- A 64 KiB node rewritten by property set at 5/s: ~129 KiB journal (value twice) + ~129 KiB row = ~258 KiB per
+  write, ~1.29 MiB/s; the 8 MiB burst lasts ~6.7 s (~33 writes), then about one write every 4 s.
+- A 64 KiB node moved at 5/s: ~65 KiB journal + ~129 KiB row = ~194 KiB per write; refused after ~9 s, then
+  about one write every 3 s.
+- Normal editing: pasting 500 small nodes is ~3.7 MiB (inside the burst); 68 half-limit (32 KiB) property
+  writes back to back, as the history-paging journey does, are ~4.4 MiB of journal; a 200-node selection transform
+  committed once is ~1.5 MiB. Dragging a 200-node selection with a commit per frame would be refused within a
+  second; the checked editor batch commits once per gesture.
+- Ceiling after the budget: 64 KiB/s = 225 MiB per hour per author per verse of stored-plus-published bytes
+  (was ~3.4 GiB/h for the 64 KiB transform loop). Only the journal part of it stays on the writer's disk.
+
+**Per-verse setting.** `budget::node_write_budget_for_verse(verse_id)` (and `inbound_node_budget_for_verse`) is
+the single place that returns a verse's rate; today the defaults. A `verse_settings` column can feed it later
+without a redesign (the door already keys buckets by verse).
+
+**Refusal.** The error text starts with `NODE_WRITE_BUDGET_EXCEEDED` ("node write budget exceeded") and goes on
+`; retry after <ms> ms`; both are re-exported at the crate root with `node_write_retry_after_ms(&str)`. Each arm
+replies through its ordinary failure path (`RequestFailed`/`Error` with the arm's prefix, `TransformFailed`
+rollback for a transform, the URL outcome keeps the budget text), so the GUI scene-write door sees a refusal
+and the API can map the prefix to 429 with `Retry-After`. `SceneChange::TransformFailed.retry_after_ms` is
+`node_write_retry_after_ms` of the error (`lib.rs` `UpdateNodeTransform` arm): `Some` only for a budget refusal.
+
+**Not charged and not admitted** (system writes, or charged elsewhere): replica-open recovery and republish,
+re-judge, inbound applies (their own budget below), `ImportGltf` (asset upload quota),
+`AdoptSceneAsset`, deletes and tombstones (they end a node), plugin batches (`PluginCommit`, bounded by the
+plugin host), seeding and reconcile. The owner is not exempt: a runaway local script is the realistic case.
+
+**Imports (2026-11-14).** A petal snapshot import is admitted and charged like any local node write, to the
+importing API token's DID (`ImportPetalSnapshot.actor`), because every receiver charges the rows it publishes to
+this HOST's DID: without a local charge, one Manager repeating imports with fresh petal ids could empty the host's
+inbound allowance on every peer and defer every other local user's edits from this host.
+- Admission: `import_petal_snapshot_correlated` calls `NodeWriteDoor::admit_scope` with the destination fractal's
+  scope after resolving it and before validating or writing anything. A refusal is `ImportError::WriteBudget`; the
+  reply is `RequestFailed` keeping the `node write budget exceeded; retry after <ms> ms` text, which fe-api turns
+  into 429 + `Retry-After` (`rest::write_budget_response`).
+- Charge, after commit (`publish_imported_petal_through`, the DB thread's own door): the restored archive journal
+  facts (CBOR bytes of every `node_log` row carrying this import's `archive_import_id`), then per node the import
+  fact plus the published wire row through `NodeWriteDoor::publish`. Nodes left to recovery (no sender, full
+  queue) are charged their import fact only (`charge_committed`); recovery itself stays uncharged.
+- Size against the burst: an import is admitted while the importer's balance is positive and charged in full after,
+  so an import larger than the 8 MiB burst still succeeds and leaves the importer in debt; the importer's next node
+  write or import in that verse waits until the 64 KiB/s refill brings the balance above zero. Numbers: a 100-node
+  petal of 50 KB nodes charges ~10 MB of facts + ~10 MB of rows, leaving ~-11.6 MB, about 3 minutes; the largest
+  importable petal (~1 000 nodes at the 64 KiB node limit, plus at most 32 MiB of default-depth history) charges about
+  ~290 MiB, about 75 minutes of that importer's refill. Steady state per importer is 64 KiB/s, a quarter of the
+  256 KiB/s inbound refill receivers grant this host, so imports alone cannot keep the host's inbound bucket empty;
+  one very large import does use the receivers' 16 MiB inbound burst once and defers this host's other rows there
+  until it drains.
+- Not charged: the petal row (one row, at most `MAX_NODE_BYTES`) and the quarantined op-log copy.
+- Test seam: `petal_snapshot::ImportWriteBudget` (`frozen()`, `balance()`) wraps a door for the public
+  `import_petal_snapshot_publishable` / `publish_imported_petal`; journey `petal_snapshot_export_then_import_journey`.
+
+**Receiver side.** A hostile-but-authorized remote Editor is not behind the local door, so
+`InboundAdmissions::run_budgeted` keeps a second `ByteBudgets` per (verse, author) for applied inbound `node`
+rows, charged with the row bytes. An over-budget row is not run: it is `Deferred(AuthorBudget { did: author })`
+(a typed variant since 2026-11-14; it replaced a `Parent { table: "_fe_write_budget" }` sentinel, so no parent
+landing can ever match it) and held in the existing queue, keyed by (verse, table, record, author), so a
+node rewritten in a loop holds only its latest version. `budget_retry_due`/`retry_budget` retry it once the
+bucket refills: on the next inbound delivery, and from the DB loop while the lane is idle (it sleeps in 20 ms
+steps and stops at the first command). Beside the entry caps (4,096 per verse, 512 per author) the queue now
+caps held bytes (64 MiB per verse, 16 MiB per author) with the same drop-oldest policy and the same
+`deferred_admission_drop_count` counter; a dropped row is replayed by the next replica open. A replica-open
+replay of a large Verse is delayed past 16 MiB per author, never dropped below the byte caps.
+
+## petal-snapshot-replication
+
+Decided 2026-11-14 ("imports replicate to peers"): after an import commits, the whole verse sees the petal as if this host
+had created it. The snapshot's own clocks and authors are untrusted input. They never reach the wire.
+
+- **Authorship.** The only authenticated identity on the wire is the iroh entry author, which is this host's DID.
+  `field_clock::wire::parse_own` rejects an `_fe_clock.author` that differs from it, so the host is the replication
+  author of every imported row. The importing API token's DID (`DbCommand::ImportPetalSnapshot.actor`) is the
+  operation actor: `source_did` of the import journal facts, `imported_by` on quarantined history, and `owner_did` of
+  the assets the import introduces. This is the same split a live REST create has (scene_publication/AGENTS.md
+  "Authority and provenance").
+- **Clock.** `import_petal_snapshot_correlated` first advances the process HLC past every restored clock, then takes ONE
+  fresh import HLC. That HLC stamps the node journal facts and the petal's own versions, so every imported key
+  orders after anything the archive carried and before every later local edit.
+- **Nodes.** Inside the restore transaction, each node gets one fresh `node_log` fact: `op: baseline`,
+  `coverage_reason: petal_imported` (`IMPORT_COVERAGE_REASON`), `row_version` = the archive's highest for that node + 1,
+  `source_did` = the importer, `hlc_timestamp` = the import HLC, and `scope` = the petal scope. Its `state` and
+  `after_state` are read back in SQL from the row just written: the stored row with `position` as
+  `[x, elevation, z]` and `properties` defaulting to `{}`. That is `node_history::normalize_snapshot` of the stored
+  row, which is the publication proof `scene_publication::prepare` requires (latest fact, journal version, exact
+  scope, covering after-state, positive version, non-empty actor and log id). It is the same fact
+  `object_creation::commit` writes for a create (`coverage_reason: object_created`). The node's own per-key versions
+  and `node_scene_clock` are then stamped by `prepare` itself at the fact's HLC, exactly as for a live create.
+  A replicating import (any `publisher`, i.e. the DB thread arm and `import_petal_snapshot_publishable`) with no
+  valid actor (empty, or longer than 256 characters) is refused before anything is read or written
+  (`ImportError::Unattributed`, a `PetalSnapshotImportRefused`). Only the local test helpers (`import_petal_snapshot`,
+  `import_petal_snapshot_as(None)`) import without an actor; they write no fact, and recovery skips those nodes because
+  the newest fact is archive history (next item).
+- **Archive history is never proof.** Every restored archive `node_log` row gets `payload.archive_import_id` = this
+  import's id (`node_history::ARCHIVE_FACT_KEY`, set unconditionally, so an archive cannot pre-empt or omit it).
+  `node_history::require_committed_boundary`, which `scene_publication::prepare` runs on every journal proof (post-commit
+  publish and replica-open `recover` alike), refuses a fact carrying it. Without the marker an archive author could
+  ship a newest fact whose scope and after-state match the restored row (exporting their own import produces exactly
+  one), and this host would sign archive content at an archive-chosen HLC with an archive-chosen `source_did` as cause.
+  The marker stays in place rather than moving the rows to a separate table because the history reader
+  (`read_granted`, `state_at`) keeps reading them for pre-import versions; export strips it
+  (`collect_bounded_history`), so export, import, export stays a fixed point. The per-node import fact carries no
+  marker and remains the proof.
+- **History users see.** A node's history after an attributed import lists the archive's facts (at most the export's
+  per-node depth, default 8) with their original versions and authors, each now carrying `archive_import_id`, then the
+  importer's `petal_imported` baseline at the next version. A pre-import fact whose recorded scope the reader cannot
+  authorize shows as an `unavailable_interval` placeholder; `state_at` reconstructs pre-import versions from the
+  archive facts as before; undo never reaches across the import fact.
+- **Petal.** With a publisher DID (`import_petal_snapshot_reply_as` / `import_petal_snapshot_publishable`),
+  `RestorePlan::stamp_petal` writes every replicated petal key (`PETAL_REPLICATED_COLUMNS`) as the host's own
+  version at the import HLC, plus the winner cache, in the restore transaction. It uses
+  `field_clock::versions_write_sql` / `clock_write_sql`, the same statements `field_clock::publish::stamp_changed_keys`
+  writes on a first publish of a row that has no versions. The petal is therefore clocked even when nothing could be
+  published, and `local_catalog::reemit` (restamp=false) carries those versions at replica open.
+- **Assets.** An attributed import stores the assets it introduces with `owner_did` = the importer and `petal_id` = the
+  imported petal, as a live upload does. That is the upload proof `proven_asset_wire` needs, so they travel as their
+  nodes' dependencies. fe-api replaces `size_bytes` with the verified blob length and charges the bytes to the
+  importer's upload quota first. Insert-if-absent keeps any pre-existing asset row untouched.
+- **After commit.** `publish_imported_petal_through` (the DB thread's write door; `publish_imported_petal` is the
+  public seam) publishes the petal (`local_catalog::publish_petal`) and then each node through
+  `NodeWriteDoor::publish`, charging the importer (§write-budget "Imports"). It stops when the replication queue is full. The result
+  (`ImportPublication`) says what was attempted; enqueued is never delivery.
+- **Recovery.** Anything not enqueued (no sender, offline, full queue, a refused fence) is republished at replica
+  open from the same durable facts: nodes by `scene_publication::recover` (journal proof), the petal by
+  `local_catalog::reemit` (stored own versions), and assets as node dependencies (owner proof).
+
+**What replicates and what stays local.**
+
+| Snapshot table | Imported | Replicated |
+|---|---|---|
+| petal | yes | yes (clocked row, host-authored) |
+| nodes | yes | yes (scene rows, host-published, importer journal fact as proof) |
+| assets | yes (insert-if-absent) | yes, when introduced by an attributed import (owner proof); content_hash needed |
+| node_log | yes, plus one import fact per node | never (LOCAL-only table) |
+| op_log | quarantined in `op_log_imported` | never (not an inbound table, never proof) |
+| rooms, models, field_defs | yes | no (not inbound applied tables; diagnosed as deferred dependencies) |
+| iot_readings | yes | no (history out of a file is not a verified reading; republishing it would need reading authorship) |
+| roles | no | no |
+
+**Role rows are dropped.** A role row is a materialized cache of signed role statements. Replicating one out of a
+file would let a snapshot hand roles to arbitrary DIDs on every peer, and even importing it locally would grant
+access no statement backs. They are counted (`ImportedPetal::roles_not_imported`), and fe-api reports the count as
+`not_imported.roles`. The importer re-grants deliberately.
+
+**Bounds at import (live write-time rules).**
+- A node over `MAX_NODE_BYTES`, measured on its normalized form (`node_history::check_snapshot_size`), refuses the
+  import naming the node.
+- A petal row over `MAX_NODE_BYTES` is refused, because a clocked row repeats every own value and must fit
+  `MAX_ROW_BYTES`.
+- A petal `terrain` failing `replicated_row::is_valid_inbound_petal_terrain` (the terrain writer's check) is refused.
+- An `enforced_schema` failing `EnforcedPropertySchema::parse` (`MAX_SCHEMA_BYTES`) is refused, naming the definition.
+- Every imported node property value passes the live property-write rule before anything is written
+  (`field_def::capture_property_rules` at the petal scope, i.e. enforced node rules of the destination fractal and
+  verse, plus the archive's own enforced node rules scoped exactly to the petal; then
+  `field_def::validate_captured_property_rules`, which also applies `validate_json_numbers`). A failing value refuses
+  the import as `invalid petal snapshot: node <id> property "<key>": ...`. Rules are read once per key per import.
+
+**Receivers.** Receivers judge the host's authority at the import HLC under the row's deepest scope:
+- Petal keys need Editor; `hexon_manifest` needs Manager (`confine_petal` raises the floor to ManageScope).
+- Node keys need Editor.
+- Assets go through the inbound asset rules (author role, petal confinement, quota strip).
+
+A host that holds Manager at the destination therefore satisfies every replicated row. The API's Manager check is on
+the token, not the host. A host below Manager publishes what it may and the rest is refused on receivers, exactly as
+for its live writes.
+
+**Residuals.**
+- `petal.node_id` (identity, insert-once) keeps the archive's value; it is data, never authority.
+- The archive's own `node_log` rows stay as local history under foreign actors. They are never replicated and never
+  proof (marked, above).
+- The destination's property rules are read before the restore transaction, not fenced inside it: a rule installed
+  between the check and the commit is not applied to the imported values (a live write fences its captured rules).
+
+## plugin-host-bounds
+
+Every extension byte bound derives from `fe_sdk::property_schema::MAX_NODE_BYTES` (fe-sdk/src/AGENTS.md
+§plugin-host bounds), so raising or lowering the node limit moves these without another sweep.
+
+- **Query read (`plugin_host::read`, `load_query_rows`).** Phase one runs inside the guarded transaction and
+  returns only `node_id` per candidate (name, `after` and the property predicate filtered in SQL; `ORDER BY node_id
+  LIMIT 1025`). It used to project `bytes::len(encoding::cbor::encode($this))`, which SurrealDB may evaluate for
+  every row in the petal before the sort and limit; now no row is encoded in phase one. Phase two loads
+  `PLUGIN_NODE_COLUMNS` for `PLUGIN_QUERY_CHUNK_ROWS` (16) ids at a time, measures each row as it is read (plain
+  JSON, `snapshot_wire_len` plus a separator), and stops at `limit` matches or as soon as the delivered rows pass
+  `MAX_QUERY_PAGE_BYTES`, even mid-chunk. The context then cuts exactly with `cut_query_page`; because this loader
+  only ever stops early after passing the budget (the soundness rule `cut_query_page` relies on), the context sees
+  an early stop as "more rows" and hands out a cursor. Peak DB-thread memory per read is one page plus one chunk.
+- **Oversized rows** (written before a lower limit, or by a legacy path) are loaded and returned; the context
+  names them in `QueryPage::omitted` and keeps the rest of the page. `get_node` of one is `budget-exceeded`.
+- **Unreadable rows.** A stored row `snapshot_for_plugin` cannot present (e.g. an invalid stored rotation) no longer
+  fails the whole page: the loader delivers `fe_sdk::plugin_host::unreadable_snapshot(id)` (non-finite transform,
+  which no presentable node has), `NodeQuery::matches` judges it by the cursor alone, and `cut_query_page` lists it in
+  `omitted` like an oversized row. `get_node` of one still fails.
+- **Candidate bound.** More than 1,024 candidates past the cursor refuses only when the loader ran out of
+  listed candidates before filling `limit` (the rest would be invisible); page with `after` or narrow the name.
+- **Batch expansion (`commit`).** Loaded rows, their last history row and every journal fact are charged to
+  `MAX_EXPANDED_BATCH_BYTES` (32 node limits) as they are built, so a batch of many small ops on many full
+  nodes is refused before it holds more than that, not after. Peak is about the bound plus the bound-fence
+  bindings (a second copy of each loaded row and history row).
+
+## write-time publishable check coverage
+
+`scene_publication::check_publishable` (`scene_publication/AGENTS.md` §row-bound) now runs in:
+- `node_history::commit_mutations_in_scope` for any change other than `full_transform` / `plugin_tombstone` (callers: rename
+  through `commit_mutation`, the three property writers, transform). The property writers still run their own check first, so
+  a refusal is raised once, before this one.
+- `petal_snapshot.rs` import, after `RestorePlan::build` (the size refusal still wins), naming the node. With no publisher or
+  actor it checks as `IMPORT_CHECK_PUBLISHER`.
+- `plugin_host::commit`, on every created or property-changed staged node, refusing the whole batch (`InvalidInput`) with a
+  message naming the node. Extension commits are charged to the write budget through `plugin_host::flush_through_door`
+  (§write-budget "Extensions") once the DB thread's `PluginCommit` arm calls it.
+
+Still unchecked: editor batches and stamp edits (`editor_batch/`) commit through their own
+`commit_operation_atomic_with`, not `commit_mutations_in_scope`. Duplicate commits through `object_creation::commit`.

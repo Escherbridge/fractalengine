@@ -261,6 +261,8 @@ pub(crate) async fn prepare(
         state["asset_id"] = json!(asset_id);
     }
     node_history::check_snapshot_size(&state)?;
+    // More than the own-key cap, or a row over the bound, could never publish (scene_publication/AGENTS.md §row-bound).
+    super::scene_publication::check_publishable(db, &id, actor, None, &state).await?;
     let mut without_position = state.clone();
     without_position.as_object_mut().unwrap().remove("position");
     statements.extend([

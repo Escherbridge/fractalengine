@@ -99,6 +99,7 @@ pub(crate) async fn prepare_birth(
         "position":[0.0,0.0,0.0],"elevation":0.0,"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0],
         "interactive":true,"edit_seq":0,"created_at":chrono::Utc::now().to_rfc3339(),"properties":properties});
     node_history::check_snapshot_size(&state)?;
+    super::scene_publication::check_publishable(db, node_id, actor, None, &state).await?;
     let mut fields = state.clone();
     fields.as_object_mut().unwrap().remove("position");
     bindings.push(("stamp_birth_fields".into(), fields));

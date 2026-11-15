@@ -9,6 +9,57 @@ use crate::{op_log::commit_operation_atomic_with, repo::Db, types::OpLogEntry};
 
 pub(crate) const JOURNAL_VERSION: u64 = 1;
 const MAX_REPLAY_ROWS: usize = 10_000;
+/// Serialized entry bytes after which a history page ends early (AGENTS.md §history-paging).
+pub const HISTORY_PAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Journal rows read per round while a history page fills.
+const HISTORY_FETCH_ROWS: usize = 8;
+/// Operations whose stored `after_state` a replay may return (the reducer's vocabulary).
+const REPLAYABLE_OPERATIONS: [&str; 4] = ["node_renamed", "property_set", "property_deleted", "full_transform"];
+/// Payload keys a light fact keeps, with presence preserved.
+const LIGHT_PAYLOAD_KEYS: [&str; 7] = [
+    "journal_version",
+    "scope",
+    "stamp_batch_id",
+    "atomic_save_id",
+    "stamp_request_id",
+    "atomic_save_request_id",
+    "editor_request_id",
+];
+/// A journal fact without its stored states and change data: the identity, scope and receipt fields the
+/// authorization and atomic-save checks read (AGENTS.md §history-replay).
+const LIGHT_FACT_SELECT: &str = "SELECT node_id, log_id, row_version, op, source_did, \
+    object::keys(payload) AS light_payload_keys, \
+    payload.journal_version AS light_journal_version, payload.scope AS light_scope, \
+    payload.stamp_batch_id AS light_stamp_batch_id, payload.atomic_save_id AS light_atomic_save_id, \
+    payload.stamp_request_id AS light_stamp_request_id, payload.atomic_save_request_id AS light_atomic_save_request_id, \
+    payload.editor_request_id AS light_editor_request_id, \
+    payload.after_state.node_id AS light_after_node, payload.after_state.petal_id AS light_after_petal, \
+    payload.state.node_id AS light_state_node, payload.state.petal_id AS light_state_petal FROM node_log";
+
+/// Rebuild a light fact's `payload` from its projected columns, keeping only keys the stored payload has.
+fn light_fact(mut row: Value) -> Value {
+    let keys: Vec<String> = row["light_payload_keys"]
+        .as_array()
+        .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
+    let has = |key: &str| keys.iter().any(|present| present == key);
+    let mut payload = serde_json::Map::new();
+    for key in LIGHT_PAYLOAD_KEYS {
+        if has(key) {
+            payload.insert(key.to_owned(), row[format!("light_{key}")].clone());
+        }
+    }
+    for (key, node, petal) in [("after_state", "light_after_node", "light_after_petal"), ("state", "light_state_node", "light_state_petal")] {
+        if has(key) {
+            payload.insert(key.to_owned(), json!({"node_id": row[node].clone(), "petal_id": row[petal].clone()}));
+        }
+    }
+    if let Some(object) = row.as_object_mut() {
+        object.retain(|column, _| !column.starts_with("light_"));
+        object.insert("payload".to_owned(), Value::Object(payload));
+    }
+    row
+}
 
 fn require_grant(grant: &NodeAccessGrant, scope: &str) -> anyhow::Result<()> {
     let resource = crate::parse_scope(scope)?;
@@ -217,9 +268,9 @@ async fn atomic_save(
         Ok(Some(tag)) => tag,
         Err(()) => return Ok(AtomicSaveRead::Incomplete),
     };
-    let mut response = db.query(format!("SELECT * OMIT id FROM node_log WHERE node_id = $id AND payload.{} = $batch ORDER BY row_version ASC LIMIT 201 TIMEOUT 5s",tag.field()))
+    let mut response = db.query(format!("{LIGHT_FACT_SELECT} WHERE node_id = $id AND payload.{} = $batch ORDER BY row_version ASC LIMIT 201 TIMEOUT 5s",tag.field()))
         .bind(("id", node_id.to_string())).bind(("batch", tag.id().to_string())).await?.check()?;
-    let rows: Vec<Value> = response.take(0)?;
+    let rows: Vec<Value> = response.take::<Vec<Value>>(0)?.into_iter().map(light_fact).collect();
     if rows.is_empty() || rows.len() > 200 {
         return Ok(AtomicSaveRead::Incomplete);
     }
@@ -256,9 +307,14 @@ async fn atomic_save(
     }))
 }
 
+/// Stable prefix of the write-time refusal for a node over `MAX_NODE_BYTES`.
+pub(crate) const NODE_TOO_LARGE: &str = "object snapshot exceeds the node size limit";
+
+/// Refuse a node snapshot over `fe_sdk::property_schema::MAX_NODE_BYTES` (scene_publication/AGENTS.md §row-bound).
 pub(crate) fn check_snapshot_size(value: &Value) -> anyhow::Result<()> {
-    if serde_json::to_vec(value)?.len() > fe_sdk::property_schema::MAX_PROPERTY_BYTES {
-        anyhow::bail!("covered object snapshot exceeds 65536 bytes");
+    let limit = fe_sdk::property_schema::MAX_NODE_BYTES;
+    if serde_json::to_vec(value)?.len() > limit {
+        anyhow::bail!("{NODE_TOO_LARGE} of {limit} bytes");
     }
     Ok(())
 }
@@ -586,6 +642,11 @@ pub(crate) async fn commit_mutations_in_scope(
     let mut facts = Vec::new();
     let mut version = 0;
     let atomic = changes.len() > 1;
+    // Transform-only and tombstone writes skip the publishable check (scene_publication/AGENTS.md §row-bound).
+    let publishable_before = changes
+        .iter()
+        .any(|(op, _, _)| !matches!(op.as_str(), "full_transform" | "plugin_tombstone"))
+        .then(|| state.clone());
     for (op, data, schema_versions) in changes {
         let prepared = prepare_change(state, previous.as_ref(), &scope, &op, data, schema_versions)?;
         version = prepared.version;
@@ -595,6 +656,10 @@ pub(crate) async fn commit_mutations_in_scope(
             .last()
             .map(|(_, version, payload)| json!({"row_version": version, "payload": payload}));
         facts.extend(prepared.facts);
+    }
+    // Every journaled writer: refuse a write whose row could never be published (a shrinking write passes).
+    if let Some(before) = &publishable_before {
+        super::scene_publication::check_publishable(db, &node_id, actor, Some(before), &state).await?;
     }
     if atomic {
         // Tag the facts as one atomic save so playback never shows an intermediate state (§atomic-replay).
@@ -677,6 +742,9 @@ fn reduce_change(state: &mut Value, op: &str, data: &Value) -> anyhow::Result<()
     Ok(())
 }
 
+/// Payload key a petal snapshot import stamps on every archive journal fact it restores (history, never proof).
+pub(crate) const ARCHIVE_FACT_KEY: &str = "archive_import_id";
+
 /// Require a completed local Save before publishing its resulting current state.
 pub(crate) async fn require_committed_boundary(
     db: &Db,
@@ -684,6 +752,11 @@ pub(crate) async fn require_committed_boundary(
     node_id: &str,
     actor: &str,
 ) -> anyhow::Result<()> {
+    // An archive's own journal is never local publication proof (handlers/AGENTS.md §petal-snapshot-replication).
+    anyhow::ensure!(
+        row["payload"].get(ARCHIVE_FACT_KEY).is_none(),
+        "an imported archive journal fact is never publication proof"
+    );
     match atomic_save(db, row, node_id, &NodeAccessGrant::Local, actor).await? {
         AtomicSaveRead::Untagged => Ok(()),
         AtomicSaveRead::Saved(save) if row_version(row)? == save.committed_version => Ok(()),
@@ -749,11 +822,37 @@ pub(crate) async fn read_granted(
     if let Some(target) = at_version {
         return replay(db, node_id, target, metadata, grant, local_did).await;
     }
-    let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $after ORDER BY row_version ASC LIMIT $limit")
-        .bind(("id", node_id.to_string())).bind(("after", after_version)).bind(("limit", (limit + 1) as i64)).await?.check()?;
-    let mut rows: Vec<Value> = response.take(0)?;
-    let more = rows.len() > limit;
-    rows.truncate(limit);
+    // Byte-bounded page: up to `limit` entries and HISTORY_PAGE_BYTES, never empty (AGENTS.md §history-paging).
+    let mut rows: Vec<Value> = Vec::new();
+    let mut page_bytes = 0usize;
+    let mut cursor = after_version;
+    let more = loop {
+        let want = (limit - rows.len()).min(HISTORY_FETCH_ROWS);
+        let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $after ORDER BY row_version ASC LIMIT $limit")
+            .bind(("id", node_id.to_string())).bind(("after", cursor)).bind(("limit", (want + 1) as i64)).await?.check()?;
+        let batch: Vec<Value> = response.take(0)?;
+        let read_more = batch.len() > want;
+        let mut over_budget = false;
+        for row in batch.into_iter().take(want) {
+            let size = serde_json::to_vec(&row)?.len();
+            if !rows.is_empty() && page_bytes + size > HISTORY_PAGE_BYTES {
+                over_budget = true;
+                break;
+            }
+            cursor = row_version(&row)?;
+            page_bytes += size;
+            rows.push(row);
+        }
+        if over_budget {
+            break true;
+        }
+        if !read_more {
+            break false;
+        }
+        if rows.len() == limit {
+            break true;
+        }
+    };
     metadata["next_after_version"] = if more {
         rows.last()
             .map(row_version)
@@ -836,15 +935,15 @@ async fn replay(
             return Ok(metadata);
         }
     }
+    // Interval checks read light facts; the state comes from the target's stored after_state (AGENTS.md §history-replay).
     let start = row_version(baseline)?;
-    let mut state = baseline["payload"]["state"].clone();
     let mut expected = start;
     let mut processed = 0;
     let mut batches: BTreeMap<AtomicSaveTag, AtomicSaveRead> = BTreeMap::new();
     while expected < target {
-        let mut response = db.query("SELECT * OMIT id FROM node_log WHERE node_id = $id AND row_version > $start AND row_version <= $target ORDER BY row_version ASC LIMIT 200 TIMEOUT 5s")
+        let mut response = db.query(format!("{LIGHT_FACT_SELECT} WHERE node_id = $id AND row_version > $start AND row_version <= $target ORDER BY row_version ASC LIMIT 200 TIMEOUT 5s"))
             .bind(("id",node_id.to_string())).bind(("start",expected)).bind(("target",target)).await?.check()?;
-        let rows: Vec<Value> = response.take(0)?;
+        let rows: Vec<Value> = response.take::<Vec<Value>>(0)?.into_iter().map(light_fact).collect();
         if rows.is_empty() {
             break;
         }
@@ -896,39 +995,34 @@ async fn replay(
                     return Ok(metadata);
                 }
             }
-            if reduce_change(
-                &mut state,
-                row["op"].as_str().unwrap_or(""),
-                &row["payload"]["data"],
-            )
-            .is_err()
-            {
+            if !row["op"].as_str().is_some_and(|op| REPLAYABLE_OPERATIONS.contains(&op)) {
                 metadata["availability"] = json!("unsupported_operation");
-                return Ok(metadata);
-            }
-            if row["op"] == "full_transform" {
-                state["edit_seq"] = json!(
-                    state["edit_seq"]
-                        .as_i64()
-                        .unwrap_or(0)
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("transform edit sequence exhausted"))?
-                );
-                state["elevation"] = state["position"][1].clone();
-            }
-            if state != row["payload"]["after_state"] {
-                metadata["availability"] = json!("incomplete_interval");
                 return Ok(metadata);
             }
         }
     }
     if expected != target {
         metadata["availability"] = json!("version_unavailable");
-    } else {
-        metadata["availability"] = json!("available");
-        metadata["state"] = state;
-        metadata["baseline_version"] = json!(start);
+        return Ok(metadata);
     }
+    // Every fact stores the full state after it: the baseline's own state, or the target's after_state.
+    let state = if target == start {
+        baseline["payload"]["state"].clone()
+    } else {
+        let mut response = db.query("SELECT VALUE payload.after_state FROM node_log WHERE node_id = $id AND row_version = $target LIMIT 1")
+            .bind(("id", node_id.to_string())).bind(("target", target)).await?.check()?;
+        let states: Vec<Value> = response.take(0)?;
+        match states.into_iter().next() {
+            Some(state) if state.is_object() => state,
+            _ => {
+                metadata["availability"] = json!("incomplete_interval");
+                return Ok(metadata);
+            }
+        }
+    };
+    metadata["availability"] = json!("available");
+    metadata["state"] = state;
+    metadata["baseline_version"] = json!(start);
     Ok(metadata)
 }
 

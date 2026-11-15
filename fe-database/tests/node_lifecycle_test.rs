@@ -658,6 +658,7 @@ fn duplicate_copies_row_minus_path_identity_keys() {
     h.send(DbCommand::ExportPetalSnapshot {
         petal_id: petal.clone(),
         correlation_id: Some("export-1".into()),
+        history_per_node: None,
     });
     let snapshot = match h.recv() {
         DbResult::PetalSnapshotExported { rows, correlation_id, .. } => {

@@ -105,6 +105,7 @@ impl ApplyReport {
         db: &Db,
         verse_id: &str,
         dids: Vec<String>,
+        local_publisher: Option<&str>,
         entity_change_tx: Option<&SceneChangeSender>,
     ) {
         let dids: Vec<String> = dids
@@ -116,7 +117,7 @@ impl ApplyReport {
         if dids.is_empty() {
             return;
         }
-        match crate::field_clock::rejudge::rejudge_authors_detailed(db, verse_id, &dids, entity_change_tx).await {
+        match crate::field_clock::rejudge::rejudge_authors_detailed(db, verse_id, &dids, local_publisher, entity_change_tx).await {
             Ok(rejudged) => {
                 self.rejudged.extend(rejudged.reports);
                 self.removed_nodes.extend(rejudged.removed_nodes);
@@ -161,7 +162,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     // RP-3: role statements bypass the Editor+ write gate — their gate is the
     // fe-policy validator plus durable placement (plan §2.4).
     if table == crate::role_grants::ROLE_DOC_TABLE {
-        return apply_role_statement(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await;
+        return apply_role_statement(db, verse_id, record_id, row_bytes, author_did, local_publisher, entity_change_tx).await;
     }
     // The manifest-apply path must notice the owner becoming known (or
     // changing) so the role partition promotes pre-manifest holds.
@@ -175,8 +176,8 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     };
     // A3: admission precedes dispatch — a denied or deferred row is never
     // applied and never re-emitted (there is no replication sender in scope).
-    match admit_inbound_row(db, verse_id, table, record_id, row_bytes, author_did).await? {
-        Admission::Allow => {}
+    let basis = match admit_inbound_row(db, verse_id, table, record_id, row_bytes, author_did).await? {
+        Admission::Allow(basis) => basis,
         Admission::Deny(reason) => {
             tracing::warn!(
                 verse_id,
@@ -199,15 +200,15 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
             );
             return Ok(ApplyReport::of(ReplicatedRowOutcome::Deferred(reason)));
         }
-    }
+    };
     if table == "node" {
         if let Some(outcome) = super::scene_publication::apply_complete(
             db, verse_id, record_id, row_bytes, author_did, local_publisher, entity_change_tx, false,
         ).await? {
             return Ok(ApplyReport::of(outcome));
         }
-        if !legacy_node_row_provable(db, verse_id, record_id, row_bytes, author_did).await? {
-            tracing::debug!(verse_id, record_id, author = author_did, "markerless node row from a statement-derived Editor carries no write clock; denied (QA-0131)");
+        if !legacy_node_row_provable(db, verse_id, record_id, row_bytes, author_did, basis).await? {
+            tracing::debug!(verse_id, record_id, author = author_did, ?basis, "markerless node row not provable by the current-role gate or its write clock; denied (QA-0131)");
             return Ok(ApplyReport::of(ReplicatedRowOutcome::Denied));
         }
     }
@@ -215,7 +216,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
     // Per-table semantics: `Timeseries` tables take the append-only union
     // path (A12), everything else the tombstone-aware row merge (N-4).
     let outcome =
-        dispatch_by_mode(db, verse_id, table, record_id, row_bytes, author_did, entity_change_tx).await?;
+        dispatch_by_mode(db, verse_id, table, record_id, row_bytes, author_did, basis, entity_change_tx).await?;
     let mut report = ApplyReport::of(outcome);
     if let (Some((known_before, owner_before)), ReplicatedRowOutcome::Applied) =
         (manifest_before, &report.outcome)
@@ -235,7 +236,7 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
                 .chain(owner_before)
                 .chain(owner_after)
                 .collect();
-            report.rejudge(db, verse_id, dids, entity_change_tx).await;
+            report.rejudge(db, verse_id, dids, local_publisher, entity_change_tx).await;
         }
     }
     Ok(report)
@@ -245,14 +246,19 @@ pub(crate) async fn apply_replicated_row_reporting_with_publisher(
 /// clock, so an author whose Editor comes from role statements cannot show it
 /// held that role when writing — judged as of clock 0, only authority that is
 /// not statement-derived (the owner) applies it. Current publishers always
-/// send complete versioned snapshots; src/AGENTS.md §write-time-role.
+/// send complete versioned snapshots; src/AGENTS.md §write-time-role. The write-time
+/// check leaves sub-Editor authors to the current-role gate, so only a `RoleGate` basis passes.
 async fn legacy_node_row_provable(
     db: &Db,
     verse_id: &str,
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
+    basis: Basis,
 ) -> anyhow::Result<bool> {
+    if basis != Basis::RoleGate {
+        return Ok(false);
+    }
     let petal = serde_json::from_slice::<serde_json::Value>(row_bytes)
         .ok()
         .and_then(|row| row.get("petal_id")?.as_str().map(str::to_owned));
@@ -279,12 +285,14 @@ async fn legacy_node_row_provable(
 /// admission. Never enters the in-memory content queue and never waits on
 /// `Parent`: the materializer works on scope strings (src/AGENTS.md
 /// §inbound-admissions).
+#[allow(clippy::too_many_arguments)]
 async fn apply_role_statement(
     db: &Db,
     verse_id: &str,
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
+    local_publisher: Option<&str>,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ApplyReport> {
     // A `Doc::del` carries no HLC and iroh's `del` is a prefix delete;
@@ -361,7 +369,7 @@ async fn apply_role_statement(
         // re-read forwards it again once its grantor is empowered (§2.5).
         Placement::RefusedOverBudget => ApplyReport::of(ReplicatedRowOutcome::Deferred(waiting)),
     };
-    report.rejudge(db, verse_id, rejudge_dids, entity_change_tx).await;
+    report.rejudge(db, verse_id, rejudge_dids, local_publisher, entity_change_tx).await;
     Ok(report)
 }
 
@@ -385,6 +393,7 @@ async fn held_statement_key_exists(
 /// `Timeseries` tables (currently just `iot_reading`) use the union CRDT
 /// contract — see [`apply_timeseries_row`]; everything else keeps the
 /// tombstone-aware row merge path.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_by_mode(
     db: &Db,
     verse_id: &str,
@@ -392,14 +401,20 @@ async fn dispatch_by_mode(
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
+    basis: Basis,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
+    // A membership-floor admission is applied only by a per-key judge (handlers/AGENTS.md §admission-basis).
+    if basis == Basis::MembershipFloor && !matches!(table, "verse" | "fractal" | "petal") {
+        tracing::warn!(verse_id, table, record_id, author = author_did, "membership-floor row reached a writer that does not judge per key; denied");
+        return Ok(ReplicatedRowOutcome::Denied);
+    }
     match ReplicationMode::for_table(table) {
         ReplicationMode::Timeseries => {
             apply_timeseries_row(db, verse_id, table, record_id, row_bytes).await
         }
         ReplicationMode::Row => {
-            apply_row_mode(db, verse_id, table, record_id, row_bytes, author_did, entity_change_tx).await
+            apply_row_mode(db, verse_id, table, record_id, row_bytes, author_did, basis, entity_change_tx).await
         }
     }
 }
@@ -488,6 +503,7 @@ async fn apply_timeseries_row(
 
 /// Row-mode dispatch: tombstone-aware (N-4) insert-or-merge for the tables the
 /// inbound path has row semantics for.
+#[allow(clippy::too_many_arguments)]
 async fn apply_row_mode(
     db: &Db,
     verse_id: &str,
@@ -495,6 +511,7 @@ async fn apply_row_mode(
     record_id: &str,
     row_bytes: &[u8],
     author_did: &str,
+    basis: Basis,
     entity_change_tx: Option<&SceneChangeSender>,
 ) -> anyhow::Result<ReplicatedRowOutcome> {
     match table {
@@ -512,14 +529,21 @@ async fn apply_row_mode(
                 return Ok(ReplicatedRowOutcome::NotApplicable);
             }
             // Per-key clock: a clocked row is judged key by key; an unclocked one only fills legacy-floor keys.
-            if super::clocked_row::carries_field_clock(row_bytes) {
+            if basis == Basis::MembershipFloor || super::clocked_row::carries_field_clock(row_bytes) {
                 super::clocked_row::apply_clocked_static_row(db, verse_id, table, record_id, row_bytes, author_did)
                     .await
             } else {
                 apply_static_row(db, verse_id, table, record_id, row_bytes).await
             }
         }
-        "node" => apply_node_row(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await,
+        // The legacy node writer judges nothing itself: it needs the current-role gate's witness.
+        "node" if basis == Basis::RoleGate => {
+            apply_node_row(db, verse_id, record_id, row_bytes, author_did, entity_change_tx).await
+        }
+        "node" => {
+            tracing::warn!(verse_id, record_id, author = author_did, ?basis, "node row without a current-role admission reached the legacy writer; denied");
+            Ok(ReplicatedRowOutcome::Denied)
+        }
         // R5 (CDL-SPEC10 A3): insert-if-absent, never overwrite, anchored
         // rows only — see `apply_anchored_asset_row`.
         "asset" => apply_anchored_asset_row(db, verse_id, record_id, row_bytes, author_did).await,
@@ -559,13 +583,53 @@ async fn apply_row_mode(
 
 /// Verdict of the inbound admission gate.
 enum Admission {
-    /// The row may be applied.
-    Allow,
+    /// The row may be applied by a writer that honours `Basis`.
+    Allow(Basis),
     /// The row is denied — never applied, never re-emitted.
     Deny(String),
     /// The row cannot be judged yet (plan §2.4) — not applied now, retried
     /// when the awaited fact lands.
     Defer(DeferralReason),
+}
+
+/// What an `Allow` rests on: the witness every writer checks (handlers/AGENTS.md §admission-basis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Basis {
+    /// The author cleared the current-role gate at the row's scopes.
+    RoleGate,
+    /// No author role applies: the first manifest, a self-signed enrolment, or a no-op entry.
+    Intrinsic,
+    /// Membership only: a per-key write-time judge must still decide every version.
+    MembershipFloor,
+}
+
+/// How a hierarchy row's `_fe_clock` steers admission.
+enum ClockShape {
+    /// No clock column: the current-role gate.
+    Unclocked,
+    /// A clock the per-key judge certainly reads: the membership floor.
+    Judgeable,
+    /// A valid clock the per-key judge would not read (a node row without `_fe_scene`, or an empty `own`): the current-role gate.
+    Unjudgeable,
+    /// A clock the strictest reader refuses: denied.
+    Malformed(String),
+}
+
+/// Classify a hierarchy row's clock with the per-key judge's own reader (`parse_own`).
+fn clock_shape(table: &str, row_bytes: &[u8], author_did: &str) -> ClockShape {
+    let Ok(row) = serde_json::from_slice::<serde_json::Value>(row_bytes) else {
+        return ClockShape::Unclocked;
+    };
+    match crate::field_clock::parse_own(table, &row, author_did) {
+        Ok(None) => ClockShape::Unclocked,
+        Err(error) => ClockShape::Malformed(format!("{error:#}")),
+        Ok(Some(own)) if own.is_empty() => ClockShape::Unjudgeable,
+        // `apply_complete` returns the legacy `None` only for a row without the marker key.
+        Ok(Some(_)) if table == "node" && row.get(super::scene_publication::wire::MARKER).is_none() => {
+            ClockShape::Unjudgeable
+        }
+        Ok(Some(_)) => ClockShape::Judgeable,
+    }
 }
 
 /// The role floor a confined row must clear.
@@ -715,14 +779,14 @@ async fn admit_inbound_row(
                 }));
             }
         }
-        return Ok(Admission::Allow);
+        return Ok(Admission::Allow(Basis::Intrinsic));
     }
 
     // A table the inbound path never writes, or an empty `del` entry on a
     // table without tombstone semantics, is a no-op at dispatch
     // (`NotApplicable`): there is nothing to judge, and nothing to queue.
     if !is_applied_table(table) || (row_bytes.is_empty() && table != "node") {
-        return Ok(Admission::Allow);
+        return Ok(Admission::Allow(Basis::Intrinsic));
     }
 
     // First-manifest rule (RP-4 step 3): before a manifest exists, ONLY the
@@ -752,7 +816,7 @@ async fn admit_inbound_row(
                 record_id,
                 "first verse manifest — trust on first use"
             );
-            return Ok(Admission::Allow);
+            return Ok(Admission::Allow(Basis::Intrinsic));
         }
         return Ok(Admission::Defer(DeferralReason::Manifest));
     }
@@ -772,18 +836,24 @@ async fn admit_inbound_row(
         }
         Confined::Stop(other) => return Ok(other),
     };
-    // Clocked node rows too (CLOCK-07): a pre-demotion version must still reach the per-key judge.
-    if matches!(table, "verse" | "fractal" | "petal" | "node") && super::clocked_row::carries_field_clock(row_bytes) {
-        // Filling a missing namespace_id picks the replica this node opens next: still a verse Manager's call.
-        if table == "verse" && fills_namespace_id(db, verse_id, row_bytes).await? {
-            let verse_scope = vec![crate::scope::build_scope(verse_id, None, None)];
-            let gate = role_gate(db, verse_id, table, record_id, author_did, &verse_scope, Floor::ManageVerse).await?;
-            if !matches!(gate, Admission::Allow) {
-                return Ok(gate);
+    // Clocked rows (CLOCK-07): the membership floor only for a shape the per-key judge certainly reads.
+    if matches!(table, "verse" | "fractal" | "petal" | "node") {
+        match clock_shape(table, row_bytes, author_did) {
+            ClockShape::Unclocked | ClockShape::Unjudgeable => {}
+            ClockShape::Malformed(reason) => return Ok(Admission::Deny(format!("field clock refused: {reason}"))),
+            ClockShape::Judgeable => {
+                // Filling a missing namespace_id picks the replica this node opens next: still a verse Manager's call.
+                if table == "verse" && fills_namespace_id(db, verse_id, row_bytes).await? {
+                    let verse_scope = vec![crate::scope::build_scope(verse_id, None, None)];
+                    let gate = role_gate(db, verse_id, table, record_id, author_did, &verse_scope, Floor::ManageVerse).await?;
+                    if !matches!(gate, Admission::Allow(_)) {
+                        return Ok(gate);
+                    }
+                }
+                // Per-key clock: only a membership floor; each version is judged at write time when merged.
+                return clocked_membership_floor(db, verse_id, author_did).await;
             }
         }
-        // Per-key clock: only a membership floor; each version is judged at write time when merged.
-        return clocked_membership_floor(db, verse_id, author_did).await;
     }
     role_gate(db, verse_id, table, record_id, author_did, &scopes, floor).await
 }
@@ -807,7 +877,7 @@ async fn clocked_membership_floor(db: &Db, verse_id: &str, author_did: &str) -> 
     if crate::role_grants::verse_owner(db, verse_id).await?.as_deref() == Some(author_did)
         || is_named_in_verse_statement(db, verse_id, author_did).await?
     {
-        return Ok(Admission::Allow);
+        return Ok(Admission::Allow(Basis::MembershipFloor));
     }
     Ok(Admission::Defer(DeferralReason::AuthorRole {
         did: author_did.to_string(),
@@ -894,7 +964,7 @@ async fn role_gate(
             }
         }
     }
-    Ok(Admission::Allow)
+    Ok(Admission::Allow(Basis::RoleGate))
 }
 
 /// AC-44(c) enrolment membership: the principal resolves to a role at the
@@ -2063,6 +2133,8 @@ async fn apply_node_row(
         .unwrap_or_else(|| record_id.to_string());
     if let Some(obj) = row.as_object_mut() {
         obj.insert("node_id".to_string(), serde_json::json!(node_id.clone()));
+        // The legacy writer judges no versions, so it never stores the wire clock column.
+        obj.remove(crate::field_clock::CLOCK_COLUMN);
     }
     let petal_id = row
         .get("petal_id")
@@ -2846,10 +2918,11 @@ mod tests {
 
     /// RP-3: a Viewer's row is not converged-yet, not structural — Deferred
     /// (the dispatch loop's `InboundAdmissions` retries it), never applied now.
+    /// database-r2-1: a `_fe_clock` without `_fe_scene` earns no membership floor (handlers/AGENTS.md §admission-basis).
     #[tokio::test]
     async fn viewer_role_row_is_deferred_never_applied() {
         let db = schema_db().await;
-        seed_verse_with_roles(&db, "v1", &[("did:key:peer-view", "viewer")]).await;
+        seed_verse_with_roles(&db, "v1", &[("did:key:peer-view", "viewer"), ("did:key:peer-ed", "editor")]).await;
         let (scene_tx, mut scene_rx) = tokio::sync::broadcast::channel::<SceneChange>(8);
 
         let outcome = apply_replicated_row_handler(
@@ -2879,6 +2952,66 @@ mod tests {
         assert!(rows.is_empty(), "deferred row must not be persisted");
         // …and emitted no scene change (never re-emitted anywhere).
         assert!(scene_rx.try_recv().is_err());
+
+        // A Viewer named in an admitted statement used to clear the clocked membership floor.
+        assert_eq!(
+            place_statement(&db, "v1", &crate::scope::build_scope("v1", None, None), "did:key:peer-view", "did:key:owner-a", fe_policy::GrantedRole::Viewer, 100).await,
+            crate::role_grants::Placement::Admitted
+        );
+        let markerless = |node_id: &str, tombstone: bool, clock: serde_json::Value| {
+            let mut row: serde_json::Value = serde_json::from_slice(&gated_node_row(node_id)).unwrap();
+            if tombstone {
+                row = serde_json::json!({ "node_id": node_id, "petal_id": "petal-1", "tombstone": { "hlc": 1 } });
+            }
+            row[crate::field_clock::CLOCK_COLUMN] = clock;
+            serde_json::to_vec(&row).unwrap()
+        };
+        let own_clock = |author: &str| {
+            let name = crate::field_clock::FieldVersion {
+                field: "display_name".into(),
+                author: author.into(),
+                hlc: 1 << 20,
+                value: Some(serde_json::json!("clocked")),
+                deleted: false,
+            };
+            crate::field_clock::encode_own(author, &[name])
+        };
+        let viewer_role = ReplicatedRowOutcome::Deferred(DeferralReason::AuthorRole { did: "did:key:peer-view".to_string() });
+        let viewer_legs = [
+            // The finding's exact payload: an unreadable clock is refused outright.
+            ("node-a", markerless("node-a", true, serde_json::json!({ "author": "did:key:peer-view" })), ReplicatedRowOutcome::Denied),
+            // A valid clock the per-key judge would never read goes through the current-role gate.
+            ("node-a", markerless("node-a", true, own_clock("did:key:peer-view")), viewer_role.clone()),
+            ("node-viewer-clocked", markerless("node-viewer-clocked", false, own_clock("did:key:peer-view")), viewer_role),
+            // A clock naming another author than the transport's is refused.
+            ("node-a", markerless("node-a", true, own_clock("did:key:peer-ed")), ReplicatedRowOutcome::Denied),
+        ];
+        for (node_id, row, expected) in viewer_legs {
+            let outcome = apply_replicated_row_handler(&db, "v1", "node", node_id, &row, "did:key:peer-view", Some(&scene_tx))
+                .await
+                .unwrap();
+            assert_eq!(outcome, expected, "{}", String::from_utf8_lossy(&row));
+        }
+        let survivor = select_json(&db, "SELECT tombstone FROM node WHERE node_id = 'node-a'").await;
+        assert!(survivor[0]["tombstone"].is_null(), "a Viewer never tombstones a node: {survivor:?}");
+        assert!(select_json(&db, "SELECT node_id FROM node WHERE node_id = 'node-viewer-clocked'").await.is_empty());
+        assert!(scene_rx.try_recv().is_err());
+
+        // The same shapes from an Editor clear the current-role gate and still apply through the legacy merge.
+        let tombstone = markerless("node-b", true, own_clock("did:key:peer-ed"));
+        let created = markerless("node-editor-clocked", false, own_clock("did:key:peer-ed"));
+        for (node_id, row, expected) in [
+            ("node-b", tombstone, ReplicatedRowOutcome::AppliedTombstone),
+            ("node-editor-clocked", created, ReplicatedRowOutcome::Applied),
+        ] {
+            let outcome = apply_replicated_row_handler(&db, "v1", "node", node_id, &row, "did:key:peer-ed", None)
+                .await
+                .unwrap();
+            assert_eq!(outcome, expected, "{node_id}");
+        }
+        let gone = select_json(&db, "SELECT tombstone FROM node WHERE node_id = 'node-b'").await;
+        assert!(gone[0]["tombstone"].is_object(), "an Editor's tombstone applies: {gone:?}");
+        assert_eq!(select_json(&db, "SELECT node_id FROM node WHERE node_id = 'node-editor-clocked'").await.len(), 1);
     }
 
     #[tokio::test]

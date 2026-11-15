@@ -159,6 +159,30 @@ the others. Local role statements call `rejudge_local`, which holds the result i
 Inbound role statements trigger it from `replicated_row.rs`. The revoke frontier a local revoke uses is
 `store::author_frontier` (called from `role_grants.rs`). Triggers: spec §3.8.
 
+### §rejudge-pending
+
+Hierarchy rows are stamped at publish (`stamp_changed_keys`, at a fresh HLC), and `publish_clocked_value` does
+nothing without a sender. So a committed local value can differ from its cached winner with no version behind it.
+`clocked_row::rematerialize` used to overwrite or unset that column when the key's winner changed (review finding
+database-r2-2). Now `unstamped_local_keys` finds each clock key whose column differs from its cached winner's stored
+value, and the re-judge leaves that column alone while still writing the judged winner cache, so the next
+restamping publish stamps it. The stamp is that value's write, so with a known local DID (`local_did`,
+threaded from `rejudge_authors_detailed`: the inbound path passes its local publisher, `rejudge_local` the
+local statement's grantor, which is the DB thread's `local_did`) the value is kept only if
+`VerseView::admits_at` admits the local DID at the current statement set (`hlc = u64::MAX`). A demoted local
+author's unstamped value reverts to the admissible winner. `None` (direct callers without an identity) cannot judge
+the author and keeps the value. Not covered: a key with no cached winner at all (schema defaults are
+indistinguishable from a local addition), and a column whose stored form differs from its version's JSON.
+Residual (review, LOW, kept as is 2026-11-14): `hlc = u64::MAX` judges the local DID at the CURRENT statement
+set, which always admits the owner host, so a local API caller's unstamped write whose authority is later
+retroactively invalidated is still re-signed by the host. No real write time exists to judge instead:
+hierarchy rows have no `node_log`-style journal; renames (`entity::rename_entity_handler`) write no `op_log`
+row; the writers that do (`SetPetalTerrain`, `UpdatePetalMeta`, `SetPetalRenderDistance`, ...) record neither
+the acting DID nor a per-column change, and `op_log` is keyed by a reused `node_id` field. Fixing it needs a
+per-column local write record (actor, HLC) for hierarchy writes.
+Proof: `handlers::crud::delete_node_tests::created_fractal_publishes_its_own_clocked_name` (last legs).
+Node rows: `scene_publication/AGENTS.md` §rejudge-pending.
+
 ## §legacy-migration
 
 `migrate::seed_legacy_floor(db)` seeds every verse, fractal, petal and node row that has no

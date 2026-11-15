@@ -628,6 +628,16 @@ pub(crate) async fn prepare(
         groups,
         created_group_id,
     };
+    // Refuse the whole batch if any node row could never be published (per-node stored-version read).
+    for ((node, before), id) in staged.iter().zip(&captured.nodes).zip(&ids) {
+        let writes_row = node
+            .facts
+            .iter()
+            .any(|(op, _, _)| !matches!(op.as_str(), "baseline" | "full_transform" | "plugin_tombstone"));
+        if writes_row {
+            super::super::scene_publication::check_publishable(db, id, actor, Some(&before.state), &node.state).await?;
+        }
+    }
     let mut checks = Vec::new();
     for (index, (node, before)) in staged.iter().zip(&captured.nodes).enumerate() {
         let mut expected = if node.facts.is_empty() {

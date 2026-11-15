@@ -118,23 +118,18 @@ pub async fn uninstall_crate_in_petal(
     hexon_uri: &str,
     petal_id: &str,
 ) -> Result<(), anyhow::Error> {
-    db.query("DELETE FROM crate_registry WHERE hexon_uri = $hexon_uri AND petal_id = $petal_id")
-        .bind(("hexon_uri", hexon_uri.to_string()))
-        .bind(("petal_id", petal_id.to_string()))
-        .await?
-        .check()?;
-
-    let mut remaining = db
-        .query("SELECT VALUE petal_id FROM crate_registry WHERE hexon_uri = $hexon_uri LIMIT 1")
-        .bind(("hexon_uri", hexon_uri.to_string()))
-        .await?;
-    let still_held: Vec<String> = remaining.take(0)?;
-    if still_held.is_empty() {
-        db.query("DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri")
-            .bind(("hexon_uri", hexon_uri.to_string()))
-            .await?
-            .check()?;
-    }
+    // One transaction: the holder check sees this petal's delete, so a failure leaves no orphan entries.
+    db.query(
+        "BEGIN TRANSACTION; \
+         DELETE FROM crate_registry WHERE hexon_uri = $hexon_uri AND petal_id = $petal_id; \
+         DELETE FROM crate_entry WHERE hexon_uri = $hexon_uri \
+           AND array::len((SELECT VALUE petal_id FROM crate_registry WHERE hexon_uri = $hexon_uri)) = 0; \
+         COMMIT TRANSACTION;",
+    )
+    .bind(("hexon_uri", hexon_uri.to_string()))
+    .bind(("petal_id", petal_id.to_string()))
+    .await?
+    .check()?;
 
     Ok(())
 }

@@ -486,10 +486,11 @@ pub(crate) async fn load_hierarchy_handler(
         .query(
             // FR-1: tombstoned nodes persist as soft-deleted rows but are
             // filtered from the hierarchy so the delete survives reload.
+            // Projected columns only: see handlers/AGENTS.md §hierarchy-projection.
             "SELECT * FROM verse ORDER BY created_at ASC;\
-             SELECT * FROM fractal ORDER BY created_at ASC;\
-             SELECT * FROM petal ORDER BY created_at ASC;\
-             SELECT * FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
+             SELECT fractal_id, verse_id, name, view_hidden, created_at FROM fractal ORDER BY created_at ASC;\
+             SELECT petal_id, fractal_id, name, view_hidden, render_distance, created_at FROM petal ORDER BY created_at ASC;\
+             SELECT node_id, petal_id, display_name, asset_id, position, elevation, rotation, scale, created_at FROM node WHERE tombstone = NONE ORDER BY created_at ASC",
         )
         .await?;
 
@@ -727,10 +728,11 @@ pub(crate) async fn load_nodes_by_petal_handler(
     blob_store: &BlobStoreHandle,
     petal_id: &str,
 ) -> anyhow::Result<Vec<fe_runtime::messages::NodeDto>> {
-    // FR-1: exclude tombstoned (soft-deleted) rows from the scene snapshot.
+    // FR-1: exclude tombstoned (soft-deleted) rows from the scene snapshot; NodeDto columns only (§hierarchy-projection).
     let mut node_res: surrealdb::IndexedResults = db
         .query(
-            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+            "SELECT node_id, display_name, asset_id, position, elevation, rotation, scale, created_at FROM node \
+             WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
         )
         .bind(("pid", petal_id.to_string()))
         .await?;
@@ -1881,11 +1883,11 @@ mod delete_node_tests {
 
         // A filled floor is re-judged at its claim; the publisher's own migration floor stays admitted.
         let stranger = crate::field_clock::judge::VerseView { owner: "did:key:stranger".into(), admitted: Vec::new() };
-        crate::handlers::clocked_row::rematerialize(&peer, "verse-1", "petal", "petal-1", &stranger)
+        crate::handlers::clocked_row::rematerialize(&peer, "verse-1", "petal", "petal-1", &stranger, None)
             .await
             .expect("re-judge peer");
         assert!(petal_row(&peer).await["description"].is_null(), "the filled floor is demoted");
-        crate::handlers::clocked_row::rematerialize(&other, "verse-1", "petal", "petal-1", &stranger)
+        crate::handlers::clocked_row::rematerialize(&other, "verse-1", "petal", "petal-1", &stranger, None)
             .await
             .expect("re-judge publisher");
         assert_eq!(petal_row(&other).await["description"], "beta", "the migration floor stays");
@@ -1899,6 +1901,90 @@ mod delete_node_tests {
         let landed = petal_row(&third).await;
         assert_eq!(landed["description"], "alpha");
         assert!(landed["bounds"].is_null(), "the invalid column is not applied");
+
+        // database-r2-2 (field_clock/AGENTS.md §rejudge-pending): a local value no publish has stamped survives a
+        // re-judge that demotes ANOTHER author's key while the local author is still admitted, and the next publish
+        // stamps it; once the local author is no longer admitted the column reverts to the admissible winner.
+        const LOCAL: &str = "did:key:local";
+        const OTHER: &str = "did:key:other";
+        fn editor_statement(peer: &str, revoked: bool, hlc: u64) -> fe_policy::RoleStatement {
+            let windows = if revoked {
+                vec![fe_policy::GrantWindow { role: fe_policy::GrantedRole::Editor, since: 1, until: hlc }]
+            } else {
+                Vec::new()
+            };
+            fe_policy::RoleStatement {
+                scope: crate::scope::build_scope("verse-1", None, None),
+                peer_did: peer.to_owned(),
+                grantor_did: "did:key:z6MkA".to_owned(),
+                role: fe_policy::GrantedRole::Editor,
+                revoked,
+                hlc,
+                editor_since: None,
+                manager_since: None,
+                windows,
+            }
+        }
+        /// Floored petal: OTHER clocks `description`, LOCAL changes it unpublished, OTHER's grant is revoked below
+        /// its write (LOCAL's too when `local_revoked`), and OTHER's rows are re-judged with the local DID known.
+        async fn rejudged_local_description(local_revoked: bool) -> Db {
+            let db = setup_mem_db().await;
+            exec(&db, "UPDATE petal SET description = 'floor' WHERE petal_id = 'petal-1'").await;
+            crate::field_clock::seed_legacy_floor(&db).await.expect("seed legacy floor");
+            for peer in [LOCAL, OTHER] {
+                crate::role_grants::submit_statement(&db, "verse-1", &editor_statement(peer, false, 1))
+                    .await
+                    .expect("grant Editor");
+            }
+            let written = crate::op_log::next_hlc_timestamp().0;
+            let version = crate::field_clock::FieldVersion {
+                field: "description".into(),
+                author: OTHER.into(),
+                hlc: written,
+                value: Some(serde_json::json!("other")),
+                deleted: false,
+            };
+            let wire = serde_json::to_vec(&serde_json::json!({
+                "petal_id": "petal-1",
+                "_fe_clock": crate::field_clock::encode_own(OTHER, &[version]),
+            }))
+            .expect("wire");
+            assert_eq!(
+                crate::handlers::clocked_row::apply_clocked_static_row(&db, "verse-1", "petal", "petal-1", &wire, OTHER)
+                    .await
+                    .expect("apply OTHER's description"),
+                fe_runtime::messages::ReplicatedRowOutcome::Applied
+            );
+            // Committed locally with no sender: no publish ran, so the value has no version yet.
+            exec(&db, "UPDATE petal SET description = 'local' WHERE petal_id = 'petal-1'").await;
+            crate::role_grants::submit_statement(&db, "verse-1", &editor_statement(OTHER, true, written - 1))
+                .await
+                .expect("late revoke of OTHER");
+            if local_revoked {
+                let now = crate::op_log::next_hlc_timestamp().0;
+                crate::role_grants::submit_statement(&db, "verse-1", &editor_statement(LOCAL, true, now))
+                    .await
+                    .expect("revoke LOCAL");
+            }
+            crate::field_clock::rejudge::rejudge_authors_detailed(&db, "verse-1", &[OTHER.to_owned()], Some(LOCAL), None)
+                .await
+                .expect("re-judge OTHER's rows");
+            db
+        }
+        let kept = rejudged_local_description(false).await;
+        assert_eq!(petal_row(&kept).await["description"], "local", "the unstamped local value survives the re-judge");
+        let local_store = std::sync::Arc::new(CapturingStore::default());
+        let local_blobs: BlobStoreHandle = local_store.clone();
+        let (local_sender, _local_receiver) = crossbeam::channel::bounded(16);
+        crate::field_clock::publish_clocked_row(&kept, &local_blobs, Some(&local_sender), LOCAL, "verse-1", "petal", "petal-1", true)
+            .await
+            .expect("publish the kept value");
+        let bytes = local_store.0.lock().unwrap().last().cloned().expect("published petal bytes");
+        let republished: serde_json::Value = serde_json::from_slice(&bytes).expect("petal json");
+        assert_eq!(republished["_fe_clock"]["author"], LOCAL);
+        assert_eq!(republished["_fe_clock"]["own"]["description"]["value"], "local", "the next publish stamps it: {republished}");
+        let demoted = rejudged_local_description(true).await;
+        assert_eq!(petal_row(&demoted).await["description"], "floor", "a no-longer-admitted local value reverts to the admissible winner");
     }
 
     #[tokio::test]
@@ -2249,13 +2335,41 @@ mod asset_ingest_tests {
         assert!(bevy::math::Quat::from_array(current.node.rotation).dot(bevy::math::Quat::from_euler(bevy::math::EulerRot::XYZ,0.5,0.0,0.0)).abs()>1.0-1e-6);
         let mut res = db
             .query("SELECT asset_id, rotation, elevation FROM node WHERE node_id = $nid")
-            .bind(("nid", node_id))
+            .bind(("nid", node_id.clone()))
             .await
             .unwrap();
         let rows: Vec<serde_json::Value> = res.take(0).unwrap();
         assert_eq!(rows[0]["asset_id"], asset_id.as_str());
         assert_eq!(rows[0]["rotation"], serde_json::json!([0.5, 0.0, 0.0]));
         assert_eq!(rows[0]["elevation"], 2.0);
+
+        // Projection leg: a node holding half the node limit in properties still loads with every field the tree and NodeDto read.
+        let bulk = "x".repeat(fe_sdk::property_schema::MAX_NODE_BYTES / 2);
+        db.query("UPDATE node SET properties = { bulk: $bulk } WHERE node_id = $nid")
+            .bind(("bulk", bulk))
+            .bind(("nid", node_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let verses = load_hierarchy_handler(&db, &store).await.expect("hierarchy loads");
+        let tree_node = verses
+            .iter()
+            .flat_map(|verse| &verse.fractals)
+            .flat_map(|fractal| &fractal.petals)
+            .flat_map(|petal| &petal.nodes)
+            .find(|node| node.id == node_id)
+            .expect("the large node is in the tree");
+        assert_eq!(
+            (tree_node.name.as_str(), tree_node.petal_id.as_str(), tree_node.position, tree_node.scale, tree_node.rotation),
+            ("house", "petal-1", [1.0, 2.0, 3.0], [2.0; 3], current.node.rotation)
+        );
+        assert!(tree_node.has_asset);
+        assert_eq!(tree_node.asset_path.as_deref(), Some(asset_path.as_str()));
+        let petal_nodes = load_nodes_by_petal_handler(&db, &store, "petal-1").await.expect("petal nodes load");
+        let dto = petal_nodes.iter().find(|node| node.node_id == node_id).expect("the large node is in the petal snapshot");
+        assert_eq!((dto.name.as_str(), dto.position, dto.scale, dto.has_asset), ("house", [1.0, 2.0, 3.0], [2.0; 3], true));
+        assert_eq!(dto.asset_path.as_deref(), Some(asset_path.as_str()));
     }
 
     /// CDL-SPEC10 Phase A security: an R5 device-payload asset (declared

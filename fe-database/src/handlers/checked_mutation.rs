@@ -137,7 +137,7 @@ pub(crate) async fn commit(
         _ => anyhow::bail!("Undo supports full transforms and single path-point edits only"),
     };
     let prepared = node_history::prepare_change(
-        before,
+        before.clone(),
         previous.as_ref(),
         &scope,
         operation,
@@ -145,6 +145,10 @@ pub(crate) async fn commit(
         schemas,
     )?;
     anyhow::ensure!(prepared.version > 0, "invalid stored edit history version");
+    // Transform-only writes fit by construction (scene_publication/AGENTS.md §row-bound); a path edit is measured.
+    if operation == "property_set" {
+        super::scene_publication::check_publishable(db, node_id, local_did, Some(&before), &prepared.after).await?;
+    }
     let receipt = NodeMutationReceipt {
         node_id: node_id.into(),
         history_version: prepared.version,
