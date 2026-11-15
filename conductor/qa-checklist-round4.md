@@ -534,7 +534,7 @@ Work that is not code: in-app looks, simulator runs, sweeps and decisions the pl
 - [ ] OWED-EXT-4 · app · portal spikes SP-1..SP-9 on WebView2 (your Windows box)
 - [ ] OWED-EXT-5 · sim · portal T5.5: run PJ1-PJ9 and the portal sim scenarios, `run.py validate portal-*` receipts, full sweep once (PJ8 is native-only)
 - [ ] OWED-EXT-6 · app · RUNBOOK H4 earthwork petal authorization; R-GATE-11 GUI create augments; R-GATE-15 GUI queue test; door-parity journey; GPX serial-create deferral (owned by group NEW)
-- [ ] OWED-EXT-7 · app · R-Z-16 / R-BIN-21: decide whether a bound `portal.open` bundle may mount by package without a repository node (see section 5)
+- [ ] OWED-EXT-7 · app · R-Z-16 / R-BIN-21 (decided 2026-11-14: a bound `portal.open` bundle opens only from its node; `BrowserCommand::OpenBoundBundle` is removed): select a node with a bound `portal.open` binding -> nothing mounts until "Open bound bundle" is clicked
 - [ ] OWED-EXT-8 · app · mint a scoped share link from the Copy-for-BI card in-app (needs a GUI-to-API seam; documented instead by EXT-13)
 - [ ] OWED-EXT-9 · app · QA-0174: GPX path vs 1:100 terrain (nodes at -27 m, focus-node 100x off); re-look after CITY-08 and the scale slices
 - [ ] OWED-EXT-10 · sim · QA-0165 role-at-write decision and clock track (owned by CLOCK)
@@ -866,9 +866,12 @@ Checks for the fixes made after the scoped review of `2b289db1..HEAD`. Findings 
 ### Snapshot import (fe-database, fe-api)
 - [ ] RF-DB3-1 · api · Import a snapshot whose `field_def_id` already exists in another verse -> refused with a collision reason; the other verse's definition is unchanged.
 - [ ] RF-DB3-2 · api · PATCH `/api/v1/field-defs/<id>` on an id that two rows share -> fails as ambiguous and changes neither row.
-- [ ] RF-DB4-1 · batch · Import a snapshot with a forged asset `owner_did` and negative `size_bytes`, then run the upload quota query for the forged owner -> sum unchanged; the asset row has size 0 and no owner.
+- [ ] RF-DB4-1 · batch · Import a snapshot with a forged asset `owner_did` and negative `size_bytes`, then run the upload quota query for the forged owner -> sum unchanged. Through the API the asset row is owned by the importing caller, anchored to the imported petal, and sized from the verified blob (counted against the importer's quota); an import with no caller identity stores size 0 and no owner.
 - [ ] RF-EH4-1 · batch · Export a petal, delete it, import it on the same node, edit it, export again -> the second export succeeds with strictly ascending lamports.
-- [ ] RF-API1-1 · api · POST `/api/v1/petals/import-snapshot` into a fractal that has a `scene.create` extension binding (then the same with the binding on the verse) -> 409 `hook-unjudgeable`, no petal created.
+- [ ] RF-API1-1 · api · POST `/api/v1/petals/import-snapshot` into a fractal whose `scene.create` extension binding (then the same with the binding on the verse) is installed and running here -> the hook is asked once per node (its log shows each node name with `petal_id` = the new petal); a hook that allows every node -> 200, a hook that refuses one node -> 409 `refused` with `package_id` and no petal created; the same binding to a package NOT installed on this host -> 409 `hook-unjudgeable`, no petal created.
+- [ ] RF-API1-3 · sim · Import a snapshot on peer A (Manager at the destination fractal) -> peer B in the same verse shows the petal and every node within the usual sync time, without restarting either peer; the import response said `persist: committed`.
+- [ ] RF-API1-4 · sim · Import a snapshot whose petal carries a role row for a third DID -> the response says `not_imported.roles: 1`; on peer A and on peer B that DID has no role at the petal (role list and an API call as that DID both refuse).
+- [ ] RF-API1-5 · api · Import a snapshot with one node whose properties exceed 64 KiB -> 400 `refused` whose reason names that node id and the node size limit; no petal created.
 
 ### Relay and sync (fe-sync, desktop relay)
 - [ ] RF-SR1-1 · app · Owner with relay serving on does not navigate anywhere; a member connects through the relay -> admitted once the pinned replica opens and roles arrive (log: "pinned its served verse replicas open").
@@ -907,7 +910,7 @@ Checks for the fixes made after the scoped review of `2b289db1..HEAD`. Findings 
 - [ ] RF-DB2-4 · sim · Two pre-upgrade peers hold different descriptions for the same petal; each publishes it to two new peers in opposite orders -> both new peers show the same description.
 - [ ] RF-DB2-5 · sim · An Editor's publish fills a column on a new peer; the Editor's grant is then revoked back past that write -> after the role view settles, the filled value is gone on that peer (the publisher's own value stays on the publisher).
 - [ ] RF-DB4-2 · batch · Import a snapshot whose asset names another petal's id -> the stored asset is anchored to the imported petal.
-- [ ] RF-API1-2 · api · Bind a `scene.create` hook on a fractal, then clear it from another manager (`mode: inherit`), then import a snapshot into that fractal -> not refused as `hook-unjudgeable`.
+- [ ] RF-API1-2 · api · Bind a `scene.create` hook on a fractal, then clear it from another manager (`mode: inherit`), then import a snapshot into that fractal -> the hook is not asked (its log shows no call) and the import succeeds (200).
 - [ ] RF-SR1-3 · app · Lease a served verse through a write before the relay pins it, wait for the lease to expire -> the replica stays open (debug log), members stay admitted.
 - [ ] RF-BT1-2 · app · Desktop relay dial-back with no peer online -> attempts at about 0, 65, 195 and 455 s, then the relay stops.
 
@@ -926,3 +929,18 @@ Open after the sweep (not fixed):
 - [ ] RF-OPEN-14 · A shared database handle still alive when the database thread exits keeps the store locked until the process ends (a storage thread inside the database dependency never stops). No product flow reopens the store in-process today; an in-app restart feature would hit this. The test assertion "a reader held across a terminal reset gets an error" was removed because it cannot coexist with reopening the same store; the same exit path is still asserted after a plain shutdown.
 - [ ] RF-OPEN-15 · Websocket journey: a small race remains in the test if the server's 200 ms credential check fires between the revoke and the client's write.
 - [ ] RF-OPEN-16 · CI runs no tests for fe-database, fe-sync, fe-api, fe-policy or fe-runtime, which is how 13 tests went stale unnoticed (several written "code first" and never run). Batches R1-R6 and R11 have not been run in this sweep.
+
+### Second review and decision loop (2026-11-14)
+Not repeated here: import onto a second peer, role rows granting nothing, an import refused by a scene hook (RF-API1-1, RF-API1-3, RF-API1-4).
+- [ ] RF-D-1 · sim · A Viewer peer publishes a tombstone for a node, and another Viewer publishes a new node row -> the node stays on every peer and the new row appears on none.
+- [ ] RF-D-2 · app · Edit a node locally while the edit is still unpublished, then have another peer change a role in the verse -> your edit is still there afterwards and publishes normally.
+- [ ] RF-D-3 · app · Make an edit fail (stall the database thread), click Retry under Unsaved edits once it recovers, then press Ctrl+Z -> the retried edit is undone (RF-OPEN-6 no longer applies).
+- [ ] RF-D-4 · app · Pen tool: click without moving, then press and drag on a slope and on flat ground -> a click places a point, a drag starts after about 6 px of pointer travel, and both feel the same on slope and flat.
+- [ ] RF-D-5 · app · Road tool: click the current road anchor again -> no segment is added.
+- [ ] RF-D-6 · app · Road tool: place points, press Ctrl+Z, then end the road during the undo -> the undone points are still removed from the road.
+- [ ] RF-D-7 · api · Publish a different build under an existing package id and version -> 409 `version_conflict`; the stored build is unchanged.
+- [ ] RF-D-8 · app · Hexon Manager, Available tab -> registry packages are listed with an Install button; with the registry slow it shows a loading state, with no packages an empty state, and with the registry unreachable an error state.
+- [ ] RF-D-9 · app · Clear the registry address setting (blank) -> the Available tab uses the hosted registry; a typed address still overrides it.
+- [ ] RF-D-10 · app · Start the embedded relay, then create a verse -> a member connects through the relay and is served that verse without a restart.
+- [ ] RF-D-11 · app · Select too many objects (over the 4 MiB Undo/Redo group limit) and save -> the message says the selection is too large and to select fewer objects; nothing is saved.
+- [ ] RF-D-12 · app · Inspector: open a node with a large property value (tens of KB) -> the row shows a preview with "Edit full value"; clicking it opens the whole value for editing.

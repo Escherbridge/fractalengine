@@ -10,6 +10,7 @@ import re
 
 MAX_SCENARIO_BYTES = 1024 * 1024
 MAX_STEPS = 128
+MAX_STRING_CHARS = 65536 - 4096  # mirrors fe-sdk/src/property_schema.rs MAX_NODE_BYTES (65_536) less 4 KiB for the node envelope
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 ULID = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
 OP_FIELDS = {
@@ -76,7 +77,7 @@ def finite_tree(value, depth=0):
         for child in value:
             finite_tree(child, depth + 1)
     elif isinstance(value, str):
-        require(len(value) <= 65536, "JSON string exceeds 65536 characters")
+        require(len(value) <= MAX_STRING_CHARS, "JSON string exceeds %d characters" % MAX_STRING_CHARS)
 
 
 def integer(value, low, high, label):

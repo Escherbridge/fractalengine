@@ -1650,6 +1650,15 @@ could not grow, and the baseline commit on this box is ~80 GB (WSL VM 26 GB, VS 
 - Every chunk runs with `--no-fail-fast` (since 2026-11-14). Without it cargo stops a multi-binary chunk at
   the first failing test binary, so the binaries after it never run and their failures stay hidden: the
   first R7-R10 sweep reported 7 failing tests, and fixing those exposed 10 more, most in binaries that had not run.
+- Every chunk has a time limit (`-ChunkTimeoutMin`, default 60): at the limit the chunk's whole process tree is
+  killed and the chunk is reported `TIMEOUT`. Added 2026-11-15 after one sync test that blocked forever on a
+  full event channel held an unattended overnight run for seven hours.
+- A chunk that ends `build_failed` with `E0786 found invalid metadata files` or `E0463` is out of commit
+  memory, not corrupt: the note under the error reads `failed to mmap file ... The paging file is too small
+  (os error 1455)`. On 2026-11-15 several chunks failed this way with 108 of 128 GB committed (32 GB of RAM;
+  editors, language servers and two `rustc` at about 11 GB each). Nothing needs cleaning: free commit (close
+  WSL, a language server or spare editor windows) and re-run the chunk with `-Jobs 1`, which halves the
+  compiler's share. Still never delete build caches while a chunk is compiling.
 - To re-run a subset of chunks, pass `-BatchFile` a scratch markdown file holding only those `cargo test`
   lines under their `## R<n>` headings; the guards and pruning stay in force.
 - After each chunk the runner deletes the `.exe`/`.pdb` files in `target/debug/deps` written since

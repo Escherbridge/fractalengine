@@ -111,6 +111,236 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-15 (afternoon) — R1-R11 RUN AND DIAGNOSED; WEBSITE AND DEMO NODE ON RAILWAY; NOTHING OF TODAY
+  COMMITTED YET.** *Tests.* The overnight R1-R11 run hung for seven hours on one fe-sync test that blocked on a
+  full `bounded(32)` event channel nobody read (`sync_thread::tests::a_held_role_statement_is_reread_...`, now
+  on an unbounded `flood_evt_tx`); the runner gained `-ChunkTimeoutMin` (default 60) so one hung test can no
+  longer stall a run. First full pass: 3,825 passed, about ten failing tests, three chunks not built. Every
+  failure is diagnosed and fixed in the tree: eight stale tests, one message-order fix in
+  `fe-query/src/sql_guard.rs` (the record-cast rule now runs before the keyword loop), one real store-actor
+  leak. The chunks that did not build were **out of commit memory, not corrupt**: `E0786 invalid metadata`
+  carries the note `failed to mmap ... The paging file is too small (os error 1455)`; this box has 32 GB of
+  RAM and sat at 108 of 128 GB committed. `wsl --shutdown` (user-approved; it stops the Podman containers,
+  including `oasis-postgres`) freed about 30 GB. The re-run of the fourteen affected chunks is in
+  `.omc/logs/tests/rerun-20261115/` (run log `.omc/research/test-rerun-20261115.log`, UTF-16); two of its
+  chunks failed the same memory way again and must be repeated with `-Jobs 1` (`tools/qa/AGENTS.md`
+  §test-batches). *Railway* (project `fractalengine-hexon-registry`, environment `production`): three services
+  now. `hexon-registry` unchanged. `demo-node` (`f786b86d-de14-4a32-9b0b-e016a68335ee`, volume at `/data`,
+  `PORT=8765`, private name `demo-node.railway.internal`, **no public address**) runs the published `fe-relay`
+  Linux binary from the rolling `latest` release on `ubuntu:26.04` (the published build needs glibc 2.43;
+  24.04 fails at load, and the release notes still say 2.39). `web` (`cf19f732-936f-45ca-b765-db1d194c34bd`)
+  is the Astro site (landing page, docs, `/status`), live at `https://web-production-59f961f9.up.railway.app`,
+  with custom domain `fractalengine.escherbridge.com` attached (id `c30bd10f-07f2-41ac-a8b5-aa53517b1732`,
+  target port 8080) and waiting for the user's two DNS records at Cloudflare: `CNAME fractalengine ->
+  uuao5s21.up.railway.app` and the `TXT _railway-verify.fractalengine` value Railway printed (re-read it with
+  `railway domain` or the service's Networking page). Site, demo-node Dockerfile and seed script live in the
+  private repo under `web/` (uncommitted there). *Decisions today:* positioning is "a digital twin and
+  intelligence analytics tool"; the "dashboard" is the docs (how to use a deployed instance, develop
+  extensions) plus a status page and a live demo-data page; primary action "Download the preview build";
+  existing seven screenshots; the user adds the DNS record; reach the demo node through `railway ssh`, never a
+  public address. *Keys (never printed, user must back them up; ACL = the user only):*
+  `%USERPROFILE%\.fractalengine\demo-node.key` (node identity seed, used to mint API tokens) and
+  `demo-node-share-signer.key` beside it. *Still to do, in order:* (1) repeat the memory-failed chunks with
+  `-Jobs 1`, fix anything real, re-check the four feature-set compiles; (2) mint demo tokens with
+  `cargo run -p fe-identity --example mint_api_token` (bootstrap owner 1 h, then verse owner 1 h and verse
+  viewer 30 d), run `/opt/fe/seed_demo.py --create-verse`, `--seed`, `--verify` inside the container over
+  `railway ssh --service demo-node`, store the viewer token as the `web` service variable `DEMO_NODE_TOKEN`
+  with `DEMO_NODE_URL=http://demo-node.railway.internal:8765`, redeploy `web` with the demo page; (3) leak and
+  secret scan, topical commits in both repos, `git push -4 origin main`, haiku CI monitor. Not started and
+  awaiting a go-ahead: extension credential slots with keychain storage, a device-resources track, the
+  blocks / blob-reference / verse-configurable row cap track, whether release builds include `plugin-host`, a
+  Railway spending limit, the glibc requirement of the Linux build, confirming the export `?history` cap of 256.
+- **2026-11-15 (early) — FIX ROUND DONE AND COMPILED; BATCHES R1-R11 RUNNING.** All five fix agents
+  reported; `cargo check --workspace --all-targets --keep-going` is green after three orchestrator repairs
+  (a shadowed `door` name in `fe-database/src/handlers/plugin_host.rs` `flush_charged`; eight test call
+  sites for changed signatures in `fe-sync/src/sync_thread.rs`, `fe-api/tests/export_share_test.rs`,
+  `fe-database/tests/db_test.rs`; the two new refusal arms in `fe-api/src/rest.rs` `scene_denied_response`
+  and `flush_through_door` at `fe-database/src/lib.rs`). What the fix round changed: pending local keys are
+  now only keys a local journal fact actually changed (`scene_publication/inbound.rs` `local_writes`; the
+  publisher refuses to stamp a key with a stale cached winner unless a local fact wrote it); an import that
+  would replicate with no actor is refused (`ImportError::Unattributed`), archive `node_log` rows carry
+  `payload.archive_import_id` and are never publication proof (`node_history.rs` `ARCHIVE_FACT_KEY`),
+  imports are admitted and charged through the write door and their property values are checked against
+  destination rules; **live hooks fail closed** (`SceneVerdict::Unanswered` → `SceneRefusal::HookFailed`
+  409 `hook-failed`; per-caller allowance of 256 calls in flight → `Busy` 503 `hook-busy`; round-robin
+  `SceneCallQueue` in `plugin_bridge.rs`; crashed instance restarts with backoff; a degraded binding stays
+  in force; wasmtime epoch interruption at the hook deadline); extension query phase one selects ids only;
+  extension commits go through the write door; fe-sync kept-row eviction is per author and never takes
+  another author's last row, a dropped role row forces an all-author role re-read before any re-judge, a
+  dropped row schedules one re-seed, shutdown marks the store closed, own row writes hold a temp tag until
+  the next GC pass, relay hosts are judged before insertion, a failed owned-verse read keeps the served
+  set; editor batches and stamp edits run `check_publishable`. Residuals recorded by the agents: a narrow
+  GC window for rows arriving from other peers (library keeps the needed functions private); the GC task
+  can outlive shutdown by up to one 10-minute interval; verse/fractal/petal rows have no per-column write
+  time for the re-judge check; `node_log` and `op_log` are never pruned (the budget bounds the rate, about
+  225 MiB per hour per author per verse, not the size). Running now (background task, no source edits
+  until it ends): feature-set compile checks, then `tools\qa\test_batches.ps1 -Batches R1..R11`
+  (`--no-fail-fast`), logs in `.omc/logs/tests/all-20261114/`, summary in the task output and
+  `.omc/research/test-all-20261114.log`. Expect failures: none of today's decision-round code has ever
+  run. Next: fix failures by crate (sonnet; opus for clock, sync and hooks), re-run failed chunks only,
+  commit in topical commits, leak scan, `git push -4 origin main`, haiku CI monitor. The registry needs a
+  redeploy only if `fe-hexon-registry` or `fe-format` changed since deployment `c61bc6f5`: check
+  `git status -- fe-hexon-registry fe-format` against what was deployed (the working tree at that time).
+- **2026-11-14 (night, later) — WORKSPACE COMPILES; THREE ADVERSARIAL REVIEWS; FIX ROUND IN FLIGHT.**
+  `cargo check --workspace --all-targets` green after one manifest fix (`hex` moved from dev to normal
+  dependencies in `fe-api/Cargo.toml`); `--features relay-server` (fe-sync), `remote` (fe-hexon),
+  `plugin-host,relay-server,entitlement` (fractalengine) and `plugin-host,relay-server` (fractalengine-relay)
+  green too. Integration pass applied and NOT yet recompiled: byte gate on the DB command channel
+  (`fe_runtime::channels::DbCommandBytes`, 64 MiB, released in `fe-database/src/command_lane.rs`, charged by
+  `fe_sync::byte_bounds::try_send_db` through a thread-local scope), `DeferralReason::AuthorBudget`,
+  `history_per_node` on `ExportPetalSnapshot` with `?history=N` (max 256, chosen by the agent: confirm),
+  REST 429 `write-budget-exceeded` with `Retry-After` (`rest.rs` `write_budget_response`), MCP retry text,
+  WebSocket `transform_throttled`, editor "Saving too fast" dead letter, `check_publishable` in
+  `commit_mutations_in_scope`, snapshot import and extension commits. Three read-only opus reviews
+  (verdicts): admission basis HOLDS; **re-judge pending keys BROKEN** (a stale cached winner makes another
+  author's unauthorized value look like a pending local key and the host re-signs it,
+  `scene_publication/inbound.rs` ~423); imports HOLD with holes (an import with no actor still publishes and
+  archive `node_log` rows can serve as proof; imports and extension commits bypass the write budget; quota
+  checked before the import lock); **live hooks BROKEN** (queue flooding and a crashed instance let small
+  writes pass); extension data access HOLDS (phase-one query may encode every row; no wall-clock interrupt);
+  **sync byte caps BROKEN** (an oversized role row evicts an owner's kept revoke; an oversized row flushes
+  all kept rows; nothing re-reads dropped rows); **reclaim BROKEN** (shutdown never marks the store closed;
+  a blob written during a GC pass can be deleted while referenced); relay HOLDS with residuals (a new relay
+  can be dialled before its host is judged; a failed owned-verse read empties the served set). **User
+  decision (23): when a bound scene hook gives no answer, the live edit is REFUSED** (reverses the earlier
+  fail-open default OQ-B4). Five fix agents running, no cargo: re-judge pending keys (opus); import proof,
+  budget, quota and `TransformFailed.retry_after_ms` (opus); hooks fail closed with backlog bound, instance
+  recovery, import transforms judged, query phase one, epoch interruption, extension commits through the
+  write door (opus); sync eviction, re-read on drop, shutdown, GC race, judged hosts before insert, served
+  set kept on read error (opus); `check_publishable` in editor batches and stamp edits, upload 429 (sonnet).
+  After they report: full compile again (default plus the four feature sets), then run tests rather than
+  another review round: batches R1-R11 through `tools\qa\test_batches.ps1` (the user asked for R1-R6 and R11
+  after the decisions; R7-R10 chunks must be re-run because their code changed), fix, commit in topical
+  commits, push, CI monitor agent. Redeploy the registry only if `fe-hexon-registry` or `fe-format` changed
+  after deployment `c61bc6f5` (they have not so far).
+- **2026-11-14 (night) — REGISTRY SEEDED; ALL BUILD AGENTS DONE; FIRST FULL COMPILE RUNNING.**
+  User answers: generate a project publisher key now; publish all four packages as they are. Done: a new
+  ed25519 seed is in `%USERPROFILE%\.fractalengine\hexon-publisher.key` (64 hex chars, ACL = the user's
+  account only, never printed; the user must back it up: whoever holds it can publish under these package
+  ids). The four packages were sealed with
+  `cargo run -p fe-format --no-default-features --example seal_hexon -- <in> <out>` (key from env
+  `FE_SECRET_HEXON_SEAL_KEY`; the sealer rewrites `publisher_did` to the key's did:key, prefix
+  `did:key:z6MkoYA6rrM2`) and published with the operator token read from the Railway variable
+  `FE_REGISTRY_PUBLISH_TOKEN`. Live check: search lists 4 packages under one publisher
+  (`tileset-north-america-pacific-northwest` 0.1.0 `terrain_tileset` 7.69 MB; `alpine-demo-terrain` 0.1.0
+  `terrain`; `morning-run-gpx` 0.1.0 `gpx_collection`; `lakeside-scene` 0.1.0 `scene`); the Pacific
+  Northwest download is byte-identical to the sealed file; a wrong token gets 401. Known consequences of
+  "as they are": only Pacific Northwest appears in the desktop registry list (the list shows
+  `terrain_tileset` only), and `lakeside-scene` still declares a dependency on the alpine package under its
+  old placeholder publisher id. Sealed copies are in the session scratchpad only; sources are
+  `sample-hexons/dist/` and the sibling `gis-tile-etl/dist/`. The session restarted once (host process
+  exit); the three interrupted agents had already finished and re-verified their files. Every agent of the
+  "fix everything" round has reported: fe-sync byte bounds (`fe-sync/src/byte_bounds.rs`, streaming join,
+  chunked re-judge, library GC with a protect callback for superseded row blobs), fe-database (node limit
+  64 KiB, `MAX_ROW_BYTES` 176 KiB with per-own-key headroom, write-time `check_publishable`, per-author
+  write budget `scene_publication/budget.rs` with defaults 8 MiB burst / 64 KiB per second and a receiver
+  side, `reclaim.rs`), read paths (projected hierarchy and WebSocket resync, cursor on the node list,
+  `/query` row window, byte-paged history, replay from stored after-state, bounded export). NOTHING IS
+  COMPILED: `cargo check --workspace --all-targets` is running (log
+  `.omc/research/check-all-20261114.log`); expect errors from about fifteen agents' unbuilt work; fix by
+  crate with build-fix agents, then check `--features relay-server` for fe-sync, fractalengine and
+  fractalengine-relay. Open NEEDS to apply in an integration pass after the compile is green: fe-api answers
+  429 with Retry-After when `fe_database::node_write_retry_after_ms` matches (REST, MCP, WebSocket) and the
+  fe-ui scene-write door treats `NODE_WRITE_BUDGET_EXCEEDED` as a retryable refusal; a typed
+  `DeferralReason::AuthorBudget` in fe-runtime; `check_publishable` inside
+  `node_history::commit_mutations_in_scope`, the snapshot import and plugin commits; a byte gate on the DB
+  command channel (`DbCommand::payload_bytes`, a shared counter in `fe-runtime/src/channels.rs`, decrement in
+  `fe-database/src/lib.rs`, wiring in the host); `history_per_node` on `DbCommand::ExportPetalSnapshot`.
+  API behaviour changes clients will notice: node list is paged with `next` and ordered by node id; `/query`
+  refuses a top-level LIMIT above 10,000 and a non-literal LIMIT; node history default page is 20 and a
+  short page no longer means the end; hook inputs above a quarter of the cap fail closed. Then: adversarial
+  security review (admission basis, hook import, import replication, extension bounds, write budget),
+  commit in topical commits, batches R1-R6 and R11 plus R7-R10 chunks touched today, push, CI monitor.
+- **2026-11-14 (late) — NODE LIMIT BACK TO 64 KiB; "FIX EVERYTHING" ROUND IN FLIGHT; REGISTRY LIVE.**
+  A wider impact review of the 256 KiB node limit judged it unsafe to ship: (B1) nothing reclaims superseded
+  row copies and nothing limits write rate (a large node moved over the live API grows the writer's disk by
+  about 22 GiB an hour, every peer's by about 9 GiB); (B2) the join path reads a whole verse into memory and
+  five inbound queues cap entries, not bytes. Both exist at 64 KiB at a quarter of the size. User answers:
+  (20) node limit **back to 64 KiB** (`fe_sdk::property_schema::MAX_NODE_BYTES`; everything stays derived so
+  raising it is one constant); (21) **fix everything now**, before the test batches; (22) the four small
+  defaults are **accepted** (terrain re-sculpt stays in-app; new-peer role history unchanged; manual Refresh
+  after a failed multi-select read; bundles open only from their node, unused `OpenBoundBundle` command
+  removed). The user also said: there are **no existing peers yet**, so "all peers upgrade together" costs
+  nothing; and extensions should be able to call external APIs and, with permission, use the user's own
+  device resources (desktop now, mobile later). Survey result on that: outbound HTTPS to manifest-declared
+  hosts with host-held secrets ALREADY exists (`egress.http-request`, `fe-plugin/src/net/egress.rs`,
+  `fractalengine/src/extension_host/net_sources.rs` `FileCredentialStore`), but no screen sets a credential
+  slot and keys sit in a plain JSON file, not the OS keychain; device resources (files, clipboard, camera,
+  serial) are not in the extension contract at all (estimate 4-6 weeks for user-picked files with per-device
+  consent); the Wasm runtime (wasmtime, JIT) cannot run on iOS, so mobile means host-brokered access.
+  Recommended and NOT started: a credential-slot screen with keychain storage (2-4 days) and a planned track
+  for device resources. Agents in flight for (21), none building: fe-sync (streaming join, byte caps on
+  inbound queues, chunked role re-check, reclaim of superseded row blobs), fe-database (limit reset, row
+  headroom, per-author write budget with a receiver-side counterpart, reclaim of superseded canonical row
+  blobs), read paths (hierarchy and WebSocket resync without properties, byte-paged lists and history,
+  history replay from the nearest stored state, bounded export), plus an integration agent applying
+  follow-ups and registering unreached tests in `conductor/test-batches.md`. Done and waiting for the
+  compile: extension bounds derived from the node limit with paging and a fail-closed rule for large hook
+  inputs (`fe-runtime/src/scene_hook_gate.rs` strict tickets above a quarter of the input cap), editor
+  per-frame fixes, relay serves new verses live and judges relay hostnames at every lookup
+  (`fe-sync/src/relay_dns.rs`), imports replicate (host signs, importer is the journal actor and asset
+  owner; role rows never imported), re-judge keeps an authorized unpublished local edit.
+  **Registry is LIVE** at `https://hexon-registry-production.up.railway.app` (deployment `c61bc6f5`,
+  domain target port changed to 8080 because the app binds Railway's `PORT`): health 200 with protocol
+  header, anonymous search 200, unknown package 404, publish without or with a wrong token 401. Hardened
+  before going live after a security review (fixed number of concurrent archive reads, streaming, atomic
+  publish, 64 MiB publish cap, no path leaks; `FE_REGISTRY_ARCHIVE_CONCURRENCY=2` set). It is EMPTY: seeding
+  needs sealed, signed packages and a publisher key; a research agent is working out the toolchain.
+  Requests from this machine to Railway (and to unrelated sites) time out intermittently at connect: a
+  local network problem, retry before blaming the service; use `curl -4`. The registry code is deployed
+  from the working tree and is NOT committed yet. Nothing from today's decision rounds is committed except
+  `ff6494be` (row bound, local).
+- **2026-11-14 — DECISION LOOP ROUNDS 4-5; SECOND REVIEW FOUND A VIEWER WRITE BYPASS; FIXES IN FLIGHT.**
+  Second scoped review (`wf_01381b82-813`, the ~70 skipped files; `.omc/state/round45-review2-findings.json`):
+  5 confirmed, 3 LOW unverified, 0 refuted. **HIGH `database-r2-1`: a Viewer could tombstone or create nodes
+  on every peer** (a node row with `_fe_clock` but no `_fe_scene` skipped `role_gate`, the per-key path
+  declined it, the legacy merge assumed the gate had run). Fixed structurally in
+  `fe-database/src/handlers/replicated_row.rs`: `Admission::Allow` carries a `Basis` witness
+  (`RoleGate` / `Intrinsic` / `MembershipFloor`), the legacy writers demand `RoleGate`, and the clock floor
+  is chosen by the per-key judge's own parser (`handlers/AGENTS.md` §admission-basis). MED fixes written:
+  `api-1` publish answered ok for a rejected upload (`fe-api/src/hexon.rs`, now 409 `version_conflict`),
+  `ui-r1` zero-length road segment, `ui-r2` road undo dropped on End (`road_chain.rs`); `database-r2-2`
+  (re-judge reverts an unpublished local edit) in progress. User answers, rounds 4-5: (13) the bypass fix
+  **ships with everything**, not ahead; (14) **snapshot imports replicate to peers** (importer becomes the
+  author; snapshot role rows must not become replicated grants); (15) the relay **picks up new verses
+  live**; (16) **fix all three LOW security findings** (uninstall transaction, import blob-rollback race,
+  relay hostname re-judgment at connect); (17) gossip and relay-advert signing **stay configurable**, no
+  default flip; (18) licensed tilesets **parked**; (19) **no release tag yet**. The fourth question of
+  round 5 (four small defaults: terrain re-sculpt through the API stays out; clock history on new peers
+  unchanged; multi-select read failure keeps manual Refresh; portal bundles open only from their node)
+  came back as "Other" with no text: **not ratified, nothing changed for those four, ask again.** Built
+  this round (no cargo by agents; nothing compiled yet except the registry crate): node limit 256 KiB
+  (`fe_sdk::property_schema::MAX_NODE_BYTES`, row bound 528 KiB, schema cap stays 64 KiB, extension host
+  and hook input buffers stay 64 KiB so extensions cannot read or judge a node over 64 KiB), recovery in
+  8 MiB batches, hooks judge imports (`SceneWriteDoor::judge_import`, strict fail-closed mode, provisional
+  petal in the host; live hook calls still fail open by design), retry Undo, pen drag by screen pixels,
+  registry publish token, Hexon Manager registry list and default address. Railway variables set on the
+  service (publish token generated, stored only there). Still to do: compile everything, adversarial
+  security review of the admission fix, the hook import and the registry server, deploy and seed, commit,
+  batches R1-R6 and R11 plus touched chunks, push.
+- **2026-11-14 — DECISION LOOP (three rounds, twelve answers) AND HEXON REGISTRY ON RAILWAY; BUILD IN FLIGHT.**
+  User answers (AskUserQuestion): (1) registry workspace = "Jade Zaher's Projects"; (2) per-node limit 64 KiB
+  -> **256 KiB**; (3) snapshot import into a hooked scope: **build the hook lookup** (hooks judge the import);
+  (4) batches R1-R6 and R11 run **after** the decisions are implemented; (5) recovery past 8 MiB **publishes in
+  batches**; (6) a successfully retried edit **records an Undo step**; (7) pen click-versus-drag uses **screen
+  distance**; (8) **review the ~70 files the first scoped review skipped** (workflow `wf_01381b82-813`, findings
+  go to `.omc/state/round45-review2-findings.json`); (9) deploy the **open** registry (`fe-hexon-registry`),
+  not the commercial one; (10) **open reads, a separate token to publish** (`FE_REGISTRY_PUBLISH_TOKEN`, server
+  change); (11) seed with the three synthetic samples **plus the Pacific Northwest terrain package** (its
+  elevation source needs an attribution notice: carry it in the listing); (12) app gets a **default registry
+  address and a browse list** in the Hexon Manager. Also from the user: large values should move to blob
+  storage behind a reference id, blocks as their own track, and a verse-configurable row cap is wanted
+  (RF-OPEN-12). Assumption taken without asking: licensed (paid) tilesets stay off; the hosted registry
+  serves free packages only. Railway (CLI signed in, project linked to this checkout): project
+  `fractalengine-hexon-registry` (`3681131a-2836-4a56-9e50-9ab9c5fe8b8c`), environment `production`
+  (`195cc82a-df2a-403b-96df-cf8b3679d027`), service `hexon-registry` (`9863c583-5069-4725-9a46-53859aec9a95`),
+  volume `hexon-registry-volume` at `/data`, domain `https://hexon-registry-production.up.railway.app`
+  (target port 8790). Nothing is deployed yet: the server change comes first. Git Bash rewrites a leading-slash
+  argument (`/data`) into a Windows path; prefix Railway commands with `MSYS_NO_PATHCONV=1`. Build agents
+  (no cargo, disjoint files): registry server (sonnet), Hexon Manager browse and default address (sonnet),
+  node limit and batched recovery (opus), hooks judge imports (opus, needs a security review after), retry
+  Undo and pen drag (sonnet). Then: one `cargo check`, security review of the hook change, deploy and seed
+  the registry, commit, run R1-R6 and R11 plus the chunks the changes touch, push.
 - **2026-11-14 — R7-R10 TEST SWEEP DONE: 17 FAILING TESTS, 4 PRODUCT FAULTS FIXED, 13 STALE TESTS REPAIRED.**
   First run of batches `R7,R8,R9,R10` on the review fixes: 1,560 passed, 7 failed. Fixing those exposed 10 more,
   because cargo stops a multi-binary chunk at its first failing test binary; `tools/qa/test_batches.ps1` now

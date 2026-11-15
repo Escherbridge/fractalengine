@@ -152,7 +152,7 @@ missing `reqwest`/`tokio` symbols.
 | `fe-sim/src/**` | 43 |
 | `fe-database/tests/{device_enrolment_test,device_payload_test,iot_reading_test,observation_plane_test}.rs` | 60 |
 | `fe-api/tests/{device_ingest_test,iot_ingest_test,sim_control_test}.rs`, `fe-api/src/sim.rs` | 23 |
-| `fe-database/tests/db_test.rs` (J3 flush fn only: `test_rename_entity_omits_node_scene_change`, body at ~L785; turn 3 added the decode-provenance leg at ~L1240 (R-X-29) and the mixed-class all-or-nothing flush leg at ~L1325) | 1 |
+| `fe-database/tests/db_test.rs` (J3 flush fn only: `test_rename_entity_omits_node_scene_change`, body at ~L785; turn 3 added the decode-provenance leg at ~L1240 (R-X-29) and the mixed-class all-or-nothing flush leg at ~L1325; the plugin node-bounds leg at ~L1120: near-full value, transaction byte budget, byte-cut query paging) | 1 |
 
 **IoT subtotal ≈ 149** — **region total ≈ 760**
 

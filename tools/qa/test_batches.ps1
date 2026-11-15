@@ -7,6 +7,7 @@ param(
     [switch]$KeepArtifacts,        # keep the test executables and PDBs a chunk linked (default: prune them)
     [int]$Jobs = 2,                # cargo -j for every chunk (6 cores shared with the other sessions)
     [int]$MinFreeGb = 60,          # refuse to start a chunk with less free disk than this on the target drive
+    [int]$ChunkTimeoutMin = 60,    # kill a chunk (cargo and its test processes) that runs longer than this
     [string]$LogRoot = '',         # default: .omc/logs/tests/<yyyyMMdd-HHmmss>
     [string]$BatchFile = ''        # default: conductor/test-batches.md
 )
@@ -87,16 +88,17 @@ foreach ($chunk in $selected) {
     # --no-fail-fast: one failing test binary must not hide the binaries cargo would run after it.
     $command = $chunk.Command -replace '^cargo test', "cargo test -j $Jobs --no-fail-fast"
     "[{0:HH:mm:ss}] {1} #{2}: {3}" -f $started, $chunk.Batch, $chunk.Index, $command
-    Push-Location $repoRoot
-    & cmd /c "$command > `"$log`" 2>&1"
-    $exitCode = $LASTEXITCODE
-    Pop-Location
+    # A hung test must not stall the whole run: the chunk's process tree is killed at the time limit.
+    $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "$command > `"$log`" 2>&1" -WorkingDirectory $repoRoot -NoNewWindow -PassThru
+    $null = $proc.Handle
+    $timedOut = -not $proc.WaitForExit($ChunkTimeoutMin * 60000)
+    if ($timedOut) { & taskkill /PID $proc.Id /T /F | Out-Null; $exitCode = 124 } else { $proc.WaitForExit(); $exitCode = $proc.ExitCode }
     $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
     $passed = 0; $failed = 0; $ignored = 0; $binaries = 0
     foreach ($m in [regex]::Matches($text, 'test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored')) {
         $binaries++; $passed += [int]$m.Groups[2].Value; $failed += [int]$m.Groups[3].Value; $ignored += [int]$m.Groups[4].Value
     }
-    $status = if ($exitCode -eq 0) { 'ok' } elseif ($binaries -eq 0) { 'build_failed' } else { 'FAILED' }
+    $status = if ($timedOut) { 'TIMEOUT' } elseif ($exitCode -eq 0) { 'ok' } elseif ($binaries -eq 0) { 'build_failed' } else { 'FAILED' }
     $failedTests = @([regex]::Matches($text, '(?m)^test (\S+) \.\.\. FAILED\s*$') | ForEach-Object { $_.Groups[1].Value })
     $prunedGb = 0
     if (-not $KeepArtifacts -and (Test-Path $depsDir)) {

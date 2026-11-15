@@ -19,7 +19,7 @@ from scenario import source_probe, target_key
 NODE_FIELDS = ("display_name", "position", "elevation", "rotation", "scale", "properties", "asset_id", "petal_id",
                "view", "edit_seq")
 POOL_WORKERS = 4
-OBSERVATION_INLINE_BYTES = 262144  # largest canonical value recorded inline (city-lite hierarchies run to ~60 KB)
+OBSERVATION_INLINE_BYTES = 1048576  # above the largest published row (2 * MAX_NODE_BYTES = 128 KiB plus headroom); city-lite runs ~60 KB
 # fe-api rate-limits /query and the distributed timeseries query at 10 per second per DID (fe-api
 # limits.rs QUERY_RATE_PER_SEC), on the same DID the driver writes with. One prober round fires each
 # family's targets together, so a round stays under these bursts and leaves the rest for the driver

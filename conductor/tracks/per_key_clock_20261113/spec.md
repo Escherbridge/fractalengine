@@ -175,7 +175,11 @@ whose author is no longer admissible (a revoke window ends below its hlc) stops 
 
 | Bound | Value |
 |---|---|
-| serialized row including `_fe_clock` | <= 144 KiB (twice the 64 KiB node write limit plus 16 KiB; was 96 KiB until 2026-11-14) |
+| node snapshot at write time (`fe_sdk::property_schema::MAX_NODE_BYTES`) | <= 64 KiB (65_536 bytes; 256 KiB for part of 2026-11-14, set back by owner decision) |
+| one property value (`MAX_PROPERTY_BYTES`) | <= 64 KiB (equal to the node limit) |
+| schema descriptor (`MAX_SCHEMA_BYTES`) | <= 64 KiB |
+| serialized row including `_fe_clock` (`wire::MAX_ROW_BYTES`) | <= 176 KiB (180_224 bytes: twice the node limit, plus 512 own keys x 64 bytes of per-key overhead, plus 16 KiB; 144 KiB, 96 KiB and 528 KiB earlier on 2026-11-14). A write whose projected row would exceed it less 1 KiB, or carry more than 512 own keys, is refused at write time (`scene_publication/AGENTS.md` §row-bound). Wire limit: all peers must run the same build |
+| startup recovery batch | <= 1024 rows and <= 8 MiB prepared bytes per batch; any number of batches (`scene_publication/AGENTS.md` §recovery-batches) |
 | keys in one `own` map | <= 512 |
 | grant windows per statement | <= 8 |
 | HLC future bound | 5 minutes (`op_log::admit_scene_hlc`, `fe-database/src/op_log.rs:108`) |
