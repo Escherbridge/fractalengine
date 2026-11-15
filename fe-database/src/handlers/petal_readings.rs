@@ -27,7 +27,7 @@ pub(crate) async fn read(
     authorize(db, grant, local_did, &scope).await?;
     let mut response = db
         .query(format!(
-            "SELECT node_id, metric, units, value, recorded_at_ms FROM iot_reading \
+            "SELECT node_id, metric, units, value, recorded_at_ms, reading_id FROM iot_reading \
              WHERE petal_id = $petal AND recorded_at_ms >= $since \
              AND node_id IN (SELECT VALUE node_id FROM node WHERE petal_id = $petal AND tombstone = NONE) \
              ORDER BY recorded_at_ms DESC, reading_id DESC LIMIT {SOURCE_ROW_LIMIT}"
