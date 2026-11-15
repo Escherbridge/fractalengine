@@ -11,12 +11,38 @@ use crate::editor_batch::{
 };
 use crate::messages::{DbCommand, NodeMutation};
 use crate::scene_hook_gate::{
-    SceneAugment, SceneCaller, SceneCallerKind, SceneGateTicket, SceneHookGate, SceneHookInput,
-    SceneVerdict,
+    busy_message, unanswered_message, ProvisionFailure, SceneAugment, SceneCaller, SceneCallerKind,
+    SceneGateTicket, SceneHookGate, SceneHookInput, SceneVerdict, StrictVerdict, UnansweredCall,
 };
 
 /// Most hook calls one write may dispatch; a bound write over it is refused `input-too-large`.
 pub const MAX_HOOK_CALLS_PER_WRITE: usize = MAX_EDITOR_BATCH_TARGETS;
+
+/// Most serialized hook-input bytes one live write may dispatch at once (the plugin transaction bound).
+pub const MAX_HOOK_BYTES_PER_WRITE: usize = fe_sdk::plugin_host::MAX_TRANSACTION_BYTES;
+
+/// Whole budget of one import's judgment, provisioning included (fe-api's export timeout).
+pub const IMPORT_JUDGMENT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How an import's judgment ended; only `Admitted` may be sent (see `fe-runtime/src/AGENTS.md` §scene-hook-import).
+#[derive(Debug)]
+pub enum ImportJudgment {
+    /// Every bound hook allowed each input unchanged, or none is in effect: send this command as judged.
+    Admitted(DbCommand),
+    /// A hook refused an input, or an input or call count is over a cap (the live codes and statuses).
+    Refused(SceneRefusal),
+    /// A hook allowed only with augments, which would make the written rows differ from the judged ones.
+    Augmented { package_id: String },
+    /// A bound hook gave no usable answer.
+    Unanswered {
+        package_id: String,
+        failure: UnansweredCall,
+    },
+    /// The budget ran out before every input was judged.
+    OverBudget { budget_ms: u64 },
+    /// The new petal's bindings could not be resolved or cannot be judged on this host.
+    Unresolved(ProvisionFailure),
+}
 
 /// How the door treats each scene-writing `DbCommand` (`hooks` empty = plain send, no hook covers it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +58,7 @@ pub const SCENE_WRITE_CENSUS: &[CensusRow] = &[
     CensusRow { variant: "CreateNodeWithAsset", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "ImportGltf", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "CreateObject", hooks: "scene.create + scene.property", note: "one property call per initial key, node null" },
-    CensusRow { variant: "ImportPetalSnapshot", hooks: "scene.create + scene.property", note: "one create per node, one property call per initial key" },
+    CensusRow { variant: "ImportPetalSnapshot", hooks: "scene.create + scene.transform + scene.property", note: "one create per node, one transform per node with a non-default rotation or scale, one property call per initial key; judged strictly by judge_import" },
     CensusRow { variant: "DuplicateNode", hooks: "scene.create", note: "proposed.source = the copied node" },
     CensusRow { variant: "PromoteInstance", hooks: "scene.create", note: "proposed.source = {path}#inst-{i}" },
     CensusRow { variant: "PromoteCheckedStamp", hooks: "scene.create", note: "proposed.source = {path}#inst-{i}" },
@@ -157,22 +183,33 @@ pub enum SceneRefusal {
     InputTooLarge { package_id: String, limit_bytes: usize },
     /// The write would dispatch more than [`MAX_HOOK_CALLS_PER_WRITE`] calls.
     TooManyHookCalls { package_id: String, limit: usize },
+    /// The bound extension gave no answer (deadline, crash, decline, bad output): fail closed.
+    HookFailed {
+        package_id: String,
+        failure: UnansweredCall,
+    },
+    /// The caller holds its live-call allowance at this binding; retry after `retry_after_ms`.
+    Busy { package_id: String, retry_after_ms: u64 },
 }
 
 impl SceneRefusal {
-    /// The client-facing code: `refused` or `input-too-large`.
+    /// The client-facing code: `refused`, `input-too-large`, `hook-failed` or `hook-busy`.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Refused { .. } => "refused",
             Self::InputTooLarge { .. } | Self::TooManyHookCalls { .. } => "input-too-large",
+            Self::HookFailed { .. } => "hook-failed",
+            Self::Busy { .. } => "hook-busy",
         }
     }
 
-    /// REST status: 409 for a refusal, 413 for caller-sized input.
+    /// REST status: 409 for a refusal or a hook that gave no answer (as imports), 413 for caller-sized
+    /// input, 503 for a busy binding (retryable).
     pub fn http_status(&self) -> u16 {
         match self {
-            Self::Refused { .. } => 409,
+            Self::Refused { .. } | Self::HookFailed { .. } => 409,
             Self::InputTooLarge { .. } | Self::TooManyHookCalls { .. } => 413,
+            Self::Busy { .. } => 503,
         }
     }
 
@@ -180,7 +217,17 @@ impl SceneRefusal {
         match self {
             Self::Refused { package_id, .. }
             | Self::InputTooLarge { package_id, .. }
-            | Self::TooManyHookCalls { package_id, .. } => package_id,
+            | Self::TooManyHookCalls { package_id, .. }
+            | Self::HookFailed { package_id, .. }
+            | Self::Busy { package_id, .. } => package_id,
+        }
+    }
+
+    /// Milliseconds after which a retry may pass; only a busy binding is retryable.
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::Busy { retry_after_ms, .. } => Some(*retry_after_ms),
+            _ => None,
         }
     }
 
@@ -197,6 +244,11 @@ impl SceneRefusal {
             Self::TooManyHookCalls { package_id, limit } => format!(
                 "Refused by {package_id}: input-too-large (the write needs more than {limit} hook calls)"
             ),
+            Self::HookFailed { package_id, failure } => unanswered_message(package_id, failure),
+            Self::Busy {
+                package_id,
+                retry_after_ms,
+            } => busy_message(package_id, *retry_after_ms),
         }
     }
 
@@ -212,6 +264,16 @@ impl SceneRefusal {
             } => Err(Self::InputTooLarge {
                 package_id,
                 limit_bytes,
+            }),
+            SceneVerdict::Unanswered { package_id, failure } => {
+                Err(Self::HookFailed { package_id, failure })
+            }
+            SceneVerdict::Busy {
+                package_id,
+                retry_after_ms,
+            } => Err(Self::Busy {
+                package_id,
+                retry_after_ms,
             }),
         }
     }
@@ -399,10 +461,10 @@ impl SceneWriteDoor {
             inputs,
             ..
         } = write;
-        if let Some(refusal) = self.over_call_cap(&inputs) {
+        let caller = caller_for(caller_kind, author_did);
+        if let Some(refusal) = self.over_call_cap(&inputs, Some(&caller)) {
             return SceneWriteTicket::settled(SceneWriteOutcome::Refused(refusal));
         }
-        let caller = caller_for(caller_kind, author_did);
         let checks = inputs
             .into_iter()
             .map(|input| self.gate.begin(input, caller.clone()))
@@ -444,19 +506,104 @@ impl SceneWriteDoor {
         })
     }
 
-    /// A bound write that would dispatch more calls than the cap is refused, never partly checked.
-    fn over_call_cap(&self, inputs: &[SceneHookInput]) -> Option<SceneRefusal> {
-        let mut targets = inputs
+    /// Judge a write that creates its petal (a snapshot import): provision the petal in `verse_id`/`fractal_id`, then
+    /// judge each hook input in order, one call at a time within its hook deadline and `budget` overall. Strict: a
+    /// refusal, an augment or a non-answer refuses the whole write. Needs a tokio time driver.
+    pub async fn judge_import(
+        &self,
+        caller_kind: SceneCallerKind,
+        write: SceneWrite,
+        verse_id: &str,
+        fractal_id: &str,
+        budget: std::time::Duration,
+    ) -> ImportJudgment {
+        let SceneWrite {
+            petal_id,
+            author_did,
+            command,
+            inputs,
+        } = write;
+        let deadline = tokio::time::Instant::now() + budget;
+        let lease = match self
+            .gate
+            .provision(verse_id, fractal_id, &petal_id, deadline)
+            .await
+        {
+            Ok(Some(lease)) => lease,
+            // No backend: no extension runs on this host, so no hook is in effect (as for a live write).
+            Ok(None) => return ImportJudgment::Admitted(command),
+            Err(failure) => return ImportJudgment::Unresolved(failure),
+        };
+        // Inputs are judged one at a time inside the import budget, so only the call cap applies.
+        if let Some(refusal) = self.over_call_cap(&inputs, None) {
+            return ImportJudgment::Refused(refusal);
+        }
+        let caller = caller_for(caller_kind, author_did);
+        let judged = tokio::time::timeout_at(deadline, async {
+            for input in inputs {
+                match self.gate.begin(input, caller.clone()).wait_strict().await {
+                    StrictVerdict::Answered(SceneVerdict::Proceed { augment: None }) => {}
+                    StrictVerdict::Answered(SceneVerdict::Proceed {
+                        augment: Some(augment),
+                    }) => {
+                        return Err(ImportJudgment::Augmented {
+                            package_id: augment.package_id().to_owned(),
+                        })
+                    }
+                    StrictVerdict::Answered(verdict) => {
+                        if let Err(refusal) = SceneRefusal::from_verdict(verdict) {
+                            return Err(ImportJudgment::Refused(refusal));
+                        }
+                    }
+                    StrictVerdict::Unanswered {
+                        package_id,
+                        failure,
+                    } => {
+                        return Err(ImportJudgment::Unanswered {
+                            package_id,
+                            failure,
+                        })
+                    }
+                }
+            }
+            Ok(())
+        })
+        .await;
+        // Released only after every call settled or was abandoned (the release queues behind them).
+        drop(lease);
+        match judged {
+            Ok(Ok(())) => ImportJudgment::Admitted(command),
+            Ok(Err(judgment)) => judgment,
+            Err(_) => ImportJudgment::OverBudget {
+                budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+            },
+        }
+    }
+
+    /// A bound write over the call cap, or (with `caller`) whose summed hook inputs pass the transaction bound, is refused whole.
+    fn over_call_cap(&self, inputs: &[SceneHookInput], caller: Option<&SceneCaller>) -> Option<SceneRefusal> {
+        let dispatched: Vec<(String, &SceneHookInput)> = inputs
             .iter()
-            .filter_map(|input| Some((self.gate.dispatch_target(input)?, input.hook())));
-        let (package_id, hook) = targets.next()?;
-        if 1 + targets.count() <= MAX_HOOK_CALLS_PER_WRITE {
+            .filter_map(|input| Some((self.gate.dispatch_target(input)?, input)))
+            .collect();
+        let (package_id, first) = dispatched.first()?;
+        let hook = first.hook();
+        if dispatched.len() > MAX_HOOK_CALLS_PER_WRITE {
+            self.gate.count_too_large(package_id, hook);
+            return Some(SceneRefusal::TooManyHookCalls {
+                package_id: package_id.clone(),
+                limit: MAX_HOOK_CALLS_PER_WRITE,
+            });
+        }
+        let caller = caller?;
+        let summed: usize = dispatched.iter().map(|(_, input)| self.gate.input_bytes(input, caller)).sum();
+        if summed <= MAX_HOOK_BYTES_PER_WRITE {
             return None;
         }
-        self.gate.count_too_large(&package_id, hook);
-        Some(SceneRefusal::TooManyHookCalls {
-            package_id,
-            limit: MAX_HOOK_CALLS_PER_WRITE,
+        self.gate.count_too_large(package_id, hook);
+        Some(SceneRefusal::InputTooLarge {
+            package_id: package_id.clone(),
+            limit_bytes: MAX_HOOK_BYTES_PER_WRITE,
         })
     }
 }
@@ -505,7 +652,7 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
             name,
             position,
             ..
-        } => found(vec![petal_id.as_str()], vec![create(petal, name, *position)]),
+        } => found(vec![petal_id.as_str()], vec![create(petal, name, widen(*position))]),
         DbCommand::ImportGltf {
             request,
             petal_id,
@@ -515,12 +662,12 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
         } => {
             let mut carried = vec![petal_id.as_str()];
             carried.extend(request.as_ref().map(|request| request.petal_id.as_str()));
-            found(carried, vec![create(petal, name, *position)])
+            found(carried, vec![create(petal, name, widen(*position))])
         }
         DbCommand::CreateObject {
             petal_id, input, ..
         } => {
-            let mut inputs = vec![create(petal, &input.name, input.position)];
+            let mut inputs = vec![create(petal, &input.name, widen(input.position))];
             inputs.extend(input.properties.iter().map(|(key, value)| {
                 SceneHookInput::InitialProperty {
                     petal_id: petal.to_owned(),
@@ -561,7 +708,7 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
             scale,
         } => found(
             Vec::new(),
-            vec![transform(petal, node_id, *position, *rotation, *scale)],
+            vec![transform(petal, node_id, widen(*position), widen(*rotation), widen(*scale))],
         ),
         DbCommand::SetNodeProperty {
             node_id,
@@ -707,7 +854,12 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
     }
 }
 
-fn create(petal: &str, name: &str, position: [f32; 3]) -> SceneHookInput {
+/// A live command's `f32` vector as the stored `f64` (exact widening; the JSON a hook sees is unchanged).
+fn widen(vector: [f32; 3]) -> [f64; 3] {
+    vector.map(f64::from)
+}
+
+fn create(petal: &str, name: &str, position: [f64; 3]) -> SceneHookInput {
     SceneHookInput::Create {
         petal_id: petal.to_owned(),
         name: name.to_owned(),
@@ -715,15 +867,20 @@ fn create(petal: &str, name: &str, position: [f32; 3]) -> SceneHookInput {
     }
 }
 
-/// One `scene.create` per imported node row plus one `scene.property` per initial key (`node: null`).
+/// Per imported node row: one `scene.create`, one `scene.transform` when its rotation or scale is not the default,
+/// and one `scene.property` per initial key (`node: null`); numbers are the stored `f64` values.
 fn snapshot_inputs(petal: &str, nodes: &[Value]) -> Vec<SceneHookInput> {
-    let axis = |value: &Value| value.as_f64().unwrap_or(0.0) as f32;
+    let axis = |value: &Value| value.as_f64().unwrap_or(0.0);
     let mut inputs = Vec::new();
     for node in nodes {
         // Stored rows: GeoJSON `position.coordinates` = [x, z], height in `elevation`.
         let coordinates = &node["position"]["coordinates"];
         let position = [axis(&coordinates[0]), axis(&node["elevation"]), axis(&coordinates[1])];
         inputs.push(create(petal, node["display_name"].as_str().unwrap_or_default(), position));
+        if let Some((rotation, scale)) = imported_pose(node) {
+            let node_id = node["node_id"].as_str().unwrap_or_default();
+            inputs.push(transform(petal, node_id, position, rotation, scale));
+        }
         if let Some(properties) = node["properties"].as_object() {
             inputs.extend(properties.iter().map(|(key, value)| SceneHookInput::InitialProperty {
                 petal_id: petal.to_owned(),
@@ -733,6 +890,46 @@ fn snapshot_inputs(petal: &str, nodes: &[Value]) -> Vec<SceneHookInput> {
         }
     }
     inputs
+}
+
+/// An imported row's rotation (Euler XYZ) and scale when either is not the default (identity, unit scale).
+/// The DB refuses a row whose rotation or scale is malformed; such a row is still presented, never skipped.
+fn imported_pose(node: &Value) -> Option<([f64; 3], [f64; 3])> {
+    let numbers = |field: &str| -> Option<Vec<f64>> {
+        match &node[field] {
+            Value::Null => Some(Vec::new()),
+            Value::Array(values) => values.iter().map(Value::as_f64).collect(),
+            _ => None,
+        }
+    };
+    let (rotation, scale) = (numbers("rotation"), numbers("scale"));
+    let identity = match rotation.as_deref() {
+        Some([]) => true,
+        Some([x, y, z]) => [*x, *y, *z] == [0.0; 3],
+        Some([x, y, z, w]) => [*x, *y, *z] == [0.0; 3] && w.abs() == 1.0,
+        _ => false,
+    };
+    let unit = matches!(scale.as_deref(), Some([]) | Some([1.0, 1.0, 1.0]));
+    if identity && unit {
+        return None;
+    }
+    let euler = match rotation.as_deref() {
+        Some([x, y, z]) => [*x, *y, *z],
+        // A quaternion row converts as the editor batch does (f32 math, widened).
+        Some([x, y, z, w]) => {
+            let (ex, ey, ez) = Quat::from_array([*x as f32, *y as f32, *z as f32, *w as f32])
+                .normalize()
+                .to_euler(EulerRot::XYZ);
+            widen([ex, ey, ez])
+        }
+        _ => [f64::NAN; 3],
+    };
+    let scale = match scale.as_deref() {
+        Some([x, y, z]) => [*x, *y, *z],
+        Some([]) => [1.0; 3],
+        _ => [f64::NAN; 3],
+    };
+    Some((euler, scale))
 }
 
 fn create_from(petal: &str, source_node_id: String) -> SceneHookInput {
@@ -745,9 +942,9 @@ fn create_from(petal: &str, source_node_id: String) -> SceneHookInput {
 fn transform(
     petal: &str,
     node_id: &str,
-    position: [f32; 3],
-    rotation: [f32; 3],
-    scale: [f32; 3],
+    position: [f64; 3],
+    rotation: [f64; 3],
+    scale: [f64; 3],
 ) -> SceneHookInput {
     SceneHookInput::Transform {
         petal_id: petal.to_owned(),
@@ -775,7 +972,7 @@ fn mutation_input(petal: &str, node_id: &str, mutation: &NodeMutation) -> SceneH
             position,
             rotation,
             scale,
-        } => transform(petal, node_id, *position, *rotation, *scale),
+        } => transform(petal, node_id, widen(*position), widen(*rotation), widen(*scale)),
     }
 }
 
@@ -789,13 +986,7 @@ fn editor_batch_inputs(petal: &str, edit: &EditorBatchEdit) -> Vec<SceneHookInpu
         match &target.mutation {
             EditorTargetMutation::Transform(value) => {
                 let (x, y, z) = Quat::from_array(value.rotation).to_euler(EulerRot::XYZ);
-                inputs.push(transform(
-                    petal,
-                    &target.node_id,
-                    value.position.map(|v| v as f32),
-                    [x, y, z],
-                    value.scale.map(|v| v as f32),
-                ));
+                inputs.push(transform(petal, &target.node_id, value.position, widen([x, y, z]), value.scale));
             }
             EditorTargetMutation::Properties(edits) => {
                 inputs.extend(edits.iter().map(|edit| match edit {
@@ -825,7 +1016,7 @@ mod tests {
     use super::*;
     use crate::messages::CreateObjectInput;
     use crate::node_history::NodeAccessGrant;
-    use crate::scene_hook_gate::tests::gate_with;
+    use crate::scene_hook_gate::tests::{gate_with, gate_with_transform};
     use crate::scene_hook_gate::{SceneHook, SceneHookReply, MAX_HOOK_INPUT_BYTES};
 
     fn set_property(node: &str, key: &str, value: Value) -> DbCommand {
@@ -883,20 +1074,44 @@ mod tests {
         }
     }
 
+    /// An import of one node `n2` with a non-default scale, at a position only `f64` holds exactly.
+    fn import_scaled(petal: &str) -> DbCommand {
+        DbCommand::ImportPetalSnapshot {
+            rows: Box::new(crate::petal_snapshot::PetalSnapshotRows {
+                petal: json!({"petal_id": petal}),
+                nodes: vec![json!({
+                    "node_id": "n2",
+                    "display_name": "tower",
+                    "position": {"type": "Point", "coordinates": [1000000.03, 2.0]},
+                    "elevation": 0.0,
+                    "rotation": [0.0, 0.0, 0.0, 1.0],
+                    "scale": [40.0, 1.0, 1.0],
+                })],
+                ..Default::default()
+            }),
+            correlation_id: Some("import-2".into()),
+            actor: None,
+        }
+    }
+
     fn settle(door: &SceneWriteDoor, kind: SceneCallerKind, write: SceneWrite) -> SceneWriteOutcome {
         door.submit(kind, write)
             .poll(Instant::now())
             .unwrap_or_else(|_| panic!("an answered write settles at once"))
     }
 
-    /// Every door verdict: unbound and uncovered writes are plain sends; a refusal is 409, caller-sized
-    /// input 413; a write that would dispatch too many calls is refused before any call.
+    /// Every door verdict: unbound and uncovered writes are plain sends; a refusal is 409, a hook that gives no
+    /// answer is 409 `hook-failed` (fail closed, owner decision 2026-11-14), caller-sized input 413; a write that
+    /// would dispatch too many calls is refused before any call.
     #[test]
     fn scene_write_door_verdicts() {
         let refuse = SceneHookReply::Output(json!({"verdict": "refuse", "reason": "zoned"}));
         let allow = SceneHookReply::Output(json!({"verdict": "allow"}));
+        let crash = SceneHookReply::Fault("trap: unreachable".into());
+        let decline = SceneHookReply::Declined("cannot parse".into());
         let oversized = json!("x".repeat(MAX_HOOK_INPUT_BYTES));
         let many = (0..=MAX_HOOK_CALLS_PER_WRITE).map(|i| format!("zone{i}"));
+        let heavy = (0..5).map(|i| format!("zone{i}{}", "x".repeat(MAX_HOOK_INPUT_BYTES - 2048)));
         let cases: Vec<(&str, SceneHookReply, &str, DbCommand, Option<(&str, u16)>, usize)> = vec![
             ("unbound petal", refuse.clone(), "p2", create_node("p2"), None, 0),
             ("no hook covers a delete", refuse.clone(), "p1", DbCommand::DeleteNode { node_id: "n1".into() }, None, 0),
@@ -905,8 +1120,12 @@ mod tests {
             ("refused create", refuse.clone(), "p1", create_node("p1"), Some(("refused", 409)), 1),
             ("refused delete", refuse.clone(), "p1", DbCommand::DeleteNodeProperty { node_id: "n1".into(), key: "zone".into(), correlation_id: None }, Some(("refused", 409)), 1),
             ("caller-sized value", allow.clone(), "p1", set_property("n1", "zone", oversized), Some(("input-too-large", 413)), 0),
-            ("too many calls", allow, "p1", create_object("p1", many), Some(("input-too-large", 413)), 0),
+            ("too many calls", allow.clone(), "p1", create_object("p1", many), Some(("input-too-large", 413)), 0),
+            ("summed input bytes over the transaction bound", allow, "p1", create_object("p1", heavy), Some(("input-too-large", 413)), 0),
             ("refused snapshot import", refuse.clone(), "p1", import_snapshot("p1", &[]), Some(("refused", 409)), 1),
+            // Fail closed: a small write whose hook crashes or declines used to proceed; now it is refused.
+            ("crashed hook, small write", crash, "p1", set_property("n1", "zone", json!(1)), Some(("hook-failed", 409)), 1),
+            ("declining hook, small create", decline, "p1", create_node("p1"), Some(("hook-failed", 409)), 1),
         ];
         for (label, answer, petal, command, refusal, calls) in cases {
             let (gate, backend) = gate_with(Some(answer), true);
@@ -922,10 +1141,31 @@ mod tests {
             }
             assert_eq!(backend.calls.lock().unwrap().len(), calls, "{label}");
         }
+
+        // An imported node with a non-default scale is presented to scene.transform like a live transform update, so
+        // a refusing transform hook refuses the import; the hook sees the stored f64 position, not an f32 cast.
+        let (gate, backend) = gate_with_transform(Some(allow_reply()), Some(refuse.clone()));
+        let door = SceneWriteDoor::new(gate, crossbeam::channel::unbounded().0);
+        let write = SceneWrite::new("p1", import_scaled("p1")).unwrap().by("did:key:remote");
+        let SceneWriteOutcome::Refused(refused) = settle(&door, SceneCallerKind::Rest, write) else {
+            panic!("the transform hook refuses the scaled import")
+        };
+        assert_eq!((refused.code(), refused.http_status()), ("refused", 409));
+        let calls = backend.calls.lock().unwrap().clone();
+        assert_eq!(calls.iter().map(|call| call.hook).collect::<Vec<_>>(), [SceneHook::Create, SceneHook::Transform]);
+        assert_eq!(
+            calls[1].input["proposed"],
+            json!({"position": [1000000.03, 0.0, 2.0], "rotation": [0.0, 0.0, 0.0], "scale": [40.0, 1.0, 1.0]})
+        );
+        assert_eq!((calls[1].input["node"].as_str(), calls[0].input["proposed"]["position"][0].as_f64()), (Some("n2"), Some(1000000.03)));
+    }
+
+    fn allow_reply() -> SceneHookReply {
+        SceneHookReply::Output(json!({"verdict": "allow"}))
     }
 
     /// The commit flow through one door: classification, petal checks, a create's augments staged on
-    /// the created node after the send, a silent guest failing open on the GUI path, and the API wait.
+    /// the created node after the send, a silent guest refusing on the GUI path, and the API wait.
     #[test]
     fn scene_write_door_journey() {
         // Only census commands pass, for the authorized petal only.
@@ -998,7 +1238,8 @@ mod tests {
             [transform("p1", "n1", [1.0, 2.0, 3.0], [0.0; 3], [1.0; 3])]
         );
 
-        // GUI: a silent guest keeps the ticket pending, then the write proceeds past the deadline.
+        // GUI: a silent guest keeps the ticket pending, then the write is refused past the deadline (fail closed;
+        // it used to be admitted), naming the extension.
         let (gate, backend) = gate_with(None, true);
         let door = SceneWriteDoor::new(gate, crossbeam::channel::unbounded().0);
         let write = SceneWrite::new("p1", set_property("n1", "zone", json!(2))).unwrap();
@@ -1006,7 +1247,14 @@ mod tests {
         assert!(ticket.is_waiting());
         let ticket = ticket.poll(Instant::now()).err().expect("still waiting");
         let late = Instant::now() + SceneHook::Property.deadline() + Duration::from_millis(1);
-        assert!(matches!(ticket.poll(late), Ok(SceneWriteOutcome::Admitted(_))));
+        let Ok(SceneWriteOutcome::Refused(refusal)) = ticket.poll(late) else {
+            panic!("a silent hook refuses the write")
+        };
+        assert_eq!((refusal.code(), refusal.http_status(), refusal.retry_after_ms()), ("hook-failed", 409, None));
+        assert_eq!(
+            refusal.message(),
+            "Refused by org.example.zoning: it did not answer in time; the edit was not applied"
+        );
         assert!(backend.held.lock().unwrap()[0].is_closed());
 
         // API: a door without a sender hands the command back; the async wait settles a refusal, and an

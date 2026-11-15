@@ -207,8 +207,20 @@ object/array/string/number/integer/boolean/null. Supported constraints:
 `minLength`/`maxLength`, `minimum`/`maximum`. Unknown keywords and constraints on
 incompatible kinds fail. Required members must be declared. Outer properties
 remain optional; null needs permission. Limits: depth16, rule nodes256,
-encoded schema/property65536bytes. String length counts Unicode scalar values.
+encoded schema `MAX_SCHEMA_BYTES` (65536), encoded property value `MAX_PROPERTY_BYTES`
+(= `MAX_NODE_BYTES`). String length counts Unicode scalar values.
 Validation preserves JSON types. Device-format schema remains independent.
+
+`MAX_NODE_BYTES` (65_536 bytes = 64 KiB; briefly 256 KiB on 2026-11-14, set back the same day) is the node
+snapshot limit every write path enforces
+(`fe-database` `node_history::check_snapshot_size`) and the base of the scene wire
+row bound (`fe-database/src/handlers/scene_publication/AGENTS.md` row-bound). One
+property may fill a whole node; a schema stays small because it is parsed on every
+validated write. It is a WIRE limit: all peers of a Verse must run a build with the
+same value, or a peer on a smaller build refuses the larger rows. The extension host
+bounds DO follow it (§plugin-host bounds); only non-node JSON (`MAX_HOST_BYTES`) does not.
+The row bound adds headroom for the per-key own-version overhead (512 keys x 64 bytes), and fe-database
+refuses at write time a node whose published row could never be emitted (more than 512 replicated keys).
 
 
 ## Plugin host
@@ -217,7 +229,31 @@ Validation preserves JSON types. Device-format schema remains independent.
 is an exact name/property predicate with a bounded limit, never SQL or code.
 PendingOp keeps the existing three operations. The sink must persist the whole
 batch before returning its receipt, or refuse before effects. The host validates
-64 operations/64 KiB, and readers return at most 200 nodes/64 KiB. Plain property
+64 operations and the byte bounds below; readers return at most 200 nodes per page.
+
+### §plugin-host bounds
+
+Every node-content bound is derived from `property_schema::MAX_NODE_BYTES` (`N`); none is a literal.
+
+| Bound | Value | Unit |
+|---|---|---|
+| `NODE_ENVELOPE_BYTES` | 8 KiB | ids, key, name, transform, caller around one node |
+| `MAX_NODE_PAYLOAD_BYTES` | N + 8 KiB | one snapshot, one op, one scene hook input/output |
+| `MAX_PROPERTY_BYTES` | N | one property value (`validate_property_value`) |
+| `MAX_TRANSACTION_BYTES` | 4 x payload | encoded ops of one transaction or window |
+| `MAX_QUERY_PAGE_BYTES` | 4 x payload | encoded rows of one query page |
+| `MAX_READINGS_BYTES` | 512 KiB | staged readings (separate budget: 1,000 maximal readings) |
+| `MAX_COMMIT_BYTES` | transaction + readings | one flush |
+| `MAX_HOST_BYTES` | 64 KiB | non-node JSON only (kv values, bus/event JSON) |
+
+Sizes are measured as plain property JSON (`snapshot_json`, `snapshot_wire_len`), the form both script hosts
+deliver. Paging: `NodeQuery.after` is an exclusive node-id cursor (also enforced by `matches`).
+`cut_query_page(rows, limit, budget)` keeps rows in order while they fit `budget` (rows plus separators), lists
+a row over one payload in `omitted` (it consumes a row of `limit` but no bytes), and sets `next` to the last
+consumed id when more may follow: when it cut, when rows remained, when `limit` rows were consumed, or when the
+reader delivered more than `budget` bytes. The last rule makes an upstream early stop detectable without a
+field on the reader trait: a reader may stop early only after it delivered more than the page budget
+(fe-database/src/handlers/AGENTS.md §plugin-host-bounds). `budget` must be at least one node payload. Plain property
 JSON conversions preserve nested values and integer precision across script hosts.
 
 

@@ -11,6 +11,8 @@ use crate::{
 
 pub const MAX_EDITOR_BATCH_TARGETS: usize = 256;
 pub const MAX_EDITOR_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Stable fragment of the database's refusal when a group save exceeds [`MAX_EDITOR_BATCH_BYTES`]; the UI matches it.
+pub const BUDGET_REFUSAL_MARKER: &str = "Undo/Redo lifecycle reservation";
 
 /// Stored path context for a promoted stamp, never an authority grant.
 #[derive(Debug, Clone, Serialize, Deserialize)]

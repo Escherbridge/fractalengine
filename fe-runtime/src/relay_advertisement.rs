@@ -238,7 +238,7 @@ impl std::fmt::Display for AdvertisedRelayUrl {
     }
 }
 
-/// Classifies one address; IPv4 embedded in IPv6 (mapped, compatible, NAT64) is judged as IPv4.
+/// Classifies one address; IPv4 embedded in IPv6 (mapped, compatible, NAT64, 6to4, Teredo) is judged as IPv4.
 pub fn classify_relay_address(address: IpAddr) -> AddressClass {
     match address {
         IpAddr::V4(ip) => classify_ipv4(ip),
@@ -263,8 +263,18 @@ fn classify_ipv6(ip: Ipv6Addr) -> AddressClass {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || leading & 0xffc0 == 0xfe80 {
         return AddressClass::Refused;
     }
-    if let Some(embedded) = embedded_ipv4(ip) {
-        return classify_ipv4(embedded);
+    let embedded = embedded_ipv4(ip);
+    if !embedded.is_empty() {
+        // Every embedded address must pass: the strictest class wins.
+        return embedded
+            .into_iter()
+            .map(classify_ipv4)
+            .max_by_key(|class| match class {
+                AddressClass::Public => 0,
+                AddressClass::Private => 1,
+                AddressClass::Refused => 2,
+            })
+            .unwrap_or(AddressClass::Refused);
     }
     if leading & 0xfe00 == 0xfc00 || leading & 0xffc0 == 0xfec0 {
         AddressClass::Private
@@ -273,15 +283,22 @@ fn classify_ipv6(ip: Ipv6Addr) -> AddressClass {
     }
 }
 
-/// IPv4 carried in `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible) or `64:ff9b::a.b.c.d` (NAT64).
-fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+/// IPv4 carried in `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible), `64:ff9b::a.b.c.d`
+/// (NAT64), `2002:aabb:ccdd::/48` (6to4), or Teredo `2001:0::/32` (its server field, and its
+/// client field stored XOR all-ones).
+fn embedded_ipv4(ip: Ipv6Addr) -> Vec<Ipv4Addr> {
     let segments = ip.segments();
-    let tail = Ipv4Addr::from((u32::from(segments[6]) << 16) | u32::from(segments[7]));
+    let pair = |high: u16, low: u16| (u32::from(high) << 16) | u32::from(low);
     match segments {
         [0, 0, 0, 0, 0, 0xffff, _, _] | [0, 0, 0, 0, 0, 0, _, _] | [0x64, 0xff9b, 0, 0, 0, 0, _, _] => {
-            Some(tail)
+            vec![Ipv4Addr::from(pair(segments[6], segments[7]))]
         }
-        _ => None,
+        [0x2002, ..] => vec![Ipv4Addr::from(pair(segments[1], segments[2]))],
+        [0x2001, 0, ..] => vec![
+            Ipv4Addr::from(pair(segments[2], segments[3])),
+            Ipv4Addr::from(!pair(segments[6], segments[7])),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -625,6 +642,14 @@ mod tests {
             ("https://100.64.0.1", false, true, false),
             ("https://[fd00::1]", false, true, false),
             ("https://[::ffff:10.0.0.5]", false, true, false),
+            // 6to4 and Teredo carry IPv4 too: judged by the embedded address (Teredo: server and
+            // de-obfuscated client, the strictest wins).
+            ("https://[2002:808:808::1]", true, true, true),
+            ("https://[2002:a00:5::1]", false, true, false),
+            ("https://[2002:7f00:1::1]", false, false, false),
+            ("https://[2001:0:4136:e378:8000:63bf:f5ff:fffa]", false, true, false),
+            ("https://[2001:0:a00:1::f7f7:f7f7]", false, true, false),
+            ("https://[2001:0:4136:e378::80ff:fffe]", false, false, false),
             ("http://192.168.1.10:3340", false, true, false),
         ];
         let open = AdvertisedRelayPolicy { allow_private: true };

@@ -2,12 +2,15 @@
 //! (docs/extensions/bindings.md §6); rationale in `fe-runtime/src/AGENTS.md` §scene-hook-gate.
 //!
 //! Issuers (GUI commit, REST, MCP, WS) reach the gate through the one door, [`crate::scene_write`]; the DB thread,
-//! `ApplyReplicatedRow` and `PluginCommit` never pass through it. Faults and timeouts fail open and
-//! are counted (OQ-B4); a bound write whose hook input the caller sized over the cap is refused
-//! (steer 2026-11-09 02:45); only `property_scope` keys reach the guest; augments stage in the
-//! instance window through the binary's [`SceneHookBackend`].
+//! `ApplyReplicatedRow` and `PluginCommit` never pass through it. Every bound call fails closed: a missed deadline,
+//! fault, decline or bad output refuses the write (owner decision 2026-11-14, reversing OQ-B4); a petal import
+//! provisions the new petal first (§scene-hook-import); a bound write whose hook input the caller sized over the
+//! cap is refused (steer 2026-11-09 02:45); a caller over its in-flight allowance is refused busy; only
+//! `property_scope` keys reach the guest; augments stage in the instance window through the binary's
+//! [`SceneHookBackend`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -17,14 +20,26 @@ use tokio::sync::oneshot;
 
 /// Deadline used if the catalogue row is ever missing (it is 250 ms for every scene hook).
 const FALLBACK_DEADLINE_MS: u64 = 250;
-/// Largest hook input JSON handed to a guest (the `hooks` ABI cap, bindings.md §7.3).
-pub const MAX_HOOK_INPUT_BYTES: usize = 64 * 1024;
+/// Largest hook input JSON handed to a guest: one full node value plus the envelope (bindings.md §7.3).
+pub const MAX_HOOK_INPUT_BYTES: usize = fe_sdk::plugin_host::MAX_NODE_PAYLOAD_BYTES;
+/// Live calls one caller may hold at one binding (petal, package): one full write's worth.
+pub const MAX_HOOK_CALLS_IN_FLIGHT: usize = crate::editor_batch::MAX_EDITOR_BATCH_TARGETS;
+
+/// A call's deadline for an input of `input_bytes`: `base`, growing linearly to twice `base` at
+/// [`MAX_HOOK_INPUT_BYTES`]. Shared by the gate's wait, the instance's timeout and its epoch interrupt.
+pub fn input_deadline(base: Duration, input_bytes: usize) -> Duration {
+    let span = MAX_HOOK_INPUT_BYTES as u32;
+    let bytes = input_bytes.min(MAX_HOOK_INPUT_BYTES) as u32;
+    base + base * bytes / span
+}
 /// Longest refusal reason shown to a caller, in bytes.
 pub const MAX_REFUSAL_REASON_BYTES: usize = 512;
 /// Most augment property sets one answer may stage (the tick window's op ceiling).
 pub const MAX_AUGMENT_OPS: usize = 64;
 
 static INSTALLED: OnceLock<SceneHookGate> = OnceLock::new();
+/// Source of [`ProvisionalPetal::hold`] ids (one per provision, paired with its release).
+static NEXT_HOLD: AtomicU64 = AtomicU64::new(1);
 
 /// The three scene hook points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -105,20 +120,20 @@ impl SceneCaller {
     }
 }
 
-/// One node write as the gate sees it; rotation is Euler XYZ radians, as stored.
+/// One node write as the gate sees it; rotation is Euler XYZ radians; numbers are the values the DB stores.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SceneHookInput {
     Create {
         petal_id: String,
         name: String,
-        position: [f32; 3],
+        position: [f64; 3],
     },
     Transform {
         petal_id: String,
         node_id: String,
-        position: [f32; 3],
-        rotation: [f32; 3],
-        scale: [f32; 3],
+        position: [f64; 3],
+        rotation: [f64; 3],
+        scale: [f64; 3],
     },
     /// `value` is `null` for a deleted key.
     Property {
@@ -261,7 +276,7 @@ pub enum SceneHookReply {
     Output(Value),
     /// `hook-error::refused(reason)`.
     Refused(String),
-    /// `hook-error::invalid-input` or `failed`: the built-in serves the use.
+    /// `hook-error::invalid-input` or `failed`: no judgment, so the write is refused.
     Declined(String),
     /// Trap, fuel exhaustion, bad output, a missed deadline, or no instance could serve.
     Fault(String),
@@ -276,6 +291,29 @@ pub struct AugmentOp {
     pub key: String,
     pub value: Value,
 }
+
+/// A petal an import is about to create, addressed where it will live; `hold` pairs one provision with its release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionalPetal {
+    pub verse_id: String,
+    pub fractal_id: String,
+    pub petal_id: String,
+    pub hold: u64,
+}
+
+/// Why the backend cannot answer for a provisional petal; every case refuses the import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvisionFailure {
+    /// Bindings could not be read or resolved now (host gone, snapshot unreadable, busy): REST 503.
+    Unavailable(String),
+    /// A scene hook in effect there cannot run on this host (unresolved here, or placed on another peer): REST 409.
+    Unjudgeable { hook: String, reason: String },
+    /// The id already names a petal at another address, whose hooks must not see this import: REST 409.
+    Exists,
+}
+
+/// Where the backend answers a provision.
+pub type ProvisionReplySender = oneshot::Sender<Result<(), ProvisionFailure>>;
 
 /// What only the binary can do: resolve bindings, reach instances, stage into their windows.
 pub trait SceneHookBackend: Send + Sync + 'static {
@@ -293,6 +331,69 @@ pub trait SceneHookBackend: Send + Sync + 'static {
         node_id: &str,
         ops: Vec<AugmentOp>,
     ) -> Result<(), String>;
+    /// Resolve bindings at a petal that does not exist yet, so `bound`/`dispatch` answer for its id until `release`;
+    /// never blocks. The default cannot, so an import is refused (fail closed).
+    fn provision(&self, _petal: ProvisionalPetal, reply: ProvisionReplySender) {
+        let _ = reply.send(Err(ProvisionFailure::Unavailable(
+            "this host cannot resolve scene hooks for a new petal".into(),
+        )));
+    }
+    /// End one `provision` (called exactly once per provision, whatever it answered); never blocks.
+    fn release(&self, _petal: &ProvisionalPetal) {}
+}
+
+/// A provisioned petal; dropping it releases the provision.
+#[must_use = "hold the lease until every hook call of the import settled"]
+pub struct ProvisionLease {
+    backend: Arc<dyn SceneHookBackend>,
+    petal: ProvisionalPetal,
+}
+
+impl Drop for ProvisionLease {
+    fn drop(&mut self) {
+        self.backend.release(&self.petal);
+    }
+}
+
+/// A bound call that gave no usable answer; live writes and imports both refuse on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnansweredCall {
+    /// No answer within the hook's deadline.
+    Deadline,
+    /// Trap, fuel exhaustion, bad output, a dropped call or no serving instance.
+    Fault(String),
+    /// Guest `invalid-input` / `failed`.
+    Declined(String),
+}
+
+impl UnansweredCall {
+    /// The client-facing kind: `deadline`, `fault` or `declined`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Deadline => "deadline",
+            Self::Fault(_) => "fault",
+            Self::Declined(_) => "declined",
+        }
+    }
+
+    /// Why the extension gave no answer, for a refusal line.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Deadline => "it did not answer in time".into(),
+            Self::Fault(detail) => format!("it crashed ({})", clean_reason(detail)),
+            Self::Declined(detail) => format!("it declined to judge ({})", clean_reason(detail)),
+        }
+    }
+}
+
+/// A strictly settled call (imports): an answer maps as live, a non-answer never passes.
+#[derive(Debug)]
+pub enum StrictVerdict {
+    Answered(SceneVerdict),
+    Unanswered {
+        package_id: String,
+        failure: UnansweredCall,
+    },
 }
 
 /// Gate outcomes per (package, hook), reported beside the instance's own `hooks.*` counters.
@@ -302,22 +403,24 @@ pub struct SceneGateCounters {
     pub calls: u64,
     pub allowed: u64,
     pub refused: u64,
-    /// Guest `invalid-input` / `failed`: the write proceeded.
+    /// Guest `invalid-input` / `failed`: the write was refused.
     pub declined: u64,
-    /// Faults and bad output: the write proceeded (OQ-B4).
+    /// Faults and bad output: the write was refused.
     pub faults: u64,
-    /// No answer within the deadline: the write proceeded (OQ-B4).
+    /// No answer within the deadline: the write was refused.
     pub timeouts: u64,
     /// Writes that never reached the guest because their key is outside `property_scope`.
     pub skipped: u64,
     /// Writes refused because the caller-sized hook input exceeded [`MAX_HOOK_INPUT_BYTES`].
     pub too_large: u64,
+    /// Writes refused before dispatch because their caller held [`MAX_HOOK_CALLS_IN_FLIGHT`] live calls.
+    pub busy: u64,
     pub augments_staged: u64,
     pub augments_dropped: u64,
 }
 
 impl SceneGateCounters {
-    fn rows(&self) -> [(&'static str, u64); 10] {
+    fn rows(&self) -> [(&'static str, u64); 11] {
         [
             ("calls", self.calls),
             ("allowed", self.allowed),
@@ -327,6 +430,7 @@ impl SceneGateCounters {
             ("timeouts", self.timeouts),
             ("skipped", self.skipped),
             ("too_large", self.too_large),
+            ("busy", self.busy),
             ("augments_staged", self.augments_staged),
             ("augments_dropped", self.augments_dropped),
         ]
@@ -334,12 +438,49 @@ impl SceneGateCounters {
 }
 
 type CounterTable = BTreeMap<(String, SceneHook), SceneGateCounters>;
+/// Live calls per (petal, package, caller DID).
+type InFlightTable = HashMap<(String, String, String), usize>;
+
+/// One live call held against its caller's allowance; dropping it (settled or abandoned) frees the slot.
+struct InFlight {
+    table: Arc<Mutex<InFlightTable>>,
+    key: (String, String, String),
+}
+
+impl InFlight {
+    /// A slot when the caller holds fewer than [`MAX_HOOK_CALLS_IN_FLIGHT`] live calls at this binding.
+    fn take(table: &Arc<Mutex<InFlightTable>>, key: (String, String, String)) -> Option<Self> {
+        let mut held = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = held.entry(key.clone()).or_default();
+        if *count >= MAX_HOOK_CALLS_IN_FLIGHT {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            table: Arc::clone(table),
+            key,
+        })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut held = self.table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = held.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                held.remove(&self.key);
+            }
+        }
+    }
+}
 
 /// The host's scene hook gate; `Default` is disabled (every write proceeds untouched).
 #[derive(Resource, Clone, Default)]
 pub struct SceneHookGate {
     backend: Option<Arc<dyn SceneHookBackend>>,
     counters: Arc<Mutex<CounterTable>>,
+    in_flight: Arc<Mutex<InFlightTable>>,
 }
 
 impl SceneHookGate {
@@ -348,6 +489,7 @@ impl SceneHookGate {
         Self {
             backend: Some(backend),
             counters: Arc::default(),
+            in_flight: Arc::default(),
         }
     }
 
@@ -381,14 +523,26 @@ impl SceneHookGate {
             }
         }
         let input_json = input.to_json(caller.to_json(backend.local_did()));
+        let input_bytes = input_json.to_string().len();
         // The caller sized this input (names, values): over the cap it is refused, never waved through.
-        if input_json.to_string().len() > MAX_HOOK_INPUT_BYTES {
+        if input_bytes > MAX_HOOK_INPUT_BYTES {
             self.count(&binding.package_id, hook, |c| c.too_large += 1);
             return SceneGateTicket(TicketState::Ready(SceneVerdict::InputTooLarge {
                 package_id: binding.package_id,
                 limit_bytes: MAX_HOOK_INPUT_BYTES,
             }));
         }
+        // A caller holding a full write's worth of live calls here is refused busy, before the worker sees it.
+        let caller_did = caller.did.clone().unwrap_or_else(|| backend.local_did().to_owned());
+        let slot_key = (input.petal_id().to_owned(), binding.package_id.clone(), caller_did);
+        let Some(slot) = InFlight::take(&self.in_flight, slot_key) else {
+            self.count(&binding.package_id, hook, |c| c.busy += 1);
+            return SceneGateTicket(TicketState::Ready(SceneVerdict::Busy {
+                retry_after_ms: u64::try_from(input_deadline(hook.deadline(), MAX_HOOK_INPUT_BYTES).as_millis())
+                    .unwrap_or(u64::MAX),
+                package_id: binding.package_id,
+            }));
+        };
         let call = SceneHookCall {
             hook,
             petal_id: input.petal_id().to_owned(),
@@ -399,7 +553,7 @@ impl SceneHookGate {
         };
         let (reply, answer) = oneshot::channel();
         self.count(&binding.package_id, hook, |c| c.calls += 1);
-        let deadline = Instant::now() + hook.deadline();
+        let deadline = Instant::now() + input_deadline(hook.deadline(), input_bytes);
         backend.dispatch(call, reply);
         SceneGateTicket(TicketState::Waiting(Box::new(Waiting {
             gate: self.clone(),
@@ -409,12 +563,55 @@ impl SceneHookGate {
             binding,
             answer,
             deadline,
+            _slot: slot,
         })))
     }
 
     /// Check one write from async code, waiting at most the hook's deadline.
     pub async fn check(&self, input: SceneHookInput, caller: SceneCaller) -> SceneVerdict {
         self.begin(input, caller).wait().await
+    }
+
+    /// True when a backend is installed; a disabled gate judges nothing, live or imported.
+    pub fn is_enabled(&self) -> bool {
+        self.backend.is_some()
+    }
+
+    /// Resolve bindings for `petal_id`, about to be created in `fractal_id`, waiting until `deadline`.
+    /// `Ok(None)` = disabled gate; the lease keeps the provision until dropped, and every failure path releases it too.
+    pub async fn provision(
+        &self,
+        verse_id: &str,
+        fractal_id: &str,
+        petal_id: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<ProvisionLease>, ProvisionFailure> {
+        let Some(backend) = &self.backend else {
+            return Ok(None);
+        };
+        let petal = ProvisionalPetal {
+            verse_id: verse_id.to_owned(),
+            fractal_id: fractal_id.to_owned(),
+            petal_id: petal_id.to_owned(),
+            hold: NEXT_HOLD.fetch_add(1, Ordering::Relaxed),
+        };
+        let (reply, answer) = oneshot::channel();
+        backend.provision(petal.clone(), reply);
+        // Built before waiting: a late answer after a timeout is still released, in order behind the provision.
+        let lease = ProvisionLease {
+            backend: Arc::clone(backend),
+            petal,
+        };
+        match tokio::time::timeout_at(deadline, answer).await {
+            Ok(Ok(Ok(()))) => Ok(Some(lease)),
+            Ok(Ok(Err(failure))) => Err(failure),
+            Ok(Err(_)) => Err(ProvisionFailure::Unavailable(
+                "the extension host dropped the request".into(),
+            )),
+            Err(_) => Err(ProvisionFailure::Unavailable(
+                "the extension host did not resolve bindings in time".into(),
+            )),
+        }
     }
 
     /// The package `input` would reach (bound, and in `property_scope` for a property); never blocks.
@@ -424,6 +621,13 @@ impl SceneHookGate {
             .property_key()
             .is_none_or(|key| in_property_scope(&binding.property_scope, key));
         in_scope.then_some(binding.package_id)
+    }
+
+    /// Serialized size of the call `input` would dispatch (0 with no backend), as `begin` measures it.
+    pub(crate) fn input_bytes(&self, input: &SceneHookInput, caller: &SceneCaller) -> usize {
+        self.backend.as_ref().map_or(0, |backend| {
+            input.to_json(caller.to_json(backend.local_did())).to_string().len()
+        })
     }
 
     /// Count one write refused before dispatch because its hook input was caller-sized over a cap.
@@ -477,6 +681,13 @@ pub enum SceneVerdict {
     Refused { package_id: String, reason: String },
     /// A bound write whose hook input is over `limit_bytes`: do not send it (REST answers 413).
     InputTooLarge { package_id: String, limit_bytes: usize },
+    /// The bound extension gave no answer (deadline, crash, decline, bad output): do not send the write.
+    Unanswered {
+        package_id: String,
+        failure: UnansweredCall,
+    },
+    /// The caller already holds its live-call allowance at this binding: do not send; retry later.
+    Busy { package_id: String, retry_after_ms: u64 },
 }
 
 impl SceneVerdict {
@@ -484,11 +695,13 @@ impl SceneVerdict {
         Self::Proceed { augment: None }
     }
 
-    /// The client-facing refusal code (`refused`, `input-too-large`); `None` when the write proceeds.
+    /// The client-facing refusal code (`refused`, `input-too-large`, `hook-failed`, `hook-busy`); `None` when the write proceeds.
     pub fn refusal_code(&self) -> Option<&'static str> {
         match self {
             Self::Refused { .. } => Some("refused"),
             Self::InputTooLarge { .. } => Some("input-too-large"),
+            Self::Unanswered { .. } => Some("hook-failed"),
+            Self::Busy { .. } => Some("hook-busy"),
             Self::Proceed { .. } => None,
         }
     }
@@ -505,9 +718,24 @@ impl SceneVerdict {
             } => Some(format!(
                 "Refused by {package_id}: input-too-large (the hook input exceeds {limit_bytes} bytes)"
             )),
+            Self::Unanswered { package_id, failure } => Some(unanswered_message(package_id, failure)),
+            Self::Busy {
+                package_id,
+                retry_after_ms,
+            } => Some(busy_message(package_id, *retry_after_ms)),
             Self::Proceed { .. } => None,
         }
     }
+}
+
+/// The refusal line for a bound hook that gave no answer.
+pub fn unanswered_message(package_id: &str, failure: &UnansweredCall) -> String {
+    format!("Refused by {package_id}: {}; the edit was not applied", failure.describe())
+}
+
+/// The refusal line for a caller over its live-call allowance.
+pub fn busy_message(package_id: &str, retry_after_ms: u64) -> String {
+    format!("Refused by {package_id}: the extension is busy; retry in {retry_after_ms} ms")
 }
 
 /// Augment property sets from an allowing answer, already filtered to `property_scope`.
@@ -536,6 +764,11 @@ impl SceneAugment {
     /// The property sets that will stage.
     pub fn ops(&self) -> &[AugmentOp] {
         &self.ops
+    }
+
+    /// The package whose answer asked for the augment.
+    pub fn package_id(&self) -> &str {
+        &self.package_id
     }
 
     /// The written node, `None` while a create's node id is unknown.
@@ -597,6 +830,8 @@ struct Waiting {
     binding: SceneBinding,
     answer: oneshot::Receiver<SceneHookReply>,
     deadline: Instant,
+    /// The caller's live-call slot, freed when the ticket settles or is dropped.
+    _slot: InFlight,
 }
 
 impl SceneGateTicket {
@@ -647,6 +882,26 @@ impl SceneGateTicket {
             }
         }
     }
+
+    /// Async, for imports: like [`wait`](Self::wait), but a deadline, fault, decline or bad output is `Unanswered`.
+    pub async fn wait_strict(self) -> StrictVerdict {
+        match self.0 {
+            TicketState::Ready(verdict) => StrictVerdict::Answered(verdict),
+            TicketState::Spent => StrictVerdict::Unanswered {
+                package_id: String::new(),
+                failure: UnansweredCall::Fault("the ticket was already settled".into()),
+            },
+            TicketState::Waiting(mut waiting) => {
+                let deadline = tokio::time::Instant::from_std(waiting.deadline);
+                let reply = match tokio::time::timeout_at(deadline, &mut waiting.answer).await {
+                    Ok(Ok(reply)) => Some(reply),
+                    Ok(Err(_)) => Some(dropped_reply()),
+                    Err(_) => None,
+                };
+                (*waiting).settle_strict(reply)
+            }
+        }
+    }
 }
 
 fn dropped_reply() -> SceneHookReply {
@@ -654,8 +909,59 @@ fn dropped_reply() -> SceneHookReply {
 }
 
 impl Waiting {
-    /// Map an answer (`None` = deadline passed) to a verdict, counting it; every non-answer fails open.
+    /// Strict mapping (imports): every non-answer is `Unanswered` and counted; an answer settles as live.
+    fn settle_strict(self, reply: Option<SceneHookReply>) -> StrictVerdict {
+        let package_id = self.binding.package_id.clone();
+        let hook = self.hook;
+        let failure = match &reply {
+            None => {
+                self.gate.count(&package_id, hook, |c| c.timeouts += 1);
+                Some(UnansweredCall::Deadline)
+            }
+            Some(SceneHookReply::Fault(detail)) => {
+                self.gate.count(&package_id, hook, |c| c.faults += 1);
+                Some(UnansweredCall::Fault(detail.clone()))
+            }
+            Some(SceneHookReply::Declined(detail)) => {
+                self.gate.count(&package_id, hook, |c| c.declined += 1);
+                Some(UnansweredCall::Declined(detail.clone()))
+            }
+            Some(SceneHookReply::Output(output)) => match parse_answer(output) {
+                Err(detail) => {
+                    self.gate.count(&package_id, hook, |c| c.faults += 1);
+                    Some(UnansweredCall::Fault(detail))
+                }
+                Ok(_) => None,
+            },
+            Some(SceneHookReply::Refused(_)) => None,
+        };
+        match failure {
+            Some(failure) => {
+                tracing::warn!(package_id, hook = hook.id(), ?failure, "scene hook gave no answer; the write is refused");
+                StrictVerdict::Unanswered {
+                    package_id,
+                    failure,
+                }
+            }
+            None => StrictVerdict::Answered(self.answered(reply)),
+        }
+    }
+
+    /// Map an answer (`None` = deadline passed) to a verdict, counting it; every non-answer refuses (fail closed).
     fn settle(self, reply: Option<SceneHookReply>) -> SceneVerdict {
+        let gate = self.gate.clone();
+        let hook = self.hook;
+        match self.settle_strict(reply) {
+            StrictVerdict::Answered(verdict) => verdict,
+            StrictVerdict::Unanswered { package_id, failure } => {
+                gate.count(&package_id, hook, |c| c.refused += 1);
+                SceneVerdict::Unanswered { package_id, failure }
+            }
+        }
+    }
+
+    /// Map a usable answer (allow or refuse) to a verdict, counting it; `settle_strict` filtered the rest.
+    fn answered(self, reply: Option<SceneHookReply>) -> SceneVerdict {
         let Self {
             gate,
             hook,
@@ -672,32 +978,18 @@ impl Waiting {
                 reason: clean_reason(reason),
             }
         };
+        // Non-answers were counted and filtered by `settle_strict`; they can only refuse here.
+        let unanswered = |failure: UnansweredCall| SceneVerdict::Unanswered {
+            package_id: package_id.clone(),
+            failure,
+        };
         match reply {
-            None => {
-                gate.count(&package_id, hook, |c| c.timeouts += 1);
-                tracing::warn!(
-                    package_id,
-                    hook = hook.id(),
-                    "scene hook missed its deadline; the write proceeds"
-                );
-                SceneVerdict::proceed()
-            }
-            Some(SceneHookReply::Fault(detail)) => {
-                gate.count(&package_id, hook, |c| c.faults += 1);
-                tracing::warn!(package_id, hook = hook.id(), %detail, "scene hook faulted; the write proceeds");
-                SceneVerdict::proceed()
-            }
-            Some(SceneHookReply::Declined(_)) => {
-                gate.count(&package_id, hook, |c| c.declined += 1);
-                SceneVerdict::proceed()
-            }
+            None => unanswered(UnansweredCall::Deadline),
+            Some(SceneHookReply::Fault(detail)) => unanswered(UnansweredCall::Fault(detail)),
+            Some(SceneHookReply::Declined(detail)) => unanswered(UnansweredCall::Declined(detail)),
             Some(SceneHookReply::Refused(reason)) => refuse(&reason),
             Some(SceneHookReply::Output(output)) => match parse_answer(&output) {
-                Err(detail) => {
-                    gate.count(&package_id, hook, |c| c.faults += 1);
-                    tracing::warn!(package_id, hook = hook.id(), %detail, "scene hook bad output; the write proceeds");
-                    SceneVerdict::proceed()
-                }
+                Err(detail) => unanswered(UnansweredCall::Fault(detail)),
                 Ok(GuestAnswer::Refuse(reason)) => refuse(&reason),
                 Ok(GuestAnswer::Allow(ops)) => {
                     let offered = ops.len();
@@ -810,10 +1102,12 @@ fn clean_reason(reason: &str) -> String {
 pub(crate) mod tests {
     use super::*;
 
-    /// A backend with one binding at petal `p1`; `answer: None` holds the call unanswered.
+    /// A backend with one binding at petal `p1`; `answer: None` holds the call unanswered; `transform_answer`
+    /// overrides it for `scene.transform`.
     pub(crate) struct FakeBackend {
         pub(crate) binding: SceneBinding,
         pub(crate) answer: Option<SceneHookReply>,
+        pub(crate) transform_answer: Option<SceneHookReply>,
         pub(crate) calls: Mutex<Vec<SceneHookCall>>,
         pub(crate) held: Mutex<Vec<SceneHookReplySender>>,
         pub(crate) staged: Mutex<Vec<(String, Vec<AugmentOp>)>>,
@@ -827,8 +1121,12 @@ pub(crate) mod tests {
             (petal_id == "p1").then(|| self.binding.clone())
         }
         fn dispatch(&self, call: SceneHookCall, reply: SceneHookReplySender) {
+            let answer = match (&self.transform_answer, call.hook) {
+                (Some(answer), SceneHook::Transform) => Some(answer),
+                _ => self.answer.as_ref(),
+            };
             self.calls.lock().unwrap().push(call);
-            match &self.answer {
+            match answer {
                 Some(answer) => {
                     let _ = reply.send(answer.clone());
                 }
@@ -861,9 +1159,26 @@ pub(crate) mod tests {
         answer: Option<SceneHookReply>,
         may_augment: bool,
     ) -> (SceneHookGate, Arc<FakeBackend>) {
+        fake_gate(answer, None, may_augment)
+    }
+
+    /// [`gate_with`] whose `scene.transform` calls get `transform_answer` instead.
+    pub(crate) fn gate_with_transform(
+        answer: Option<SceneHookReply>,
+        transform_answer: Option<SceneHookReply>,
+    ) -> (SceneHookGate, Arc<FakeBackend>) {
+        fake_gate(answer, transform_answer, true)
+    }
+
+    fn fake_gate(
+        answer: Option<SceneHookReply>,
+        transform_answer: Option<SceneHookReply>,
+        may_augment: bool,
+    ) -> (SceneHookGate, Arc<FakeBackend>) {
         let backend = Arc::new(FakeBackend {
             binding: binding(may_augment),
             answer,
+            transform_answer,
             calls: Mutex::default(),
             held: Mutex::default(),
             staged: Mutex::default(),
@@ -896,9 +1211,10 @@ pub(crate) mod tests {
             .expect("an answered call settles at once")
     }
 
-    /// Every guest answer maps to one verdict and one counter; only a refusal stops the write (OQ-B4).
+    /// Every guest answer maps to one verdict and one counter; only an allow lets the write through
+    /// (fail closed, owner decision 2026-11-14): a decline, fault or bad output is `hook-failed`.
     #[test]
-    fn scene_gate_answers_map_to_verdicts_and_fail_open() {
+    fn scene_gate_answers_map_to_verdicts_and_fail_closed() {
         let long = "x".repeat(MAX_REFUSAL_REASON_BYTES + 40);
         let cases: Vec<(&str, SceneHookReply, Option<&str>, &str)> = vec![
             (
@@ -928,25 +1244,25 @@ pub(crate) mod tests {
             (
                 "declined",
                 SceneHookReply::Declined("bad input".into()),
-                None,
+                Some("!declined"),
                 "declined",
             ),
             (
                 "fault",
                 SceneHookReply::Fault("fuel exhausted".into()),
-                None,
+                Some("!fault"),
                 "faults",
             ),
             (
                 "unknown verdict",
                 SceneHookReply::Output(json!({"verdict": "maybe"})),
-                None,
+                Some("!fault"),
                 "faults",
             ),
             (
                 "augment not a list",
                 SceneHookReply::Output(json!({"verdict": "allow", "augment": {}})),
-                None,
+                Some("!fault"),
                 "faults",
             ),
         ];
@@ -959,7 +1275,13 @@ pub(crate) mod tests {
         for (label, answer, refusal, counted) in cases {
             let (gate, backend) = gate_with(Some(answer), true);
             let verdict = settle_now(&gate, transform("p1"));
+            // `!kind` = no answer: refused as `hook-failed`, naming the extension and why.
             match (refusal, &verdict) {
+                (Some(kind), SceneVerdict::Unanswered { package_id, failure }) if kind.starts_with('!') => {
+                    assert_eq!((package_id.as_str(), failure.kind()), ("org.example.zoning", &kind[1..]), "{label}");
+                    assert_eq!(verdict.refusal_code(), Some("hook-failed"), "{label}");
+                    assert!(verdict.refusal_message().unwrap().starts_with("Refused by org.example.zoning: it "), "{label}");
+                }
                 (Some(expected), SceneVerdict::Refused { package_id, reason }) => {
                     assert_eq!(package_id, "org.example.zoning", "{label}");
                     assert_eq!(reason, expected, "{label}");
@@ -983,7 +1305,8 @@ pub(crate) mod tests {
     }
 
     /// The commit flow: unbound petals and out-of-scope keys never reach the guest, the call carries the
-    /// §6 input, a silent guest times out open, and an allowed augment stages only in-scope keys.
+    /// §6 input, a silent guest times out closed, a flooding caller is refused busy, and an allowed augment stages
+    /// only in-scope keys.
     #[test]
     fn scene_gate_journey_scope_deadline_and_augment() {
         // Disabled and unbound gates proceed without a call.
@@ -1055,7 +1378,8 @@ pub(crate) mod tests {
             })
         );
 
-        // A silent guest: pending until the deadline, then the write proceeds and the call is abandoned.
+        // A silent guest on a small input: pending until the deadline, then the write is REFUSED `hook-failed`
+        // naming the extension (fail closed; this used to proceed) and the call is abandoned.
         let (gate, backend) = gate_with(None, true);
         let mut ticket = gate.begin(
             property("zone"),
@@ -1064,16 +1388,18 @@ pub(crate) mod tests {
         let past_deadline =
             Instant::now() + SceneHook::Property.deadline() + Duration::from_millis(1);
         assert!(ticket.poll(Instant::now()).is_none() && ticket.is_waiting());
-        let verdict = ticket.poll(past_deadline);
+        let verdict = ticket.poll(past_deadline).expect("settled at the deadline");
         assert!(matches!(
-            verdict,
-            Some(SceneVerdict::Proceed { augment: None })
+            &verdict,
+            SceneVerdict::Unanswered { package_id, failure: UnansweredCall::Deadline }
+                if package_id == "org.example.zoning"
         ));
         assert_eq!(
-            gate.counters("org.example.zoning", SceneHook::Property)
-                .timeouts,
-            1
+            verdict.refusal_message().as_deref(),
+            Some("Refused by org.example.zoning: it did not answer in time; the edit was not applied")
         );
+        let counters = gate.counters("org.example.zoning", SceneHook::Property);
+        assert_eq!((counters.timeouts, counters.refused), (1, 1));
         assert!(
             backend.held.lock().unwrap()[0].is_closed(),
             "the backend can skip an abandoned call"
@@ -1082,6 +1408,93 @@ pub(crate) mod tests {
             backend.calls.lock().unwrap()[0].input["caller"],
             json!({"did": "did:key:remote", "kind": "ws", "local": false})
         );
+
+        // Backlog: one caller holding a full write's worth of live calls at this binding is refused busy before
+        // dispatch (retryable); another caller still reaches the guest, and a settled call frees its slot.
+        let (gate, backend) = gate_with(None, true);
+        let flooder = SceneCaller::api(SceneCallerKind::Rest, "did:key:flooder");
+        let mut held: Vec<_> = (0..MAX_HOOK_CALLS_IN_FLIGHT)
+            .map(|_| gate.begin(property("zone"), flooder.clone()))
+            .collect();
+        assert!(
+            gate.begin(property("zone"), SceneCaller::ui()).is_waiting(),
+            "the local GUI caller has its own allowance"
+        );
+        let mut over = gate.begin(property("zone"), flooder.clone());
+        let busy = over.poll(Instant::now()).expect("refused at once");
+        assert!(matches!(
+            &busy,
+            SceneVerdict::Busy { package_id, retry_after_ms } if package_id == "org.example.zoning" && *retry_after_ms > 0
+        ));
+        assert_eq!(busy.refusal_code(), Some("hook-busy"));
+        assert_eq!(backend.calls.lock().unwrap().len(), MAX_HOOK_CALLS_IN_FLIGHT + 1, "the busy call never dispatched");
+        drop(held.pop());
+        assert!(gate.begin(property("zone"), flooder).is_waiting(), "a freed slot admits the next call");
+        assert_eq!(gate.counters("org.example.zoning", SceneHook::Property).busy, 1);
+
+        // Full-size values (src/AGENTS.md §scene-hook-gate bounds): an input exactly at the cap reaches the
+        // guest, which judges it (here: refuses); one byte more is refused before any call.
+        let sized = |len: usize| SceneHookInput::Property {
+            petal_id: "p1".into(),
+            node_id: "n1".into(),
+            key: "zone".into(),
+            value: json!("x".repeat(len)),
+        };
+        let envelope = sized(0)
+            .to_json(SceneCaller::ui().to_json("did:key:local"))
+            .to_string()
+            .len();
+        let full = MAX_HOOK_INPUT_BYTES - envelope;
+        assert!(full >= fe_sdk::property_schema::MAX_PROPERTY_BYTES);
+        let (gate, backend) = gate_with(
+            Some(SceneHookReply::Output(
+                json!({"verdict": "refuse", "reason": "zone too large"}),
+            )),
+            true,
+        );
+        assert!(matches!(
+            settle_now(&gate, sized(full)),
+            SceneVerdict::Refused { reason, .. } if reason == "zone too large"
+        ));
+        assert_eq!(
+            backend.calls.lock().unwrap()[0].input["value"]
+                .as_str()
+                .map(str::len),
+            Some(full),
+            "the guest judged the whole value"
+        );
+        assert!(matches!(
+            settle_now(&gate, sized(full + 1)),
+            SceneVerdict::InputTooLarge { limit_bytes: MAX_HOOK_INPUT_BYTES, .. }
+        ));
+        assert_eq!(backend.calls.lock().unwrap().len(), 1);
+
+        // Deadline scaling keeps honest hooks time to parse a large input; any size that gets no answer refuses.
+        let base = SceneHook::Property.deadline();
+        assert_eq!(input_deadline(base, 0), base);
+        assert_eq!(input_deadline(base, MAX_HOOK_INPUT_BYTES), 2 * base);
+        let (gate, _backend) = gate_with(None, true);
+        let mut ticket = gate.begin(sized(full), SceneCaller::ui());
+        assert!(
+            ticket.poll(Instant::now() + base + Duration::from_millis(1)).is_none(),
+            "a full-size input waits its doubled deadline"
+        );
+        assert!(matches!(
+            ticket.poll(Instant::now() + 2 * base + Duration::from_millis(1)),
+            Some(SceneVerdict::Unanswered { failure: UnansweredCall::Deadline, .. })
+        ));
+        // A crash refuses both a full-size and a small input (the small one used to proceed).
+        let (gate, _backend) = gate_with(Some(SceneHookReply::Fault("fuel exhausted".into())), true);
+        for input in [sized(full), property("zone")] {
+            let verdict = settle_now(&gate, input);
+            assert!(matches!(&verdict, SceneVerdict::Unanswered { failure: UnansweredCall::Fault(_), .. }));
+            assert_eq!(
+                verdict.refusal_message().as_deref(),
+                Some("Refused by org.example.zoning: it crashed (fuel exhausted); the edit was not applied")
+            );
+        }
+        let counters = gate.counters("org.example.zoning", SceneHook::Property);
+        assert_eq!((counters.faults, counters.refused), (2, 2));
 
         // An allowed transform stages only in-scope augment keys, on the written node.
         let augment = json!({"verdict": "allow", "augment": [{"key": "zone", "value": "A"}, {"key": "owner", "value": "x"}]});

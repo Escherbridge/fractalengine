@@ -5,8 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Maximum encoded schema or validated property size.
-pub const MAX_PROPERTY_BYTES: usize = 65_536;
+/// Maximum encoded node snapshot (all columns and properties); a wire limit, see src/AGENTS.md §property-schema.
+pub const MAX_NODE_BYTES: usize = 65_536;
+/// Maximum encoded validated property value: one property may fill a node.
+pub const MAX_PROPERTY_BYTES: usize = MAX_NODE_BYTES;
+/// Maximum encoded schema descriptor.
+pub const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DEPTH: usize = 16;
 const MAX_SCHEMA_NODES: usize = 256;
 
@@ -113,7 +117,7 @@ fn yes() -> bool {
 impl EnforcedPropertySchema {
     /// Parse and check a descriptor, rejecting unsupported or inconsistent rules.
     pub fn parse(value: &Value) -> Result<Self, String> {
-        check_size(value)?;
+        check_size(value, MAX_SCHEMA_BYTES, "schema")?;
         reject_null_constraints(&value["schema"])?;
         let descriptor: Self = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         if descriptor.version == 0 {
@@ -126,7 +130,7 @@ impl EnforcedPropertySchema {
 
     /// Validate without applying defaults, converting types, or changing the value.
     pub fn validate(&self, value: &Value) -> Result<(), String> {
-        check_size(value)?;
+        check_size(value, MAX_PROPERTY_BYTES, "property")?;
         check_value_depth(value, 0)?;
         self.schema.validate_at(value, "$", 0)
     }
@@ -220,11 +224,9 @@ fn check_value_depth(value: &Value, depth: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn check_size(value: &Value) -> Result<(), String> {
-    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > MAX_PROPERTY_BYTES {
-        return Err(format!(
-            "property/schema exceeds {MAX_PROPERTY_BYTES} bytes"
-        ));
+fn check_size(value: &Value, limit: usize, what: &str) -> Result<(), String> {
+    if serde_json::to_vec(value).map_err(|e| e.to_string())?.len() > limit {
+        return Err(format!("{what} exceeds {limit} bytes"));
     }
     Ok(())
 }

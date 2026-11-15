@@ -1367,6 +1367,7 @@ mod tests {
             &DbCommand::ExportPetalSnapshot {
                 petal_id: "p".to_string(),
                 correlation_id: Some("api-export".to_string()),
+                history_per_node: None,
             },
             export_tx,
         );

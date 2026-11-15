@@ -43,6 +43,12 @@ wait reasons exist:
   until the author's role rises; role statements wait in a durable store
   (`role_statement_pending`) and are re-evaluated every time any author's
   authority changes (RP-3 partition logic).
+- **`AuthorBudget { did }`** (2026-11-14): a `node` row over its author's
+  inbound byte budget (fe-database `handlers/AGENTS.md` §write-budget). It
+  replaces the old `Parent { table: "_fe_write_budget", id: author }` sentinel;
+  retried when that DID's budget refills (`retry_budget`), never by a parent
+  landing. `DeferralReason` is not serialized anywhere; logs show it through
+  `Debug` as `AuthorBudget { did: "did:key:..." }`.
 
 **Content row retry:** A deferred content row is held in the DB thread's
 in-memory `InboundAdmissions` queue (4096 per verse, 512 per author, drop-oldest
@@ -59,6 +65,36 @@ change) promotes held statements that are now admissible and demotes admitted
 statements that are no longer admissible. This durable retry mechanism ensures
 the converged role set is a function of the set of statements received, not
 their order (plan §2.2, §2.4).
+
+## §db-command-bytes (2026-11-14)
+
+The DB command channel is `bounded(256)` in commands, but `ApplyReplicatedRow`
+carries a whole peer row and `RejudgeReplicatedNodes` up to 4 MiB of candidate
+rows, so count alone let it hold `256 x row size`. `ChannelHandles::db_cmd_bytes`
+(`channels.rs`, a `DbCommandBytes` around one `Arc<AtomicU64>`) counts the
+in-flight `DbCommand::payload_bytes()` (row bytes for `ApplyReplicatedRow`, summed
+candidate bytes for `RejudgeReplicatedNodes`, 0 for every other command).
+
+- **Who charges:** only the sync thread, before each byte-carrying `try_send`
+  (`fe_sync::byte_bounds::try_send_db`). `try_charge` admits when the total stays
+  within `DB_COMMAND_BYTE_CAP` (64 MiB) or nothing is in flight (an oversized row
+  passes alone, so it can never wait forever). A refusal reads as a full channel, so
+  the sender's existing keep/defer path applies; a failed send releases its charge.
+- **Who releases:** the DB thread's `CommandLane` (fe-database `src/AGENTS.md`
+  §command-lane) when it hands a command out, so the lane's 128-command lookahead
+  counts as in flight. A newer node version that supersedes a queued one releases
+  the replaced bytes at once.
+- **Wiring:** the hosts (`fractalengine/src/main.rs`, `fractalengine-relay/src/main.rs`)
+  pass the same counter to `fe_database::spawn_db_thread_gated` and
+  `fe_sync::sync_thread::spawn_sync_thread_with_sources`. Every other spawn shape
+  is ungated: `spawn_db_thread_shared` releases on a private counter nobody charges
+  and the sync spawns without a counter send ungated (today's behaviour). Releases
+  saturate at zero, so a command nobody charged (a test or the harness sending rows
+  directly) can only make the count low, never stick it high.
+- **Still unbounded:** commands from the GUI, API and plugin host are count-bounded only
+  (their payloads are bounded by their own request limits, e.g. `ImportPetalSnapshot`
+  rows by the 256 MiB upload cap); rows sent by anything other than the gated sync thread
+  (the test harness peer, tests) are not charged.
 
 ## §property-bridge (`bim_primitives_on_paths_20260712`, C5)
 
@@ -1265,12 +1301,41 @@ written.
   tools, WS entity commands and the GUI. A door that skips the gate is a bypass, not an optimisation.
 - **Caller kinds.** `SceneCallerKind` is `Ui`, `Rest`, `Mcp` or `Ws` (the `/ws` entity commands, fe-api
   `WS_SCENE_CALLER`); it reaches the guest as `caller.kind` (`ui`, `rest`, `mcp`, `ws`).
-- **Fail-open has limits.** A guest crash, trap, fuel exhaustion or missed deadline proceeds, and the
-  gate counts it (OQ-B4). An input over `MAX_HOOK_INPUT_BYTES` while a binding exists REFUSES with
-  `SceneVerdict::InputTooLarge` (`input-too-large`), because the caller controls that size (steer 02:45).
-  The API doors answer it 413 (`SceneRefusal::http_status`); a plain refusal is 409; the GUI shows the
-  `Refused by <package>` advisory and sends nothing. With no binding the size is never checked here.
-  Only keys in the build's `property_scope` reach the guest; any other key proceeds and counts as `skipped`.
+- **Fail closed (owner decision 2026-11-14, reversing OQ-B4).** Every call to a bound hook is strict: a missed
+  deadline, a guest crash (trap, fuel exhaustion, epoch interrupt), a decline (`invalid-input` / `failed`) or bad
+  output settles as `SceneVerdict::Unanswered { package_id, failure }` and the write is REFUSED, counted as the failure
+  kind plus `refused`. The door maps it to `SceneRefusal::HookFailed`: code `hook-failed`, REST 409 (the same code and
+  status an import uses for a hook that gave no answer), message `Refused by <package>: it did not answer in time |
+  it crashed (<detail>) | it declined to judge (<detail>); the edit was not applied`. Until 2026-11-14 a small input
+  failed open; the reviewer showed that a flood or a crafted trapping input turned that into a bypass on demand.
+  Unchanged: a write with no bound hook, a disabled gate, a key outside `property_scope`, and an `inherit`/`builtin`
+  binding that resolves to no extension all proceed as before. A petal import judges the same way, one call at a time
+  (§scene-hook-import). An input over `MAX_HOOK_INPUT_BYTES` while a binding exists REFUSES with
+  `SceneVerdict::InputTooLarge` (`input-too-large`, 413), because the caller controls that size (steer 02:45). The GUI
+  shows the `Refused by <package>` advisory and sends nothing. With no binding the size is never checked here.
+- **Bounds (derived from `fe_sdk::property_schema::MAX_NODE_BYTES`).** `MAX_HOOK_INPUT_BYTES = MAX_NODE_PAYLOAD_BYTES`
+  (node limit + 8 KiB envelope: one full property value with node id, key and caller fits). fe-plugin uses the same
+  number for a `scene.*` call's input and output JSON, so an augment answer carries at most one node's worth.
+  `input_deadline(base, bytes)` grows the catalogue deadline linearly from `base` (empty input) to twice `base` at the
+  cap, so an honest hook still has time to parse a large input; the gate's wait, the instance's post-call timeout and
+  its epoch interrupt (fe-plugin `HooksGuest::call`) use the same function, and the instance adds 64 fuel per input
+  byte (capped at the host fuel ceiling). The growth cannot open a pass: every non-answer refuses. Where the clock
+  starts: the gate's at dispatch (queueing, serialization and delivery count against it); the instance's just before
+  the guest call (delivery into linear memory and every host read count; serialization does not).
+- **Busy (queue starvation, reviewer item a).** The binding worker is one thread for every petal on the host. The gate
+  holds an `InFlight` slot per live call, keyed (petal, package, caller DID); a caller already holding
+  `MAX_HOOK_CALLS_IN_FLIGHT` (one full write, `MAX_EDITOR_BATCH_TARGETS` = 256) live calls at that binding is refused
+  before dispatch with `SceneVerdict::Busy` -> `SceneRefusal::Busy` (`hook-busy`, REST 503, `retry_after_ms` = twice the
+  hook deadline). A slot frees when its ticket settles or is dropped, so abandoned calls never hold it (the worker skips
+  them by `reply.is_closed()`). The worker serves its queue round-robin per (petal, package, caller)
+  (`fractalengine/src/AGENTS.md` §scene-hook-queue), so a flooding Editor delays another caller's call by at most one
+  call per busy queue, each bounded by its own deadline (epoch interrupt), and never fills another petal's allowance.
+- **Crash recovery (reviewer item b).** A guest that traps, runs out of fuel or is interrupted inside a hook restarts at
+  once from the cached component (fe-plugin `ExtensionInstance::recover`, src/wasm/AGENTS.md §hooks); hook calls are
+  refused (a fault, so `hook-failed`) until a backoff passes (1 s, doubling per crash, at most 5 restarts per minute),
+  then it judges again. An instance that degrades for another reason (tick or bus fault, a failed restart) keeps its
+  binding in force: `bound` still answers for `Unresolved { reason: Degraded }`, the call faults and the write is
+  refused naming the package. A Manager frees the scope by Disable (resolves `Disabled`, unbound) or by unbinding.
 - An allowing guest may augment the write with `set_property` ops on the subject node. Those ops stage
   in the instance's tick window through `SceneHookBackend::stage_augment`, are capped at
   `MAX_AUGMENT_OPS`, and flush as an ordinary `PluginCommit`.
@@ -1290,6 +1355,11 @@ cannot forget a hook: it either goes through the door or its command is not in t
   the hook deadline. Dropping a ticket abandons its outstanding calls and sends nothing.
 - **Caller-sized input refuses.** One input over `MAX_HOOK_INPUT_BYTES`, or a write that would dispatch
   more than `MAX_HOOK_CALLS_PER_WRITE` hook calls, refuses `input-too-large` (413) before any guest runs.
+- **Refusal vocabulary.** `SceneRefusal::{Refused (409 refused), InputTooLarge | TooManyHookCalls (413
+  input-too-large), HookFailed (409 hook-failed: the hook gave no answer), Busy (503 hook-busy, retryable,
+  `retry_after_ms()`)}`; `message()` always starts `Refused by <package>:`.
+- **Numbers the hook sees.** `SceneHookInput` carries `f64`. A live command's `f32` vectors widen exactly (the JSON a
+  hook sees is unchanged, and matches the widened value the DB stores); an import presents the row's stored `f64`.
 - **Petal binding.** `SceneWrite::new(petal_id, command)` takes the petal the door authorized; a command
   carrying another petal is `PetalMismatch`, a non-scene command `NotASceneWrite` (send it on its own path).
 
@@ -1299,7 +1369,7 @@ cannot forget a hook: it either goes through the door or its command is not in t
 |---|---|---|
 | `CreateNode`, `CreateNodeWithAsset`, `ImportGltf` | `scene.create` | name, position |
 | `CreateObject` | `scene.create` + `scene.property` | one property call per initial key, node null |
-| `ImportPetalSnapshot` | `scene.create` + `scene.property` | one create per node, one property call per initial key; capped by `MAX_HOOK_CALLS_PER_WRITE` (`scene_write.rs:19`) |
+| `ImportPetalSnapshot` | `scene.create` + `scene.transform` + `scene.property` | one create per node, one transform per node whose stored rotation or scale is not the default (the shape a live transform update sends, so a `scene.transform` hook can refuse an imported pose), one property call per initial key; positions are the stored `f64` values; capped by `MAX_HOOK_CALLS_PER_WRITE` (`scene_write.rs:19`) |
 | `DuplicateNode` | `scene.create` | `proposed.source` = the copied node |
 | `PromoteInstance`, `PromoteCheckedStamp` | `scene.create` | `proposed.source` = `{path}#inst-{i}` |
 | `UpdateNodeTransform` | `scene.transform` | |
@@ -1313,6 +1383,32 @@ cannot forget a hook: it either goes through the door or its command is not in t
 Doors that must go through it: GUI node actions (fe-ui `actions/node.rs`), inspector edits, the gimbal commit
 (`node_manager/transform_broadcast.rs`), REST, MCP tools, WS entity commands, mutations, objects, waypoints,
 GPX and promote (fe-api). `ApplyReplicatedRow` and `PluginCommit` never pass it (judged where written).
+
+## §scene-hook-import
+
+A petal snapshot import creates a petal that does not exist yet. The live gate resolves hooks per petal from the
+host's published cache, so it would find nothing at an absent petal. `SceneWriteDoor::judge_import(kind, write,
+verse_id, fractal_id, budget)` closes that gap without a second resolver.
+
+- **Provision, then judge.** `SceneHookGate::provision` asks the backend (`SceneHookBackend::provision`) to resolve
+  bindings at `(verse, fractal, new petal)`, then waits until the deadline. The binary adds the petal to its petal
+  directory, re-reads the verse's binding snapshot, resolves and publishes, and answers. After that, `bound` and
+  `dispatch` serve the new petal id exactly as they serve a live one: the same inheritance (petal > fractal > verse,
+  nearest effective row, `inherit` = none) and the same instance per `(petal, package)`. `ProvisionLease` releases it
+  on drop. Every provision gets exactly one release, keyed by `ProvisionalPetal::hold`, even after a timeout.
+- **Strict settle.** Each input is `begin`, then `SceneGateTicket::wait_strict`, one call at a time, within the hook's
+  own deadline, all under one `budget` (`IMPORT_JUDGMENT_BUDGET`, 10 s). A missed deadline, fault, decline or bad
+  output is `StrictVerdict::Unanswered` (counted as live), never a pass. An allow carrying an admitted augment is
+  `ImportJudgment::Augmented`, because augments stage as later writes on a node id. That would make the written row
+  differ from the judged one, so it is refused. The `MAX_HOOK_CALLS_PER_WRITE` cap applies after provisioning
+  (413).
+- **Failure answers.** `ProvisionFailure::Unavailable` (host gone or busy, bindings unreadable, timeout) means 503.
+  `Unjudgeable` (a `scene.*` point at the new petal is `Unresolved` or `Elsewhere` on this host) and `Exists` (the id
+  is already a petal at another address, whose hooks must not see the rows) both mean 409. A backend that does not
+  implement `provision` answers `Unavailable` by default (fail closed). A disabled gate (no backend) admits, as for
+  live writes.
+- **TOCTOU.** As for a live write, a binding that changes after judgment is not re-checked before the DB command.
+  The provision rereads the binding snapshot, so judgment uses rows no older than the request.
 
 ## §blob-fallback
 

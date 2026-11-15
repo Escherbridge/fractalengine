@@ -7,10 +7,23 @@ use crate::{NodeSnapshot, PropertyValue};
 
 /// Maximum scene operations admitted in one atomic transaction.
 pub const MAX_TRANSACTION_OPS: usize = 64;
-/// Maximum encoded transaction or returned snapshot bytes.
+/// Maximum encoded JSON argument that is not node content (kv values, bus and event JSON).
 pub const MAX_HOST_BYTES: usize = 65_536;
 /// Maximum nodes returned by one structured query.
 pub const MAX_NODE_QUERY_ROWS: usize = 200;
+/// Fixed allowance over one node's content for the record around it (ids, key, name, transform, caller).
+pub const NODE_ENVELOPE_BYTES: usize = 8 * 1024;
+/// Largest one-node payload on the extension boundary: a node snapshot, one staged op, one hook input.
+pub const MAX_NODE_PAYLOAD_BYTES: usize =
+    crate::property_schema::MAX_NODE_BYTES + NODE_ENVELOPE_BYTES;
+/// Maximum encoded ops of one transaction or staged window: four full-size nodes.
+pub const MAX_TRANSACTION_BYTES: usize = 4 * MAX_NODE_PAYLOAD_BYTES;
+/// Maximum encoded rows of one query page: four full-size nodes; a page cut here carries a cursor.
+pub const MAX_QUERY_PAGE_BYTES: usize = 4 * MAX_NODE_PAYLOAD_BYTES;
+/// Maximum encoded staged readings of one window (1000 maximal readings fit).
+pub const MAX_READINGS_BYTES: usize = 8 * MAX_HOST_BYTES;
+/// Maximum encoded ops plus readings of one commit.
+pub const MAX_COMMIT_BYTES: usize = MAX_TRANSACTION_BYTES + MAX_READINGS_BYTES;
 
 /// Shared host-only revocation lease; never reconstructed from guest input.
 #[derive(Debug, Clone)]
@@ -146,6 +159,9 @@ pub struct NodeQuery {
     /// Maximum rows, in deterministic node-ID order.
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// Exclusive cursor: only nodes whose id sorts after it (a previous page's `next`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -158,6 +174,7 @@ impl Default for NodeQuery {
             name: None,
             property: None,
             limit: default_limit(),
+            after: None,
         }
     }
 }
@@ -188,6 +205,9 @@ impl NodeQuery {
         if let Some(property) = &self.property {
             crate::storage::validate_key(&property.key).map_err(|error| error.to_string())?;
         }
+        if let Some(after) = &self.after {
+            crate::storage::validate_node_id(after).map_err(|error| error.to_string())?;
+        }
         if serde_json::to_vec(self)
             .map_err(|error| error.to_string())?
             .len()
@@ -198,9 +218,18 @@ impl NodeQuery {
         Ok(())
     }
 
-    /// Evaluate the declared predicates on a current node snapshot.
+    /// Evaluate the declared predicates on a current node snapshot; an [`unreadable_snapshot`] the reader's
+    /// store matched is judged by the cursor alone (it is omitted from the page, never delivered).
     pub fn matches(&self, node: &NodeSnapshot) -> bool {
-        self.name.as_ref().is_none_or(|name| &node.name == name)
+        let after = self
+            .after
+            .as_ref()
+            .is_none_or(|after| node.node_id.as_str() > after.as_str());
+        if is_unreadable(node) {
+            return after;
+        }
+        after
+            && self.name.as_ref().is_none_or(|name| &node.name == name)
             && self.property.as_ref().is_none_or(|predicate| {
                 node.properties
                     .get(&predicate.key)
@@ -239,6 +268,100 @@ pub fn snapshot_json(node: &NodeSnapshot) -> Value {
         "position":node.position,"rotation":node.rotation,"scale":node.scale,"properties":properties})
 }
 
+/// Encoded bytes of a node as both script hosts deliver it (plain property JSON).
+pub fn snapshot_wire_len(node: &NodeSnapshot) -> usize {
+    serde_json::to_vec(&snapshot_json(node)).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The bytes of a node a guest may read; a node over [`MAX_NODE_PAYLOAD_BYTES`] is refused as a budget.
+pub fn node_wire_len(node: &NodeSnapshot) -> Result<usize, String> {
+    let len = snapshot_wire_len(node);
+    if len > MAX_NODE_PAYLOAD_BYTES {
+        return Err(format!(
+            "node {} is over the read budget of {MAX_NODE_PAYLOAD_BYTES} bytes",
+            node.node_id
+        ));
+    }
+    Ok(len)
+}
+
+/// Encoded bytes of a page as a reader delivered it: every row plus one separator between rows.
+pub fn page_wire_len(nodes: &[NodeSnapshot]) -> usize {
+    nodes
+        .iter()
+        .map(snapshot_wire_len)
+        .fold(0usize, |total, len| total.saturating_add(len))
+        .saturating_add(nodes.len().saturating_sub(1))
+}
+
+/// A stored row the reader matched but cannot present (e.g. a malformed stored rotation): non-finite transform,
+/// which no presentable node has. [`cut_query_page`] lists it in `omitted`, like an oversized row.
+pub fn unreadable_snapshot(node_id: String, petal_id: String) -> NodeSnapshot {
+    NodeSnapshot {
+        node_id,
+        petal_id,
+        name: String::new(),
+        position: [f64::NAN; 3],
+        rotation: [f64::NAN; 4],
+        scale: [f64::NAN; 3],
+        properties: Default::default(),
+    }
+}
+
+/// A row no guest can be shown: any non-finite transform component.
+pub fn is_unreadable(node: &NodeSnapshot) -> bool {
+    node.position
+        .iter()
+        .chain(&node.rotation)
+        .chain(&node.scale)
+        .any(|value| !value.is_finite())
+}
+
+/// One query page: rows that fit, the ids of rows skipped as over the per-node bound, and the next cursor.
+#[derive(Debug, Clone, Default)]
+pub struct QueryPage {
+    /// Rows in node-id order, each at most [`MAX_NODE_PAYLOAD_BYTES`].
+    pub nodes: Vec<NodeSnapshot>,
+    /// Pass as `after` to read on; `None` means no more rows.
+    pub next: Option<String>,
+    /// Matching nodes over [`MAX_NODE_PAYLOAD_BYTES`] or unreadable: skipped, never failing the page.
+    pub omitted: Vec<String>,
+}
+
+/// Cut a node-id-ordered page to `limit` rows and `budget` encoded bytes (`budget` at least one node
+/// payload). A reader that stopped early always delivered more than `budget`, so that is detected too
+/// (src/AGENTS.md §plugin-host paging).
+pub fn cut_query_page(nodes: Vec<NodeSnapshot>, limit: usize, budget: usize) -> QueryPage {
+    let delivered = page_wire_len(&nodes);
+    let offered = nodes.len();
+    let mut page = QueryPage::default();
+    let (mut consumed, mut kept_bytes, mut cut) = (0usize, 0usize, false);
+    let mut last = None;
+    for node in nodes {
+        if consumed == limit {
+            break;
+        }
+        let len = snapshot_wire_len(&node);
+        if len > MAX_NODE_PAYLOAD_BYTES || is_unreadable(&node) {
+            last = Some(node.node_id.clone());
+            page.omitted.push(node.node_id);
+        } else {
+            let row = len + usize::from(!page.nodes.is_empty());
+            if kept_bytes + row > budget {
+                cut = true;
+                break;
+            }
+            kept_bytes += row;
+            last = Some(node.node_id.clone());
+            page.nodes.push(node);
+        }
+        consumed += 1;
+    }
+    let more = cut || consumed < offered || consumed == limit || delivered > budget;
+    page.next = if more { last } else { None };
+    page
+}
+
 /// The authoritative result of a completed atomic transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionReceipt {
@@ -275,9 +398,11 @@ pub fn validate_transaction(ops: &[PendingOp]) -> Result<(), String> {
     if serde_json::to_vec(ops)
         .map_err(|error| error.to_string())?
         .len()
-        > MAX_HOST_BYTES
+        > MAX_TRANSACTION_BYTES
     {
-        return Err("plugin transaction exceeds 65536 bytes".into());
+        return Err(format!(
+            "plugin transaction exceeds {MAX_TRANSACTION_BYTES} bytes"
+        ));
     }
     for op in ops {
         match op {
@@ -288,7 +413,7 @@ pub fn validate_transaction(ops: &[PendingOp]) -> Result<(), String> {
             } => {
                 crate::storage::validate_node_id(node_id).map_err(|error| error.to_string())?;
                 crate::storage::validate_key(key).map_err(|error| error.to_string())?;
-                crate::property_schema::validate_persistable_numbers(value)?;
+                validate_property_value(value)?;
             }
             PendingOp::CreateNode { petal_id, name } => {
                 crate::storage::validate_node_id(petal_id).map_err(|error| error.to_string())?;
@@ -311,6 +436,19 @@ pub fn validate_transaction(ops: &[PendingOp]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// One property value: at most [`MAX_PROPERTY_BYTES`](crate::property_schema::MAX_PROPERTY_BYTES) encoded, persistable numbers.
+pub fn validate_property_value(value: &Value) -> Result<(), String> {
+    let limit = crate::property_schema::MAX_PROPERTY_BYTES;
+    if serde_json::to_vec(value)
+        .map_err(|error| error.to_string())?
+        .len()
+        > limit
+    {
+        return Err(format!("plugin property value exceeds {limit} bytes"));
+    }
+    crate::property_schema::validate_persistable_numbers(value)
 }
 
 /// A patch must change something and stay finite, with a usable rotation and positive scale.
@@ -374,11 +512,16 @@ pub fn validate_commit(ops: &[PendingOp], readings: &[StagedReading]) -> Result<
     let readings_len = serde_json::to_vec(readings)
         .map_err(|error| error.to_string())?
         .len();
+    if readings_len > MAX_READINGS_BYTES {
+        return Err(format!(
+            "plugin commit readings exceed {MAX_READINGS_BYTES} bytes"
+        ));
+    }
     let ops_len = serde_json::to_vec(ops)
         .map_err(|error| error.to_string())?
         .len();
-    if ops_len + readings_len > MAX_HOST_BYTES * 8 {
-        return Err("plugin commit exceeds 524288 bytes".into());
+    if ops_len + readings_len > MAX_COMMIT_BYTES {
+        return Err(format!("plugin commit exceeds {MAX_COMMIT_BYTES} bytes"));
     }
     Ok(())
 }

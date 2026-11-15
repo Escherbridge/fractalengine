@@ -1186,6 +1186,8 @@ pub enum DbCommand {
     ExportPetalSnapshot {
         petal_id: String,
         correlation_id: Option<String>,
+        /// History entries per node; `None` takes the DB side's default (fe-database `EXPORT_HISTORY_PER_NODE`).
+        history_per_node: Option<usize>,
     },
     /// Import a petal snapshot's rows as a new petal (refused on conflict).
     ImportPetalSnapshot {
@@ -1476,6 +1478,24 @@ pub enum DbCommand {
     },
 }
 
+/// Deepest per-node history an export may ask for (`ExportPetalSnapshot::history_per_node`); the API refuses more, the DB clamps.
+pub const EXPORT_HISTORY_PER_NODE_MAX: usize = 256;
+
+impl DbCommand {
+    /// Row bytes this command carries onto the DB channel (the byte gate's unit; src/AGENTS.md §db-command-bytes).
+    pub fn payload_bytes(&self) -> u64 {
+        match self {
+            DbCommand::ApplyReplicatedRow { row_bytes, .. } => row_bytes.len() as u64,
+            DbCommand::RejudgeReplicatedNodes { nodes, .. } => nodes
+                .iter()
+                .flat_map(|(_, candidates)| candidates.iter())
+                .map(|(_, bytes)| bytes.len() as u64)
+                .sum(),
+            _ => 0,
+        }
+    }
+}
+
 /// How one inbound replicated row was reconciled by the DB thread (A4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicatedRowOutcome {
@@ -1510,6 +1530,8 @@ pub enum DeferralReason {
     /// The author (or a role statement's grantor) resolves below the
     /// threshold the row needs; retried when that DID's effective role rises.
     AuthorRole { did: String },
+    /// A node row over its author's inbound byte budget; retried when that DID's budget refills.
+    AuthorBudget { did: String },
 }
 
 #[derive(Debug, Clone, Message)]
@@ -2334,6 +2356,9 @@ pub enum SceneChange {
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
+        /// Set when the author's node write budget refused the save: milliseconds until a retry can pass.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u64>,
     },
     /// A custom property was changed on a node.
     PropertyChanged {
@@ -2584,6 +2609,7 @@ mod scene_change_tests {
                 position: [0.0; 3],
                 rotation: [0.0; 3],
                 scale: [1.0; 3],
+                retry_after_ms: None,
             },
             SceneChange::PropertyChanged {
                 node_id: "n1".into(),
