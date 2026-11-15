@@ -400,7 +400,7 @@ async fn query_byte_ceiling_errors_not_truncates() {
     // or a non-literal one is refused before anything is read.
     let (_, body) = query(&h, &token, "SELECT * FROM node ORDER BY node_id LIMIT 2", json!({})).await;
     assert_eq!(body["ok"], true, "two of the large rows fit the byte ceiling: {body}");
-    assert_eq!(body["data"].as_array().map(Vec::len), Some(2), "{body}");
+    assert_eq!(body["data"]["data"].as_array().map(Vec::len), Some(2), "{body}");
     let over_cap = format!("SELECT node_id FROM node LIMIT {}", fe_api::limits::QUERY_ROW_CAP + 1);
     let (_, body) = query(&h, &token, &over_cap, json!({})).await;
     assert!(body["error"].as_str().unwrap_or_default().contains("row cap"), "{body}");

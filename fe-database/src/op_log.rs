@@ -4542,17 +4542,11 @@ mod tests {
                         .collect(),
                 ),
             };
-            let prepared = editor_batch::prepare(
-                &db,
-                &bounded_request,
-                "qa-final-envelope-bound",
-                &long_actor,
-            )
-            .await
-            .expect("pre-envelope payload fits while repeated actual fact envelopes do not");
             let operations = op_log_count(&db).await;
-            let error=editor_batch::commit(&db,prepared).await.expect_err("final manifest and repeated actor/tag/envelope bytes must be bounded before transaction use");
-            assert!(format!("{error:#}").contains("4 MiB"));
+            let error = editor_batch::prepare(&db, &bounded_request, "qa-final-envelope-bound", &long_actor)
+                .await
+                .expect_err("an actor too long to ever sign a published row is refused before the transaction");
+            assert!(format!("{error:#}").contains("could never be published"), "{error:#}");
             assert_eq!(op_log_count(&db).await, operations);
             db.query("UPDATE verse SET created_by='did:qa' WHERE verse_id='tree-10'")
                 .await

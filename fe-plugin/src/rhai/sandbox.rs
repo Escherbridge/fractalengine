@@ -174,7 +174,7 @@ mod tests {
                 },
             );
         }
-        engine.eval::<()>(&format!(r#"if !(get_node("big0").properties.calibration.len() == {full}) { throw "assertion failed"; }"#)).unwrap();
+        engine.eval::<()>(&format!(r#"if !(get_node("big0").properties.calibration.len() == {full}) {{ throw "assertion failed"; }}"#)).unwrap();
         engine.eval::<()>(r#"
             let first = query_nodes_page("p1", `{"name":"big","limit":200}`);
             if !(first.nodes.len() == 1 && first.next == "big0" && first.omitted.len() == 0) { throw "assertion failed"; }
