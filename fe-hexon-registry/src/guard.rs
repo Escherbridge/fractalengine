@@ -17,6 +17,43 @@ const CACHE_MAX_ENTRIES: usize = 8;
 /// Header bytes (manifest + header members) the cached indexes may hold in total.
 const CACHE_MAX_BYTES: usize = 64 << 20;
 
+/// How long a buffered response may keep its permit while the client reads it (`AGENTS.md` §hardening).
+#[derive(Clone, Copy, Debug)]
+pub struct DrainPolicy {
+    /// Time a client gets before the minimum rate applies.
+    pub grace: Duration,
+    /// Bytes per second the client must take once the grace period is over.
+    pub min_bytes_per_sec: u64,
+}
+
+impl Default for DrainPolicy {
+    fn default() -> Self {
+        Self { grace: Duration::from_secs(30), min_bytes_per_sec: 64 << 10 }
+    }
+}
+
+impl DrainPolicy {
+    /// True when a body `taken` bytes in after `elapsed` is behind the minimum-rate schedule.
+    pub fn is_stalled(&self, taken: u64, elapsed: Duration) -> bool {
+        let Some(overdue) = elapsed.checked_sub(self.grace) else {
+            return false;
+        };
+        let owed = (overdue.as_secs_f64() * self.min_bytes_per_sec as f64).ceil().max(1.0);
+        (taken as f64) < owed
+    }
+
+    /// How often the watchdog checks a held response.
+    pub(crate) fn tick(&self) -> Duration {
+        (self.grace / 4).clamp(Duration::from_millis(50), Duration::from_secs(5))
+    }
+}
+
+/// One archive permit and the drain policy its response body runs under.
+pub struct ArchivePermit {
+    _permit: OwnedSemaphorePermit,
+    pub(crate) drain: DrainPolicy,
+}
+
 type CacheKey = (PathBuf, u64, Option<SystemTime>);
 
 struct Slot {
@@ -36,6 +73,7 @@ struct Cache {
 pub struct ArchiveGuard {
     permits: Arc<Semaphore>,
     cache: Mutex<Cache>,
+    drain: DrainPolicy,
 }
 
 impl ArchiveGuard {
@@ -43,7 +81,19 @@ impl ArchiveGuard {
         Self {
             permits: Arc::new(Semaphore::new(concurrency.max(1))),
             cache: Mutex::new(Cache::default()),
+            drain: DrainPolicy::default(),
         }
+    }
+
+    /// Replace the drain policy held responses run under.
+    pub fn with_drain(mut self, drain: DrainPolicy) -> Self {
+        self.drain = drain;
+        self
+    }
+
+    /// The drain policy held responses run under.
+    pub fn drain(&self) -> DrainPolicy {
+        self.drain
     }
 
     /// The permit pool itself (tests hold every permit through this to force the 503 path).
@@ -52,11 +102,12 @@ impl ArchiveGuard {
     }
 
     /// One permit, or `None` when none frees up within a short wait.
-    pub async fn acquire(&self) -> Option<OwnedSemaphorePermit> {
+    pub async fn acquire(&self) -> Option<ArchivePermit> {
         tokio::time::timeout(PERMIT_WAIT, Arc::clone(&self.permits).acquire_owned())
             .await
             .ok()
             .and_then(Result::ok)
+            .map(|permit| ArchivePermit { _permit: permit, drain: self.drain })
     }
 
     /// Parsed index for `path`, cached per (path, length, mtime); blocking — call inside `spawn_blocking`.

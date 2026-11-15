@@ -166,6 +166,13 @@ Anonymous reads are the threat model, so every cost an anonymous caller can trig
   blocking archive read (`/meta`, `/chunk`, `/member`, `/entries`, `/asset`, manifest). No permit within 250 ms is a
   503 + `Retry-After`; nothing queues unboundedly. The permit rides the response body (`HeldRead`), so buffered bytes
   are bounded by permits, not by how slowly a client drains them. HEAD runs the same handlers and takes a permit too.
+- **Drain watchdog** (`guard::DrainPolicy`, `routes::watch_drain`, 2026-11-15): a held response keeps its bytes and
+  permit only while the client reads at a minimum rate (30 s grace, then 64 KiB/s; a 64 MiB member is held at most
+  about 17.5 minutes). Behind that schedule a timer task empties the slot, which frees both, and the next read of
+  the body fails with `TimedOut` so the connection is cut instead of truncated. The permit is also given back the
+  moment the last byte is handed to the server, not when the body object is dropped. It is a timer and not a check
+  in `poll_read` because a stalled client stops the server polling the body at all. Before this, four connections
+  that stopped reading held all four permits and every archive read answered 503 until they closed.
 - **Index cache**: `ArchiveGuard::open` keeps parsed `HexonArchiveIndex` values keyed (path, length, mtime), at most 8
   entries and 64 MiB of header text; member bodies are never cached. A replaced file has a new key, so it re-opens.
 - **No whole-file reads**: `/chunk/0` of a monolithic archive streams the file (`stream_file`) instead of `fs::read`.
@@ -183,7 +190,8 @@ Anonymous reads are the threat model, so every cost an anonymous caller can trig
   `tracing` (`routes::internal`, `read_failure`). Client mistakes keep descriptive messages.
 - **Tokens**: trimmed, minimum 32 characters (`RegistryConfig::validate`).
 
-Residual: no per-IP rate limit (use the platform edge); a client that stalls mid-body holds one archive permit.
+Residual: no per-IP rate limit (use the platform edge), so a caller that keeps opening new slow reads can still
+occupy the permits for one grace period at a time.
 
 ## §routes
 

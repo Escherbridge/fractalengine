@@ -745,6 +745,41 @@ async fn chunk_route_serves_bytes_matching_the_signed_index() {
     let (status, body) = get(&limited, "/api/v1/hexons/mono/chunk/0").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, mono);
+
+    // A client that stops reading loses its permit: two responses left unread hold both permits, the
+    // drain watchdog takes them back once the bodies are behind the minimum rate, and a late read of a
+    // cut body fails instead of returning partial bytes.
+    let state = Arc::new(
+        RegistryState::new(tmp.path().to_path_buf(), None, false, scan_dir(tmp.path()))
+            .with_archive_concurrency(2)
+            .with_drain_policy(fe_hexon_registry::guard::DrainPolicy {
+                // Longer than the 250 ms permit wait, so the refused read below is decided first.
+                grace: std::time::Duration::from_millis(800),
+                min_bytes_per_sec: 1 << 20,
+            }),
+    );
+    let stalling = build_router(state.clone());
+    let meta = || Request::builder().uri("/api/v1/hexons/mono/meta").body(Body::empty()).unwrap();
+    let mut unread = Vec::new();
+    for _ in 0..2 {
+        let resp = stalling.clone().oneshot(meta()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        unread.push(resp);
+    }
+    assert_eq!(state.archive.permits().available_permits(), 0, "unread bodies hold their permits");
+    let resp = stalling.clone().oneshot(meta()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(state.archive.permits().available_permits(), 2, "stalled bodies gave their permits back");
+    let (status, body) = get(&stalling, "/api/v1/hexons/mono/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.is_empty());
+    for resp in unread {
+        assert!(
+            axum::body::to_bytes(resp.into_body(), usize::MAX).await.is_err(),
+            "a body cut by the watchdog must fail, not truncate"
+        );
+    }
 }
 
 #[tokio::test]

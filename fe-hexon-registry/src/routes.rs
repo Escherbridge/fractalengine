@@ -13,12 +13,12 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Semaphore;
 use tokio_util::io::ReaderStream;
 use tower_http::trace::TraceLayer;
 
 use crate::config::DEFAULT_MAX_PUBLISH_BYTES;
-use crate::guard::{ArchiveGuard, DEFAULT_ARCHIVE_CONCURRENCY};
+use crate::guard::{ArchiveGuard, ArchivePermit, DrainPolicy, DEFAULT_ARCHIVE_CONCURRENCY};
 use crate::index::{self, HexonIndexEntry};
 use crate::limits;
 use crate::store::{self, FsPackageStore, PackageStore, StoreError};
@@ -121,7 +121,13 @@ impl RegistryState {
 
     /// Concurrent archive reads (default 4); drops the parsed-index cache.
     pub fn with_archive_concurrency(mut self, permits: usize) -> Self {
-        self.archive = ArchiveGuard::new(permits);
+        self.archive = ArchiveGuard::new(permits).with_drain(self.archive.drain());
+        self
+    }
+
+    /// Minimum download rate a buffered response must keep to hold its archive permit.
+    pub fn with_drain_policy(mut self, drain: DrainPolicy) -> Self {
+        self.archive = self.archive.with_drain(drain);
         self
     }
 
@@ -502,16 +508,16 @@ fn busy() -> Response {
 }
 
 /// One archive permit, or the 503 to return.
-async fn archive_permit(state: &RegistryState) -> Result<OwnedSemaphorePermit, Response> {
+async fn archive_permit(state: &RegistryState) -> Result<ArchivePermit, Response> {
     state.archive.acquire().await.ok_or_else(busy)
 }
 
 /// Run blocking archive work holding `permit`; the permit comes back with the result so the
 /// response body can keep it until the bytes are drained.
 async fn run_blocking<T: Send + 'static>(
-    permit: OwnedSemaphorePermit,
+    permit: ArchivePermit,
     work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
-) -> anyhow::Result<(OwnedSemaphorePermit, T)> {
+) -> anyhow::Result<(ArchivePermit, T)> {
     match tokio::task::spawn_blocking(move || (permit, work())).await {
         Ok((permit, Ok(value))) => Ok((permit, value)),
         Ok((_, Err(e))) => Err(e),
@@ -519,34 +525,80 @@ async fn run_blocking<T: Send + 'static>(
     }
 }
 
-/// `AsyncRead` over buffered bytes that keeps its archive permit until the body is dropped.
+/// Buffered bytes and their archive permit; emptied at end of body or by the drain watchdog.
+type HeldSlot = Arc<std::sync::Mutex<Option<(std::io::Cursor<Vec<u8>>, ArchivePermit)>>>;
+
+/// `AsyncRead` over buffered bytes that gives its permit back as soon as the last byte is read.
 struct HeldRead {
-    data: std::io::Cursor<Vec<u8>>,
-    _permit: OwnedSemaphorePermit,
+    slot: HeldSlot,
+    finished: bool,
 }
 
 impl tokio::io::AsyncRead for HeldRead {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.data), cx, buf)
+        if self.finished {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        let slot = Arc::clone(&self.slot);
+        let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((data, _)) = held.as_mut() else {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "response was read too slowly",
+            )));
+        };
+        let taken = match std::io::Read::read(data, buf.initialize_unfilled()) {
+            Ok(taken) => taken,
+            Err(e) => return std::task::Poll::Ready(Err(e)),
+        };
+        buf.advance(taken);
+        if data.position() >= data.get_ref().len() as u64 {
+            *held = None;
+            self.finished = true;
+        }
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
-/// Buffered bytes as a body whose archive permit lives until the client has drained it.
+/// Drain watchdog (`AGENTS.md` §hardening): frees a held response's bytes and permit once its client
+/// falls behind the minimum rate. A timer, not a check inside `poll_read`: a stalled client stops the
+/// server polling the body at all.
+fn watch_drain(slot: &HeldSlot, policy: DrainPolicy) {
+    let slot = Arc::downgrade(slot);
+    tokio::spawn(async move {
+        let started = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(policy.tick()).await;
+            let Some(slot) = slot.upgrade() else { return };
+            let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+            match held.as_ref() {
+                Some((data, _)) if policy.is_stalled(data.position(), started.elapsed()) => {
+                    *held = None;
+                    return;
+                }
+                Some(_) => {}
+                None => return,
+            }
+        }
+    });
+}
+
+/// Buffered bytes as a body that holds its archive permit only while the client keeps reading.
 fn held_response(
-    permit: OwnedSemaphorePermit,
+    permit: ArchivePermit,
     bytes: Vec<u8>,
     content_type: &'static str,
     disposition: Option<String>,
 ) -> Response {
     let len = bytes.len();
-    let body = Body::from_stream(ReaderStream::new(HeldRead {
-        data: std::io::Cursor::new(bytes),
-        _permit: permit,
-    }));
+    let policy = permit.drain;
+    let slot: HeldSlot = Arc::new(std::sync::Mutex::new(Some((std::io::Cursor::new(bytes), permit))));
+    watch_drain(&slot, policy);
+    let body = Body::from_stream(ReaderStream::new(HeldRead { slot, finished: false }));
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
@@ -561,7 +613,7 @@ fn held_response(
 }
 
 /// `{ok, data}` envelope serialised up front so the permit can ride the body.
-fn json_held<T: Serialize>(permit: OwnedSemaphorePermit, data: T) -> Response {
+fn json_held<T: Serialize>(permit: ArchivePermit, data: T) -> Response {
     match serde_json::to_vec(&ApiResponse::success(data)) {
         Ok(bytes) => held_response(permit, bytes, "application/json", None),
         Err(e) => internal("json serialisation failed", &e),
@@ -635,7 +687,7 @@ fn safe_filename(raw: &str) -> String {
 /// that happens to be named e.g. `notes.html` from ever being rendered as
 /// same-origin HTML by a browser that follows the link — the stored-XSS rule
 /// CDL-SPEC10 A4 already applies to fe-api blobs (S3 critic amendment, step 6).
-fn octet_response(permit: OwnedSemaphorePermit, bytes: Vec<u8>, filename: &str) -> Response {
+fn octet_response(permit: ArchivePermit, bytes: Vec<u8>, filename: &str) -> Response {
     let filename = safe_filename(filename);
     held_response(
         permit,
