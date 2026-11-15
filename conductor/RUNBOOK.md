@@ -140,13 +140,24 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   existing seven screenshots; the user adds the DNS record; reach the demo node through `railway ssh`, never a
   public address. *Keys (never printed, user must back them up; ACL = the user only):*
   `%USERPROFILE%\.fractalengine\demo-node.key` (node identity seed, used to mint API tokens) and
-  `demo-node-share-signer.key` beside it. *Still to do, in order:* (1) repeat the memory-failed chunks with
-  `-Jobs 1`, fix anything real, re-check the four feature-set compiles; (2) mint demo tokens with
-  `cargo run -p fe-identity --example mint_api_token` (bootstrap owner 1 h, then verse owner 1 h and verse
-  viewer 30 d), run `/opt/fe/seed_demo.py --create-verse`, `--seed`, `--verify` inside the container over
-  `railway ssh --service demo-node`, store the viewer token as the `web` service variable `DEMO_NODE_TOKEN`
-  with `DEMO_NODE_URL=http://demo-node.railway.internal:8765`, redeploy `web` with the demo page; (3) leak and
-  secret scan, topical commits in both repos, `git push -4 origin main`, haiku CI monitor. Not started and
+  `demo-node-share-signer.key` beside it. *Done since (same day, evening):* every chunk of R1-R11 has now run green at HEAD; the repeats ran with
+  `-Jobs 1` (logs `.omc/logs/tests/rerun-20261115/`, `rerun-final-20261115/`, `rerun-last2-20261115/`). They
+  turned up one more product bug, fixed: the petal readings summary sorted by `reading_id` without selecting
+  it, a parse error on every call (`fe-database/src/handlers/petal_readings.rs`). Three stale tests were
+  repaired. A commit security review flagged the registry: a download that stopped reading kept its archive
+  permit, so four stalled connections blocked every archive read; fixed with a per-response minimum-rate
+  timer (`guard::DrainPolicy`, `routes::watch_drain`, `fe-hexon-registry/AGENTS.md` section hardening). Demo
+  node seeded over `railway ssh` (verse `01M7GE49DGH6S6QFWE8TYF3VNH`, 17 nodes, 970 readings; a viewer write
+  is refused 403); tokens were minted with a small Node script in the private repo (`web/demo-node/
+  mint_token.mjs`) because the token is a plain EdDSA JWT and needs no Rust build; the site's viewer token
+  expires 2026-12-15 and must be rotated before then. Site live at `https://fractalengine.escherbridge.com`
+  (landing page with a "Built on" section, docs, `/status`, `/demo`). DNS for `escherbridge.com` moved to
+  Cloudflare the same day: the root, `www` and `fractalengine` are DNS-only CNAMEs to their Railway targets
+  with their `_railway-verify` TXT records, all three certificates valid; SPF and DMARC (`p=none`) added;
+  **DKIM is still owed** (the user generates the value in the Google admin console). The Cloudflare token is
+  in `%USERPROFILE%\.fractalengine\cloudflare.env`; helper `web/ops/cloudflare_dns.py` in the private repo.
+  All work is committed in both repos. *Next:* push the public repo (`git push -4 origin main`), haiku CI
+  monitor, redeploy `hexon-registry` with the drain fix, add DKIM when the value arrives. Not started and
   awaiting a go-ahead: extension credential slots with keychain storage, a device-resources track, the
   blocks / blob-reference / verse-configurable row cap track, whether release builds include `plugin-host`, a
   Railway spending limit, the glibc requirement of the Linux build, confirming the export `?history` cap of 256.
