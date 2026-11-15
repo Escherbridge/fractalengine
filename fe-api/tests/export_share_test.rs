@@ -1779,22 +1779,64 @@ async fn query_channel_fallback_with_dead_db_bridge_is_an_honest_error() {
 // HEXON-12 — petal snapshot export/import routes (Manager+)
 // ---------------------------------------------------------------------------
 
-/// What the process-wide test hook does at one petal.
+/// What the process-wide test hook does at one petal (or, through a provision, at one fractal).
 #[derive(Debug, Clone, Copy)]
 enum GateMode {
     Unbound,
     Refuse,
     Augment,
+    /// Allow every create unchanged.
+    Approve,
+    /// Refuse only the create proposing this node name.
+    RefuseNamed(&'static str),
+    /// A provision answers unavailable (the host cannot resolve bindings).
+    Unavailable,
+    /// A provision answers that a hook in effect cannot run here.
+    Unjudgeable,
 }
 
-/// A scene-hook backend whose behavior is keyed by petal id, so other journeys in this binary stay unbound.
+/// A scene-hook backend keyed by petal id, plus fractal modes a new petal inherits only through `provision`, so
+/// other journeys in this binary stay unbound.
+#[derive(Default)]
 struct SnapshotGateBackend {
     modes: std::sync::Mutex<std::collections::HashMap<String, GateMode>>,
+    fractal_modes: std::sync::Mutex<std::collections::HashMap<String, GateMode>>,
+    /// Provisioned petal id -> the mode inherited from its fractal, until released.
+    provisioned: std::sync::Mutex<std::collections::HashMap<String, GateMode>>,
+    provisions: std::sync::Mutex<Vec<fe_runtime::scene_hook_gate::ProvisionalPetal>>,
+    released: std::sync::Mutex<Vec<u64>>,
+    calls: std::sync::Mutex<Vec<fe_runtime::scene_hook_gate::SceneHookCall>>,
 }
 
 impl SnapshotGateBackend {
     fn set(&self, petal_id: &str, mode: GateMode) {
         self.modes.lock().unwrap().insert(petal_id.to_owned(), mode);
+    }
+
+    fn set_fractal(&self, fractal_id: &str, mode: GateMode) {
+        self.fractal_modes.lock().unwrap().insert(fractal_id.to_owned(), mode);
+    }
+
+    fn mode_at(&self, petal_id: &str) -> Option<GateMode> {
+        let own = self.modes.lock().unwrap().get(petal_id).copied();
+        own.or_else(|| self.provisioned.lock().unwrap().get(petal_id).copied())
+    }
+
+    /// The `scene.create` names proposed to the hook at `petal_id` so far.
+    fn created_names(&self, petal_id: &str) -> Vec<String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.petal_id == petal_id && call.hook == fe_runtime::scene_hook_gate::SceneHook::Create)
+            .map(|call| call.input["proposed"]["name"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// Every provision so far was released, and nothing is still provisioned.
+    fn all_released(&self) -> bool {
+        let holds: Vec<u64> = self.provisions.lock().unwrap().iter().map(|petal| petal.hold).collect();
+        *self.released.lock().unwrap() == holds && self.provisioned.lock().unwrap().is_empty()
     }
 }
 
@@ -1807,13 +1849,15 @@ impl fe_runtime::scene_hook_gate::SceneHookBackend for SnapshotGateBackend {
         _hook: fe_runtime::scene_hook_gate::SceneHook,
         petal_id: &str,
     ) -> Option<fe_runtime::scene_hook_gate::SceneBinding> {
-        let mode = self.modes.lock().unwrap().get(petal_id).copied()?;
-        matches!(mode, GateMode::Refuse | GateMode::Augment).then(|| fe_runtime::scene_hook_gate::SceneBinding {
-            package_id: "org.example.zoning".into(),
-            binding_scope: "VERSE#v1-FRACTAL#f1".into(),
-            config: serde_json::json!({}),
-            property_scope: vec!["zone*".into()],
-            may_augment: true,
+        let mode = self.mode_at(petal_id)?;
+        matches!(mode, GateMode::Refuse | GateMode::Augment | GateMode::Approve | GateMode::RefuseNamed(_)).then(|| {
+            fe_runtime::scene_hook_gate::SceneBinding {
+                package_id: "org.example.zoning".into(),
+                binding_scope: "VERSE#v1-FRACTAL#f1".into(),
+                config: serde_json::json!({}),
+                property_scope: vec!["zone*".into()],
+                may_augment: true,
+            }
         })
     }
     fn dispatch(
@@ -1821,12 +1865,42 @@ impl fe_runtime::scene_hook_gate::SceneHookBackend for SnapshotGateBackend {
         call: fe_runtime::scene_hook_gate::SceneHookCall,
         reply: fe_runtime::scene_hook_gate::SceneHookReplySender,
     ) {
-        let mode = self.modes.lock().unwrap().get(&call.petal_id).copied();
+        let mode = self.mode_at(&call.petal_id);
+        let proposed = call.input["proposed"]["name"].as_str().unwrap_or_default().to_owned();
+        self.calls.lock().unwrap().push(call);
+        let refuse = serde_json::json!({"verdict": "refuse", "reason": "zone locked"});
         let output = match mode {
-            Some(GateMode::Refuse) => serde_json::json!({"verdict": "refuse", "reason": "zone locked"}),
+            Some(GateMode::Refuse) => refuse,
+            Some(GateMode::RefuseNamed(name)) if proposed == name => refuse,
+            Some(GateMode::Approve | GateMode::RefuseNamed(_)) => serde_json::json!({"verdict": "allow"}),
             _ => serde_json::json!({"verdict": "allow", "augment": [{"key": "zone", "value": "A"}]}),
         };
         let _ = reply.send(fe_runtime::scene_hook_gate::SceneHookReply::Output(output));
+    }
+    fn provision(
+        &self,
+        petal: fe_runtime::scene_hook_gate::ProvisionalPetal,
+        reply: fe_runtime::scene_hook_gate::ProvisionReplySender,
+    ) {
+        use fe_runtime::scene_hook_gate::ProvisionFailure;
+        self.provisions.lock().unwrap().push(petal.clone());
+        let answer = match self.fractal_modes.lock().unwrap().get(&petal.fractal_id).copied() {
+            Some(GateMode::Unavailable) => Err(ProvisionFailure::Unavailable("bindings unreadable".into())),
+            Some(GateMode::Unjudgeable) => Err(ProvisionFailure::Unjudgeable {
+                hook: "scene.create".into(),
+                reason: "org.example.zoning cannot run on this host (NotInstalled)".into(),
+            }),
+            Some(mode) => {
+                self.provisioned.lock().unwrap().insert(petal.petal_id.clone(), mode);
+                Ok(())
+            }
+            None => Ok(()),
+        };
+        let _ = reply.send(answer);
+    }
+    fn release(&self, petal: &fe_runtime::scene_hook_gate::ProvisionalPetal) {
+        self.released.lock().unwrap().push(petal.hold);
+        self.provisioned.lock().unwrap().remove(&petal.petal_id);
     }
     fn stage_augment(
         &self,
@@ -1844,7 +1918,7 @@ fn snapshot_gate_backend() -> Arc<SnapshotGateBackend> {
     static BACKEND: std::sync::OnceLock<Arc<SnapshotGateBackend>> = std::sync::OnceLock::new();
     BACKEND
         .get_or_init(|| {
-            let backend = Arc::new(SnapshotGateBackend { modes: Default::default() });
+            let backend = Arc::new(SnapshotGateBackend::default());
             fe_runtime::scene_hook_gate::SceneHookGate::install(backend.clone()).expect("install scene gate");
             backend
         })
@@ -1853,6 +1927,7 @@ fn snapshot_gate_backend() -> Arc<SnapshotGateBackend> {
 
 /// Manager+ snapshot export and import: Editor and out-of-fractal callers are denied, a Manager's
 /// export opens with its op-log lamport-ascending, and re-importing onto the source node refuses (409).
+/// Scene hooks at the destination fractal judge each imported node all-or-nothing, after authorization.
 #[tokio::test]
 async fn petal_snapshot_export_import_authz_journey() {
     use axum::extract::FromRequest;
@@ -1865,6 +1940,7 @@ async fn petal_snapshot_export_import_authz_journey() {
     let petal_id = ulid();
     seed_petal(&db, &petal_id, false).await;
     seed_node(&db, &petal_id, "snapshot-node", 1.0, 2.0, 0.0).await;
+    seed_node(&db, &petal_id, "second-node", 3.0, 4.0, 0.0).await;
     for op_type in [OpType::CreatePetal, OpType::SetPetalTerrain] {
         let entry = OpLogEntry {
             lamport_clock: 0,
@@ -1889,7 +1965,11 @@ async fn petal_snapshot_export_import_authz_journey() {
     let recorded_actors = Arc::clone(&import_actors);
     let fixture_db = db.clone();
     tokio::spawn(async move {
-        use fe_database::handlers::petal_snapshot::{export_petal_snapshot_reply, import_petal_snapshot_reply};
+        use fe_database::handlers::petal_snapshot::{
+            export_petal_snapshot_reply, import_petal_snapshot_reply_charged, ImportWriteBudget,
+        };
+        // The importer's node write budget, as the DB thread's door: one write per author, then in debt.
+        let mut budget = ImportWriteBudget::frozen_one_write();
         loop {
             let request = match api_cmd_rx.try_recv() {
                 Ok(request) => request,
@@ -1903,12 +1983,12 @@ async fn petal_snapshot_export_import_authz_journey() {
                 continue;
             };
             let reply = match cmd {
-                DbCommand::ExportPetalSnapshot { petal_id, correlation_id } => {
+                DbCommand::ExportPetalSnapshot { petal_id, correlation_id, .. } => {
                     export_petal_snapshot_reply(&db, petal_id, correlation_id).await
                 }
                 DbCommand::ImportPetalSnapshot { rows, correlation_id, actor } => {
                     recorded_actors.lock().expect("actor log").push(actor.clone());
-                    import_petal_snapshot_reply(&db, *rows, correlation_id, actor).await
+                    import_petal_snapshot_reply_charged(&db, &mut budget, "did:key:fixture-host", *rows, correlation_id, actor).await
                 }
                 other => panic!("only snapshot commands ride the channel here: {other:?}"),
             };
@@ -1926,6 +2006,7 @@ async fn petal_snapshot_export_import_authz_journey() {
         State(state.clone()),
         Extension(editor.clone()),
         Path(petal_id.clone()),
+        Query(fe_api::petal_snapshot::ExportSnapshotQuery::default()),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND, "Editor must not export a snapshot");
@@ -1934,6 +2015,7 @@ async fn petal_snapshot_export_import_authz_journey() {
         State(state.clone()),
         Extension(manager.clone()),
         Path(petal_id.clone()),
+        Query(fe_api::petal_snapshot::ExportSnapshotQuery::default()),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1945,7 +2027,7 @@ async fn petal_snapshot_export_import_authz_journey() {
     let archive = body_bytes(response).await;
     let opened = fe_format::snapshot::import_petal_snapshot(&archive).expect("snapshot archive opens");
     assert_eq!(opened.data.petal["petal_id"], petal_id.as_str());
-    assert_eq!(opened.data.nodes.len(), 1, "the petal's node travels with it");
+    assert_eq!(opened.data.nodes.len(), 2, "the petal's nodes travel with it");
     let lamports: Vec<u64> = opened
         .data
         .oplog
@@ -1989,33 +2071,28 @@ async fn petal_snapshot_export_import_authz_journey() {
     }
     gate.set(&petal_id, GateMode::Unbound);
 
-    // A scene hook bound at the destination fractal or verse cannot be judged through the absent petal: 409, no DB call.
-    for bound_scope in ["VERSE#v1-FRACTAL#f1", "VERSE#v1"] {
-        fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k', verse_id: 'v1', scope: $scope, hook: 'scene.create', author_did: 'did:key:z6MkOwner', mode: 'extension' }")
-            .bind(("scope", bound_scope))
-            .await
-            .expect("seed binding row");
+    // The new petal's hooks come from a provision at the destination (v1, f1): unresolvable bindings are 503, a hook in
+    // effect that cannot run here is 409 hook-unjudgeable; neither reaches the DB, and each provision is released.
+    for (mode, status, expected_error) in [
+        (GateMode::Unavailable, StatusCode::SERVICE_UNAVAILABLE, "hooks-unavailable"),
+        (GateMode::Unjudgeable, StatusCode::CONFLICT, "hook-unjudgeable"),
+    ] {
+        gate.set_fractal("f1", mode);
         let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
         let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
-        assert_eq!(response.status(), StatusCode::CONFLICT, "{bound_scope}");
+        assert_eq!(response.status(), status, "{mode:?}");
         let body = body_json(response).await;
-        assert_eq!(body["error"], "hook-unjudgeable", "{bound_scope}: {body}");
-        assert!(body.get("petal_id").is_none(), "{bound_scope}: refused before the DB: {body}");
-        fixture_db.query("DELETE extension_binding").await.expect("clear binding rows");
+        assert_eq!(body["error"], expected_error, "{mode:?}: {body}");
+        assert!(body.get("petal_id").is_none(), "{mode:?}: refused before the DB: {body}");
+        let provisioned = gate.provisions.lock().unwrap().last().cloned().expect("a provision was asked");
+        assert_eq!(
+            (provisioned.verse_id.as_str(), provisioned.fractal_id.as_str(), provisioned.petal_id.as_str()),
+            ("v1", "f1", petal_id.as_str()),
+            "{mode:?}: the new petal is resolved where it will live"
+        );
+        assert!(gate.all_released(), "{mode:?}: every provision is released");
     }
-
-    // A stale `extension` row superseded by a newer `inherit` from another author is no hook in effect.
-    fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k1', verse_id: 'v1', scope: 'VERSE#v1-FRACTAL#f1', hook: 'scene.create', author_did: 'did:key:z6MkOwner', mode: 'extension', written_at: '5' }")
-        .await
-        .expect("seed stale binding");
-    fixture_db.query("CREATE extension_binding CONTENT { binding_key: 'k2', verse_id: 'v1', scope: 'VERSE#v1-FRACTAL#f1', hook: 'scene.create', author_did: 'did:key:z6MkOther', mode: 'inherit', written_at: '9' }")
-        .await
-        .expect("seed superseding inherit");
-    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
-    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
-    let body = body_json(response).await;
-    assert_ne!(body["error"], "hook-unjudgeable", "superseded binding must not refuse: {body}");
-    fixture_db.query("DELETE extension_binding").await.expect("clear binding rows");
+    gate.set_fractal("f1", GateMode::Unbound);
 
     // Manager onto the source node: the petal already exists, so the import is refused, never merged.
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
@@ -2025,19 +2102,25 @@ async fn petal_snapshot_export_import_authz_journey() {
     let refused = body_json(response).await;
     assert_eq!(refused["error"], "refused", "{refused}");
     assert_eq!(refused["petal_id"], petal_id.as_str(), "{refused}");
-    // Two real imports reached the DB (superseded-binding leg, then this one), each with the token holder's DID; gate and hook-unjudgeable refusals sent none.
+    // One real import reached the DB (this one), with the token holder's DID; every gate refusal above sent none.
     assert_eq!(
         *import_actors.lock().expect("actor log"),
-        vec![Some(manager_subject.clone()), Some(manager_subject)],
+        vec![Some(manager_subject.clone())],
         "each real import carries the Manager token's sub"
     );
 
-    // Editor, and a Manager of another fractal, are denied before anything is restored.
+    // Editor, and a Manager of another fractal, are denied before any hook runs: a refusing hook at f1 is never asked.
+    gate.set_fractal("f1", GateMode::Refuse);
+    let provisions_before = gate.provisions.lock().unwrap().len();
+    let calls_before = gate.calls.lock().unwrap().len();
     for caller in [editor.clone(), foreign_manager.clone()] {
         let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
         let response = import_petal_snapshot(State(state.clone()), Extension(caller), multipart).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "import denied with the existence-safe 404");
     }
+    assert_eq!(gate.provisions.lock().unwrap().len(), provisions_before, "a denied caller provisions nothing");
+    assert_eq!(gate.calls.lock().unwrap().len(), calls_before, "a denied caller makes no hook run");
+    gate.set_fractal("f1", GateMode::Unbound);
 
     // Imported history: a never-imported petal lists nothing (Manager of its fractal still passes the gate).
     let history = |caller: ApiClaims, after_lamport: Option<u64>| {
@@ -2067,9 +2150,64 @@ async fn petal_snapshot_export_import_authz_journey() {
         .expect("free the petal")
         .check()
         .expect("free the petal");
+
+    // A hook bound at the fractal (the petal itself binds nothing) refusing the second of two nodes refuses the whole
+    // import: the first node was judged and allowed, the second refused; 409, no DB call, no rows.
+    gate.modes.lock().unwrap().remove(&petal_id);
+    gate.calls.lock().unwrap().clear();
+    gate.set_fractal("f1", GateMode::RefuseNamed("node-snapshot-node"));
     let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
     let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
-    assert_eq!(response.status(), StatusCode::OK, "the Manager import onto a free petal succeeds");
+    assert_eq!(response.status(), StatusCode::CONFLICT, "one refused node refuses the import");
+    let body = body_json(response).await;
+    assert_eq!(body["error"], "refused", "{body}");
+    assert_eq!(body["package_id"], "org.example.zoning", "{body}");
+    assert!(body.get("petal_id").is_none(), "refused at the gate, before the DB: {body}");
+    assert_eq!(
+        gate.created_names(&petal_id),
+        ["node-second-node", "node-snapshot-node"],
+        "one scene.create per node, in node_id order, until the refusal"
+    );
+    assert_eq!(import_actors.lock().expect("actor log").len(), 1, "the refused import never reached the DB");
+    let mut left = fixture_db
+        .query("SELECT petal_id FROM petal WHERE petal_id = $petal; SELECT node_id FROM node WHERE petal_id = $petal;")
+        .bind(("petal", petal_id.clone()))
+        .await
+        .expect("read the freed petal");
+    let petals: Vec<serde_json::Value> = left.take(0).expect("petal rows");
+    let nodes: Vec<serde_json::Value> = left.take(1).expect("node rows");
+    assert!(petals.is_empty() && nodes.is_empty(), "nothing was written: {petals:?} {nodes:?}");
+    assert!(gate.all_released(), "the refused import released its provision");
+
+    // The same hook approving: the import succeeds, and the hook saw each created node at the new petal.
+    gate.calls.lock().unwrap().clear();
+    gate.set_fractal("f1", GateMode::Approve);
+    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
+    assert_eq!(response.status(), StatusCode::OK, "the Manager import onto a free petal succeeds once approved");
+    let imported = body_json(response).await;
+    assert_eq!(imported["data"]["persist"], "committed", "local commit only, never a delivery certificate: {imported}");
+    assert_eq!(imported["data"]["not_imported"]["roles"], 0, "this petal carries no role rows: {imported}");
+    // The import is now publishable: one fresh importer-attributed journal fact per node is its proof.
+    let mut facts = fixture_db
+        .query("SELECT source_did FROM node_log WHERE node_id IN (SELECT VALUE node_id FROM node WHERE petal_id = $petal) AND payload.coverage_reason = 'petal_imported'")
+        .bind(("petal", petal_id.clone()))
+        .await
+        .expect("read import facts");
+    let facts: Vec<serde_json::Value> = facts.take(0).expect("import fact rows");
+    assert_eq!(facts.len(), 2, "one import fact per node: {facts:?}");
+    assert!(facts.iter().all(|fact| fact["source_did"] == manager.sub.as_str()), "the importer is the journal actor: {facts:?}");
+    let mut approved = gate.created_names(&petal_id);
+    approved.sort();
+    assert_eq!(approved, ["node-second-node", "node-snapshot-node"], "the hook saw every created node");
+    assert!(
+        gate.calls.lock().unwrap().iter().all(|call| call.binding_scope == "VERSE#v1-FRACTAL#f1" && call.input["caller"]["did"] == manager.sub.as_str()),
+        "judged under the fractal binding, as the importing token"
+    );
+    assert!(gate.all_released(), "the approved import released its provision");
+    gate.set_fractal("f1", GateMode::Unbound);
+    // Two real imports reached the DB: the existing-petal refusal and this one.
+    assert_eq!(import_actors.lock().expect("actor log").len(), 2, "only judged imports reach the DB");
 
     let response = history(manager.clone(), None).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -2105,4 +2243,29 @@ async fn petal_snapshot_export_import_authz_journey() {
         let response = history(caller, None).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "imported history is Manager+ of the petal's fractal");
     }
+
+    // Write budget: the committed import charged the Manager past its (one-write) budget, so its next import is the
+    // retryable 429 with Retry-After, refused at the DB door before anything is written.
+    fixture_db
+        .query("DELETE petal WHERE petal_id = $petal")
+        .bind(("petal", petal_id.clone()))
+        .await
+        .expect("free the petal row")
+        .check()
+        .expect("free the petal row");
+    let multipart = Multipart::from_request(upload(&archive), &()).await.expect("multipart");
+    let response = import_petal_snapshot(State(state.clone()), Extension(manager.clone()), multipart).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS, "an importer in debt is throttled");
+    assert!(!header_str(&response, "retry-after").is_empty(), "the throttle names its delay");
+    let throttled = body_json(response).await;
+    assert_eq!(throttled["error"], "write-budget-exceeded", "{throttled}");
+    assert!(throttled["retry_after_ms"].as_u64().is_some_and(|millis| millis > 0), "{throttled}");
+    assert_eq!(import_actors.lock().expect("actor log").len(), 3, "the throttled import reached the DB door");
+    let mut left = fixture_db
+        .query("SELECT petal_id FROM petal WHERE petal_id = $petal")
+        .bind(("petal", petal_id.clone()))
+        .await
+        .expect("read the petal");
+    let petals: Vec<serde_json::Value> = left.take(0).expect("petal rows");
+    assert!(petals.is_empty(), "the throttled import wrote nothing: {petals:?}");
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
+    response::{IntoResponse, Response},
     Extension, Json,
 };
 use fe_identity::api_token::ApiClaims;
@@ -25,8 +26,11 @@ pub struct HistoryQuery {
     pub limit: usize,
 }
 
+/// Entries a history page asks for when the caller names no `limit`; the DB may end a page sooner by bytes (AGENTS.md §node-history).
+pub const DEFAULT_HISTORY_LIMIT: usize = 20;
+
 fn default_limit() -> usize {
-    100
+    DEFAULT_HISTORY_LIMIT
 }
 
 /// Exact committed version to reconstruct.
@@ -248,6 +252,13 @@ async fn correlated(state: &ApiState, command: DbCommand, id: &str) -> Result<Va
             correlation_id,
         } if correlation_id == id => {
             tracing::warn!(%error, "node history operation refused");
+            // Throttled, not invalid: keep the retry hint so REST/MCP can answer 429 / retry text.
+            if let Some(millis) = fe_database::node_write_retry_after_ms(&error) {
+                return Err(format!(
+                    "{}; retry after {millis} ms",
+                    fe_database::NODE_WRITE_BUDGET_EXCEEDED
+                ));
+            }
             if error.contains("integer exceeds supported signed 64-bit storage range") {
                 return Err("integer exceeds supported signed 64-bit storage range".into());
             }
@@ -316,13 +327,23 @@ pub async fn state_at(
     )
 }
 
+/// [`response`] for a write: a budget refusal answers 429 with `Retry-After` (rest.rs `write_budget_response`).
+fn write_response(result: Result<Value, String>) -> Response {
+    if let Err(error) = &result {
+        if let Some(throttled) = crate::rest::write_budget_response(error) {
+            return throttled;
+        }
+    }
+    response(result).into_response()
+}
+
 pub async fn mutate(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(node_id): Path<String>,
     Json(mutation): Json<NodeMutation>,
-) -> Json<ApiResponse<Value>> {
-    response(
+) -> Response {
+    write_response(
         match authorized(&state, &claims, &node_id, "editor").await {
             Ok(scope) => match scope_petal_id(&scope) {
                 Some(petal_id) => {
@@ -343,7 +364,7 @@ pub async fn create(
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     Json(input): Json<fe_runtime::messages::CreateObjectInput>,
-) -> Json<ApiResponse<Value>> {
+) -> Response {
     let result = if crate::auth::require_role(&claims, "editor").is_err() {
         Err("insufficient permissions".into())
     } else if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
@@ -357,5 +378,5 @@ pub async fn create(
             .await
             .map_err(WriteFailure::message)
     };
-    response(result)
+    write_response(result)
 }

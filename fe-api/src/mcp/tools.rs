@@ -78,6 +78,10 @@ async fn decode_base64(text: String, max_len: usize) -> Result<Vec<u8>, String> 
 /// Map a `DbResult::Error` to the generic client text, logging the detail.
 fn db_failure(tool: &str, e: &str) -> String {
     tracing::warn!("{tool} MCP failed: {e}");
+    // A budget refusal is retryable, not "failed": keep its marker for the dispatcher's retry text.
+    if let Some(millis) = fe_database::node_write_retry_after_ms(e) {
+        return format!("{}; retry after {millis} ms", fe_database::NODE_WRITE_BUDGET_EXCEEDED);
+    }
     "operation failed".to_string()
 }
 
@@ -534,7 +538,7 @@ pub(super) fn get_node_history(call: ToolCall<'_>) -> ToolFuture<'_> {
                     .ok_or("invalid limit")
             })
             .transpose()?
-            .unwrap_or(100);
+            .unwrap_or(crate::node_history::DEFAULT_HISTORY_LIMIT);
         crate::node_history::read_core(
             call.state,
             call.claims,

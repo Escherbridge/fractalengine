@@ -354,6 +354,8 @@ pub fn validate_elevated_sql(sql: &str, allowed_tables: &[&str]) -> Result<Eleva
     // ASCII-only uppercasing keeps the validated text byte-aligned with `sql`.
     let sql_upper = sql.to_ascii_uppercase();
     let sql_upper = sql_upper.as_str();
+    // Table/record casts first: `<option<table>>` is a cast, and the specific refusal beats the OPTION keyword.
+    reject_record_constructors(sql_upper, sql_upper)?;
     for keyword in ELEVATED_BANNED_KEYWORDS {
         if contains_word(sql_upper, keyword) {
             return Err(format!("{keyword} is not allowed in elevated queries"));
@@ -362,7 +364,6 @@ pub fn validate_elevated_sql(sql: &str, allowed_tables: &[&str]) -> Result<Eleva
     // Reads that never name a FROM target: comments (could split a needle),
     // record constructors / `.to_record()`, and `table:key` literals.
     reject_comments(sql_upper)?;
-    reject_record_constructors(sql_upper, sql_upper)?;
     reject_foreign_record_literals(sql_upper, allowed_tables)?;
     let bytes = sql_upper.as_bytes();
     let mut tables = Vec::new();

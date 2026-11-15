@@ -412,56 +412,153 @@ pub async fn promote_instance(
 
 #[derive(Debug, Deserialize)]
 pub struct KindQuery {
-    /// `stamp` | `earthwork_region`.
+    /// `stamp` | `earthwork_region` | `repository`.
     pub kind: String,
     /// Optional owning-path filter (stamps only): "all stamps on path X".
     #[serde(default)]
     pub path_id: Option<String>,
+    /// Opaque `next` value of the previous page; absent = first page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Most rows on this page (1..=[`NODE_LIST_MAX_ROWS`], default the max); the byte budget may end it sooner.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
-/// GET /api/v1/petals/:petal_id/nodes?kind=stamp[&path_id=..] — list live nodes
-/// of a type through the generic abstraction (FR-6, N-10). Row-capped read.
+/// Most rows one node-list page carries (AGENTS.md §node-list-paging).
+pub const NODE_LIST_MAX_ROWS: usize = 100;
+/// Rows read from the DB per round while a page fills (bounds transient memory to this many nodes).
+const NODE_LIST_FETCH_ROWS: usize = 16;
+/// Response bytes a page's rows may use: the query ceiling minus room for the envelope.
+pub const NODE_LIST_PAGE_BYTES: usize = crate::limits::QUERY_MAX_RESPONSE_BYTES - 64 * 1024;
+/// Version prefix of the opaque node-list cursor.
+const NODE_LIST_CURSOR_PREFIX: &str = "n1.";
+
+/// One node-list page: the `ApiResponse` envelope plus `next`, the cursor for the rest (`null` = complete).
+#[derive(Debug, Serialize)]
+pub struct NodeListPage {
+    pub ok: bool,
+    pub data: Option<Vec<serde_json::Value>>,
+    pub error: Option<String>,
+    pub next: Option<String>,
+}
+
+impl NodeListPage {
+    fn error(message: impl Into<String>) -> Json<Self> {
+        Json(Self { ok: false, data: None, error: Some(message.into()), next: None })
+    }
+}
+
+/// Opaque cursor naming the last node id a page returned.
+fn encode_node_cursor(node_id: &str) -> String {
+    format!("{NODE_LIST_CURSOR_PREFIX}{}", hex::encode(node_id.as_bytes()))
+}
+
+/// The node id a cursor resumes after, or `None` for a malformed cursor.
+fn decode_node_cursor(cursor: &str) -> Option<String> {
+    let bytes = hex::decode(cursor.strip_prefix(NODE_LIST_CURSOR_PREFIX)?).ok()?;
+    String::from_utf8(bytes).ok().filter(|node_id| is_addressable_node_id(node_id))
+}
+
+/// GET /api/v1/petals/:petal_id/nodes?kind=stamp[&path_id=..][&cursor=..][&limit=..] — list live nodes
+/// of a type (FR-6, N-10) in node id order, paged by rows and bytes (AGENTS.md §node-list-paging).
 pub async fn list_nodes_by_kind(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     Path(petal_id): Path<String>,
     Query(q): Query<KindQuery>,
-) -> impl IntoResponse {
+) -> Json<NodeListPage> {
     if require_role(&claims, "viewer").is_err() {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "insufficient permissions",
-        ));
+        return NodeListPage::error("insufficient permissions");
     }
     if !is_valid_ulid(&petal_id) {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "invalid petal_id",
-        ));
+        return NodeListPage::error("invalid petal_id");
     }
     if crate::rest::authorized_petal_scope(&state, &claims, &petal_id)
         .await
         .is_none()
     {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            crate::rest::NOT_FOUND_OR_DENIED,
-        ));
+        return NodeListPage::error(crate::rest::NOT_FOUND_OR_DENIED);
     }
     let Some(kind) = fe_query::NodeKind::from_tag(&q.kind) else {
-        return Json(ApiResponse::<Vec<serde_json::Value>>::error(
-            "unknown node kind",
-        ));
+        return NodeListPage::error("unknown node kind");
+    };
+    let limit = q.limit.unwrap_or(NODE_LIST_MAX_ROWS);
+    if !(1..=NODE_LIST_MAX_ROWS).contains(&limit) {
+        return NodeListPage::error(format!("limit must be 1..={NODE_LIST_MAX_ROWS}"));
+    }
+    let after = match q.cursor.as_deref() {
+        None => String::new(),
+        Some(cursor) => match decode_node_cursor(cursor) {
+            Some(node_id) => node_id,
+            None => return NodeListPage::error("invalid cursor"),
+        },
+    };
+    let Some(ref db) = state.db_reader else {
+        return NodeListPage::error("read endpoint not available (no db_reader)");
     };
 
-    // "all stamps on path X" uses the path-scoped builder; otherwise all of a
-    // kind in the petal. Both are fe-query generic-node SQL, tombstone-filtered.
-    // Ids ride in `binds` ($petal_id/$path_id), never interpolated (injection-safe).
-    let (sql, binds) = match (kind, q.path_id.as_deref()) {
+    // Keyset over node_id; ids and the tag ride in binds, never interpolated (injection-safe).
+    use fe_query::spatial_nodes::{KIND_KEY, STAMP_PATH_ID_KEY};
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("petal_id".to_string(), serde_json::json!(petal_id));
+    vars.insert("kind".to_string(), serde_json::json!(kind.as_tag()));
+    let path_filter = match (kind, q.path_id) {
         (fe_query::NodeKind::Stamp, Some(path_id)) => {
-            fe_query::stamps_on_path_sql(&petal_id, path_id)
+            vars.insert("path_id".to_string(), serde_json::json!(path_id));
+            format!(" AND properties.{STAMP_PATH_ID_KEY} = $path_id")
         }
-        _ => fe_query::nodes_of_kind_sql(&petal_id, kind),
+        _ => String::new(),
     };
+    let sql = format!(
+        "SELECT * FROM node WHERE petal_id = $petal_id AND properties.{KIND_KEY} = $kind{path_filter} AND tombstone = NONE AND node_id > $after ORDER BY node_id ASC LIMIT $fetch"
+    );
+    match read_node_page(db, &sql, vars, after, limit, NODE_LIST_PAGE_BYTES).await {
+        Ok((rows, next)) => Json(NodeListPage { ok: true, data: Some(rows), error: None, next }),
+        Err(error) => NodeListPage::error(error),
+    }
+}
 
-    run_capped_select(&state, sql, binds).await
+/// Fill one page from `sql` (keyset `$after`, `$fetch` rows per read): at most `limit` rows and
+/// `max_bytes` of serialized rows, always at least one row; returns the rows and the cursor for the rest.
+async fn read_node_page(
+    db: &Arc<crate::db_reader::ReadDb>,
+    sql: &str,
+    mut vars: std::collections::HashMap<String, serde_json::Value>,
+    mut after: String,
+    limit: usize,
+    max_bytes: usize,
+) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+    let guarded = crate::query_guard::GuardedQuery { sql: sql.to_string() };
+    let mut rows = Vec::new();
+    let mut bytes = 0usize;
+    loop {
+        let want = (limit - rows.len()).min(NODE_LIST_FETCH_ROWS);
+        vars.insert("after".to_string(), serde_json::json!(after));
+        // One extra row tells whether anything follows this read.
+        vars.insert("fetch".to_string(), serde_json::json!(want + 1));
+        let batch = crate::query_guard::run_guarded_query(db, &guarded, &vars, want + 1).await?;
+        let more = batch.len() > want;
+        for row in batch.into_iter().take(want) {
+            let size = row.to_string().len() + 1;
+            if !rows.is_empty() && bytes + size > max_bytes {
+                return Ok((rows, Some(encode_node_cursor(&after))));
+            }
+            after = row
+                .get("node_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("node row without node_id")?
+                .to_string();
+            bytes += size;
+            rows.push(row);
+        }
+        if !more {
+            return Ok((rows, None));
+        }
+        if rows.len() == limit {
+            return Ok((rows, Some(encode_node_cursor(&after))));
+        }
+    }
 }
 
 /// GET /api/v1/petals/:petal_id/earthwork/summary — aggregate real-unit cut/fill

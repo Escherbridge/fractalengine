@@ -101,9 +101,36 @@ fn create_denied(status: StatusCode, msg: &str) -> Response {
     (status, Json(ApiResponse::<CreatedEntityDto>::error(msg))).into_response()
 }
 
-/// A post-authz REST create failure (historical 200 + `{ok:false}` shape).
+/// A post-authz REST create failure (historical 200 + `{ok:false}` shape; 429 when the write budget refused it).
 fn create_failed(msg: impl Into<String>) -> Response {
+    let msg = msg.into();
+    if let Some(throttled) = write_budget_response(&msg) {
+        return throttled;
+    }
     Json(ApiResponse::<CreatedEntityDto>::error(msg)).into_response()
+}
+
+/// Stable error code of a node write the author's budget refused (fe-api/AGENTS.md §write-budget).
+pub(crate) const WRITE_BUDGET_CODE: &str = "write-budget-exceeded";
+
+/// Whole seconds (minimum 1) a client waits before retrying a budget-refused write, if `error` is one.
+pub(crate) fn write_budget_retry_seconds(error: &str) -> Option<u64> {
+    fe_database::node_write_retry_after_ms(error).map(|millis| millis.div_ceil(1000).max(1))
+}
+
+/// `429` + `Retry-After` for a budget-refused node write; the one REST mapping of that refusal.
+pub(crate) fn write_budget_response(error: &str) -> Option<Response> {
+    let millis = fe_database::node_write_retry_after_ms(error)?;
+    let seconds = write_budget_retry_seconds(error)?;
+    let body = serde_json::json!({
+        "ok": false, "data": null, "error": WRITE_BUDGET_CODE, "retry_after_ms": millis,
+    });
+    Some((
+        StatusCode::TOO_MANY_REQUESTS,
+        [(axum::http::header::RETRY_AFTER, seconds.to_string())],
+        Json(body),
+    )
+        .into_response())
 }
 
 fn created(id: String, name: String) -> Response {
@@ -130,6 +157,14 @@ pub(crate) fn scene_denied_response(denied: SceneDenied) -> Response {
                 "package_id": package_id, "limit_calls": limit,
             })
         }
+        SceneDenied::Hook(SceneRefusal::HookFailed { package_id, failure }) => serde_json::json!({
+            "ok": false, "data": null, "error": "hook-failed",
+            "package_id": package_id, "failure": failure.kind(), "reason": failure.describe(),
+        }),
+        SceneDenied::Hook(SceneRefusal::Busy { package_id, retry_after_ms }) => serde_json::json!({
+            "ok": false, "data": null, "error": "hook-busy",
+            "package_id": package_id, "retry_after_ms": retry_after_ms,
+        }),
         SceneDenied::Door(_) => serde_json::json!({
             "ok": false, "data": null, "error": denied.message(),
         }),
@@ -142,7 +177,8 @@ pub(crate) fn scene_denied_response(denied: SceneDenied) -> Response {
 fn write_failure_response<T: serde::Serialize>(failure: WriteFailure) -> Response {
     match failure {
         WriteFailure::Denied(denied) => scene_denied_response(denied),
-        WriteFailure::Failed(message) => Json(ApiResponse::<T>::error(message)).into_response(),
+        WriteFailure::Failed(message) => write_budget_response(&message)
+            .unwrap_or_else(|| Json(ApiResponse::<T>::error(message)).into_response()),
     }
 }
 
@@ -417,6 +453,9 @@ async fn create_node_in_petal(
         }
         Ok(DbResult::Error(e)) => {
             tracing::error!("create_node failed: {e}");
+            if write_budget_retry_seconds(&e).is_some() {
+                return create_failed(e);
+            }
             create_failed("operation failed")
         }
         Ok(_) => create_failed("unexpected response"),
@@ -473,10 +512,15 @@ pub async fn update_transform(
         req.rotation,
         req.scale,
     );
-    let persist = match transform_outcome(&mut outcomes, &node_id, req.position).await {
-        Some(true) => "persisted",
-        Some(false) => return error(TRANSFORM_REFUSED),
-        None => "queued",
+    let persist = match transform_verdict(&mut outcomes, &node_id, req.position).await {
+        TransformVerdict::Persisted => "persisted",
+        TransformVerdict::Refused => return error(TRANSFORM_REFUSED),
+        // The author's node write budget refused the save: the one REST budget mapping (429 + Retry-After).
+        TransformVerdict::Throttled(retry_after_ms) => {
+            let text = format!("{}; retry after {retry_after_ms} ms", fe_database::NODE_WRITE_BUDGET_EXCEEDED);
+            return write_budget_response(&text).unwrap_or_else(|| error(TRANSFORM_REFUSED));
+        }
+        TransformVerdict::Unconfirmed => "queued",
     };
     admission.stage(None);
 
@@ -507,32 +551,57 @@ pub(crate) fn transform_command(
 pub(crate) const TRANSFORM_REFUSED: &str =
     "transform refused by the database (current access or validation); the preview was rolled back";
 
+/// The DB's verdict on one fire-and-forget transform persist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransformVerdict {
+    /// Committed at the requested position.
+    Persisted,
+    /// Refused (access, validation or a missing node).
+    Refused,
+    /// Refused by the author's node write budget; retry after this many milliseconds.
+    Throttled(u64),
+    /// No verdict within the wait.
+    Unconfirmed,
+}
+
 /// Bounded wait (3 s) for the DB's verdict on one fire-and-forget transform
-/// persist (QA-0087): `Some(true)` committed at `position`, `Some(false)`
-/// refused, `None` unconfirmed. Subscribe BEFORE sending the persist.
-pub(crate) async fn transform_outcome(
+/// persist (QA-0087). Subscribe BEFORE sending the persist.
+pub(crate) async fn transform_verdict(
     outcomes: &mut tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>,
     node_id: &str,
     position: [f32; 3],
-) -> Option<bool> {
+) -> TransformVerdict {
     use fe_runtime::messages::SceneChange;
     use tokio::sync::broadcast::error::RecvError;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         match tokio::time::timeout_at(deadline, outcomes.recv()).await {
-            Err(_) | Ok(Err(RecvError::Closed)) => return None,
+            Err(_) | Ok(Err(RecvError::Closed)) => return TransformVerdict::Unconfirmed,
             Ok(Err(RecvError::Lagged(_))) => continue,
             Ok(Ok(SceneChange::NodeTransform { node_id: id, position: stored, .. }))
                 if id == node_id
                     && stored.iter().zip(position).all(|(a, b)| (a - b).abs() <= 1e-4) =>
             {
-                return Some(true)
+                return TransformVerdict::Persisted
             }
-            Ok(Ok(SceneChange::TransformFailed { node_id: id, .. })) if id == node_id => {
-                return Some(false)
+            Ok(Ok(SceneChange::TransformFailed { node_id: id, retry_after_ms, .. })) if id == node_id => {
+                return retry_after_ms.map_or(TransformVerdict::Refused, TransformVerdict::Throttled)
             }
             Ok(Ok(_)) => continue,
         }
+    }
+}
+
+/// [`transform_verdict`] as `Some(true)` committed, `Some(false)` refused or throttled, `None` unconfirmed.
+pub(crate) async fn transform_outcome(
+    outcomes: &mut tokio::sync::broadcast::Receiver<fe_runtime::messages::SceneChange>,
+    node_id: &str,
+    position: [f32; 3],
+) -> Option<bool> {
+    match transform_verdict(outcomes, node_id, position).await {
+        TransformVerdict::Persisted => Some(true),
+        TransformVerdict::Refused | TransformVerdict::Throttled(_) => Some(false),
+        TransformVerdict::Unconfirmed => None,
     }
 }
 
@@ -1414,18 +1483,16 @@ pub(crate) async fn run_local_query(
     )
     .await?;
 
-    let data = crate::query_guard::run_guarded_query_via_state(
+    // Row and byte caps are counted while reading (AGENTS.md §query-row-window).
+    let data = crate::query_guard::run_guarded_query_in_byte_pages(
         state,
         &guarded,
         vars,
         crate::limits::QUERY_ROW_CAP,
-    )
-    .await?;
-    crate::query_guard::enforce_byte_ceiling(
-        &data,
         crate::limits::QUERY_MAX_RESPONSE_BYTES,
         crate::limits::QUERY_MAX_RESPONSE_LABEL,
-    )?;
+    )
+    .await?;
     // FR-5: stamp the egress CRS resolved from the token's scope.
     let crs = crate::crs::scope_crs(state, &claims.scope).await;
     Ok(crate::types::QueryResultDto {

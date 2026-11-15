@@ -141,6 +141,8 @@ struct Model {
     asset_types: HashMap<String, String>,
     terrain: HashMap<String, serde_json::Value>, // petal_id -> stored terrain
     field_defs: HashMap<String, String>,         // id -> stored scope
+    /// When set, every `CommitNodeMutation` fails with this text (the write budget's refusal).
+    write_refusal: Option<String>,
     log: Vec<serde_json::Value>,
 }
 
@@ -341,6 +343,9 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
         } => {
             m.log
                 .push(json!({"cmd":"CommitNodeMutation","node_id":node_id,"actor_did":actor_did}));
+            if let Some(refusal) = m.write_refusal.clone() {
+                return failed(correlation_id, refusal);
+            }
             let Some(node) = m.node(&node_id) else {
                 return failed(correlation_id, "node missing".into());
             };
@@ -655,6 +660,9 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 "name": name, "position": position.to_vec(),
                 "rotation": rotation.to_vec(), "scale": scale.to_vec(),
             }));
+            if let Some(refusal) = m.write_refusal.clone() {
+                return failed(correlation_id, refusal);
+            }
             let Some((_, hash)) = m.assets.iter().find(|(id, _)| *id == asset_id).cloned() else {
                 return failed(
                     correlation_id,
@@ -2263,6 +2271,21 @@ async fn rest_create_node_with_asset_id_is_place_asset() {
         "neither refusal reached the DB channel"
     );
     assert!(model.lock().unwrap().logged("CreateNode").is_empty());
+
+    // Budget refusal on a placed asset is retryable (429), not "operation failed".
+    model.lock().unwrap().write_refusal =
+        Some(format!("{}; retry after 1500 ms", fe_database::NODE_WRITE_BUDGET_EXCEEDED));
+    let (status, body) = rest_create_node_body(
+        &state,
+        &home_editor,
+        home_path,
+        json!({ "name": "Throttled", "asset_id": own_asset }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"], "write-budget-exceeded");
+    assert_eq!(body["retry_after_ms"], 1500);
+    model.lock().unwrap().write_refusal = None;
 }
 
 /// POST .../verses/{v}/fractals/{f}/petals: the fractal's stored verse is the
@@ -2928,6 +2951,30 @@ async fn property_tools_round_trip() {
     )
     .await;
     assert_eq!(tool_json(&resp)["properties"], json!({}));
+
+    // Write budget: the DB refuses a write with a retry hint -> MCP names the delay, REST answers 429.
+    model.lock().unwrap().write_refusal =
+        Some(format!("{}; retry after 1500 ms", fe_database::NODE_WRITE_BUDGET_EXCEEDED));
+    let resp = call_tool(
+        &state,
+        &editor,
+        "set_property",
+        json!({ "node_id": home.node, "key": "k", "value": 1 }),
+    )
+    .await;
+    assert_tool_error(&resp, "write budget exceeded; retry after 2 s");
+    let throttled = fe_api::node_history::mutate(
+        State(state.clone()),
+        Extension(editor.clone()),
+        axum::extract::Path(home.node.clone()),
+        Json(fe_runtime::messages::NodeMutation::PropertySet { key: "k".into(), value: json!(1) }),
+    )
+    .await;
+    assert_eq!(throttled.headers()["retry-after"], "2");
+    let (status, body) = rest_reply(throttled).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "write-budget-exceeded");
+    assert_eq!(body["retry_after_ms"], 1500);
 }
 
 #[tokio::test]
@@ -3133,6 +3180,11 @@ async fn query_tool_uses_the_guarded_local_pipeline() {
         .post_json("/mcp", Some(&token), &call("DELETE node"))
         .await;
     assert_tool_error(&body, "only SELECT statements are allowed");
+
+    // The tool shares /query's row window: a top-level LIMIT past the row cap is refused up front.
+    let over_cap = format!("SELECT node_id FROM node LIMIT {}", fe_api::limits::QUERY_ROW_CAP + 1);
+    let (_, body) = h.post_json("/mcp", Some(&token), &call(&over_cap)).await;
+    assert_tool_error(&body, "LIMIT exceeds the row cap");
 }
 
 // ---------------------------------------------------------------------------

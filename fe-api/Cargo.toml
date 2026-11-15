@@ -45,11 +45,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # portal_bundles::origin_allowed hands a parsed url::Url to fe_runtime::portal_url::is_url_allowed
 # (already in Cargo.lock at 2.5.8 via fe-runtime: no new compile unit).
 url = "2"
+# Node list cursors (endpoint.rs); already in Cargo.lock.
+hex = "0.4"
 
 [dev-dependencies]
 jsonwebtoken = { workspace = true }
 tempfile = "3"
-hex = "0.4"
 # Dev-dep cycle is legal cargo: the API-integration harness lives in the
 # harness crate's lib target (see fe-test-harness/src/AGENTS.md §api-harness).
 fractalengine-test-harness = { path = "../fe-test-harness" }

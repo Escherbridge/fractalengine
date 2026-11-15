@@ -119,6 +119,15 @@ pub enum WsServerMsg {
         rotation: [f32; 3],
         scale: [f32; 3],
     },
+    /// The save was refused by the author's write budget: revert like a rollback, then wait
+    /// `retry_after_ms` before saving this node again (fe-api/AGENTS.md §write-budget).
+    TransformThrottled {
+        node_id: String,
+        retry_after_ms: u64,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    },
     /// Response to an `EntityCommand`, echoing its `request_id`.
     EntityCommandResult {
         request_id: String,
@@ -227,6 +236,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
     let mut transform_rx = state.transform_broadcast_tx.subscribe();
     let mut entity_change_rx = state.entity_change_tx.subscribe();
     let mut scene_version: u64 = 0;
+    let mut lag_recovery = LagRecovery::default();
     // Extension-stream subscriptions, opened on the first `bus_subscribe`; closes its host client on drop.
     let mut bus_streams: Option<crate::extensions::ExtensionStreams> = None;
 
@@ -492,19 +502,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                     Ok(_) => {} // filtered out by subscription
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("WS client lagged by {n} transform updates");
-                        if let Err(error) = send_scene_snapshots(
-                            &mut socket,
-                            &state,
-                            &claims,
-                            &subscribed_petals,
-                            &mut scene_version,
-                        )
-                        .await
-                        {
-                            tracing::warn!(?error, "WS transform lag snapshot recovery failed");
-                            subscribed_petals.clear();
-                            send_resync_required(&mut socket).await;
-                        }
+                        lag_recovery.due = true;
+                        recover_from_lag(&mut socket, &state, &claims, &mut subscribed_petals, &mut scene_version, &mut lag_recovery).await;
                     }
                     Err(_) => break,
                 }
@@ -522,13 +521,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                         if !subscribed_petals.contains(petal_id) {
                             continue;
                         }
-                        if let SceneChange::TransformFailed { node_id, position, rotation, scale, .. } = sc {
-                            send_protected(&mut socket, &state, &claims, &WsServerMsg::TransformRollback {
-                                node_id: node_id.clone(),
-                                position: *position,
-                                rotation: *rotation,
-                                scale: *scale,
-                            }).await;
+                        if let SceneChange::TransformFailed { node_id, position, rotation, scale, retry_after_ms, .. } = sc {
+                            // A budget refusal is `transform_throttled`; any other failure a plain rollback.
+                            let message = transform_failure_message(node_id, *position, *rotation, *scale, *retry_after_ms);
+                            send_protected(&mut socket, &state, &claims, &message).await;
                             continue;
                         }
                         scene_version += 1;
@@ -541,19 +537,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                     Ok(_) => {} // no subscriptions
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("WS client lagged by {n} entity change updates");
-                        if let Err(error) = send_scene_snapshots(
-                            &mut socket,
-                            &state,
-                            &claims,
-                            &subscribed_petals,
-                            &mut scene_version,
-                        )
-                        .await
-                        {
-                            tracing::warn!(?error, "WS scene lag snapshot recovery failed");
-                            subscribed_petals.clear();
-                            send_resync_required(&mut socket).await;
-                        }
+                        lag_recovery.due = true;
+                        recover_from_lag(&mut socket, &state, &claims, &mut subscribed_petals, &mut scene_version, &mut lag_recovery).await;
                     }
                     Err(_) => break,
                 }
@@ -564,6 +549,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
                 if !credential_still_current(&mut socket, &state, &claims).await {
                     break;
                 }
+                // A lag inside the cooldown is answered here once the cooldown ends.
+                recover_from_lag(&mut socket, &state, &claims, &mut subscribed_petals, &mut scene_version, &mut lag_recovery).await;
                 for (node_id, (position, rotation, scale)) in transform_debounce.drain() {
                     let admission = transform_augments.remove(&node_id);
                     let sent = state.api_cmd_tx.send(ApiCommand::TransformPersist {
@@ -588,6 +575,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ApiState>, hosts: ApiHo
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Client message for a transform save that failed: throttled (retry hint) or a plain rollback.
+fn transform_failure_message(
+    node_id: &str,
+    position: [f32; 3],
+    rotation: [f32; 3],
+    scale: [f32; 3],
+    retry_after_ms: Option<u64>,
+) -> WsServerMsg {
+    let node_id = node_id.to_owned();
+    match retry_after_ms {
+        Some(retry_after_ms) => WsServerMsg::TransformThrottled { node_id, retry_after_ms, position, rotation, scale },
+        None => WsServerMsg::TransformRollback { node_id, position, rotation, scale },
+    }
+}
 
 /// Most extension-stream events written per wake before the queue is polled again.
 const BUS_EVENT_BATCH: usize = 64;
@@ -718,9 +720,11 @@ async fn load_petal_nodes_direct(
     db: &crate::db_reader::ReadDb,
     petal_id: &str,
 ) -> Result<Vec<crate::types::NodeDto>, SceneSnapshotLoadError> {
+    // Only the columns `snapshot_node_from_row` reads (AGENTS.md §ws-lag-recovery).
     let mut result = db
         .query(
-            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
+            "SELECT node_id, display_name, petal_id, position, elevation, asset_id, asset_path, created_at FROM node \
+             WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC",
         )
         .bind(("pid", petal_id.to_string()))
         .await
@@ -783,6 +787,47 @@ fn snapshot_node_from_row(
             .map(str::to_string),
         webpage_url: None,
     })
+}
+
+/// Shortest spacing between two lag-recovery snapshot rounds of one connection (AGENTS.md §ws-lag-recovery).
+const LAG_SNAPSHOT_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Per-connection lag state: a snapshot round is owed (`due`) and when the last one ran.
+#[derive(Default)]
+struct LagRecovery {
+    due: bool,
+    last_round: Option<tokio::time::Instant>,
+}
+
+impl LagRecovery {
+    /// Claim the owed round if the cooldown has passed.
+    fn claim(&mut self, now: tokio::time::Instant) -> bool {
+        if !self.due || self.last_round.is_some_and(|last| now.duration_since(last) < LAG_SNAPSHOT_COOLDOWN) {
+            return false;
+        }
+        self.due = false;
+        self.last_round = Some(now);
+        true
+    }
+}
+
+/// Run an owed lag-recovery snapshot round, at most once per cooldown; a failed round asks the client to resync.
+async fn recover_from_lag(
+    socket: &mut WebSocket,
+    state: &ApiState,
+    claims: &ApiClaims,
+    subscribed_petals: &mut HashSet<String>,
+    scene_version: &mut u64,
+    lag: &mut LagRecovery,
+) {
+    if !lag.claim(tokio::time::Instant::now()) {
+        return;
+    }
+    if let Err(error) = send_scene_snapshots(socket, state, claims, subscribed_petals, scene_version).await {
+        tracing::warn!(?error, "WS lag snapshot recovery failed");
+        subscribed_petals.clear();
+        send_resync_required(socket).await;
+    }
 }
 
 /// Send a fresh scene snapshot for each subscribed petal after broadcast lag.

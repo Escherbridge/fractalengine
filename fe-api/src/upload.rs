@@ -579,6 +579,9 @@ pub(crate) async fn place_asset_core(
             tracing::warn!("place_asset refused: {e}");
             if e.contains("matched no asset") {
                 Err(UNKNOWN_ASSET.to_string())
+            } else if fe_database::node_write_retry_after_ms(&e).is_some() {
+                // Budget refusal keeps its text so the REST layer answers 429 (`write_budget_response`).
+                Err(e)
             } else {
                 Err("operation failed".to_string())
             }

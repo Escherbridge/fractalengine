@@ -120,15 +120,190 @@ pub async fn guard_and_prepare_query_with_mode(
 ) -> Result<GuardedQuery, String> {
     check_rate_limit(state, rate_key, rate_max_per_sec, rate_label).await?;
     let static_pass = prepare_scoped_sql(sql, &[], mode)?;
-    if !static_pass.reads_petal_scoped_table() {
-        return Ok(GuardedQuery {
-            sql: static_pass.sql,
-        });
+    let scoped = if static_pass.reads_petal_scoped_table() {
+        let petals = resolve_scope_petals(state, scope).await?;
+        prepare_scoped_sql(sql, &petals, mode)?.sql
+    } else {
+        static_pass.sql
+    };
+    // `/query` statements always carry a top-level LIMIT the DB enforces (AGENTS.md §query-row-window).
+    let sql = if mode == GuardMode::Query {
+        bound_top_level_rows(&scoped, crate::limits::QUERY_ROW_CAP)?
+    } else {
+        scoped
+    };
+    Ok(GuardedQuery { sql })
+}
+
+/// Give a guarded statement a top-level `LIMIT` of at most `row_cap + 1` rows (one past the cap so an
+/// over-cap result still reads as "row cap exceeded"); a caller LIMIT above `row_cap` is refused.
+pub fn bound_top_level_rows(sql: &str, row_cap: usize) -> Result<String, String> {
+    let window = RowWindow::parse(sql)?;
+    let limit = match window.limit {
+        Some(limit) if limit > row_cap as u64 => {
+            return Err(format!(
+                "LIMIT exceeds the row cap (limit {row_cap} rows); page with LIMIT/START"
+            ))
+        }
+        Some(limit) => limit,
+        None => row_cap as u64 + 1,
+    };
+    Ok(window.render(limit, window.start))
+}
+
+/// Top-level clause keywords that SurrealQL orders after `LIMIT`/`START`.
+const AFTER_LIMIT_KEYWORDS: [&str; 5] = ["FETCH", "VERSION", "TEMPFILES", "EXPLAIN", "PARALLEL"];
+
+/// A single SELECT split around its top-level `LIMIT`/`START` clauses (AGENTS.md §query-row-window).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowWindow {
+    /// Statement text before the clause position.
+    head: String,
+    /// Statement text after it, both clauses removed.
+    tail: String,
+    /// The caller's top-level LIMIT, if any.
+    pub limit: Option<u64>,
+    /// The caller's top-level START (0 when absent).
+    pub start: u64,
+}
+
+/// One identifier/number run outside strings and brackets.
+struct TopLevelWord {
+    start: usize,
+    end: usize,
+    upper: String,
+}
+
+impl RowWindow {
+    /// Find the top-level `LIMIT [BY] n` / `START [AT] n` clauses; a non-literal value is refused.
+    pub fn parse(sql: &str) -> Result<Self, String> {
+        let sql = sql.trim_end();
+        let words = top_level_words(sql);
+        let mut limit: Option<(usize, usize, u64)> = None;
+        let mut start: Option<(usize, usize, u64)> = None;
+        for (index, word) in words.iter().enumerate() {
+            let (filler, slot, name) = match word.upper.as_str() {
+                "LIMIT" => ("BY", &mut limit, "LIMIT"),
+                "START" => ("AT", &mut start, "START"),
+                _ => continue,
+            };
+            let Some((end, value)) = clause_value(sql, &words, index, filler) else {
+                continue;
+            };
+            let value = value.ok_or_else(|| format!("top-level {name} must be a whole number literal"))?;
+            if slot.replace((word.start, end, value)).is_some() {
+                return Err(format!("only one top-level {name} is allowed"));
+            }
+        }
+        let mut spans: Vec<(usize, usize)> = limit.iter().chain(start.iter()).map(|&(from, to, _)| (from, to)).collect();
+        spans.sort_unstable();
+        let position = match spans.first() {
+            Some(&(from, _)) => from,
+            None if words.iter().any(|word| AFTER_LIMIT_KEYWORDS.contains(&word.upper.as_str())) => {
+                return Err(format!(
+                    "add a top-level LIMIT (at most {} rows) to this query",
+                    crate::limits::QUERY_ROW_CAP
+                ))
+            }
+            None => sql.len(),
+        };
+        let mut rest = String::with_capacity(sql.len());
+        let mut cursor = 0;
+        for &(from, to) in &spans {
+            rest.push_str(&sql[cursor..from]);
+            cursor = to;
+        }
+        rest.push_str(&sql[cursor..]);
+        Ok(Self {
+            head: rest[..position].trim_end().to_string(),
+            tail: rest[position..].trim_start().to_string(),
+            limit: limit.map(|(_, _, value)| value),
+            start: start.map_or(0, |(_, _, value)| value),
+        })
     }
-    let petals = resolve_scope_petals(state, scope).await?;
-    Ok(GuardedQuery {
-        sql: prepare_scoped_sql(sql, &petals, mode)?.sql,
-    })
+
+    /// The statement reading `limit` rows from offset `start`.
+    pub fn render(&self, limit: u64, start: u64) -> String {
+        let clause = format!("{} LIMIT {limit} START {start}", self.head);
+        if self.tail.is_empty() {
+            clause
+        } else {
+            format!("{clause} {}", self.tail)
+        }
+    }
+}
+
+/// Words at bracket depth 0, outside string literals; `$param`, `a.field` and `table:id` parts are skipped.
+fn top_level_words(sql: &str) -> Vec<TopLevelWord> {
+    let bytes = sql.as_bytes();
+    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut words = Vec::new();
+    let mut depth = 0i32;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match byte {
+            b'\'' | b'"' | b'`' => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != byte {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                index += 1;
+            }
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                index += 1;
+            }
+            _ if is_word(byte) => {
+                let start = index;
+                while index < bytes.len() && is_word(bytes[index]) {
+                    index += 1;
+                }
+                let previous = start.checked_sub(1).map(|at| bytes[at]);
+                if depth == 0 && !matches!(previous, Some(b'$' | b'.' | b':')) {
+                    words.push(TopLevelWord { start, end: index, upper: sql[start..index].to_ascii_uppercase() });
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    words
+}
+
+/// For a `LIMIT`/`START` word at `index`: `None` when it is not a clause (an identifier), else the clause
+/// end and its value (`None` value = not a plain whole-number literal).
+fn clause_value(sql: &str, words: &[TopLevelWord], index: usize, filler: &str) -> Option<(usize, Option<u64>)> {
+    let adjacent = |from: usize, to: usize| sql[from..to].bytes().all(|byte| byte.is_ascii_whitespace());
+    let keyword_end = words[index].end;
+    let mut next = index + 1;
+    let mut value_from = keyword_end;
+    if let Some(word) = words.get(next).filter(|word| word.upper == filler && adjacent(keyword_end, word.start)) {
+        value_from = word.end;
+        next += 1;
+    }
+    let after = sql[value_from..].trim_start();
+    let starts_value = after.bytes().next().is_some_and(|byte| byte.is_ascii_digit() || matches!(byte, b'$' | b'('));
+    if !starts_value {
+        return None;
+    }
+    let literal = words
+        .get(next)
+        .filter(|word| adjacent(value_from, word.start) && word.upper.bytes().all(|byte| byte.is_ascii_digit()));
+    let Some(word) = literal else {
+        return Some((value_from, None));
+    };
+    // The literal must end the clause: what follows is the statement end or another keyword.
+    let follows_cleanly = sql[word.end..]
+        .trim_start()
+        .bytes()
+        .next()
+        .is_none_or(|byte| byte.is_ascii_alphabetic());
+    let value = word.upper.parse::<u64>().ok().filter(|_| follows_cleanly);
+    Some((word.end, value))
 }
 
 /// Execute a guarded query with a DB-side `TIMEOUT 5s`, a client backstop, and a row cap.
@@ -273,6 +448,59 @@ pub async fn run_guarded_query_via_state(
         ));
     }
     Ok(data)
+}
+
+/// Rows the first `/query` read asks for; most results end inside it, in one statement as before.
+const FIRST_QUERY_PAGE_ROWS: u64 = 256;
+/// Most rows any later read asks for (bounds one read to this many rows at the widest row seen).
+const MAX_QUERY_PAGE_ROWS: u64 = 1024;
+
+/// Run a [`GuardedQuery`] whose SQL carries a top-level LIMIT ([`bound_top_level_rows`]) in growing
+/// LIMIT/START reads, counting serialized bytes as rows arrive: past `max_bytes` (or `row_cap` rows) it
+/// fails before reading further, so one request never loads more than about one read past the ceiling.
+pub async fn run_guarded_query_in_byte_pages(
+    state: &ApiState,
+    guarded: &GuardedQuery,
+    vars: &std::collections::HashMap<String, serde_json::Value>,
+    row_cap: usize,
+    max_bytes: usize,
+    max_bytes_label: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let window = RowWindow::parse(&guarded.sql)?;
+    let ceiling = window.limit.unwrap_or(u64::MAX).min(row_cap as u64 + 1);
+    let mut rows = Vec::new();
+    let mut bytes = 0usize;
+    let mut widest = 1usize;
+    let mut page = FIRST_QUERY_PAGE_ROWS;
+    loop {
+        let fetched = rows.len() as u64;
+        let want = page.min(ceiling.saturating_sub(fetched));
+        if want == 0 {
+            break;
+        }
+        let read = GuardedQuery { sql: window.render(want, window.start.saturating_add(fetched)) };
+        let batch = run_guarded_query_via_state(state, &read, vars, usize::MAX).await?;
+        let received = batch.len() as u64;
+        for row in batch {
+            let size = row.to_string().len() + 1;
+            bytes += size;
+            widest = widest.max(size);
+            if bytes > max_bytes {
+                return Err(format!("result size exceeds ceiling ({max_bytes_label}); narrow the query"));
+            }
+            rows.push(row);
+        }
+        if rows.len() > row_cap {
+            return Err(format!(
+                "row cap exceeded (limit {row_cap} rows; narrow the query or add LIMIT)"
+            ));
+        }
+        if received < want {
+            break;
+        }
+        page = (((max_bytes - bytes) / widest) as u64 + 1).clamp(1, MAX_QUERY_PAGE_ROWS);
+    }
+    Ok(rows)
 }
 
 /// True when the channel fallback could not reach the DB thread at all

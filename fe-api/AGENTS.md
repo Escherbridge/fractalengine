@@ -29,6 +29,19 @@ result failures are instead reported as `resync_required` and emit no snapshot.
 Lag recovery clears the connection's scene subscriptions before that error so
 no incremental changes resume until the client explicitly resubscribes.
 
+**§ws-lag-recovery (2026-11-14).** A snapshot reads only the columns the WS
+`NodeDto` carries (`node_id, display_name, petal_id, position, elevation,
+asset_id, asset_path`; never `properties`), on the direct reader and through
+`LoadNodesByPetal` (fe-database `crud.rs::load_nodes_by_petal_handler`, same
+projection). One connection runs at most one lag-recovery round per
+`LAG_SNAPSHOT_COOLDOWN` (2 s): a lag inside the cooldown marks the round owed
+(`LagRecovery.due`) and the 200 ms debounce tick runs it once the cooldown
+ends, so a client that keeps lagging costs one subscribed-petal read per 2 s,
+not one per lag. Worst case per round: ~200 bytes × nodes of each subscribed
+petal (≈ 2 MB for 10 000 nodes; before: 10 000 × 64 KiB ≈ 640 MiB). Left as
+is: `scene_subscribe` itself reads a snapshot per request (same projection);
+it is a deliberate client action, bounded by the projection, not by a rate.
+
 ## §routes
 
 Route inventory for `server.rs::build_router`. The `.route()` registrations
@@ -200,8 +213,25 @@ Makes every object a stable `fe://verse/fractal/petal/node` endpoint you can
   through `fe_query::spatial_nodes` (the tag vocabulary + type-specific keys are
   the JSON contract T2/T3 write and T5 reads — no fe-api→T2/T3 file coupling):
   `GET /api/v1/petals/{p}/nodes?kind=stamp&path_id=…` ("all stamps on path X") and
-  `GET /api/v1/petals/{p}/earthwork/summary` (real-unit total cut/fill). Both run
-  under the `limits` row cap + byte ceiling (`run_capped_select`).
+  `GET /api/v1/petals/{p}/earthwork/summary` (real-unit total cut/fill). The summary
+  (one aggregate row) runs under the `limits` row cap + byte ceiling
+  (`run_capped_select`); the list pages (§node-list-paging).
+- **§node-list-paging (2026-11-14).** `GET /petals/{p}/nodes?kind=…[&path_id=…][&cursor=…][&limit=…]`
+  is a keyset page over `node_id` (`endpoint.rs::read_node_page`): it reads
+  `NODE_LIST_FETCH_ROWS` (16) rows per DB round with `node_id > $after … LIMIT`,
+  and stops adding rows at `limit` (1..=`NODE_LIST_MAX_ROWS` = 100, default 100)
+  or when the serialized rows reach `NODE_LIST_PAGE_BYTES` (the 8 MiB query
+  ceiling minus 64 KiB for the envelope), always returning at least one row.
+  Rows are whole node rows (properties included), as before. Response =
+  the `ApiResponse` envelope plus `next`: an opaque cursor (`n1.` + hex node id)
+  for the rest, `null` when complete; a malformed cursor answers
+  `invalid cursor`. What changed for clients: rows were `ORDER BY created_at`
+  (kind) / `ORDER BY properties.instance_index` (stamps on a path) in one
+  response that failed past 10 000 rows or 8 MiB; they are now in `node_id`
+  order across pages, so a client wanting instance order sorts the collected
+  pages by `properties.instance_index`. Old clients that ignore `next` get
+  the first page only. Worst case per request: 100 rows of the node limit
+  (6.4 MiB at 64 KiB) and 17 rows in memory per DB round.
 - **Egress seam (FR-5).** The analyst/context-menu (T4) copy-API-string and
   report verbs call `fe-ui gis::egress_strings::{api_string_for, report_for}`
   (pure string formatting, no `block_on`).
@@ -701,6 +731,35 @@ fallback is CORRELATED (M4 fix B2 — fe-runtime src/AGENTS.md
 §api-reply-correlation): it sends a fresh `correlation_id`, accepts only
 `QueryResult`/`QueryFailed` echoing it, and treats anything else as an error,
 never as its rows.
+
+**§query-row-window (2026-11-14).** `/query` and MCP `query` used to load the
+whole result (no LIMIT) and only then apply the row cap and byte ceiling, so
+`SELECT * FROM node` over a large scope built the full result in memory before
+failing. Now: (1) `guard_and_prepare_query_with_mode` in `GuardMode::Query`
+calls `bound_top_level_rows`, which finds the top-level (bracket depth 0,
+outside strings) `LIMIT [BY] n` / `START [AT] n` clauses (`RowWindow::parse`)
+and gives the statement a DB-enforced `LIMIT`: the caller's (refused above
+`QUERY_ROW_CAP`: `LIMIT exceeds the row cap`) or `QUERY_ROW_CAP + 1` (one
+past the cap, so an over-cap result still errors `row cap exceeded` instead of
+truncating). A top-level LIMIT/START value must be a whole-number literal
+(`$n` or an expression is refused), and a statement with no LIMIT that names
+FETCH/VERSION/TEMPFILES/EXPLAIN/PARALLEL at top level must add one (the LIMIT
+could not be placed before those clauses safely). A word `limit`/`start` used
+as a field name is not a clause and is left alone. (2)
+`run_guarded_query_in_byte_pages` (called by `rest::run_local_query`) reads
+that window in LIMIT/START steps: 256 rows first (most results finish in
+that one statement, as before), then pages sized from the widest row seen
+(`remaining bytes / widest row`, 1..=1024 rows), counting serialized bytes
+as rows arrive and failing with the same `result size exceeds ceiling (8
+MiB)` / `row cap exceeded` texts before reading further. Worst case per
+request: about 8 MiB plus one read (at most 1024 rows; 64 MiB only if a
+query's rows jump from tiny to node-sized mid-result), never the whole
+scope. A result larger than one read is not one snapshot: rows written
+between reads can shift pages; ORDER BY a unique key (node_id) for stable
+paging. What changed for clients: the response shape is unchanged; a
+top-level `LIMIT` above 10 000 or a non-literal top-level LIMIT/START is now
+refused; FETCH/VERSION/EXPLAIN without LIMIT must add a LIMIT. Export
+(`GuardMode::Export`) and share (`GuardMode::Egress`) are unchanged.
 
 `src/limits.rs` holds every cost knob as a named constant (plan D4):
 `/query` 10 000 rows / 8 MiB; exports 500 000 rows / 128 MiB; rate limits
@@ -2182,7 +2241,20 @@ property REST/MCP/WS DTOs stay compatible while using this attributed commit cor
 Existing async transform remains compatible; use mutations for a committed receipt.
 There is no effective-time override on this contract; commit order is authoritative.
 
-GET `/api/v1/nodes/{n}/history?after_version=0&limit=100` returns entries ordered by
+**History paging (2026-11-14).** Each entry carries the full state after its edit
+(a baseline carries it twice), so a 100-entry page of nodes at the 64 KiB limit
+passed the 8 MiB response cap and the history view failed. A page now holds up
+to `limit` entries (default `DEFAULT_HISTORY_LIMIT` = 20, max 200, REST and MCP)
+and the DB ends it early once its serialized entries reach
+`fe_database::handlers::node_history::HISTORY_PAGE_BYTES` (4 MiB), always with
+at least one entry; `next_after_version` is then non-null, so clients keep
+following it until null exactly as before (a short page no longer means the
+end). Worst case per page: 4 MiB plus one entry (≈ 200 KiB at today's limit).
+`state?at_version=N` returns the stored after-state of version N after checking
+the interval since its baseline with light rows (fe-database
+`src/handlers/AGENTS.md` §history-replay); its reply shape is unchanged.
+
+GET `/api/v1/nodes/{n}/history?after_version=0&limit=20` returns entries ordered by
 row_version, next_after_version (null at end), journal_version, current_version,
 coverage_start_version/time, supported_operations and current_state_verified.
 GET `/api/v1/nodes/{n}/state?at_version=N` adds availability, exact at_version,
@@ -2461,22 +2533,85 @@ Both are Manager+ (`SNAPSHOT_MINIMUM_ROLE`). The import authorizes on a parse-on
 
 - **Blobs before rows, rolled back on refusal.** The import stores blobs through `fe_hexon::snapshot::restore_snapshot_archive`
   before it sends `DbCommand::ImportPetalSnapshot`, because rows must never point at missing blobs. Restore returns the
-  hashes it newly wrote; on a refusal, a `RequestFailed` reply or an unsent command they are removed again
-  (`discard_new_blobs`, `petal_snapshot.rs:395-400`), so a refused import leaves no orphan blob. Pre-existing blobs are
+  hashes it newly wrote; on a refusal, a `RequestFailed` reply or an unsent command they are swept again after a grace
+  window (`discard_unreferenced_new_blobs`, below), so a refused import leaves no orphan blob. Pre-existing blobs are
   never removed. A timeout, dropped or unexpected reply may still have committed, so its new blobs are kept.
+  A `RequestFailed` carrying the node write budget text (the importer's budget is spent) answers 429 with
+  `Retry-After` through `rest::write_budget_response` (§write-budget).
 - **Op-log entries are written DB-side.** `ExportPetal` and `ImportPetal` are recorded by fe-database
   (`handlers/petal_snapshot.rs`), not by this route.
-- **Scene hooks on import (limit).** The gate judges one `scene.create` per node from display name, position
-  (x, elevation, z) and one `scene.property` per initial property key/value, and nothing else: hooks never see scale,
-  rotation, `node_log`, `op_log` or rooms. Node ids exist only DB-side, so augments cannot be staged: an admission
-  carrying any augment is refused 409 `hook-augment-unsupported` (nothing written); an empty one proceeds. Hook
-  refusals keep the shared 409/413 forms. Tested in `tests/export_share_test.rs` (`petal_snapshot_export_import_authz_journey`).
-- **Hooks bound above the destination (`hook-unjudgeable`).** Scene bindings resolve per PETAL (fractal and verse rows
-  are inherited into a petal's resolved view in the host cache), and an import's petal is absent locally, so the
-  petal-keyed gate can never see a fractal- or verse-bound hook. `scene_hook_bound_above` reads `extension_binding` for
-  the destination fractal scope and its verse; a live `scene.*` extension row there refuses the import 409
-  `hook-unjudgeable` before any blob is written (fail closed; unreadable = 503; no `db_reader` = not checked). Only the newest version per (scope, hook, key) counts (an `inherit` after an `extension` lifts it); admissibility is not evaluated here, so a demoted author's newest binding still counts (fail closed).
-  NEEDS (fe-runtime/plugin_bridge): a scope-keyed `scene_binding` fallback would let such hooks judge instead of refuse.
+- **Export is bounded to what import accepts (2026-11-14).** The export carries the newest
+  `EXPORT_HISTORY_PER_NODE` (8) journal facts per node within `EXPORT_HISTORY_BYTES` (32 MiB) per archive, not the
+  whole `node_log` (fe-database `src/handlers/AGENTS.md` §export-bound). The DB refuses an archive whose state table
+  or op-log member would pass `fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES` (64 MiB) or whose members plus blobs
+  would pass `MAX_ARCHIVE_UNCOMPRESSED_BYTES` (1 GiB), before its `ExportPetal` audit is written; this route answers
+  413 with the reason (prefix `petal snapshot would not import`). The route then refuses (413, same prefix) an
+  estimate (members + asset `size_bytes`) above `MAX_SNAPSHOT_ARCHIVE_BYTES` (256 MiB) before reading any blob, and the
+  built archive above it before sending. What changed for clients: history in an exported archive is now the recent
+  tail, not every edit; an export that the import side would refuse is a 413 instead of a file that cannot be
+  imported.
+- **`?history=N` (2026-11-14).** The export route takes an optional `history` query parameter: journal facts kept
+  per node (default 8). A value above `fe_runtime::messages::EXPORT_HISTORY_PER_NODE_MAX` (256) is a 400
+  (`history must be at most 256`); a non-number is axum's query rejection (400). It rides
+  `DbCommand::ExportPetalSnapshot { history_per_node }`; the DB arm clamps to the same maximum, and `history=0`
+  exports no journal history (the import writes its own baseline fact per node). The 32 MiB journal byte bound still
+  applies at any depth.
+- **Scene hooks judge an import (2026-11-14).** The imported petal does not exist yet, so the route asks
+  `SceneWriteDoor::judge_import` (fe-runtime `src/AGENTS.md` §scene-hook-import) after the Manager+ check and before any
+  blob is written. The host provisions the new petal at the DB-resolved destination (`parse_scope` of the fractal scope,
+  which must name the snapshot's `fractal_id`), so the same resolver and cache a live write uses decide which hooks are
+  in effect: verse and fractal bindings inherited as for any petal. There is no second resolver here (the old
+  `extension_binding` read is gone). Each node is presented exactly as a live create: one `scene.create` (display name,
+  position x/elevation/z, `petal_id` = the new petal, `caller` = the token's `sub`, kind `rest`) and one `scene.property`
+  per initial property key with `node: null`. Calls run one at a time, each within its hook deadline (250 ms), under one
+  `IMPORT_JUDGMENT_BUDGET` (10 s, the export timeout). Strict and all-or-nothing: the first refusal, augment or non-answer
+  stops the judgment, and nothing is sent to the DB. The restored node rows must equal the judged ones (else 400), so
+  no row is written that differs from what the hooks saw.
+- **Outside scene hooks.** Hooks never see scale, rotation, `node_log`, `op_log`, rooms, models, assets, field definitions,
+  roles or readings. No live write of those reaches a `scene.*` hook either (fe-runtime §scene-write census), so the
+  import does not invent a judgment for them.
+- **Outcomes** (`judgment_response`):
+
+  | Outcome | Status | `error` |
+  |---|---|---|
+  | caller not Manager+ at the destination | 404 | existence-safe denial, before any provision or hook |
+  | a hook refused a node or property | 409 | `refused` (+ `package_id`, `reason`; no `petal_id`) |
+  | a hook input or call count over its cap | 413 | `input-too-large` |
+  | a hook allowed only with augments | 409 | `hook-augment-unsupported` |
+  | a hook missed its deadline, faulted, declined or gave bad output | 409 | `hook-failed` (`failure`: `deadline`/`fault`/`declined`) |
+  | the 10 s budget ran out | 409 | `hook-failed` (`failure`: `budget`) |
+  | a hook in effect cannot run on this host (unresolved, or bound to another peer) | 409 | `hook-unjudgeable` |
+  | bindings unreadable, host worker gone or busy, provision timed out | 503 | `hooks-unavailable` |
+  | the petal id is already a petal at another address | 409 | `refused` (+ `petal_id`; the DB would refuse it too) |
+
+  Since 2026-11-14 (owner decision, reversing OQ-B4) a live write is refused on a deadline, fault or decline too (`hook-failed` 409, `SceneRefusal::HookFailed`); a caller over its live-call allowance gets 503 `hook-busy` with `retry_after_ms`. With no extension host on this build (no
+  gate installed) no hook is in effect and the import proceeds, as live writes do. Tested in
+  `tests/export_share_test.rs` (`petal_snapshot_export_import_authz_journey`).
+- **Replication (2026-11-14).** A committed import replicates to the verse, published after commit by the DB thread
+  (fe-database `src/handlers/AGENTS.md` §petal-snapshot-replication). The success body is
+  `{petal_id, persist: "committed", not_imported: {roles: N}}`. `persist: "committed"` is the existing receipt word
+  for a local commit. It never certifies that peers have the petal: publication runs after the reply, and an
+  unpublished row is republished at replica open. Snapshot role rows are never imported; `not_imported.roles` counts
+  them so the importer can re-grant deliberately.
+- **Imported assets are the importer's uploads.** Each asset's `size_bytes` is replaced with its verified blob length
+  (the reader re-hashed every shipped blob). The sum of the shipped blob bytes is charged against the importer's
+  upload quota before any blob is written (413 `upload quota exceeded by the snapshot's assets`; 503 if the quota
+  cannot be read). The check is conservative: it counts blobs an existing asset row may already hold. It runs inside
+  `IMPORT_SECTION` (2026-11-14), so N concurrent imports by one caller each see the assets the earlier ones committed;
+  it does not serialize against live uploads, which check the same quota on their own.
+- **Blob rollback race (security inbox 18).** One process-wide async mutex (`IMPORT_SECTION`) covers blob writes,
+  the quota check, the DB round trip and cleanup, so imports run one at a time from their first blob write. The hook
+  judgment runs before it. Cost: concurrent imports queue, each for at most its blob writes plus `IMPORT_TIMEOUT`
+  (30 s). A refused import's newly written blobs (`newly_stored`) are not removed in the request: a detached task waits
+  `BLOB_SWEEP_GRACE` (60 s), takes `IMPORT_SECTION` (so an import in flight has committed its rows first), and removes
+  only those no `asset.content_hash` and no `crate_entry.asset_hash` references then (`sweep_unreferenced_blobs`); an
+  unreadable reference check keeps them all (an orphan, never a dangling row).
+  Why a grace window: live uploads (`upload.rs`) take no guard; they store the blob (finding it present costs nothing)
+  and then register the row in one 5 s `db_round_trip`. Sweeping 60 s later means any upload that found one of these
+  blobs during the import has registered (or failed) by then.
+  Residual: an upload or hexon install of the same bytes that finds the blob present within ~5 s before the sweep and
+  registers after it can still lose the blob. Closing that needs a blob-store lock or reference count shared with
+  those writers.
 - **Imported history.** `GET /api/v1/petals/{petal_id}/imported-history?after_lamport=&limit=` (`imported_history.rs`) lists
   quarantined op-log rows from `op_log_imported` (summary fields and `imported_by`, no payload), Manager+ with the export's
   existence-safe 404 (`petal_snapshot::denied`), read through `db_reader` with bound parameters.
@@ -2526,3 +2661,25 @@ self relay cannot be advertised over REST; fix needs a NetworkOps dialback seam.
 
 ## §ws-close-drain
 After a revoked-credential `auth_invalid` + Close, `ws.rs::drain_until_peer_close` reads inbound frames until the peer's Close/EOF or 300 ms. Dropping with unread inbound bytes is a TCP RST on Windows, which discards the `auth_invalid`/Close the client has not yet read.
+
+## §write-budget
+
+A node write the author's byte budget refuses (`fe_database::NODE_WRITE_BUDGET_EXCEEDED`, `handlers/AGENTS.md`
+§write-budget) is retryable, not invalid; each surface keeps the delay:
+- REST: `rest::write_budget_response` answers `429` with `Retry-After` = `ceil(ms / 1000)` s (minimum 1) and
+  `{"ok":false,"data":null,"error":"write-budget-exceeded","retry_after_ms":ms}`. It is applied in the three places REST turns
+  failure text into a response: `write_failure_response` (set/delete property, waypoint create and move),
+  `create_failed` (create node, place asset) and `node_history::write_response` (`POST .../mutate`, `POST .../objects`).
+  `node_history::correlated` used to collapse every `RequestFailed` to "operation refused"; it now keeps the budget
+  text so those mappings can see it.
+- MCP: the dispatcher (`mcp/mod.rs`) rewrites a budget failure to `write budget exceeded; retry after N s` and keeps
+  `isError: true`; `tools::db_failure` keeps the budget text for `DbResult::Error` replies.
+- WebSocket: `WsServerMsg::TransformThrottled { node_id, retry_after_ms, position, rotation, scale }` is the throttled
+  twin of `TransformRollback` (`ws::transform_failure_message`), sent when `SceneChange::TransformFailed.retry_after_ms`
+  is `Some` (the DB thread fills it from the budget refusal text).
+- REST transform (`PATCH .../transform`): `rest::transform_verdict` reads the same field; `Throttled(ms)` answers through
+  `write_budget_response` (429). MCP `update_transform` keeps `transform_outcome` (refused or throttled both end as
+  `TRANSFORM_REFUSED`).
+- Snapshot import: an importer whose budget is spent gets `RequestFailed` with the budget text; the import route answers
+  429 through `write_budget_response` (fe-database `src/handlers/AGENTS.md` §write-budget "Imports").
+- Not mapped: `CreateNodeWithAsset` (`upload::place_asset`) logs the refusal and answers "operation failed".

@@ -121,6 +121,12 @@ struct InstalledCrateDto {
 /// Envelope code of a licensed non-free entry refused to a caller without an entitlement.
 const ENTITLEMENT_REQUIRED_CODE: &str = "entitlement_required";
 
+/// Envelope code of a publish whose id@version exists with different content (HTTP 409).
+const VERSION_CONFLICT_CODE: &str = "version_conflict";
+
+/// Envelope code of a publish whose content-hash bind failed (HTTP 500).
+const PUBLISH_BIND_FAILED_CODE: &str = "publish_bind_failed";
+
 /// The REST surface holds no licensee token: gates open tokenless against an empty keyring (see `src/AGENTS.md` §hexon-entitlement).
 struct TokenlessEntitlement {
     identity: SigningKey,
@@ -250,13 +256,13 @@ pub async fn publish_crate(
     State(state): State<Arc<ApiState>>,
     Extension(claims): Extension<ApiClaims>,
     mut multipart: Multipart,
-) -> JsonResult {
+) -> Response {
     if require_role(&claims, "owner").is_err() {
-        return err("insufficient permissions");
+        return err("insufficient permissions").into_response();
     }
 
     let Some(registry) = get_registry(&state) else {
-        return err("hexon registry not configured");
+        return err("hexon registry not configured").into_response();
     };
 
     let mut crate_bytes = Vec::new();
@@ -270,16 +276,16 @@ pub async fn publish_crate(
     }
 
     if crate_bytes.is_empty() {
-        return err("no .hexon file uploaded");
+        return err("no .hexon file uploaded").into_response();
     }
 
     let package = match HexonPackage::open(&crate_bytes) {
         Ok(p) => p,
-        Err(e) => return err(&format!("invalid package: {}", e)),
+        Err(e) => return err(&format!("invalid package: {}", e)).into_response(),
     };
 
     if !package.signature_valid() {
-        return err("package signature verification failed");
+        return err("package signature verification failed").into_response();
     }
 
     let uri = package.hexon_uri();
@@ -288,20 +294,49 @@ pub async fn publish_crate(
     let manifest_dto = to_manifest_dto(&package.manifest);
     let mut reg = registry.lock().unwrap();
     let subject = crate::auth::api_token_context(&claims);
-    match reg.publish_as(&subject, package) {
-        // Already published: return the manifest anyway.
-        Ok(_) | Err(RegistryError::AlreadyInstalled(_)) => {
-            // Entitlement checks need the content hash recomputed from these exact archive bytes.
-            if let Err(error) = reg.bind_published_archive(&uri, &crate_bytes) {
-                warn!("Published {} without an entitlement content hash: {}", uri, error);
+    let first_publish = match reg.publish_as(&subject, package) {
+        Ok(_) => true,
+        Err(RegistryError::AlreadyInstalled(_)) => false,
+        Err(RegistryError::PermissionDenied(_)) => return err("insufficient permissions").into_response(),
+        Err(e) => return err(&format!("publish failed: {}", e)).into_response(),
+    };
+    // Entitlement checks need the content hash recomputed from these exact archive bytes.
+    match reg.bind_published_archive(&uri, &crate_bytes) {
+        Ok(()) => ok(manifest_dto).into_response(),
+        // The stored build differs from this upload: the version is taken, the old record stays.
+        Err(RegistryError::PermissionDenied(_)) if !first_publish => version_conflict(&uri),
+        Err(error) => {
+            warn!("Publish of {} could not bind its content hash: {}", uri, error);
+            if first_publish {
+                // Roll back so no record without a content hash stays published.
+                if let Err(rollback) = reg.uninstall(&uri, fe_hexon::registry::PUBLISHED_BINDING) {
+                    warn!("Rollback of unbound publish {} failed: {}", uri, rollback);
+                }
             }
-            ok(manifest_dto)
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "code": PUBLISH_BIND_FAILED_CODE,
+                    "error": format!("publish of {uri} failed"),
+                })),
+            )
+                .into_response()
         }
-        Err(fe_hexon::registry::RegistryError::PermissionDenied(_)) => {
-            err("insufficient permissions")
-        }
-        Err(e) => err(&format!("publish failed: {}", e)),
     }
+}
+
+/// 409 for an upload whose id@version is already published with different content.
+fn version_conflict(uri: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "ok": false,
+            "code": VERSION_CONFLICT_CODE,
+            "error": format!("version {uri} already exists with different content"),
+        })),
+    )
+        .into_response()
 }
 
 /// POST /api/v1/crates/:uri/install — Install a crate into a petal.

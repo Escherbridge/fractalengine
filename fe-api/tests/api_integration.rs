@@ -395,6 +395,17 @@ async fn query_byte_ceiling_errors_not_truncates() {
     let err = body["error"].as_str().unwrap_or_default();
     assert!(err.contains("result size exceeds ceiling (8 MiB)"), "{err}");
     assert!(body["data"].is_null(), "no partial data on limit violation");
+
+    // The row limit is enforced by the DB: a top-level LIMIT within the caps answers, one over the row cap
+    // or a non-literal one is refused before anything is read.
+    let (_, body) = query(&h, &token, "SELECT * FROM node ORDER BY node_id LIMIT 2", json!({})).await;
+    assert_eq!(body["ok"], true, "two of the large rows fit the byte ceiling: {body}");
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(2), "{body}");
+    let over_cap = format!("SELECT node_id FROM node LIMIT {}", fe_api::limits::QUERY_ROW_CAP + 1);
+    let (_, body) = query(&h, &token, &over_cap, json!({})).await;
+    assert!(body["error"].as_str().unwrap_or_default().contains("row cap"), "{body}");
+    let (_, body) = query(&h, &token, "SELECT node_id FROM node LIMIT $n", json!({ "n": 5 })).await;
+    assert!(body["error"].as_str().unwrap_or_default().contains("whole number literal"), "{body}");
 }
 
 /// GPX export over HTTP: a waypoint linked to its track by
@@ -696,6 +707,50 @@ async fn earthwork_summary_sums_live_region_rows() {
     assert_eq!(summary["region_count"], 2, "{body}");
     assert_eq!(summary["total_cut_m3"].as_f64(), Some(200.0), "{body}");
     assert_eq!(summary["total_fill_m3"].as_f64(), Some(100.25), "{body}");
+
+    // Node list paging: regions a third of the page byte budget each cannot share one page; following
+    // `next` lists every live region exactly once, the tombstoned one never, other petals' never.
+    let page_bytes = fe_api::endpoint::NODE_LIST_PAGE_BYTES;
+    let mut expected = Vec::new();
+    for index in 0..4 {
+        let mut properties = region(1.0, 1.0);
+        properties["bulk"] = json!("x".repeat(page_bytes / 3));
+        expected.push(
+            h.seed_node(&own.petal_id, &format!("large region {index}"), [0.0; 3], Some(properties))
+                .await
+                .expect("seed large region"),
+        );
+    }
+    let listed_rows = |body: &serde_json::Value| -> Vec<String> {
+        body["data"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| row["node_id"].as_str().expect("node_id").to_string())
+            .collect()
+    };
+    let base = format!("/api/v1/petals/{}/nodes?kind=earthwork_region", own.petal_id);
+    let (_, first) = h.get(&base, Some(&token)).await;
+    assert_eq!(first["ok"], true, "{first}");
+    let mut listed = listed_rows(&first);
+    let mut next = first["next"].as_str().map(str::to_owned);
+    let mut pages = 1;
+    while let Some(cursor) = next {
+        let (_, page) = h.get(&format!("{base}&cursor={cursor}"), Some(&token)).await;
+        assert_eq!(page["ok"], true, "{page}");
+        let rows = listed_rows(&page);
+        assert!(!rows.is_empty(), "a page with a cursor is never empty");
+        listed.extend(rows);
+        next = page["next"].as_str().map(str::to_owned);
+        pages += 1;
+    }
+    assert!(pages >= 2, "large regions must page by bytes");
+    let unique: std::collections::BTreeSet<&String> = listed.iter().collect();
+    assert_eq!(unique.len(), listed.len(), "no region is listed twice: {listed:?}");
+    assert_eq!(listed.len(), 2 + expected.len(), "both small regions and every large one: {listed:?}");
+    assert!(expected.iter().all(|id| listed.contains(id)), "{listed:?}");
+    let (_, bad) = h.get(&format!("{base}&cursor=not-a-cursor"), Some(&token)).await;
+    assert_eq!(bad["error"], "invalid cursor", "{bad}");
 }
 
 /// 6c: `GET /api/v1/nodes/{id}` reads each object type through the one
@@ -905,6 +960,21 @@ async fn hexon_crates_publish_install_search_entries_asset_journey() {
         let (_, published, _) = send_on(&router, publish(package, &owner)).await;
         assert_eq!(published["ok"], true, "{published}");
     }
+
+    // Same bytes again is an idempotent success; different bytes under the same id@version are a 409
+    // and the stored build stays (the asset assertion below still reads the original bytes).
+    let (status, again, _) = send_on(&router, publish(&free_package, &owner)).await;
+    assert_eq!((status, &again["ok"]), (StatusCode::OK, &json!(true)), "{again}");
+    let rival_package = HexonBuilder::new("api-journey-free", "did:key:z6MkPlaceholder")
+        .name("Journey Free")
+        .version("1.0.0")
+        .add_entry_with_file("model_1", EntryKind::Model, "glb", "Model", &b"a different build"[..])
+        .build(&signing_key)
+        .expect("build rival hexon");
+    let (status, conflict, _) = send_on(&router, publish(&rival_package, &owner)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(conflict["code"], "version_conflict", "{conflict}");
+    assert_eq!(conflict["ok"], false, "{conflict}");
 
     // Install is real: an editor's install returns the new record, a viewer's is denied.
     let free_uri = "api-journey-free@1.0.0";

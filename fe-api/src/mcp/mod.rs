@@ -247,9 +247,9 @@ static TOOLS: &[ToolSpec] = &[
     tool!(read_node, Viewer, NodeArg("node_id"),
         "Read an object's full payload by node id (common fields + type-specific stamp/earthwork/path data). Tombstoned nodes read as not found. Requires viewer role + scope."),
     tool!(get_node_history, Viewer, HistoryNodeArg("node_id"),
-        "Read a bounded durable object journal page with coverage metadata and per-object commit versions. Requires viewer role and current or retained object scope."),
+        "Read a durable object journal page with coverage metadata and per-object commit versions. A page holds up to `limit` entries (default 20, max 200) and ends early once its entries reach 4 MiB (always at least one); continue from next_after_version until it is null. Requires viewer role and current or retained object scope."),
     tool!(read_node_at_version, Viewer, HistoryNodeArg("node_id"),
-        "Replay one exact object commit version, with explicit unavailable/incomplete coverage. Requires viewer role and current or retained object scope."),
+        "Read the object's state at one exact commit version (the stored state of that commit, after checking the interval since its baseline), with explicit unavailable/incomplete coverage. Requires viewer role and current or retained object scope."),
     tool!(commit_node_mutation, Editor, NodeArg("node_id"),
         "Commit a typed property replacement/removal or full transform and return persisted state plus history_version. Requires editor role and object scope."),
     tool!(node_address, Viewer, NodeArg("node_id"),
@@ -306,7 +306,7 @@ static TOOLS: &[ToolSpec] = &[
     tool!(get_gis_nodes, Viewer, PetalArg("petal_id"),
         "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope."),
     tool!(query, Viewer, ScopeRule::None,
-        "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). Requires viewer role."),
+        "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). A top-level LIMIT must be a number <= 10000 (none = capped at 10000 rows); the result errors past 10000 rows or 8 MiB, counted while reading. Page large results with LIMIT/START. Requires viewer role."),
     // Literal spec: its no-argument schema lives here, not in `tools::schema` (R5-INT-2).
     ToolSpec {
         name: "get_network_diagnostics",
@@ -505,7 +505,11 @@ async fn handle_tool_call(
     match outcome {
         Ok(content) if spec.content_reply => tool_content_result(id, content),
         Ok(payload) => tool_result(id, payload),
-        Err(msg) => tool_error(id, &msg),
+        Err(msg) => match crate::rest::write_budget_retry_seconds(&msg) {
+            // Retryable: state the delay so a client waits instead of resending (still `isError`).
+            Some(seconds) => tool_error(id, &format!("write budget exceeded; retry after {seconds} s")),
+            None => tool_error(id, &msg),
+        },
     }
 }
 
