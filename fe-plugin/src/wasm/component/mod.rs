@@ -4,6 +4,7 @@
 pub mod bindings;
 pub mod broker;
 pub mod bus_bridge;
+pub mod epoch;
 pub mod hooks;
 mod imports;
 pub mod instance;
@@ -128,12 +129,15 @@ pub struct ComponentHost {
 }
 
 impl ComponentHost {
-    /// Fuel-metered engine with the component model; on-demand allocation bounded by `StoreLimits`.
+    /// Fuel-metered engine with the component model and epoch interruption (hook calls stop at their deadline,
+    /// src/wasm/AGENTS.md §hooks); on-demand allocation bounded by `StoreLimits`.
     pub fn new() -> Result<Self, ComponentError> {
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(true);
+        config.epoch_interruption(true);
         let engine = wasmtime::Engine::new(&config).map_err(host_error)?;
+        epoch::register(&engine);
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(host_error)?;
         bindings::Extension::add_to_linker::<InstanceState, HasSelf<InstanceState>>(&mut linker, |state| state)
@@ -175,15 +179,27 @@ impl ComponentHost {
         self.compile(bytes)
     }
 
-    /// [`compile`](Self::compile) through the AOT cache (keyed by the component bytes).
+    /// [`compile`](Self::compile) through the AOT cache (keyed by the component bytes); an artifact built for
+    /// another engine configuration (e.g. before epoch interruption) is evicted and recompiled once.
     pub fn compile_cached(&self, cache: &AotCache, bytes: &[u8]) -> Result<ExtensionComponent, ComponentError> {
         check_binary(bytes)?;
-        let compiled = cache
-            .get_or_compile_component(&self.engine, bytes)
-            .map_err(|error| ComponentError::PackageInvalid(format!("not-a-component {error}")))?;
-        let component = cache
-            .load_compiled_component(&self.engine, &compiled)
-            .map_err(|error| ComponentError::Host(error.to_string()))?;
+        let load = || {
+            let compiled = cache
+                .get_or_compile_component(&self.engine, bytes)
+                .map_err(|error| ComponentError::PackageInvalid(format!("not-a-component {error}")))?;
+            cache
+                .load_compiled_component(&self.engine, &compiled)
+                .map_err(|error| ComponentError::Host(error.to_string()))
+        };
+        let component = match load() {
+            Ok(component) => component,
+            Err(ComponentError::Host(stale)) => {
+                tracing::info!(%stale, "AOT artifact does not match this engine; recompiling");
+                cache.evict(bytes).map_err(|error| ComponentError::Host(error.to_string()))?;
+                load()?
+            }
+            Err(error) => return Err(error),
+        };
         self.admit(component, AotCache::hash_bytes(bytes))
     }
 
@@ -219,23 +235,54 @@ impl ComponentHost {
         setup.check()?;
         let clock = setup.clock.clone();
         let hook_fuel = setup.hook_fuel;
-        let mut store = wasmtime::Store::new(&self.engine, InstanceState::new(setup));
-        store.limiter(|state| &mut state.limits);
-        store.set_fuel(hook_fuel).map_err(host_error)?;
-        store.data().freeze_clock(clock.now_ms());
-        let pre = &component.pre;
-        // Through the raw instance, so the optional `hooks` export binds to the same instance as the world.
-        let (raw, bindings) = instance::outside_async(|| {
-            let raw = pre.instance_pre().instantiate(&mut store)?;
-            let bindings = bindings::Extension::new(&mut store, &raw)?;
-            Ok::<_, wasmtime::Error>((raw, bindings))
-        })
-        .map_err(|error| ComponentError::Activation(format!("instantiate failed: {error:#}")))?;
-        let hooks_guest = if component.exports_hooks {
-            Some(hooks::HooksGuest::bind(&mut store, &raw, hook_fuel)?)
-        } else {
-            None
-        };
-        Ok(ExtensionInstance::new(store, bindings, clock, hook_fuel).with_hooks(hooks_guest))
+        let respawn = Respawn { pre: component.pre.clone(), exports_hooks: component.exports_hooks };
+        let started = start_store(&self.engine, &respawn, InstanceState::new(setup), hook_fuel, clock.now_ms())?;
+        Ok(ExtensionInstance::new(started.store, started.bindings, clock, hook_fuel)
+            .with_hooks(started.hooks)
+            .with_respawn(respawn))
     }
+}
+
+/// What a crashed instance needs to start again from the cached component (src/wasm/AGENTS.md §hooks).
+#[derive(Clone)]
+pub(crate) struct Respawn {
+    pre: ExtensionPre<InstanceState>,
+    exports_hooks: bool,
+}
+
+/// A fresh store with the world and the optional `hooks` export bound to the same instance.
+pub(crate) struct StartedStore {
+    pub store: wasmtime::Store<InstanceState>,
+    pub bindings: bindings::Extension,
+    pub hooks: Option<hooks::HooksGuest>,
+}
+
+/// Instantiate `respawn`'s component over `state`: limits, fuel, clock and a never-firing epoch deadline are set
+/// before any guest code (start functions included) runs.
+pub(crate) fn start_store(
+    engine: &wasmtime::Engine,
+    respawn: &Respawn,
+    state: InstanceState,
+    hook_fuel: u64,
+    now_ms: u64,
+) -> Result<StartedStore, ComponentError> {
+    let mut store = wasmtime::Store::new(engine, state);
+    store.limiter(|state| &mut state.limits);
+    store.set_fuel(hook_fuel).map_err(host_error)?;
+    store.set_epoch_deadline(epoch::NO_EPOCH_DEADLINE);
+    store.data().freeze_clock(now_ms);
+    let pre = &respawn.pre;
+    // Through the raw instance, so the optional `hooks` export binds to the same instance as the world.
+    let (raw, bindings) = instance::outside_async(|| {
+        let raw = pre.instance_pre().instantiate(&mut store)?;
+        let bindings = bindings::Extension::new(&mut store, &raw)?;
+        Ok::<_, wasmtime::Error>((raw, bindings))
+    })
+    .map_err(|error| ComponentError::Activation(format!("instantiate failed: {error:#}")))?;
+    let hooks = if respawn.exports_hooks {
+        Some(hooks::HooksGuest::bind(&mut store, &raw, hook_fuel)?)
+    } else {
+        None
+    };
+    Ok(StartedStore { store, bindings, hooks })
 }

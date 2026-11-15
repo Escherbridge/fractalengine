@@ -411,8 +411,22 @@ No hook call ever runs on the DB thread or the render loop.
     - Never for `PluginCommit` (`fe-database/src/lib.rs:699`), so hooks cannot recurse.
   - **They are authoring aids, not access control.** A peer without the extension writes freely,
     and its rows are judged by role alone.
-  - **Faults fail open** (OQ-B4). Input over the 64 KiB call cap is not a fault: the caller sized it, so a
-    bound write is refused (`input-too-large`, REST 413; steer 2026-11-09 02:45).
+  - **No answer blocks the write** (owner decision 2026-11-14, reversing OQ-B4). If your hook misses its
+    deadline, traps, runs out of fuel, returns `invalid-input` / `failed` or malformed output, the edit is
+    REFUSED: REST 409 `hook-failed` (`failure`: `deadline`, `fault` or `declined`), the editor shows
+    "Refused by <your package>: it did not answer in time" (or "it crashed", "it declined to judge"). The
+    deadline is the catalogue's 250 ms for `scene.*`, growing linearly with the input to twice that (500 ms)
+    at the input cap, plus 64 extra fuel per input byte. The guest is interrupted at the deadline, and no
+    host read (`get-node`, `query-*`, routes) starts after it, so a slow read counts against your time.
+    Answer from what the input carries and keep reads few. A hook that crashes is restarted from your
+    component; until a backoff passes (1 s, doubling per crash, at most 5 restarts a minute) writes in its
+    scope are refused. A caller with a full write's worth of calls already waiting at your binding is
+    refused 503 `hook-busy` with `retry_after_ms`. The input cap is one full node value plus an 8 KiB
+    envelope (fe-sdk `MAX_NODE_PAYLOAD_BYTES`, derived from `MAX_NODE_BYTES`); input over it is refused
+    `input-too-large` (413) before your hook runs (steer 2026-11-09 02:45).
+  - **Imports present transforms.** A petal snapshot import calls `scene.transform` once per imported node
+    whose rotation or scale is not the default, with the same input a live transform update sends; positions
+    in every `scene.*` input are the values the database stores.
   - **A refusal** answers REST 409 `refused` with the guest's reason. The GUI rolls back the
     optimistic transform the way `transform_failed` does.
   - **Augment ops** are staged in the instance's window and flush with its next tick as one
@@ -517,7 +531,7 @@ valid.
 
 **Limits per call.**
 - its own fuel refill (`tick.fuel`);
-- JSON in and out ≤ 64 KiB;
+- JSON in and out ≤ 64 KiB (`scene.*`: ≤ one node payload, the node limit plus 8 KiB);
 - `body` ≤ the hook's cap in §6;
 - the §6 deadline.
 
@@ -691,7 +705,7 @@ These routes write binding rows only (Manager+, judged by role). They never inst
 | OQ-B1 | What happens to a binding when its author is demoted? | Withdrawn: admissible needs both write time and now; the point falls back to the next admissible version; **Keep binding** re-authors it. | Low. Dropping the current check is a relaxation, but it reopens backdating. |
 | OQ-B2 | Where are instances anchored? | Petals only (OD-E3). Verse and fractal bindings fan out per petal; verse and fractal API paths are stretch. | Medium. Scope anchors need a WIT 2.x binding-record field and a manifest `binding` value; both are additive. |
 | OQ-B3 | Does an installed package need local acceptance before a binding runs it? | Yes, per (installation, verse), for every hook. | Low to remove later; high to add later, because it would stop running bindings. |
-| OQ-B4 | What does a scene hook do on a fault or timeout? | Fail open, counted. | Low. A per-binding `on_fault` arrives with `schema_version` 2. |
+| OQ-B4 | What does a scene hook do on a fault or timeout? | **Decided 2026-11-14 (owner): fail closed.** The write is refused (`hook-failed`, 409), counted; the earlier fail-open default let a flood or a crafted crashing input bypass a refusing hook. | Low. A per-binding `on_fault` arrives with `schema_version` 2. |
 | OQ-B5 | Can an outer scope lock its binding against overrides? | No. Nearest always wins. | Medium. A `locked` field needs `schema_version` 2, which older peers deny. |
 | OQ-B6 | Does a petal's stored terrain beat an inherited `petal.map` binding? | Yes. It counts as a petal-scope `builtin`. | Medium. Flipping it changes which map existing petals show. |
 | OQ-B7 | What does an unresolved bound route answer? | 503 to Viewer+ at the petal; the uniform 404 otherwise. | Low. |

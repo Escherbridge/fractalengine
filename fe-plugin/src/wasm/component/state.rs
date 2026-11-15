@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use fe_sdk::manifest_v2::HOST_FUEL_CEILING;
 use fe_sdk::plugin_host::{NodeReader, PendingOp};
@@ -125,6 +126,17 @@ impl InstanceSetup {
     }
 }
 
+/// The per-store resource ceilings (memory, tables, instances).
+fn store_limits() -> wasmtime::StoreLimits {
+    wasmtime::StoreLimitsBuilder::new()
+        .memory_size(INSTANCE_MEMORY_BYTES)
+        .table_elements(MAX_TABLE_ELEMENTS)
+        .instances(MAX_CORE_INSTANCES)
+        .tables(MAX_TABLES)
+        .memories(MAX_MEMORIES)
+        .build()
+}
+
 /// The `T` of every `wasmtime::Store` the component host creates.
 pub struct InstanceState {
     pub(crate) binding: Binding,
@@ -143,6 +155,8 @@ pub struct InstanceState {
     pub(crate) reads_this_hook: AtomicU32,
     /// Provenance of the `ingest.decode` call in flight; host-set, cleared when the call returns.
     pub(crate) decode_stamp: Option<DecodeStamp>,
+    /// Wall-clock deadline of the hook call in flight: reads past it are refused, so host time counts against it.
+    pub(crate) hook_deadline: Option<Instant>,
     wasi: wasmtime_wasi::WasiCtx,
     table: wasmtime::component::ResourceTable,
     pub(crate) limits: wasmtime::StoreLimits,
@@ -157,13 +171,6 @@ impl InstanceState {
             now_ms.clone(),
         )));
         let wasi = build_wasi_ctx(&setup.binding.installation_id, setup.activation, now_ms.clone(), log.clone());
-        let limits = wasmtime::StoreLimitsBuilder::new()
-            .memory_size(INSTANCE_MEMORY_BYTES)
-            .table_elements(MAX_TABLE_ELEMENTS)
-            .instances(MAX_CORE_INSTANCES)
-            .tables(MAX_TABLES)
-            .memories(MAX_MEMORIES)
-            .build();
         Self {
             binding: setup.binding,
             context: setup.context,
@@ -177,9 +184,34 @@ impl InstanceState {
             log,
             reads_this_hook: AtomicU32::new(0),
             decode_stamp: None,
+            hook_deadline: None,
             wasi,
             table: wasmtime::component::ResourceTable::new(),
-            limits,
+            limits: store_limits(),
+        }
+    }
+
+    /// The state for a restarted instance: same binding, context, window, kv, broker, readers and log; fresh WASI
+    /// (reseeded by `activation`), resource table, route cache and limits. The kv slot moves to the new state.
+    pub(crate) fn respawn(&mut self, activation: u64) -> Self {
+        let wasi = build_wasi_ctx(&self.binding.installation_id, activation, self.now_ms.clone(), self.log.clone());
+        Self {
+            binding: self.binding.clone(),
+            context: self.context.clone(),
+            window: self.window.clone(),
+            created_in_window: 0,
+            now_ms: self.now_ms.clone(),
+            kv: self.kv.take(),
+            broker: self.broker.clone(),
+            routes: RouteCache::default(),
+            geometry_reader: self.geometry_reader.clone(),
+            log: self.log.clone(),
+            reads_this_hook: AtomicU32::new(0),
+            decode_stamp: None,
+            hook_deadline: None,
+            wasi,
+            table: wasmtime::component::ResourceTable::new(),
+            limits: store_limits(),
         }
     }
 
@@ -203,8 +235,11 @@ impl InstanceState {
         self.now_ms.store(now_ms, Ordering::Release);
     }
 
-    /// Count one scene or route read against [`MAX_SCENE_READS_PER_HOOK`].
+    /// Count one scene or route read against [`MAX_SCENE_READS_PER_HOOK`]; none starts past the hook's deadline.
     pub(crate) fn take_read(&self) -> Result<(), HostError> {
+        if self.hook_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(HostError::BudgetExceeded("the hook deadline passed; no further reads".into()));
+        }
         if self.reads_this_hook.fetch_add(1, Ordering::Relaxed) >= MAX_SCENE_READS_PER_HOOK {
             return Err(HostError::BudgetExceeded(format!(
                 "at most {MAX_SCENE_READS_PER_HOOK} scene reads per hook call"
@@ -279,8 +314,10 @@ impl wasmtime_wasi::WasiView for InstanceState {
 // host-error mapping (src/wasm/AGENTS.md §host-errors)
 // ---------------------------------------------------------------------------
 
-/// Largest `json` argument, in bytes.
+/// Largest `json` argument that is not node content (bus, kv, egress), in bytes.
 pub const MAX_JSON_ARG_BYTES: usize = fe_sdk::plugin_host::MAX_HOST_BYTES;
+/// Largest property `json` argument: one node payload of text; the parsed value must also fit `MAX_PROPERTY_BYTES`.
+pub const MAX_PROPERTY_ARG_BYTES: usize = fe_sdk::plugin_host::MAX_NODE_PAYLOAD_BYTES;
 
 /// `invalid-input` with a reason.
 pub(crate) fn invalid(detail: impl Into<String>) -> HostError {
@@ -300,6 +337,14 @@ pub(crate) fn parse_json_arg(text: &str) -> Result<serde_json::Value, HostError>
     serde_json::from_str(text).map_err(|error| invalid(format!("json argument: {error}")))
 }
 
+/// Parse a property value argument: text bounded before parsing, the value checked by the SDK at stage time.
+pub(crate) fn parse_property_arg(text: &str) -> Result<serde_json::Value, HostError> {
+    if text.len() > MAX_PROPERTY_ARG_BYTES {
+        return Err(invalid(format!("property value exceeds {MAX_PROPERTY_ARG_BYTES} bytes")));
+    }
+    serde_json::from_str(text).map_err(|error| invalid(format!("json argument: {error}")))
+}
+
 /// Classify a `PluginContext` refusal (plain text) into the WIT vocabulary.
 pub(crate) fn context_error(message: String) -> HostError {
     let lower = message.to_ascii_lowercase();
@@ -309,6 +354,8 @@ pub(crate) fn context_error(message: String) -> HostError {
         HostError::Revoked(message)
     } else if lower.contains("unavailable") {
         HostError::NotAvailable(message)
+    } else if lower.contains("budget") {
+        HostError::BudgetExceeded(message)
     } else if lower.contains("reader") || lower.contains("sink") || lower.contains("poisoned") {
         HostError::Backend(message)
     } else if lower.contains("exceeds") || lower.contains("invalid") || lower.contains("must") || lower.contains("another petal") {

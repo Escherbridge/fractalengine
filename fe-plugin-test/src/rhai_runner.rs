@@ -189,7 +189,7 @@ impl RhaiTestRunner {
             engine.register_fn(
                 "commit_transaction",
                 move |petal_id: &str, encoded: &str| -> Result<Dynamic, Box<EvalAltResult>> {
-                    if encoded.len() > fe_sdk::plugin_host::MAX_HOST_BYTES {
+                    if encoded.len() > fe_sdk::plugin_host::MAX_TRANSACTION_BYTES {
                         return Err(to_script_error("plugin transaction exceeds byte limit"));
                     }
                     let ops: Vec<fe_sdk::plugin_host::PendingOp> =
@@ -497,13 +497,7 @@ fn checked_dynamic_to_json(value: &Dynamic) -> Result<serde_json::Value, String>
         Err("plugin property value is not JSON data".into())
     }
     let value = convert(value, 0)?;
-    if serde_json::to_vec(&value)
-        .map_err(|error| error.to_string())?
-        .len()
-        > fe_sdk::plugin_host::MAX_HOST_BYTES
-    {
-        return Err("plugin property exceeds 65536 bytes".into());
-    }
+    fe_sdk::plugin_host::validate_property_value(&value)?;
     Ok(value)
 }
 
@@ -548,7 +542,7 @@ mod tests {
         );
 
         let runner = RhaiTestRunner::new(host);
-        runner.eval_script(r#"let node = get_node("n1"); assert(node.name == "Test Node"); assert(node.position[0] == 0.0);"#).unwrap();
+        runner.eval_script(r#"let node = get_node("n1"); if !(node.name == "Test Node") { throw "assertion failed"; } if !(node.position[0] == 0.0) { throw "assertion failed"; }"#).unwrap();
 
         let host = runner.host();
         assert!(host.spy().was_called("get_node"));
@@ -583,7 +577,7 @@ mod tests {
             Some(&"red".to_string())
         );
         assert_eq!(host.transactions.len(), 1);
-        runner.eval_script(r#"let receipt = commit_transaction("p1", `[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":2,"values":[1,2]}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); assert(receipt.op_count == 2); assert(get_node("n1").properties.calibration.gain == 2);"#).unwrap();
+        runner.eval_script(r#"let receipt = commit_transaction("p1", `[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":2,"values":[1,2]}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); if !(receipt.op_count == 2) { throw "assertion failed"; } if !(get_node("n1").properties.calibration.gain == 2) { throw "assertion failed"; }"#).unwrap();
         let before = runner.host();
         assert!(runner.eval_script(r#"commit_transaction("p1", `[{"SetProperty":{"node_id":"n1","key":"color","value":"wrong"}},{"DeleteNode":{"node_id":"absent"}}]`);"#).is_err());
         let after = runner.host();
@@ -609,7 +603,7 @@ mod tests {
         assert_eq!(denied.transactions.len(), after.transactions.len());
         assert_eq!(denied.properties, after.properties);
         assert_eq!(denied.scene_changes.len(), after.scene_changes.len());
-        runner.eval_script(r#"let id=create_node("p1", "delete me"); delete_node(id); assert(get_node(id) == ());"#).unwrap();
+        runner.eval_script(r#"let id=create_node("p1", "delete me"); delete_node(id); if !(get_node(id) == ()) { throw "assertion failed"; }"#).unwrap();
     }
 
     #[test]
@@ -666,7 +660,7 @@ mod tests {
         let host = runner.host();
         assert!(host.spy().was_called("query_nodes"));
         assert_eq!(host.spy().query_calls[0].0, "sensor_petal");
-        runner.eval_script(r#"let nodes = query_nodes("sensor_petal", `{"name":"Sensor 1","limit":1}`); assert(nodes.len() == 1); assert(nodes[0].name == "Sensor 1");"#).unwrap();
+        runner.eval_script(r#"let nodes = query_nodes("sensor_petal", `{"name":"Sensor 1","limit":1}`); if !(nodes.len() == 1) { throw "assertion failed"; } if !(nodes[0].name == "Sensor 1") { throw "assertion failed"; }"#).unwrap();
         assert!(runner
             .eval_script(r#"query_nodes("sensor_petal", `{"sql":"DELETE node"}`);"#)
             .is_err());

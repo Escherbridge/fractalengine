@@ -8,7 +8,7 @@ use fe_sdk::plugin_host::{NodeQuery, PendingOp, ReadingProvenance, StagedReading
 use super::bindings::fractalengine::plugin::types::{Binding, HostError, Json, NodeId, Quat, Vec3};
 use super::bindings::fractalengine::plugin::{context, kv, log as guest_log, readings, scene, txn, types};
 use super::kv::{validate_kv_key, MAX_KV_KEY_BYTES, MAX_KV_LIST, MAX_KV_VALUE_BYTES};
-use super::state::{context_error, denied, invalid, parse_json_arg, InstanceState};
+use super::state::{context_error, denied, invalid, parse_json_arg, parse_property_arg, InstanceState};
 use crate::transaction::WindowError;
 use crate::LogLevel;
 
@@ -89,11 +89,22 @@ impl scene::Host for InstanceState {
             .map_err(context_error)?;
         Ok(nodes.iter().map(wit_node).collect())
     }
+
+    fn query_page(&mut self, query: Json) -> Result<scene::NodePage, HostError> {
+        self.require_scene_read()?;
+        self.take_read()?;
+        let query = NodeQuery::parse(&query).map_err(invalid)?;
+        let page = self
+            .context
+            .query_page(self.context.petal_id(), &query, fe_sdk::plugin_host::MAX_QUERY_PAGE_BYTES)
+            .map_err(context_error)?;
+        Ok(scene::NodePage { nodes: page.nodes.iter().map(wit_node).collect(), next: page.next, omitted: page.omitted })
+    }
 }
 
 impl txn::Host for InstanceState {
     fn stage_set_property(&mut self, node: NodeId, key: String, value: Json) -> Result<(), HostError> {
-        let value = parse_json_arg(&value)?;
+        let value = parse_property_arg(&value)?;
         self.stage_op(PendingOp::SetProperty { node_id: node, key, value })
             .map(|_| ())
     }

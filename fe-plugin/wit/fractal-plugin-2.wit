@@ -134,11 +134,26 @@ interface context {
 interface scene {
     use types.{node-id, json, node-snapshot, host-error};
 
-    /// One live node of the bound petal, or none.
+    /// One page of a query: rows in node-id order and the cursor of the next page.
+    record node-page {
+        nodes: list<node-snapshot>,
+        /// Pass as `after` to read on; none means no more rows.
+        next: option<node-id>,
+        /// Matching nodes over the per-node read bound: skipped so the rest of the page still arrives.
+        omitted: list<node-id>,
+    }
+
+    /// One live node of the bound petal, or none. A node is at most fe-sdk MAX_NODE_PAYLOAD_BYTES of
+    /// JSON (the node limit MAX_NODE_BYTES plus an 8 KiB envelope); a larger one is budget-exceeded.
     get-node: func(id: node-id) -> result<option<node-snapshot>, host-error>;
     /// A bounded page of the bound petal, in node-id order. `query` is fe-sdk NodeQuery JSON:
-    /// {"name"?: string, "property"?: {"key": string, "value": any}, "limit"?: 1..200}.
+    /// {"name"?: string, "property"?: {"key": string, "value": any}, "limit"?: 1..200, "after"?: node-id}.
+    /// At most `limit` rows and MAX_QUERY_PAGE_BYTES (four full nodes); a page the byte budget would
+    /// cut, or one holding a node over the per-node bound, is refused as budget-exceeded, never
+    /// silently shortened. Use query-page to read on.
     query-nodes: func(query: json) -> result<list<node-snapshot>, host-error>;
+    /// Like query-nodes, but a page the byte budget cuts is returned with `next` set.
+    query-page: func(query: json) -> result<node-page, host-error>;
 }
 
 /// Staged scene writes. Each call stages into the instance's window; the window flushes once,
@@ -185,6 +200,8 @@ interface txn {
     }
 
     /// Stage a property replacement. Key must be inside `scene.property_scope`; requires write `set_property`.
+    /// `value` is at most MAX_PROPERTY_BYTES (= MAX_NODE_BYTES) of JSON (invalid-input past it); the
+    /// window's ops hold at most MAX_TRANSACTION_BYTES, four full nodes (budget-exceeded past it, nothing staged).
     stage-set-property: func(node: node-id, key: string, value: json) -> result<_, host-error>;
     /// Stage a transform patch. Requires write `set_transform`.
     stage-set-transform: func(node: node-id, patch: transform-patch) -> result<_, host-error>;
@@ -534,12 +551,13 @@ interface hooks {
         /// The binding's config, validated against `provides[].config_schema`.
         config: json,
         /// Hook-specific input (bindings.md section 6); {"event": "configure"} for service hooks.
+        /// At most 64 KiB, or MAX_NODE_PAYLOAD_BYTES for scene.* hooks (one full node value plus the envelope).
         input: json,
         /// ingest.decode, asset.import, blob.mirror; empty otherwise.
         body: list<u8>,
     }
 
-    /// What a hook returns; JSON at most 64 KiB, `body` at most the hook's cap.
+    /// What a hook returns; JSON at most 64 KiB (MAX_NODE_PAYLOAD_BYTES for scene.* hooks), `body` at most the hook's cap.
     record hook-output {
         output: json,
         body: list<u8>,

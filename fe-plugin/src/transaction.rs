@@ -1,10 +1,13 @@
 //! Atomic plugin transactions; see src/AGENTS.md §scene-host.
 
 pub use fe_sdk::plugin_host::PendingOp;
-use fe_sdk::plugin_host::{StagedReading, MAX_HOST_BYTES, MAX_STAGED_READINGS, MAX_TRANSACTION_OPS};
+use fe_sdk::plugin_host::{
+    StagedReading, MAX_COMMIT_BYTES, MAX_READINGS_BYTES, MAX_STAGED_READINGS, MAX_TRANSACTION_BYTES,
+    MAX_TRANSACTION_OPS,
+};
 
-/// Bytes one window may hold before a flush; matches `fe_sdk::plugin_host::validate_commit`.
-pub const MAX_WINDOW_BYTES: usize = MAX_HOST_BYTES * 8;
+/// Bytes one window may hold before a flush (ops plus readings); matches `fe_sdk::plugin_host::validate_commit`.
+pub const MAX_WINDOW_BYTES: usize = MAX_COMMIT_BYTES;
 
 /// Counts and limits of a staged window (the `txn.window` import's answer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +34,8 @@ pub enum WindowError {
 pub struct StagedWindow {
     ops: Vec<PendingOp>,
     readings: Vec<StagedReading>,
-    bytes: usize,
+    op_bytes: usize,
+    reading_bytes: usize,
     max_ops: usize,
     max_readings: usize,
 }
@@ -42,7 +46,8 @@ impl StagedWindow {
         Self {
             ops: Vec::new(),
             readings: Vec::new(),
-            bytes: 0,
+            op_bytes: 0,
+            reading_bytes: 0,
             max_ops: max_ops.min(MAX_TRANSACTION_OPS),
             max_readings: max_readings.min(MAX_STAGED_READINGS),
         }
@@ -55,10 +60,11 @@ impl StagedWindow {
         }
         fe_sdk::plugin_host::validate_transaction(std::slice::from_ref(&op)).map_err(WindowError::Invalid)?;
         let size = serde_json::to_vec(&op).map_err(|e| WindowError::Invalid(e.to_string()))?.len();
-        if self.bytes + size > MAX_WINDOW_BYTES {
+        // Element bytes plus one separator: the sum never undercounts the encoded `Vec`.
+        if self.op_bytes + size + 1 > MAX_TRANSACTION_BYTES {
             return Err(WindowError::Full("bytes"));
         }
-        self.bytes += size;
+        self.op_bytes += size + 1;
         self.ops.push(op);
         Ok(())
     }
@@ -70,10 +76,10 @@ impl StagedWindow {
         }
         fe_sdk::plugin_host::validate_staged_readings(std::slice::from_ref(&reading)).map_err(WindowError::Invalid)?;
         let size = serde_json::to_vec(&reading).map_err(|e| WindowError::Invalid(e.to_string()))?.len();
-        if self.bytes + size > MAX_WINDOW_BYTES {
+        if self.reading_bytes + size + 1 > MAX_READINGS_BYTES {
             return Err(WindowError::Full("bytes"));
         }
-        self.bytes += size;
+        self.reading_bytes += size + 1;
         self.readings.push(reading);
         Ok(())
     }
@@ -85,7 +91,7 @@ impl StagedWindow {
             max_ops: self.max_ops,
             readings: self.readings.len(),
             max_readings: self.max_readings,
-            bytes: self.bytes,
+            bytes: self.op_bytes + self.reading_bytes,
             max_bytes: MAX_WINDOW_BYTES,
         }
     }
@@ -99,12 +105,14 @@ impl StagedWindow {
     pub fn discard(&mut self) {
         self.ops.clear();
         self.readings.clear();
-        self.bytes = 0;
+        self.op_bytes = 0;
+        self.reading_bytes = 0;
     }
 
     /// Take the staged contents for a flush, leaving the window empty.
     pub fn take(&mut self) -> StagedFlush {
-        self.bytes = 0;
+        self.op_bytes = 0;
+        self.reading_bytes = 0;
         StagedFlush {
             ops: std::mem::take(&mut self.ops),
             readings: std::mem::take(&mut self.readings),

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use fe_ext_guest::readings_batch::ReadingBatcher;
 use fe_ext_guest::{
-    bus, context, extension, kv, log, routes, scene, window, Caller, CommandError, DeactivateReason, Extension, NodeSnapshot, TickInfo,
+    bus, context, extension, kv, log, routes, window, Caller, CommandError, DeactivateReason, Extension, NodeSnapshot, TickInfo,
 };
 use fe_sim_model::fleet::FleetModel;
 use fe_sim_model::sensors::evaluate;
@@ -15,8 +15,10 @@ use serde_json::{json, Value};
 
 /// Metrics the manifest declares; anything else would make the host refuse the whole readings batch.
 const ALLOWED_METRICS: [&str; 2] = ["altitude_m", "temperature_c"];
-/// One page of the bound petal, the most the host returns per query.
-const ALL_NODES: &str = r#"{"limit":200}"#;
+/// Every node of the bound petal, read in pages of up to 200 rows.
+fn all_nodes() -> Result<Vec<NodeSnapshot>, fe_ext_guest::HostError> {
+    fe_ext_guest::query::all(&json!({ "limit": 200 })).map(|all| all.nodes)
+}
 /// Mover rows in one `positions` event (the stream caps an event at 4 KiB).
 const MAX_PUBLISHED_MOVERS: usize = 24;
 
@@ -177,7 +179,7 @@ struct FleetSim;
 impl Extension for FleetSim {
     /// Drive every `fleet.config` node this instance owns, then stage whatever readings fit the window.
     fn on_tick(info: TickInfo) {
-        let nodes = match scene::query_nodes(ALL_NODES) {
+        let nodes = match all_nodes() {
             Ok(nodes) => nodes,
             Err(error) => return warn(&format!("scene query refused: {error:?}")),
         };
@@ -200,7 +202,7 @@ impl Extension for FleetSim {
         };
         let args: Value = serde_json::from_str(&args).map_err(|error| CommandError::InvalidInput(error.to_string()))?;
         let target = args.get("node_id").and_then(Value::as_str);
-        let nodes = scene::query_nodes(ALL_NODES).map_err(|error| CommandError::Failed(format!("{error:?}")))?;
+        let nodes = all_nodes().map_err(|error| CommandError::Failed(format!("{error:?}")))?;
         let fleets: Vec<Fleet> = nodes.iter().filter_map(parse_fleet).filter(|fleet| target.is_none_or(|id| id == fleet.node_id)).collect();
         if target.is_some() && fleets.is_empty() {
             return Err(CommandError::Refused("node_id is not a fleet.config node".into()));
@@ -229,7 +231,7 @@ impl Extension for FleetSim {
 
 /// Stage an empty `fleet.driver` on every fleet this instance drives.
 fn release_claims() {
-    let Ok(nodes) = scene::query_nodes(ALL_NODES) else { return };
+    let Ok(nodes) = all_nodes() else { return };
     let me = context::current_binding().installation_id;
     for fleet in nodes.iter().filter_map(parse_fleet).filter(|fleet| fleet.driver.as_deref() == Some(me.as_str())) {
         set_text(&fleet.node_id, "fleet.driver", "");

@@ -384,8 +384,9 @@ only Bevy side: it maps `Degraded`/`Stopped` events onto `PluginRegistry`.
 and the scheduler as `SharedWindow` (`window_for_token` sizes it from the token's effective `TickBudget`; no `tick`
 block means zero limits).
 
-- **Stage time.** `stage_op`/`stage_reading` run the SDK validators and the byte cap (`MAX_WINDOW_BYTES`) and change
-  nothing on refusal; the host import authorizes the op or reading against the token first
+- **Stage time.** `stage_op`/`stage_reading` run the SDK validators and the byte caps (ops at most
+  `MAX_TRANSACTION_BYTES`, readings at most `MAX_READINGS_BYTES`, `MAX_WINDOW_BYTES` = their sum) and change
+  nothing on refusal (a full window is `budget-exceeded`, one property value over `MAX_PROPERTY_BYTES` is `invalid-input`); the host import authorizes the op or reading against the token first
   (`PluginContext::authorize_op`/`authorize_reading`: scene write kind, property scope, declared metric).
 - **Flush.** A due tick takes the whole window as ONE `StagedFlush` (ops + readings). `commit_staged` re-checks the
   token and commits through `StagedCommitSink` atomically (fe-database `PluginCommit`); with no readings and no staged
@@ -524,3 +525,26 @@ binding worker, never the DB thread or the render loop.
 checked against the 1 MiB hook cap before any read (`TooLarge`); then each file is read through
 `read_bounded(file, size + 1)` and kept only when its length and BLAKE3 equal the row (`Mismatch`). A declared
 size that lies is cut off, not trusted, and no extension sees a byte the store cannot vouch for.
+
+## §query-paging
+
+`PluginContext::query_page(petal, query, budget)` is the one paged read both hosts use; `query_nodes` is the
+same read that refuses (`budget-exceeded`) instead of returning a page that was cut or that skipped a node.
+The context cuts the reader's rows BEFORE projection with `fe_sdk::plugin_host::cut_query_page`, so a cut made
+upstream by the DB loader is still detected (the loader only stops early after delivering more than the page
+budget; see fe-sdk/src/AGENTS.md §plugin-host bounds). A row over `MAX_NODE_PAYLOAD_BYTES` is the unit of
+failure: it is listed in `QueryPage::omitted`, consumes a row of `limit`, and the rest of the page arrives. A stored
+row the reader cannot present (malformed rotation, say) arrives as `fe_sdk::plugin_host::unreadable_snapshot`
+(non-finite transform); `NodeQuery::matches` judges it by the cursor alone and `cut_query_page` omits it the same way.
+Wasm guests get `scene.query-page` (`node-page { nodes, next, omitted }`); Rhai scripts get
+`query_nodes_page(petal, filter)` -> `#{nodes, next, omitted}` with a one-node byte budget per page.
+
+## §rhai-limits
+
+The Rhai sandbox limits derive from the node bound so one full node converts into script values: max string
+size `MAX_NODE_PAYLOAD_BYTES` plus room for a page wrapper (cursor and up to 200 omitted ids), max array size
+half of that (every JSON element costs at least two bytes), max map size a quarter (each member at least four).
+A Rhai page is cut at one node payload, so a page never exceeds the string bound. Script-built strings are
+bound by the same number (about 98 KiB at today's 64 KiB node limit), and `DEFAULT_MAX_OPERATIONS` bounds how
+many such values a script can build. `set_property` and `commit_transaction` use the SDK caps
+(`MAX_PROPERTY_BYTES`, `MAX_TRANSACTION_BYTES`).

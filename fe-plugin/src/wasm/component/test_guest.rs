@@ -56,9 +56,37 @@ pub(crate) const STAGE_ONE_TRANSFORM: &str = r#"
 /// `on-tick` body that never returns: any fuel budget runs out.
 pub(crate) const BURN_FOREVER: &str = "(loop $spin (br $spin))";
 
+/// `hooks.on-hook` by input: byte 2 `t` (`["trap"]`) traps, `s` (`["spin"]`) loops until interrupted, anything
+/// else answers `ok({"verdict":"allow"})`. Result area at 1536: `ok` tag, output ptr/len, empty body.
+const ON_HOOK: &str = r#"
+  (data (i32.const 48) "{\"verdict\":\"allow\"}")
+  (func (export "fractalengine:plugin/hooks@2.0.0#on-hook")
+    (param i32 i32 i32 i32 i32 i32 i32 i32) (param $input i32) (param $input_len i32) (param i32 i32) (result i32)
+    (local $mode i32)
+    (if (i32.gt_u (local.get $input_len) (i32.const 2))
+      (then (local.set $mode (i32.load8_u offset=2 (local.get $input)))))
+    (if (i32.eq (local.get $mode) (i32.const 116)) (then unreachable))
+    (if (i32.eq (local.get $mode) (i32.const 115)) (then (loop $spin (br $spin))))
+    (i32.store8 (i32.const 1536) (i32.const 0))
+    (i32.store (i32.const 1540) (i32.const 48))
+    (i32.store (i32.const 1544) (i32.const 19))
+    (i32.store (i32.const 1548) (i32.const 0))
+    (i32.store (i32.const 1552) (i32.const 0))
+    (i32.const 1536))
+"#;
+
 /// A component whose `on-tick` runs `on_tick_body`; every other export is a no-op that returns
 /// a zeroed result area (`ok`, `none`).
 pub(crate) fn component(on_tick_body: &str) -> Vec<u8> {
+    encode(on_tick_body, "", "extension")
+}
+
+/// A component of world `extension-with-hooks`: a no-op `on-tick` and the [`ON_HOOK`] judge.
+pub(crate) fn hooks_component() -> Vec<u8> {
+    encode("", ON_HOOK, "extension-with-hooks")
+}
+
+fn encode(on_tick_body: &str, hooks_export: &str, world_name: &str) -> Vec<u8> {
     let wat = format!(
         r#"(module
   (import "fractalengine:plugin/txn@2.0.0" "stage-set-transform"
@@ -89,6 +117,7 @@ pub(crate) fn component(on_tick_body: &str) -> Vec<u8> {
   (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-events") (param i32 i32))
   (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-command") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 1024))
   (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-call-result") (param i64 i32 i32 i32 i32))
+  {hooks_export}
 )"#
     );
     let mut module = wat::parse_str(&wat).expect("test guest WAT parses");
@@ -97,8 +126,8 @@ pub(crate) fn component(on_tick_body: &str) -> Vec<u8> {
         .push_file(concat!(env!("CARGO_MANIFEST_DIR"), "/wit/fractal-plugin-2.wit"))
         .expect("the 2.0 WIT parses");
     let world = resolve
-        .select_world(&[package], Some("extension"))
-        .expect("world extension exists");
+        .select_world(&[package], Some(world_name))
+        .expect("the test world exists");
     wit_component::embed_component_metadata(&mut module, &resolve, world, wit_component::StringEncoding::UTF8)
         .expect("world metadata embeds");
     wit_component::ComponentEncoder::default()

@@ -109,9 +109,12 @@ for less, never more):
 |---|---|
 | ops per flush | 64 (manifest `tick.max_ops` lowers it) |
 | readings per flush | 1 000 (manifest `tick.max_readings` lowers it) |
-| bytes per flush | 65 536 (`MAX_HOST_BYTES`) |
-| query-nodes rows | 1..200 (`MAX_NODE_QUERY_ROWS`) |
-| any `json` argument | 65 536 bytes, finite numbers only |
+| op bytes per flush | `MAX_TRANSACTION_BYTES` = 4 node payloads (node limit + 8 KiB each) |
+| reading bytes per flush | `MAX_READINGS_BYTES` (512 KiB) |
+| one property value | `MAX_PROPERTY_BYTES` (= node limit `MAX_NODE_BYTES`) |
+| query-nodes / query-page rows | 1..200 (`MAX_NODE_QUERY_ROWS`), at most `MAX_QUERY_PAGE_BYTES` (4 node payloads) |
+| get-node / one page row | `MAX_NODE_PAYLOAD_BYTES`; a larger row is `omitted` from a page, `budget-exceeded` alone |
+| any other `json` argument | 65 536 bytes (`MAX_HOST_BYTES`), finite numbers only |
 | `bus-hooks.on-events` batch | 64 events, 256 KiB (a larger `host/query` snapshot, ≤ 1 MiB, arrives alone) |
 | `on-command` result | 65 536 bytes |
 | kv | keys ≤ 256 bytes, values ≤ 65 536 bytes, manifest `kv.max_bytes` (≤ 1 MiB) per instance |
@@ -133,8 +136,9 @@ plain `extension` components stay valid, so `bindings.rs` keeps binding world `e
   has its own three cases because a hook refusal (`scene.*`) is not a bus outcome.
 - **Not a bus command.** `bus-hooks.on-command` cannot carry a host call: `caller-kind` has no
   `host` case and commands are bus traffic with role floors.
-- **Limits per call** (host side, `hooks.rs`): own fuel refill (`tick.fuel`), JSON in and out
-  at most 64 KiB, `body` at most the §6 cap of the hook, the §6 deadline. A trap, fuel
+- **Limits per call** (host side, `hooks.rs`): own fuel refill (`tick.fuel`, plus 64 per input
+  byte), JSON in and out at most 64 KiB (`scene.*`: one node payload), `body` at most the §6 cap of
+  the hook, the §6 deadline (grown with the input past a quarter of the scene cap). A trap, fuel
   exhaustion, bad output or a missed deadline is a counted fault and the built-in serves the use.
 - **Service hooks** get one `configure` call at start and one per config change
   (`input = {"event":"configure"}`); call hooks get one call per use.

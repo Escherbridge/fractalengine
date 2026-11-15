@@ -8,6 +8,9 @@ use rhai::{Engine, AST};
 
 /// Default maximum operations before a script is terminated.
 pub const DEFAULT_MAX_OPERATIONS: u64 = 1_000_000;
+/// Room over one node payload for the page wrapper: the `next` cursor and up to a page of omitted ids.
+const RHAI_PAGE_SLACK_BYTES: usize =
+    (fe_sdk::plugin_host::MAX_NODE_QUERY_ROWS + 1) * fe_sdk::storage::MAX_NODE_ID_LEN;
 
 /// Configure safety limits on a Rhai [`Engine`].
 ///
@@ -19,10 +22,11 @@ pub fn configure_sandbox(engine: &mut Engine, max_operations: u64) {
     engine.disable_symbol("eval");
     engine.disable_symbol("import");
 
-    // Size limits
-    engine.set_max_array_size(10_000);
-    engine.set_max_map_size(10_000);
-    engine.set_max_string_size(65_536);
+    // Size limits, derived from the node bound so one full node converts (src/AGENTS.md §rhai-limits).
+    let node = fe_sdk::plugin_host::MAX_NODE_PAYLOAD_BYTES + RHAI_PAGE_SLACK_BYTES;
+    engine.set_max_array_size((node / 2).max(10_000));
+    engine.set_max_map_size((node / 4).max(10_000));
+    engine.set_max_string_size(node);
 
     // Instruction counting via on_progress callback.
     // The callback receives the number of operations executed so far.
@@ -141,8 +145,8 @@ mod tests {
             )
             .unwrap();
         let engine = crate::rhai::RhaiEngine::new(Arc::new(Mutex::new(context.clone())));
-        engine.eval::<()>(r#"let node=get_node("n1"); assert(node.name=="actual reader snapshot"); assert(node.position[2]==3.0); assert(node.properties.len()==1); assert(node.properties.calibration.gain==2);"#).unwrap();
-        engine.eval::<()>(r#"let nodes=query_nodes("p1",`{"name":"actual reader snapshot","property":{"key":"calibration","value":{"gain":2}},"limit":1}`); assert(nodes.len()==1);"#).unwrap();
+        engine.eval::<()>(r#"let node=get_node("n1"); if !(node.name=="actual reader snapshot") { throw "assertion failed"; } if !(node.position[2]==3.0) { throw "assertion failed"; } if !(node.properties.len()==1) { throw "assertion failed"; } if !(node.properties.calibration.gain==2) { throw "assertion failed"; }"#).unwrap();
+        engine.eval::<()>(r#"let nodes=query_nodes("p1",`{"name":"actual reader snapshot","property":{"key":"calibration","value":{"gain":2}},"limit":1}`); if !(nodes.len()==1) { throw "assertion failed"; }"#).unwrap();
         assert!(engine
             .eval::<()>(r#"query_nodes("p1",`{"property":{"key":"secret","value":"hidden"}}`);"#)
             .is_err());
@@ -150,9 +154,39 @@ mod tests {
             .eval::<()>(r#"query_nodes("p1",`{"sql":"DELETE node"}`);"#)
             .is_err());
         assert!(engine.eval::<()>(r#"query_nodes("other","all");"#).is_err());
-        engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":3}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); assert(receipt.op_count==2); assert(get_node("n1").properties.calibration.gain==3);"#).unwrap();
+        // Node-sized values (src/AGENTS.md §rhai-limits): a full node reads and writes; a script page holds one
+        // full node, pages on with `next`, and names an over-bound node in `omitted` instead of failing.
+        let full = fe_sdk::property_schema::MAX_PROPERTY_BYTES - 2;
+        for (id, len) in [("big0", full), ("big1", full), ("bigz", fe_sdk::plugin_host::MAX_NODE_PAYLOAD_BYTES)] {
+            host.lock().unwrap().insert_node(
+                id,
+                fe_sdk::NodeSnapshot {
+                    node_id: id.into(),
+                    petal_id: "p1".into(),
+                    name: "big".into(),
+                    position: [0.0; 3],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0; 3],
+                    properties: std::collections::HashMap::from([(
+                        "calibration".into(),
+                        fe_sdk::PropertyValue::String("x".repeat(len)),
+                    )]),
+                },
+            );
+        }
+        engine.eval::<()>(&format!(r#"if !(get_node("big0").properties.calibration.len() == {full}) { throw "assertion failed"; }"#)).unwrap();
+        engine.eval::<()>(r#"
+            let first = query_nodes_page("p1", `{"name":"big","limit":200}`);
+            if !(first.nodes.len() == 1 && first.next == "big0" && first.omitted.len() == 0) { throw "assertion failed"; }
+            let second = query_nodes_page("p1", `{"name":"big","limit":200,"after":"big0"}`);
+            if !(second.nodes[0].node_id == "big1" && second.omitted.len() == 1 && second.omitted[0] == "bigz" && second.next == "bigz") { throw "assertion failed"; }
+            if !(query_nodes_page("p1", `{"name":"big","limit":200,"after":"bigz"}`).next == ()) { throw "assertion failed"; }
+        "#).unwrap();
+        engine.eval::<()>(&format!(r#"let s = ""; s.pad({full}, 'x'); set_property("big0", "calibration", s);"#)).unwrap();
+        assert!(engine.eval::<()>(&format!(r#"let s = ""; s.pad({}, 'x'); set_property("big0", "calibration", s);"#, full + 1)).is_err());
+        engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":3}}},{"CreateNode":{"petal_id":"p1","name":"created"}}]`); if !(receipt.op_count==2) { throw "assertion failed"; } if !(get_node("n1").properties.calibration.gain==3) { throw "assertion failed"; }"#).unwrap();
         // A v2 SetTransform batch rides the same atomic path through PluginContexts (needs the mock SetTransform arm).
-        engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetTransform":{"node_id":"n1","position":[4.0,5.0,6.0]}},{"SetTransform":{"node_id":"n1","scale":[2.0,2.0,2.0]}}]`); assert(receipt.op_count==2);"#).unwrap();
+        engine.eval::<()>(r#"let receipt=commit_transaction("p1",`[{"SetTransform":{"node_id":"n1","position":[4.0,5.0,6.0]}},{"SetTransform":{"node_id":"n1","scale":[2.0,2.0,2.0]}}]`); if !(receipt.op_count==2) { throw "assertion failed"; }"#).unwrap();
         let count = host.lock().unwrap().transactions.len();
         assert!(engine.eval::<()>(r#"commit_transaction("p1",`[{"SetProperty":{"node_id":"n1","key":"calibration","value":{"gain":999}}},{"DeleteNode":{"node_id":"missing"}}]`);"#).is_err());
         assert_eq!(host.lock().unwrap().transactions.len(), count);

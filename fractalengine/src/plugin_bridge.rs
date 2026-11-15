@@ -1,7 +1,7 @@
 //! Production extension host: scene DB backend, integration bus, plugin manager and ticks, network broker,
 //! governance, ops drain and scoped bindings; rationale in src/AGENTS.md §plugin-bridge.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -73,6 +73,7 @@ use fe_plugin::{
 };
 use fe_runtime::extension_binding::{
     resolution_scopes, BindingMode, BindingPoint, BindingRecord, BindingResolution, BindingScopeLevel,
+    UnresolvedReason,
 };
 use fe_runtime::messages::{
     BindingRefusal, DbCommand, DbResult, ReplicatedRowOutcome, StoredBinding, VerseBindings,
@@ -83,8 +84,8 @@ use fe_runtime::plugin_host::{
     ReadingsAdmission,
 };
 use fe_runtime::scene_hook_gate::{
-    AugmentOp, SceneBinding, SceneHook, SceneHookBackend, SceneHookCall, SceneHookReply,
-    SceneHookReplySender,
+    AugmentOp, ProvisionFailure, ProvisionReplySender, ProvisionalPetal, SceneBinding, SceneHook,
+    SceneHookBackend, SceneHookCall, SceneHookReply, SceneHookReplySender,
 };
 use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
 use fe_sdk::manifest_v2::{parse_and_validate, ExtensionManifest, Ingress, RoleFloor, SceneWrite};
@@ -139,6 +140,8 @@ const OWNER_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 const SNAPSHOT_RETRY: Duration = Duration::from_secs(5);
 /// Accepted payloads queued for decode before new ones are dropped.
 const MAX_PAYLOAD_BACKLOG: usize = 256;
+/// Longest the worker serves queued `scene.*` calls before it runs a turn (src/AGENTS.md §scene-hook-queue).
+const SCENE_SERVE_SLICE: Duration = Duration::from_millis(50);
 /// Audit lines the details view shows.
 const DETAILS_AUDIT_LINES: usize = 10;
 /// Sealed builds in the extension data dir.
@@ -864,37 +867,105 @@ struct ExtensionNetRuntime(#[allow(dead_code)] tokio::runtime::Runtime);
 #[derive(Resource)]
 pub(crate) struct ExtensionBindingService(pub Mutex<Option<OwnedService>>);
 
-/// Petal id -> its `(verse, fractal, petal)` address, mirrored from the loaded hierarchy.
+/// Distinct provisional petals (imports being judged) held at once; past it a provision answers unavailable.
+const MAX_PROVISIONAL_PETALS: usize = 4;
+
+/// A provisional petal's address and the holds (one per provision) keeping it.
+type ProvisionalHolds = HashMap<String, (PetalAddress, BTreeSet<u64>)>;
+
+/// Petal id -> its `(verse, fractal, petal)` address, mirrored from the loaded hierarchy, overlaid with the
+/// provisional petals imports are judged at (`src/AGENTS.md` §scene-hook-import); the mirror always wins.
 #[derive(Clone, Default)]
-struct PetalDirectory(Arc<RwLock<HashMap<String, PetalAddress>>>);
+struct PetalDirectory(
+    Arc<RwLock<HashMap<String, PetalAddress>>>,
+    Arc<RwLock<ProvisionalHolds>>,
+);
 
 impl PetalDirectory {
     fn get(&self, petal_id: &str) -> Option<PetalAddress> {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(petal_id)
-            .cloned()
-    }
-
-    fn contains(&self, petal_id: &str) -> bool {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(petal_id)
-    }
-
-    fn of_verse(&self, verse_id: &str) -> Vec<PetalAddress> {
-        let mut petals: Vec<PetalAddress> = self
+        let mirrored = self
             .0
             .read()
             .unwrap_or_else(PoisonError::into_inner)
+            .get(petal_id)
+            .cloned();
+        mirrored.or_else(|| {
+            self.1
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(petal_id)
+                .map(|(address, _)| address.clone())
+        })
+    }
+
+    fn contains(&self, petal_id: &str) -> bool {
+        self.get(petal_id).is_some()
+    }
+
+    fn of_verse(&self, verse_id: &str) -> Vec<PetalAddress> {
+        let mirrored = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        let mut petals: Vec<PetalAddress> = mirrored
             .values()
             .filter(|petal| petal.verse_id == verse_id)
             .cloned()
             .collect();
+        petals.extend(
+            self.1
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .filter(|(petal_id, (address, _))| {
+                    address.verse_id == verse_id && !mirrored.contains_key(*petal_id)
+                })
+                .map(|(_, (address, _))| address.clone()),
+        );
+        drop(mirrored);
         petals.sort_by(|left, right| left.petal_id.cmp(&right.petal_id));
         petals
+    }
+
+    /// Add one hold on a provisional petal. `Exists` when the id is a known petal at another address.
+    fn hold_provisional(&self, address: &PetalAddress, hold: u64) -> Result<(), ProvisionFailure> {
+        let elsewhere = self
+            .0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&address.petal_id)
+            .is_some_and(|mirrored| mirrored != address);
+        if elsewhere {
+            return Err(ProvisionFailure::Exists);
+        }
+        let mut provisional = self.1.write().unwrap_or_else(PoisonError::into_inner);
+        let held = provisional.len();
+        match provisional.get_mut(&address.petal_id) {
+            Some((current, holds)) if *current == *address => {
+                holds.insert(hold);
+                Ok(())
+            }
+            Some(_) => Err(ProvisionFailure::Exists),
+            None if held >= MAX_PROVISIONAL_PETALS => Err(ProvisionFailure::Unavailable(
+                "too many petal imports are being judged; retry shortly".into(),
+            )),
+            None => {
+                provisional.insert(
+                    address.petal_id.clone(),
+                    (address.clone(), BTreeSet::from([hold])),
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Drop one hold; the verse to re-resolve once the petal's last hold is gone (an unknown hold is a no-op).
+    fn release_provisional(&self, petal_id: &str, hold: u64) -> Option<String> {
+        let mut provisional = self.1.write().unwrap_or_else(PoisonError::into_inner);
+        let (address, holds) = provisional.get_mut(petal_id)?;
+        if !holds.remove(&hold) || !holds.is_empty() {
+            return None;
+        }
+        let verse_id = address.verse_id.clone();
+        provisional.remove(petal_id);
+        Some(verse_id)
     }
 
     /// Replace the map; the verses whose petal set changed.
@@ -1854,9 +1925,17 @@ impl BindingView {
             .points
             .iter()
             .find(|candidate| candidate.point.hook == hook && candidate.point.key.is_empty())?;
-        let BindingResolution::Resolved { package_id, scope } = &published.resolved.resolution
-        else {
-            return None;
+        // A degraded instance keeps its binding in force: the gate dispatches, the call faults, the write is
+        // refused naming the package (fail closed). Disable or unbind resolves elsewhere and frees the scope.
+        let (package_id, scope) = match &published.resolved.resolution {
+            BindingResolution::Resolved { package_id, scope } => (package_id, scope),
+            BindingResolution::Unresolved {
+                package_id,
+                scope,
+                reason: UnresolvedReason::Degraded,
+                ..
+            } => (package_id, scope),
+            _ => return None,
         };
         let scene = published
             .manifest
@@ -1882,6 +1961,32 @@ impl BindingView {
                 .unwrap_or_default(),
             may_augment: writes_properties && ticks,
         })
+    }
+
+    /// Import judgment: every keyless `scene.*` point at `petal_id` runs here or is the built-in, else unjudgeable.
+    fn scene_judgeable(&self, petal_id: &str) -> Result<(), ProvisionFailure> {
+        let inner = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        let petal = inner.petals.get(petal_id).ok_or_else(|| {
+            ProvisionFailure::Unavailable("the new petal's bindings were not published".into())
+        })?;
+        for published in petal
+            .points
+            .iter()
+            .filter(|published| published.point.hook.starts_with("scene.") && published.point.key.is_empty())
+        {
+            let reason = match &published.resolved.resolution {
+                BindingResolution::Resolved { .. } | BindingResolution::Builtin { .. } => continue,
+                BindingResolution::Elsewhere { .. } => "the binding runs on another peer".to_string(),
+                BindingResolution::Unresolved {
+                    package_id, reason, ..
+                } => format!("{package_id} cannot run on this host ({reason:?})"),
+            };
+            return Err(ProvisionFailure::Unjudgeable {
+                hook: published.point.hook.clone(),
+                reason,
+            });
+        }
+        Ok(())
     }
 
     /// Whether `point` resolves to an extension at `petal_id` in the published cache; never blocks.
@@ -2104,11 +2209,19 @@ enum BindingSignal {
         input: Value,
         reply: Sender<HookAnswer>,
     },
-    /// One `scene.*` gate call; the gate stops waiting at the hook's deadline (fail open).
+    /// One `scene.*` gate call; the gate stops waiting at the hook's deadline and refuses (fail closed).
     Scene {
         call: SceneHookCall,
         reply: SceneHookReplySender,
     },
+    /// Hold a petal an import is about to create and resolve its verse; answered after the next publication.
+    Provision {
+        petal: PetalAddress,
+        hold: u64,
+        reply: ProvisionReplySender,
+    },
+    /// Drop one provision hold (the import's judgment is over).
+    Release { petal_id: String, hold: u64 },
     /// One `asset.import` call carrying the uploaded bytes; the GLB comes back in the reply body.
     Import {
         petal_id: String,
@@ -2269,6 +2382,59 @@ struct BindingWorker {
     hook_caller: Arc<dyn HookCaller>,
     /// Install/Update offers the ops worker refreshes from configured sources (`LocalFacts.registry`).
     registry_offers: RegistryOffers,
+    /// Provisions waiting for their verse to resolve and publish.
+    provisions: Vec<PendingProvision>,
+    /// `scene.*` calls waiting their turn, served round-robin per (petal, package, caller).
+    scene_calls: SceneCallQueue,
+}
+
+/// One FIFO of `scene.*` calls per (petal, package, caller DID), served round-robin so one caller's backlog delays
+/// another's call by at most one call per busy queue (src/AGENTS.md §scene-hook-queue).
+#[derive(Default)]
+struct SceneCallQueue {
+    queues: HashMap<(String, String, String), VecDeque<(SceneHookCall, SceneHookReplySender)>>,
+    /// Keys with a non-empty queue, in serving order.
+    order: VecDeque<(String, String, String)>,
+}
+
+impl SceneCallQueue {
+    fn push(&mut self, call: SceneHookCall, reply: SceneHookReplySender) {
+        let caller = call.input["caller"]["did"].as_str().unwrap_or_default().to_string();
+        let key = (call.petal_id.clone(), call.package_id.clone(), caller);
+        let queue = self.queues.entry(key.clone()).or_default();
+        if queue.is_empty() {
+            self.order.push_back(key);
+        }
+        queue.push_back((call, reply));
+    }
+
+    /// The head of the queue whose turn it is; that queue goes to the back of the order.
+    fn pop(&mut self) -> Option<(SceneHookCall, SceneHookReplySender)> {
+        while let Some(key) = self.order.pop_front() {
+            let Some(queue) = self.queues.get_mut(&key) else { continue };
+            let next = queue.pop_front();
+            if queue.is_empty() {
+                self.queues.remove(&key);
+            } else {
+                self.order.push_back(key);
+            }
+            if next.is_some() {
+                return next;
+            }
+        }
+        None
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
+
+/// One provision waiting on its verse; `resolved` is set by the turn that (re)loaded the verse's bindings.
+struct PendingProvision {
+    petal: PetalAddress,
+    reply: ProvisionReplySender,
+    resolved: Option<Result<(), String>>,
 }
 
 /// One `LoadBindingSnapshot` round trip (pinned I-DB command).
@@ -2306,13 +2472,20 @@ impl BindingWorker {
             if stop.is_requested() {
                 break;
             }
-            match signals.recv_timeout(WORKER_TURN) {
+            // Queued scene calls are served in slices between drains, so a call arriving meanwhile joins the rotation.
+            let wait = if self.scene_calls.is_empty() { WORKER_TURN } else { Duration::ZERO };
+            match signals.recv_timeout(wait) {
                 Ok(signal) => self.absorb(signal),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             while let Ok(signal) = signals.try_recv() {
                 self.absorb(signal);
+            }
+            let slice = Instant::now() + SCENE_SERVE_SLICE;
+            while Instant::now() < slice {
+                let Some((call, reply)) = self.scene_calls.pop() else { break };
+                self.scene_call(call, reply);
             }
             self.turn();
         }
@@ -2456,6 +2629,51 @@ impl BindingWorker {
         self.pump_blob_services();
         self.live.prune();
         self.publish();
+        self.answer_provisions();
+    }
+
+    /// Hold a provisional petal and mark its verse dirty; the answer waits for the turn that resolves it.
+    fn provision(&mut self, petal: PetalAddress, hold: u64, reply: ProvisionReplySender) {
+        if let Err(failure) = self.petals.hold_provisional(&petal, hold) {
+            let _ = reply.send(Err(failure));
+            return;
+        }
+        self.activator.mark_dirty(&petal.verse_id, Trigger::Navigation);
+        self.provisions.push(PendingProvision {
+            petal,
+            reply,
+            resolved: None,
+        });
+    }
+
+    /// Record a verse's resolve outcome on the provisions waiting for it.
+    fn settle_provisions(&mut self, verse_id: &str, outcome: &Result<(), String>) {
+        for pending in self
+            .provisions
+            .iter_mut()
+            .filter(|pending| pending.petal.verse_id == verse_id)
+        {
+            pending.resolved = Some(outcome.clone());
+        }
+    }
+
+    /// After publication: answer each settled provision from the published cache (what `bound` will read).
+    fn answer_provisions(&mut self) {
+        if self.provisions.iter().all(|pending| pending.resolved.is_none()) {
+            return;
+        }
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.provisions)
+            .into_iter()
+            .partition(|pending| pending.resolved.is_some());
+        self.provisions = waiting;
+        for pending in ready {
+            let answer = match pending.resolved {
+                Some(Ok(())) => self.view.scene_judgeable(&pending.petal.petal_id),
+                Some(Err(reason)) => Err(ProvisionFailure::Unavailable(reason)),
+                None => continue,
+            };
+            let _ = pending.reply.send(answer);
+        }
     }
 
     fn absorb(&mut self, signal: BindingSignal) {
@@ -2489,7 +2707,14 @@ impl BindingWorker {
                 let answer = self.call_point(&petal_id, &point, &input);
                 let _ = reply.send(answer);
             }
-            BindingSignal::Scene { call, reply } => self.scene_call(call, reply),
+            BindingSignal::Scene { call, reply } => self.scene_calls.push(call, reply),
+            BindingSignal::Provision { petal, hold, reply } => self.provision(petal, hold, reply),
+            BindingSignal::Release { petal_id, hold } => {
+                // The last hold gone: re-resolve so instances started at the provisional petal stop.
+                if let Some(verse_id) = self.petals.release_provisional(&petal_id, hold) {
+                    self.activator.mark_dirty(&verse_id, Trigger::Navigation);
+                }
+            }
             BindingSignal::Import {
                 petal_id,
                 mime,
@@ -2597,6 +2822,8 @@ impl BindingWorker {
                 Ok(bindings) => bindings,
                 Err(reason) => {
                     tracing::warn!(%verse_id, %reason, "binding snapshot did not load; retrying");
+                    // A provision never reads a stale or absent resolution: it is answered unavailable.
+                    self.settle_provisions(&verse_id, &Err(reason));
                     self.retry.insert(verse_id, Instant::now() + SNAPSHOT_RETRY);
                     continue;
                 }
@@ -2616,6 +2843,7 @@ impl BindingWorker {
                 .activator
                 .reconcile(&verse_id, &snapshot, &petals, &running);
             tracing::debug!(%verse_id, ?triggers, starts = plan.starts.len(), stops = plan.stops.len(), "bindings re-resolved");
+            self.settle_provisions(&verse_id, &Ok(()));
             self.snapshots.insert(verse_id, bindings);
             self.apply(plan);
             self.changed = true;
@@ -2721,8 +2949,8 @@ impl BindingWorker {
         }
     }
 
-    /// One `scene.*` call on the instance the binding names (lazily started); a moved binding or no instance is a
-    /// fault, so the gate lets the built-in proceed.
+    /// One `scene.*` call on the instance the binding names (lazily started); a moved binding, no instance or a
+    /// degraded one is a fault, which the gate turns into a refusal naming the package (fail closed).
     fn scene_call(&mut self, call: SceneHookCall, reply: SceneHookReplySender) {
         if reply.is_closed() {
             return;
@@ -4197,6 +4425,32 @@ impl SceneHookBackend for SceneHooks {
         let key = InstanceKey::new(petal_id.to_string(), package_id.to_string());
         self.live.stage_augment(&key, node_id, ops)
     }
+
+    fn provision(&self, petal: ProvisionalPetal, reply: ProvisionReplySender) {
+        let ProvisionalPetal {
+            verse_id,
+            fractal_id,
+            petal_id,
+            hold,
+        } = petal;
+        // A gone worker drops `reply`, which the gate reads as unavailable.
+        self.signals.send(BindingSignal::Provision {
+            petal: PetalAddress {
+                verse_id,
+                fractal_id,
+                petal_id,
+            },
+            hold,
+            reply,
+        });
+    }
+
+    fn release(&self, petal: &ProvisionalPetal) {
+        self.signals.send(BindingSignal::Release {
+            petal_id: petal.petal_id.clone(),
+            hold: petal.hold,
+        });
+    }
 }
 
 /// Present only when the plugin manager started (otherwise no gate: every write proceeds as built in).
@@ -4753,6 +5007,8 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         blob_mirror: None,
         mirror_queue,
         registry_offers: registry_offers.clone(),
+        provisions: Vec::new(),
+        scene_calls: SceneCallQueue::default(),
     };
     let service = OwnedService::spawn("ext-bindings", move |stop| worker.run(signal_rx, stop));
     app.insert_resource(ExtensionBindingService(Mutex::new(Some(service))));

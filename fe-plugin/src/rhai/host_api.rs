@@ -57,6 +57,37 @@ pub fn register_host_api(engine: &mut Engine, ctx: Arc<Mutex<PluginContext>>) {
     {
         let ctx = ctx.clone();
         engine.register_fn(
+            "query_nodes_page",
+            move |petal_id: &str, filter: &str| -> Result<Map, Box<rhai::EvalAltResult>> {
+                let query = fe_sdk::plugin_host::NodeQuery::parse(filter).map_err(script_error)?;
+                let ctx = ctx
+                    .lock()
+                    .map_err(|_| script_error("plugin context lock poisoned"))?;
+                // One node per script value at most: a page never exceeds the sandbox string bound.
+                let page = ctx
+                    .query_page(petal_id, &query, fe_sdk::plugin_host::MAX_NODE_PAYLOAD_BYTES)
+                    .map_err(script_error)?;
+                let nodes: rhai::Array = page
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        super::storage_api::json_to_dynamic(&fe_sdk::plugin_host::snapshot_json(
+                            node,
+                        ))
+                    })
+                    .collect();
+                let omitted: rhai::Array = page.omitted.into_iter().map(Dynamic::from).collect();
+                let mut map = Map::new();
+                map.insert("nodes".into(), nodes.into());
+                map.insert("next".into(), page.next.map_or(Dynamic::UNIT, Dynamic::from));
+                map.insert("omitted".into(), omitted.into());
+                Ok(map)
+            },
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
             "set_property",
             move |node_id: &str,
                   key: &str,
@@ -119,7 +150,7 @@ pub fn register_host_api(engine: &mut Engine, ctx: Arc<Mutex<PluginContext>>) {
         engine.register_fn(
             "commit_transaction",
             move |petal_id: &str, encoded: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
-                if encoded.len() > fe_sdk::plugin_host::MAX_HOST_BYTES {
+                if encoded.len() > fe_sdk::plugin_host::MAX_TRANSACTION_BYTES {
                     return Err(script_error("plugin transaction exceeds byte limit"));
                 }
                 let ops: Vec<fe_sdk::plugin_host::PendingOp> =
@@ -248,12 +279,6 @@ pub(crate) fn checked_dynamic_to_json(value: &Dynamic) -> Result<serde_json::Val
         Err("plugin property value is not JSON data".into())
     }
     let value = convert(value, 0)?;
-    if serde_json::to_vec(&value)
-        .map_err(|error| error.to_string())?
-        .len()
-        > fe_sdk::plugin_host::MAX_HOST_BYTES
-    {
-        return Err("plugin property exceeds 65536 bytes".into());
-    }
+    fe_sdk::plugin_host::validate_property_value(&value)?;
     Ok(value)
 }

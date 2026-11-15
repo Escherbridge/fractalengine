@@ -83,7 +83,7 @@ sandbox runs over one fixture are byte-identical (R25).
   `authorize_reading`, then stages all-or-nothing: the batch goes into a clone of the window that
   replaces it only when every reading fit (`budget-exceeded` past `max_readings`). `recorded-at`
   stays absent when the guest omits it; the flush path fills the flushing tick's time.
-- **kv**: keys 1..=256 bytes, values ≤ 64 KiB of valid JSON, total bytes ≤ manifest `kv.max_bytes`
+- **kv**: keys 1..=256 bytes, values ≤ 64 KiB of valid JSON (a separate budget, not node content), total bytes ≤ manifest `kv.max_bytes`
   (≤ 1 MiB) or `budget-exceeded`. `KvBackend` is the persistence seam; `MemoryKv` lasts for the
   process. A file-backed backend (so `on-install` sees state survive restarts) is the binary's job.
 - **log** and guest stdout/stderr share `wasi::GuestLog`: 4 KiB per message (cut at a char
@@ -137,12 +137,13 @@ already degraded and the scheduler stops it on its next tick. The matching bridg
 
 1. refuse if degraded;
 2. refuel to the hook budget (except `on-tick`: `TickScheduler` already called `refuel`);
-3. freeze the clock;
+3. freeze the clock and set the epoch deadline to `NO_EPOCH_DEADLINE` (these entries keep their fuel budget only);
 4. run the guest **outside any async context** (`outside_async`).
 5. On any error (fuel, trap, `wasi:cli/exit`) the instance degrades, the window is discarded
-   unflushed, and every later hook is refused with `HookFault::Degraded`. This applies to ALL hooks,
-   not only `on-tick`, so a command or ingress hook that traps halfway through staging can never
-   leave a partial batch for the next flush (`fe-plugin/wit/AGENTS.md` §staged-writes).
+   unflushed, and every later hook is refused with `HookFault::Degraded`. This applies to ALL these
+   entries, not only `on-tick`, so a command or ingress hook that traps halfway through staging can never
+   leave a partial batch for the next flush (`fe-plugin/wit/AGENTS.md` §staged-writes). A binding hook call
+   (`call_hook`) is the exception: it restarts instead (§hooks, "crash recovery").
 
 `outside_async` exists because wasmtime-wasi's sync shims (`blocking-write-and-flush`, `poll`)
 call `in_tokio`, which does `Handle::block_on` and panics inside a runtime; the plugin worker runs
@@ -191,7 +192,9 @@ pointer (exports) or a trailing return-pointer param (imports, e.g. `stage-set-t
 flat params + 1). `fleet_setup` binds the shipped fleet-sim manifest to petal `p1` of
 `MockHostEnv`. Journeys: `component/instance.rs`
 (`component_instantiates_ticks_and_stages_through_the_shared_window`) and the component block of
-`mod.rs::fuel_exhaustion_marks_degraded`. Both run in batch R11 (`cargo test -p fe-plugin`);
+`mod.rs::fuel_exhaustion_marks_degraded`. `test_guest::hooks_component()` adds a `hooks.on-hook` judge on world
+`extension-with-hooks` (byte 2 of the input picks trap `t`, spin `s` or allow); the instance journey drives crash
+recovery and the epoch interrupt with it. Both run in batch R11 (`cargo test -p fe-plugin`);
 `cargo test -p fe-plugin -- wasm::` selects just this directory.
 
 ## §read-budget (G1)
@@ -202,16 +205,62 @@ looping on them inside one hook could hold the one worker, and the DB lane, for 
 other instance's ticks. `InstanceState::take_read` caps them at `MAX_SCENE_READS_PER_HOOK` (64) per hook
 call; `ExtensionInstance::call` resets the count on every guest entry. Over budget is `budget-exceeded`,
 which the guest can handle (read less per tick, or subscribe to `host/node-changes` instead).
-`query-nodes` is capped in `context.rs::query_nodes`: `NodeQuery::validate` bounds `limit` to
-`MAX_NODE_QUERY_ROWS` (200) and a page over `MAX_HOST_BYTES` (64 KiB serialized) is refused, so one read
-cannot return an unbounded result.
+`query-nodes` and `query-page` are capped in `context.rs` (src/AGENTS.md §query-paging): `NodeQuery::validate`
+bounds `limit` to `MAX_NODE_QUERY_ROWS` (200) and a page holds at most `MAX_QUERY_PAGE_BYTES` (four node
+payloads), so one read cannot return an unbounded result.
+
+## §node-bounds
+
+All node-content bounds on this boundary derive from `fe_sdk::property_schema::MAX_NODE_BYTES`
+(fe-sdk/src/AGENTS.md §plugin-host bounds): `get-node` returns at most one node payload (`budget-exceeded`
+past it), a page at most four, `stage-set-property` takes one property value (text at most one node payload,
+value at most `MAX_PROPERTY_BYTES`, else `invalid-input`), the window's ops at most `MAX_TRANSACTION_BYTES`
+(`budget-exceeded`, nothing staged). Non-node JSON (`MAX_JSON_ARG_BYTES`: bus, kv, egress) stays 64 KiB.
+
+Guest memory: `INSTANCE_MEMORY_BYTES` (16 MiB per linear memory) is unchanged. The largest single delivery
+is one query page (4 node payloads, about 288 KiB at today's limit, about 1.06 MiB at 256 KiB) plus the guest's
+parse of one node at a time (serde_json `Value` costs up to about 12x the text for arrays of small numbers):
+about 1.2 MiB worst case today, about 4.5 MiB at a 256 KiB node limit. The ceiling has to grow only if the
+node limit passes roughly 1 MiB (then one page plus one parsed node approaches 16 MiB); the rule is
+`INSTANCE_MEMORY_BYTES >= 4 * MAX_NODE_PAYLOAD_BYTES + 12 * MAX_NODE_PAYLOAD_BYTES` with headroom for the
+guest's own state. A guest that over-allocates traps and degrades only itself; the host never traps.
 
 ## §hooks
 
 `component/hooks.rs` binds the optional `hooks` export of world `extension-with-hooks` on the same raw
 instance `instantiate` creates; plain 2.0 components stay on world `extension` and keep working. A component
 that declares `provides` must export it (`check_provides`). Each call has a catalogue deadline and byte caps
-(`hook_limits`, 64 KiB JSON), its own fuel refill and a frozen clock; a trap or timeout degrades the instance.
+(`hook_limits`: 64 KiB JSON, `MAX_SCENE_HOOK_JSON_BYTES` = one node payload for `scene.*` input and output),
+its own fuel refill and a frozen clock. Input-sized allowances: the deadline follows
+`fe_runtime::scene_hook_gate::input_deadline` (the gate's rule, so both sides agree) and the fuel gets
+`HOOK_FUEL_PER_INPUT_BYTE` (64) per input byte on top of the manifest's, capped at `HOST_FUEL_CEILING`, so parsing a
+full-size input never starves an honest hook into a fault.
+
+- **Fail closed (owner decision 2026-11-14, reversing OQ-B4).** For a bound `scene.*` hook, every outcome that is not
+  an answer (trap, fuel exhaustion, interrupt, timeout, bad output, `invalid-input` / `failed`, a degraded or
+  recovering instance) refuses the write at the gate (`hook-failed`, fe-runtime/src/AGENTS.md §scene-hook-gate). The
+  instance therefore must bound its own wall time and recover from crashes, or one input could stall or block a petal.
+- **Wall-clock bound.** The component engine enables epoch interruption; `epoch.rs` runs ONE process-wide ticker thread
+  (`EPOCH_TICK` = 10 ms) over weak handles to every engine. `HooksGuest::call` sets the store's epoch deadline to
+  `ticks_for(deadline)` before entering the guest and restores `NO_EPOCH_DEADLINE` after, so a guest still running at
+  the deadline traps with `Trap::Interrupt` (`HookFault::Interrupted`, at most two ticks late). Host reads count too:
+  `InstanceState::hook_deadline` is set for the call and `take_read` refuses (`budget-exceeded`) any read that would
+  start past it; a read already running is bounded by its own DB timeout and the interrupt lands on return. Ticks,
+  routes, bus, ingress and lifecycle entries set `NO_EPOCH_DEADLINE` and keep their fuel budgets; `start_store` sets
+  it before any start function runs (with epochs on, a store's default deadline would trap at once). AOT artifacts
+  built without epoch checks no longer load; `compile_cached` evicts and recompiles them once.
+- **Crash recovery.** A fault inside `call_hook` no longer degrades: `recover` restarts the instance at once from the
+  cached component (`Respawn`: the `ExtensionPre` and whether `hooks` is exported; `InstanceState::respawn` keeps
+  binding, context, window, kv, broker, readers and log, with fresh WASI, resource table and route cache) and runs
+  `on-activate`, because a trapped component instance cannot be entered again and ticks must keep a sound store.
+  Hook calls are refused (`HookFault::Degraded("...; restarted, serving again in N ms")`) until a backoff passes:
+  `HOOK_RESTART_BACKOFF_MS` (1 s), doubling per crash in the window, capped at a fifth of the window; once
+  `MAX_HOOK_RESTARTS_PER_WINDOW` (5) restarts fall in `HOOK_RESTART_WINDOW_MS` (60 s), hooks wait until the oldest
+  leaves it. A crash needs a served call, so restarts per window never exceed the cap. A failed restart (instantiate
+  or `on-activate`) degrades the instance as before; the binary then keeps the binding in force and refuses writes
+  until a Manager disables or unbinds (fractalengine/src/AGENTS.md §scene-hook-queue). `InstanceStats::restarts`
+  counts restarts; `ExtensionInstance::recovering()` reports the backoff.
+
 Host-initiated calls and decode stamping: src/AGENTS.md §hook-calls.
 
 ## §net-bridge

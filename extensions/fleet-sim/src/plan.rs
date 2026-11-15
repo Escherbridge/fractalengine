@@ -37,7 +37,8 @@ mod tests {
     #[test]
     fn ticks_progress_and_heading() {
         assert_eq!(due_ticks(0, 1_250, 500).collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(due_ticks(1_250, 1_900, 500).count(), 0);
+        assert_eq!(due_ticks(1_250, 1_900, 500).collect::<Vec<_>>(), vec![3]); // the 1_500 ms tick
+        assert_eq!(due_ticks(1_250, 1_400, 500).count(), 0);
         assert_eq!(due_ticks(1_900, 2_000, 500).collect::<Vec<_>>(), vec![4]);
         assert_eq!(due_ticks(0, 9_000, 0).count(), 0);
         assert!(crossed(400, 600, 500) && !crossed(500, 900, 500));

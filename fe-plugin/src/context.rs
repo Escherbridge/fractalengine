@@ -6,7 +6,10 @@
 
 use crate::capability::{validate_access, CapabilityOperation};
 use crossbeam::channel::Sender;
-use fe_sdk::plugin_host::{NodeQuery, NodeReader, PendingOp, TransactionReceipt, TransactionSink};
+use fe_sdk::plugin_host::{
+    NodeQuery, NodeReader, PendingOp, QueryPage, TransactionReceipt, TransactionSink,
+    MAX_NODE_PAYLOAD_BYTES, MAX_QUERY_PAGE_BYTES,
+};
 use std::sync::{Arc, Mutex};
 
 use crate::capability::CapabilityToken;
@@ -150,13 +153,7 @@ impl PluginContext {
             )
             .is_ok()
         });
-        if serde_json::to_vec(&node)
-            .map_err(|error| error.to_string())?
-            .len()
-            > fe_sdk::plugin_host::MAX_HOST_BYTES
-        {
-            return Err("node snapshot exceeds 65536 bytes".into());
-        }
+        fe_sdk::plugin_host::node_wire_len(&node)?;
         Ok(node)
     }
 
@@ -184,12 +181,30 @@ impl PluginContext {
         .transpose()
     }
 
-    /// Query current nodes through a bounded structured predicate.
+    /// Query current nodes through a bounded structured predicate; a page cut by bytes is refused
+    /// (`budget`), so a caller without a cursor never sees a silent truncation.
     pub fn query_nodes(
         &self,
         petal_id: &str,
         query: &NodeQuery,
     ) -> Result<Vec<crate::NodeSnapshot>, String> {
+        let page = self.query_page(petal_id, query, MAX_QUERY_PAGE_BYTES)?;
+        if !page.omitted.is_empty() || (page.next.is_some() && page.nodes.len() < query.limit) {
+            return Err(format!(
+                "query page budget of {MAX_QUERY_PAGE_BYTES} bytes reached or a node skipped; continue with a paged query"
+            ));
+        }
+        Ok(page.nodes)
+    }
+
+    /// One page of at most `query.limit` rows and `budget` encoded bytes (clamped to one node payload..
+    /// [`MAX_QUERY_PAGE_BYTES`]): fitting rows, ids skipped as over the node bound, and the next cursor.
+    pub fn query_page(
+        &self,
+        petal_id: &str,
+        query: &NodeQuery,
+        budget: usize,
+    ) -> Result<QueryPage, String> {
         self.require_capability(fe_sdk::CAP_QUERY_SELECT)?;
         self.require_capability(fe_sdk::CAP_STORAGE_READ)?;
         query.validate()?;
@@ -216,18 +231,14 @@ impl PluginContext {
         if before != self.authorize_petal(petal_id)? {
             return Err("plugin petal ancestry changed during read".into());
         }
-        let nodes: Vec<_> = nodes
+        // Cut on the reader's rows, before projection, so an upstream cut is still detected (src/AGENTS.md §query-paging).
+        let budget = budget.clamp(MAX_NODE_PAYLOAD_BYTES, MAX_QUERY_PAGE_BYTES);
+        let mut page = fe_sdk::plugin_host::cut_query_page(nodes, query.limit, budget);
+        page.nodes = std::mem::take(&mut page.nodes)
             .into_iter()
             .map(|node| self.project_node(node))
             .collect::<Result<_, _>>()?;
-        if serde_json::to_vec(&nodes)
-            .map_err(|error| error.to_string())?
-            .len()
-            > fe_sdk::plugin_host::MAX_HOST_BYTES
-        {
-            return Err("node page exceeds 65536 bytes".into());
-        }
-        Ok(nodes)
+        Ok(page)
     }
 
     /// Check one op against the token: write kind, property scope and bound petal.

@@ -126,3 +126,19 @@ scaffold's pack/countersign/tamper/sandbox half runs when `FE_EXT_TEST_COMPONENT
 examples carry only pure unit tests; their sandbox legs live here so no example crate builds the host stack.
 Guest-side unit tests: `cargo test --manifest-path tools/fe-ext/guest/Cargo.toml` (add `--features hooks` for the
 hook glue).
+
+## §guest-sdk-limits
+
+What an extension author designs for (all derived on the host from the node limit `MAX_NODE_BYTES`, 64 KiB
+today; the guest crate has no fe-sdk dependency, so it states no node-sized literal and lets the host refuse):
+
+- `scene.get-node`: one node, at most the node limit plus an 8 KiB envelope; a larger legacy node is
+  `budget-exceeded`.
+- `scene.query-nodes` refuses a page that would be cut by bytes or that skips a node. Use
+  `fe_ext_guest::query::all(&json!({...}))`, which follows `scene.query-page` cursors and returns
+  `AllNodes { nodes, omitted }`. Each page is one host read, and a hook may make 64 reads.
+- `txn.stage-set-property`: one value at most the node limit (`invalid-input`); the window's ops at most four
+  full nodes (`budget-exceeded`, nothing staged; flush and stage again next tick).
+- `scene.*` hooks receive up to one full value plus the envelope and may answer with as much (`render_for`
+  checks only the 64 KiB cap of other hooks). An answer that is late or missing for a large input REFUSES the
+  write, so a hook should parse its input once and answer early; it gets 64 fuel per input byte extra.

@@ -315,7 +315,8 @@ mod tests {
                     .await
                     .unwrap();
             });
-            let request = AdminRequest::new("t1", AdminVerb::InstallFile { path: "/tmp/x.hexon".into() });
+            let path = std::env::temp_dir().join("x.hexon").to_string_lossy().into_owned(); // absolute on every platform
+            let request = AdminRequest::new("t1", AdminVerb::InstallFile { path });
             let mut notices = Vec::new();
             let reply = exchange(&mut client, &request, |pending| notices.push(pending_notice(pending))).await.unwrap();
             app.await.unwrap();

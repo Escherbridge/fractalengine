@@ -18,7 +18,7 @@ pub(crate) const HEADER_FETCHES_PER_REFRESH: usize = 16;
 /// Package ids one refresh looks up (a petal naming more is served in id order up to this).
 pub(crate) const WANTED_PACKAGES_MAX: usize = 32;
 
-/// Parsed `provides` of one header, keyed by `(package_id, content_hash)`: a hash names immutable bytes.
+/// Parsed `provides` of one header, keyed by `(package_id, "hash@version")`: the hash names immutable bytes, the version is the listing claim they were checked against.
 type ProvidesCache = HashMap<(String, String), Vec<ProvidedHook>>;
 
 /// Registry builds the plugin worker resolves against; the ops worker refreshes them, both share one instance.
@@ -69,7 +69,8 @@ impl RegistryOffers {
         for package_id in wanted.iter().take(WANTED_PACKAGES_MAX) {
             for candidate in newest_listed(registries, &mut unreachable, package_id) {
                 let hash = candidate.entry.content_hash.to_ascii_lowercase();
-                let key = (package_id.clone(), hash.clone());
+                // Version is part of the key so a hit is checked against the same id/version as a miss.
+                let key = (package_id.clone(), format!("{hash}@{}", candidate.entry.version));
                 seen.insert(key.clone());
                 if is_killed(package_id.as_str(), candidate.entry.content_hash.as_str()) {
                     // Kept as revoked so the resolver states why nothing is offered (R-X-28); no header read.

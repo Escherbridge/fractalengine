@@ -8,6 +8,7 @@ use fe_sdk::manifest_v2::KNOWN_HOOKS;
 use wasmtime::component::Instance;
 use wasmtime::Store;
 
+use super::epoch;
 use super::instance::{outside_async, HookFault};
 use super::state::InstanceState;
 use super::{ComponentError, ExtensionComponent};
@@ -24,8 +25,12 @@ use world::exports::fractalengine::plugin::hooks as wit;
 
 /// The export a component must carry when its manifest declares `provides` (bindings.md §7.3).
 pub const HOOKS_EXPORT: &str = "fractalengine:plugin/hooks@2.0.0";
-/// Largest JSON value in or out of one hook call.
+/// Largest JSON value in or out of one hook call, except the scene hooks.
 pub const MAX_HOOK_JSON_BYTES: usize = 64 * 1024;
+/// Largest input or output JSON of a `scene.*` call: one full node value plus the envelope.
+pub const MAX_SCENE_HOOK_JSON_BYTES: usize = fe_runtime::scene_hook_gate::MAX_HOOK_INPUT_BYTES;
+/// Fuel added per input byte on top of the manifest's budget, so parsing a large input never starves the hook.
+pub const HOOK_FUEL_PER_INPUT_BYTE: u64 = 64;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
@@ -43,6 +48,10 @@ pub struct HookLimits {
     pub max_body_in: usize,
     /// Largest `body` the guest may return.
     pub max_body_out: usize,
+    /// Largest `input` JSON handed to the guest.
+    pub max_json_in: usize,
+    /// Largest `output` JSON the guest may return.
+    pub max_json_out: usize,
 }
 
 /// The §6 limits of a hook a manifest may provide (`KNOWN_HOOKS`, the B0 catalogue's deadline);
@@ -61,10 +70,13 @@ pub fn hook_limits(hook: &str) -> Option<HookLimits> {
         None if spec.call == HookCallKind::AfterCommit => AFTER_COMMIT_DEADLINE_MS,
         None => SERVICE_CALL_DEADLINE_MS,
     };
+    let json = if hook.starts_with("scene.") { MAX_SCENE_HOOK_JSON_BYTES } else { MAX_HOOK_JSON_BYTES };
     Some(HookLimits {
         deadline: Duration::from_millis(millis),
         max_body_in: body_in,
         max_body_out: body_out,
+        max_json_in: json,
+        max_json_out: json,
     })
 }
 
@@ -228,8 +240,14 @@ impl HooksGuest {
         &self.stats
     }
 
-    /// One call: caps in, own fuel refill, frozen clock, deadline, caps out. The caller holds the
-    /// instance lock, refuses while degraded, and degrades on `Fault`.
+    /// Keep the counters of the instance this one replaces after a crash.
+    pub(crate) fn inherit_stats(&mut self, previous: HooksGuest) {
+        self.stats = previous.stats;
+    }
+
+    /// One call: caps in, own fuel refill, frozen clock, deadline, caps out. The guest is interrupted at the
+    /// deadline (epoch) and no read starts past it, so host read time counts too. The caller holds the instance
+    /// lock, refuses while degraded or recovering, and restarts the instance on `Fault`.
     pub fn call(
         &mut self,
         store: &mut Store<InstanceState>,
@@ -237,11 +255,18 @@ impl HooksGuest {
         now_ms: u64,
     ) -> Result<HookReply, HookCallError> {
         let limits = hook_limits(&request.hook).ok_or_else(|| HookCallError::NotServed(request.hook.clone()))?;
-        for (what, json) in [("config", &request.config), ("input", &request.input)] {
-            if json.len() > MAX_HOOK_JSON_BYTES {
-                return Err(HookCallError::TooLarge(what));
-            }
+        if request.config.len() > MAX_HOOK_JSON_BYTES {
+            return Err(HookCallError::TooLarge("config"));
         }
+        if request.input.len() > limits.max_json_in {
+            return Err(HookCallError::TooLarge("input"));
+        }
+        // Delivery and parsing grow with the input: the deadline and fuel grow with it (src/wasm/AGENTS.md §hooks).
+        let deadline = fe_runtime::scene_hook_gate::input_deadline(limits.deadline, request.input.len());
+        let fuel = self
+            .fuel
+            .saturating_add(HOOK_FUEL_PER_INPUT_BYTE.saturating_mul(request.input.len() as u64))
+            .min(fe_sdk::manifest_v2::HOST_FUEL_CEILING.max(self.fuel));
         if request.body.len() > limits.max_body_in {
             return Err(HookCallError::TooLarge("body"));
         }
@@ -254,19 +279,23 @@ impl HooksGuest {
             body: request.body.clone(),
         };
         store
-            .set_fuel(self.fuel)
+            .set_fuel(fuel)
             .map_err(|error| HookCallError::Fault(HookFault::Trap(format!("refuel failed: {error:#}"))))?;
         store.data().freeze_clock(now_ms);
         store.data().reset_hook_budgets();
         self.stats.entry(&request.hook).calls += 1;
 
         let started = Instant::now();
+        store.data_mut().hook_deadline = Some(started + deadline);
+        store.set_epoch_deadline(epoch::ticks_for(deadline));
         let bindings = &self.bindings;
         let outcome = {
             let store = &mut *store;
             outside_async(move || bindings.fractalengine_plugin_hooks().call_on_hook(store, &wire))
         };
         let elapsed = started.elapsed();
+        store.data_mut().hook_deadline = None;
+        store.set_epoch_deadline(epoch::NO_EPOCH_DEADLINE);
 
         let result = match outcome {
             Err(error) => {
@@ -277,9 +306,9 @@ impl HooksGuest {
             }
             Ok(result) => result,
         };
-        if elapsed > limits.deadline {
+        if elapsed > deadline {
             self.stats.entry(&request.hook).timeouts += 1;
-            return Err(HookCallError::Timeout(limits.deadline));
+            return Err(HookCallError::Timeout(deadline));
         }
         match result {
             Err(refusal) => {
@@ -301,10 +330,10 @@ impl HooksGuest {
     }
 }
 
-/// The reply caps: JSON ≤ 64 KiB and well-formed, body ≤ the hook's cap.
+/// The reply caps: JSON within the hook's cap and well-formed, body ≤ the hook's cap.
 fn check_reply(reply: &wit::HookOutput, limits: &HookLimits) -> Result<(), String> {
-    if reply.output.len() > MAX_HOOK_JSON_BYTES {
-        return Err("output exceeds 64 KiB".into());
+    if reply.output.len() > limits.max_json_out {
+        return Err(format!("output exceeds {} bytes", limits.max_json_out));
     }
     if serde_json::from_str::<serde_json::Value>(&reply.output).is_err() {
         return Err("output is not JSON".into());
@@ -315,11 +344,13 @@ fn check_reply(reply: &wit::HookOutput, limits: &HookLimits) -> Result<(), Strin
     Ok(())
 }
 
-/// Fuel exhaustion, a guest exit or any other trap, as the instance's own fault classes.
-fn classify_fault(store: &Store<InstanceState>, error: &wasmtime::Error) -> HookFault {
-    let out_of_fuel = error.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::OutOfFuel)
-        || store.get_fuel().is_ok_and(|fuel| fuel == 0);
-    if out_of_fuel {
+/// The deadline interrupt, fuel exhaustion, a guest exit or any other trap, as the instance's own fault classes.
+pub(crate) fn classify_fault(store: &Store<InstanceState>, error: &wasmtime::Error) -> HookFault {
+    let trap = error.downcast_ref::<wasmtime::Trap>();
+    let out_of_fuel = trap == Some(&wasmtime::Trap::OutOfFuel) || store.get_fuel().is_ok_and(|fuel| fuel == 0);
+    if trap == Some(&wasmtime::Trap::Interrupt) {
+        HookFault::Interrupted
+    } else if out_of_fuel {
         HookFault::FuelExhausted
     } else if let Some(exit) = error.downcast_ref::<wasmtime_wasi::I32Exit>() {
         HookFault::Trap(format!("guest exited with status {}", exit.0))

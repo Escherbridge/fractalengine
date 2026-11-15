@@ -19,6 +19,7 @@ pub mod bindings {
 }
 
 pub mod hooks;
+pub mod query;
 pub mod readings_batch;
 pub mod tracking;
 pub mod window;
@@ -82,8 +83,9 @@ pub fn __dispatch_hook<E: Extension>(
         HookFailure::InvalidInput(reason) => HookError::InvalidInput(reason),
         HookFailure::Failed(reason) => HookError::Failed(reason),
     };
+    let hook = call.hook.clone();
     let parsed = HookCall::parse(call.hook, call.key, call.binding_scope, &call.config, &call.input, call.body).map_err(to_wit)?;
-    let (output, body) = E::on_hook(parsed).and_then(HookOutput::render).map_err(to_wit)?;
+    let (output, body) = E::on_hook(parsed).and_then(|out| out.render_for(&hook)).map_err(to_wit)?;
     Ok(WitOutput { output, body })
 }
 

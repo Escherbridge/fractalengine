@@ -3,7 +3,8 @@
 
 use serde_json::{json, Value};
 
-/// Largest JSON value in or out of one hook call (the host enforces it too).
+/// Largest JSON value in or out of one non-scene hook call (the host enforces it too). `scene.*` calls
+/// carry up to one full node (host `MAX_NODE_PAYLOAD_BYTES`, derived from the node limit): the host checks those.
 pub const MAX_HOOK_JSON_BYTES: usize = 64 * 1024;
 
 /// A guest-reported outcome that is not a fault; the host's built-in serves the use.
@@ -95,8 +96,13 @@ impl Output {
 
     /// Wire form: serialized JSON within the 64 KiB cap, plus the bytes.
     pub fn render(self) -> Result<(String, Vec<u8>), Failure> {
+        self.render_for("")
+    }
+
+    /// Wire form for `hook`: a `scene.*` answer is bounded by the host's node-derived cap, any other by 64 KiB.
+    pub fn render_for(self, hook: &str) -> Result<(String, Vec<u8>), Failure> {
         let text = self.output.to_string();
-        if text.len() > MAX_HOOK_JSON_BYTES {
+        if !hook.starts_with("scene.") && text.len() > MAX_HOOK_JSON_BYTES {
             return Err(Failure::Failed("hook output exceeds 64 KiB".into()));
         }
         Ok((text, self.body))
