@@ -76,6 +76,8 @@ pub struct SyncEndpoint {
     relay_allowlist: Arc<RwLock<BTreeSet<iroh::RelayUrl>>>,
     /// Relay URLs each peer's addresses named (filtered or not), so an allowlist change re-applies to the book.
     peer_relays: Arc<Mutex<BTreeMap<iroh::EndpointId, BTreeSet<iroh::RelayUrl>>>>,
+    /// Advertised relay hosts the endpoint's resolver judges on every lookup (§relay-trust "connect-time judgment").
+    relay_hosts: crate::relay_dns::RelayHostJudge,
 }
 
 /// How long [`SyncEndpoint::node_addr`] waits for a home relay — iroh's own
@@ -155,7 +157,17 @@ impl SyncEndpoint {
         relay_config: &RelayConfig,
         token: Option<RelayAccessToken>,
     ) -> Result<Self> {
-        Self::bind(secret_key, relay_config, token, BoundPorts::default()).await
+        Self::bind(secret_key, relay_config, token, BoundPorts::default(), None).await
+    }
+
+    /// Like [`Self::new`] with no relay token, but `inner_dns` answers the lookups the judging resolver checks (test seam).
+    #[cfg(test)]
+    pub(crate) async fn with_inner_dns(
+        secret_key: iroh::SecretKey,
+        relay_config: &RelayConfig,
+        inner_dns: iroh::dns::DnsResolver,
+    ) -> Result<Self> {
+        Self::bind(secret_key, relay_config, None, BoundPorts::default(), Some(inner_dns)).await
     }
 
     /// Like [`Self::new`], but re-binds the UDP ports recorded under `p2p_dir`
@@ -169,13 +181,13 @@ impl SyncEndpoint {
         let token = RelayAccessToken::from_env();
         let previous = BoundPorts::load(p2p_dir).unwrap_or_default();
         let bound = if previous == BoundPorts::default() {
-            Self::bind(secret_key, relay_config, token, previous).await
+            Self::bind(secret_key, relay_config, token, previous, None).await
         } else {
-            match Self::bind(secret_key.clone(), relay_config, token.clone(), previous).await {
+            match Self::bind(secret_key.clone(), relay_config, token.clone(), previous, None).await {
                 Ok(endpoint) => Ok(endpoint),
                 Err(error) => {
                     tracing::warn!(?previous, "previous P2P ports are taken; binding fresh ones, so peers must re-learn this node's address: {error:#}");
-                    Self::bind(secret_key, relay_config, token, BoundPorts::default()).await
+                    Self::bind(secret_key, relay_config, token, BoundPorts::default(), None).await
                 }
             }
         }?;
@@ -183,12 +195,13 @@ impl SyncEndpoint {
         Ok(bound)
     }
 
-    /// Bind on `ports` (`None` per family = a fresh port).
+    /// Bind on `ports` (`None` per family = a fresh port); `inner_dns` defaults to the system resolver.
     async fn bind(
         secret_key: iroh::SecretKey,
         relay_config: &RelayConfig,
         token: Option<RelayAccessToken>,
         ports: BoundPorts,
+        inner_dns: Option<iroh::dns::DnsResolver>,
     ) -> Result<Self> {
         let relay_mode = relay_config
             .to_relay_mode_with_token(token.as_ref())
@@ -197,10 +210,17 @@ impl SyncEndpoint {
             warn_default_relay_once();
         }
         let address_book = MemoryLookup::new();
+        let relay_hosts = crate::relay_dns::RelayHostJudge::default();
+        // Every relay dial resolves through this resolver, so an advertised host is judged at connect time too.
+        let dns_resolver = crate::relay_dns::judging_resolver(
+            inner_dns.unwrap_or_else(iroh::dns::DnsResolver::new),
+            relay_hosts.clone(),
+        );
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(secret_key)
             .relay_mode(relay_mode)
             .transport_config(bbr_transport_config())
+            .dns_resolver(dns_resolver)
             .address_lookup(address_book.clone());
         if let Some(port) = ports.v4 {
             builder = builder
@@ -239,7 +259,17 @@ impl SyncEndpoint {
             peer_relays: Arc::new(Mutex::new(BTreeMap::new())),
             relay_enabled: !matches!(relay_config, RelayConfig::Disabled),
             relay_token_configured: token.is_some(),
+            relay_hosts,
         })
+    }
+
+    /// Advertised relay hosts the resolver judges at connect time; `exempt` names configured and default relay hosts.
+    pub fn set_judged_relay_hosts(
+        &self,
+        hosts: std::collections::HashMap<String, crate::relay_dns::RelayHostRule>,
+        exempt: &BTreeSet<String>,
+    ) {
+        self.relay_hosts.update(hosts, exempt);
     }
 
     /// The unique public-key identifier of this node.

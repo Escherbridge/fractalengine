@@ -191,12 +191,67 @@ const UNSENT_ROWS_CAP: usize = 4096;
 /// first. One live entry per `(table, record, author)`: a newer replica entry
 /// supersedes the kept one (iroh-docs keeps only the latest per author and
 /// key), so a 2 Hz stream behind a busy DB thread delivers its latest state
-/// instead of a growing backlog of stale versions.
+/// instead of a growing backlog of stale versions. Bounded by entry count and
+/// by bytes (`src/AGENTS.md` §byte-bounds).
 #[derive(Default, Debug)]
 pub struct KeptRows {
     order: VecDeque<(u64, crate::replicator::RowChange)>,
-    live: HashMap<(String, String, String), u64>,
+    /// Live key → (sequence, row bytes).
+    live: HashMap<(String, String, String), (u64, u64)>,
     next: u64,
+    /// Bytes of the live entries.
+    live_bytes: u64,
+    /// Bytes of every queued entry, superseded copies included.
+    held_bytes: u64,
+    /// Entries dropped at a cap (they come back with the next replica open).
+    dropped: u64,
+    /// A drop since the last re-seed: one `seed_reconciliation` pass is owed (§byte-bounds).
+    reseed_pending: bool,
+    /// When the last owed re-seed started (`RESEED_COOLDOWN`).
+    last_reseed: Option<std::time::Instant>,
+}
+
+/// Least time between two re-seeds of one verse owed to dropped kept rows.
+pub const RESEED_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One owed re-read of every author's `role/` rows into the DB plane (§byte-bounds).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RoleResync {
+    /// Last `(record_id, author)` sent, in that order; the pass resumes after it.
+    pub after: Option<(String, String)>,
+    /// A row was lost again during this pass: run another once it ends.
+    pub again: bool,
+    /// Passes restarted because a row was lost during them (warned on each restart).
+    pub restarts: u64,
+}
+
+/// Fair eviction at a cap (§byte-bounds): the oldest row of the author holding the most bytes
+/// (`by_bytes`) or rows. Another author's last row is never chosen, so one author cannot
+/// displace another's only kept row; `None` means the incoming row is refused instead.
+/// `rows` yields `(author, bytes, order)`, smaller `order` = older.
+pub(crate) fn fair_eviction_victim<'a, K: Copy + Ord>(
+    rows: impl IntoIterator<Item = (&'a str, u64, K)>,
+    incoming_author: &str,
+    by_bytes: bool,
+) -> Option<K> {
+    // author -> (weight, rows, oldest order)
+    let mut per_author: HashMap<&str, (u64, usize, K)> = HashMap::new();
+    for (author, bytes, order) in rows {
+        let weight = if by_bytes { bytes } else { 1 };
+        per_author
+            .entry(author)
+            .and_modify(|(total, count, oldest)| {
+                *total += weight;
+                *count += 1;
+                *oldest = (*oldest).min(order);
+            })
+            .or_insert((weight, 1, order));
+    }
+    per_author
+        .into_iter()
+        .filter(|(author, (_, count, _))| *author == incoming_author || *count >= 2)
+        .max_by_key(|(_, (weight, _, oldest))| (*weight, std::cmp::Reverse(*oldest)))
+        .map(|(_, (_, _, oldest))| oldest)
 }
 
 impl KeptRows {
@@ -204,35 +259,81 @@ impl KeptRows {
         (change.table.clone(), change.record_id.clone(), change.author_id.clone())
     }
 
+    fn size(change: &crate::replicator::RowChange) -> u64 {
+        change.data.len() as u64
+    }
+
     /// Keep `change`, superseding a kept entry of the same key.
     pub fn keep(&mut self, change: crate::replicator::RowChange) {
+        let bytes = Self::size(&change);
+        let key = Self::key(&change);
+        // The superseded copy stays in `order` (held) but is no longer live.
+        if let Some((_, superseded)) = self.live.remove(&key) {
+            self.live_bytes = self.live_bytes.saturating_sub(superseded);
+        }
+        if bytes > crate::byte_bounds::KEPT_ROWS_BYTE_CAP {
+            // Never kept: it would flush every other author's rows; the owed re-seed re-reads it.
+            self.note_drop(&change);
+            return;
+        }
+        // Either cap evicts fairly (largest author first, never another author's last row).
+        loop {
+            let by_count = self.live.len() + 1 > UNSENT_ROWS_CAP;
+            let by_bytes = self.live_bytes + bytes > crate::byte_bounds::KEPT_ROWS_BYTE_CAP;
+            if !by_count && !by_bytes {
+                break;
+            }
+            let victim = fair_eviction_victim(
+                self.live.iter().map(|(k, (seq, b))| (k.2.as_str(), *b, *seq)),
+                &change.author_id,
+                !by_count,
+            );
+            let victim_key = victim.and_then(|victim| {
+                self.live.iter().find(|(_, (seq, _))| *seq == victim).map(|(k, _)| k.clone())
+            });
+            let Some(victim_key) = victim_key else {
+                self.note_drop(&change);
+                return;
+            };
+            if let Some((_, victim_bytes)) = self.live.remove(&victim_key) {
+                self.live_bytes = self.live_bytes.saturating_sub(victim_bytes);
+            }
+            self.dropped += 1;
+            self.reseed_pending = true;
+            tracing::warn!(
+                table = %victim_key.0,
+                record_id = %victim_key.1,
+                kept_bytes = self.live_bytes,
+                "kept inbound rows at cap; the largest author's oldest waits for a re-seed"
+            );
+        }
+        self.trim_front();
         let seq = self.next;
         self.next += 1;
-        self.live.insert(Self::key(&change), seq);
+        self.live.insert(key, (seq, bytes));
+        self.live_bytes += bytes;
+        self.held_bytes += bytes;
         self.order.push_back((seq, change));
-        while self.live.len() > UNSENT_ROWS_CAP {
-            if let Some((_, dropped)) = self.pop() {
-                tracing::warn!(
-                    table = %dropped.table,
-                    record_id = %dropped.record_id,
-                    "kept inbound rows at cap; the oldest waits for the next replica open"
-                );
-            }
-        }
         // Superseded entries only cost memory: compact once they dominate.
-        if self.order.len() > 2 * UNSENT_ROWS_CAP {
+        if self.order.len() > 2 * UNSENT_ROWS_CAP
+            || self.held_bytes > 2 * crate::byte_bounds::KEPT_ROWS_BYTE_CAP
+        {
             let live = &self.live;
             self.order
-                .retain(|(seq, change)| live.get(&Self::key(change)) == Some(seq));
+                .retain(|(seq, change)| live.get(&Self::key(change)).map(|(s, _)| *s) == Some(*seq));
+            self.held_bytes = self.live_bytes;
         }
     }
 
     /// The oldest live entry, removed (superseded ones are skipped).
     pub fn pop(&mut self) -> Option<(u64, crate::replicator::RowChange)> {
         while let Some((seq, change)) = self.order.pop_front() {
+            let bytes = Self::size(&change);
+            self.held_bytes = self.held_bytes.saturating_sub(bytes);
             let key = Self::key(&change);
-            if self.live.get(&key) == Some(&seq) {
+            if self.live.get(&key).map(|(s, _)| *s) == Some(seq) {
                 self.live.remove(&key);
+                self.live_bytes = self.live_bytes.saturating_sub(bytes);
                 return Some((seq, change));
             }
         }
@@ -241,7 +342,10 @@ impl KeptRows {
 
     /// Put a popped entry back at the front (its send was refused).
     pub fn restore(&mut self, seq: u64, change: crate::replicator::RowChange) {
-        self.live.insert(Self::key(&change), seq);
+        let bytes = Self::size(&change);
+        self.live.insert(Self::key(&change), (seq, bytes));
+        self.live_bytes += bytes;
+        self.held_bytes += bytes;
         self.order.push_front((seq, change));
     }
 
@@ -252,6 +356,64 @@ impl KeptRows {
     pub fn clear(&mut self) {
         self.order.clear();
         self.live.clear();
+        self.live_bytes = 0;
+        self.held_bytes = 0;
+        self.reseed_pending = false;
+    }
+
+    /// Bytes held now, superseded copies included.
+    pub fn held_bytes(&self) -> u64 {
+        self.held_bytes
+    }
+
+    /// Entries dropped at a cap so far.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Whether a drop owes this verse a re-seed.
+    pub fn reseed_pending(&self) -> bool {
+        self.reseed_pending
+    }
+
+    /// Claim the owed re-seed when `RESEED_COOLDOWN` has passed since the last one.
+    pub fn take_reseed(&mut self, now: std::time::Instant) -> bool {
+        let cooled = self.last_reseed.is_none_or(|last| now.duration_since(last) >= RESEED_COOLDOWN);
+        if !self.reseed_pending || !cooled {
+            return false;
+        }
+        self.reseed_pending = false;
+        self.last_reseed = Some(now);
+        true
+    }
+
+    /// Forget an owed re-seed (the replica closed: its next open replays every row).
+    pub fn forget_reseed(&mut self) {
+        self.reseed_pending = false;
+    }
+
+    /// Count a row not kept (refused or evicted) and owe the verse a re-seed.
+    fn note_drop(&mut self, change: &crate::replicator::RowChange) {
+        self.dropped += 1;
+        self.reseed_pending = true;
+        tracing::warn!(
+            table = %change.table,
+            record_id = %change.record_id,
+            row_bytes = change.data.len(),
+            kept_bytes = self.live_bytes,
+            "inbound row not kept at the cap; it waits for a re-seed"
+        );
+    }
+
+    /// Drop evicted or superseded entries at the front, so they stop counting as held.
+    fn trim_front(&mut self) {
+        while let Some((seq, change)) = self.order.front() {
+            if self.live.get(&Self::key(change)).map(|(s, _)| *s) == Some(*seq) {
+                break;
+            }
+            self.held_bytes = self.held_bytes.saturating_sub(Self::size(change));
+            self.order.pop_front();
+        }
     }
 }
 
@@ -574,6 +736,13 @@ pub struct VerseFabric {
     /// Inbound `role` rows the DB thread's full channel refused (QA-0132): the
     /// DB plane must learn every revoke before a re-judge runs against it.
     unsent_role_rows: VecDeque<crate::replicator::RowChange>,
+    /// Owed re-read of every author's `role/` rows after a kept role row was lost (§byte-bounds).
+    role_resync: Option<RoleResync>,
+    kept_role_rows_dropped: u64,
+    kept_role_rows_refused: u64,
+    /// Chunked re-judge progress (§byte-bounds): `[demotion, restore]`, each the DIDs the
+    /// pass serves and the last node id already handed to the DB thread.
+    rejudge_cursors: [Option<(Vec<String>, String)>; 2],
     /// Inbound content rows the DB thread's full channel refused (QA-0138).
     unsent_rows: KeptRows,
     /// Rows gated on a role/petal view that has not converged yet.
@@ -612,6 +781,10 @@ impl Default for VerseFabric {
             reread_queue: VecDeque::new(),
             rejudge_queue: VecDeque::new(),
             unsent_role_rows: VecDeque::new(),
+            role_resync: None,
+            kept_role_rows_dropped: 0,
+            kept_role_rows_refused: 0,
+            rejudge_cursors: [None, None],
             unsent_rows: KeptRows::default(),
             quarantine: VecDeque::new(),
             quarantine_evicted: 0,
@@ -1604,6 +1777,11 @@ impl VerseFabric {
         self.rejudge_queue.iter().cloned().collect()
     }
 
+    /// Where a chunked re-judge resumes; `restore_only` selects the restore pass's cursor.
+    pub fn rejudge_cursor_mut(&mut self, restore_only: bool) -> &mut Option<(Vec<String>, String)> {
+        &mut self.rejudge_cursors[usize::from(restore_only)]
+    }
+
     /// Remove re-judged DIDs whose work the DB thread accepted.
     pub fn ack_rejudges(&mut self, done: &[String]) {
         self.rejudge_queue.retain(|did| !done.contains(did));
@@ -1625,13 +1803,73 @@ impl VerseFabric {
         self.relay_adverts.urls_by_verse()
     }
 
-    /// Keep a `role` row the DB thread's channel refused, for resend (QA-0132).
+    /// Keep a `role` row the DB thread's channel (or byte gate) refused, for resend (QA-0132).
+    /// Any row not kept, refused or evicted, owes the verse a role re-sync (§byte-bounds).
     pub fn keep_unsent_role_row(&mut self, change: crate::replicator::RowChange) {
-        if self.unsent_role_rows.len() >= UNSENT_ROLE_ROWS_CAP {
-            self.unsent_role_rows.pop_front();
-            tracing::warn!("unsent role rows at cap; the oldest waits for the next replica open");
+        let incoming = change.data.len() as u64;
+        if incoming > crate::byte_bounds::MAX_KEPT_ROLE_ROW_BYTES {
+            self.kept_role_rows_refused += 1;
+            self.request_role_resync();
+            tracing::warn!(author = %change.author_id, row_bytes = incoming, "oversized role row not kept; the role re-sync re-reads it");
+            return;
+        }
+        let mut held: u64 = self.unsent_role_rows.iter().map(|row| row.data.len() as u64).sum();
+        // Fair eviction: never another author's last kept row (an owner's revoke stays).
+        loop {
+            let by_count = self.unsent_role_rows.len() >= UNSENT_ROLE_ROWS_CAP;
+            let by_bytes = held + incoming > crate::byte_bounds::UNSENT_ROLE_ROWS_BYTE_CAP;
+            if !by_count && !by_bytes {
+                break;
+            }
+            let victim = fair_eviction_victim(
+                self.unsent_role_rows
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| (row.author_id.as_str(), row.data.len() as u64, index)),
+                &change.author_id,
+                !by_count,
+            );
+            let Some(dropped) = victim.and_then(|index| self.unsent_role_rows.remove(index)) else {
+                self.kept_role_rows_refused += 1;
+                self.request_role_resync();
+                tracing::warn!(author = %change.author_id, "unsent role rows at cap; the incoming row waits for the role re-sync");
+                return;
+            };
+            held = held.saturating_sub(dropped.data.len() as u64);
+            self.kept_role_rows_dropped += 1;
+            self.request_role_resync();
+            tracing::warn!(held_bytes = held, author = %dropped.author_id, "unsent role rows at cap; the largest author's oldest waits for the role re-sync");
         }
         self.unsent_role_rows.push_back(change);
+    }
+
+    /// Owe this verse a re-read of every author's `role/` rows into the DB plane before the
+    /// next re-judge runs or acks; a request during a pass re-runs it once it ends.
+    pub fn request_role_resync(&mut self) {
+        match &mut self.role_resync {
+            Some(pass) => pass.again = true,
+            None => self.role_resync = Some(RoleResync::default()),
+        }
+    }
+
+    /// The owed role re-sync pass, if any (the sync thread advances and clears it).
+    pub fn role_resync_mut(&mut self) -> &mut Option<RoleResync> {
+        &mut self.role_resync
+    }
+
+    /// Whether a role re-sync is owed.
+    pub fn role_resync_pending(&self) -> bool {
+        self.role_resync.is_some()
+    }
+
+    /// Kept role rows evicted at a cap so far.
+    pub fn kept_role_rows_dropped(&self) -> u64 {
+        self.kept_role_rows_dropped
+    }
+
+    /// Role rows refused for keeping (oversized, or no fair victim) so far.
+    pub fn kept_role_rows_refused(&self) -> u64 {
+        self.kept_role_rows_refused
     }
 
     /// The kept role rows, oldest first, for the caller to resend in order.
@@ -1694,12 +1932,22 @@ impl VerseFabric {
         }) {
             self.quarantine.remove(index);
         }
-        if self.quarantine.len() >= QUARANTINE_CAP {
-            // Fair eviction (steer 22:10 item 4): the author holding the most rows loses its oldest, so a flooder cannot flush others.
-            if let Some(index) = self.largest_holders_oldest_index() {
-                self.quarantine.remove(index);
-                self.quarantine_evicted += 1;
+        let incoming = data.len() as u64;
+        let mut held: u64 = self.quarantine.iter().map(|q| q.data.len() as u64).sum();
+        // Either cap evicts; the incoming row always stays (§byte-bounds).
+        loop {
+            let by_count = self.quarantine.len() >= QUARANTINE_CAP;
+            let by_bytes = !self.quarantine.is_empty()
+                && held + incoming > crate::byte_bounds::QUARANTINE_BYTE_CAP;
+            if !by_count && !by_bytes {
+                break;
             }
+            // Fair eviction (steer 22:10 item 4): the author holding the most rows (bytes, when bytes trip) loses its oldest, so a flooder cannot flush others.
+            let Some(index) = self.largest_holders_oldest_index(!by_count) else { break };
+            if let Some(evicted) = self.quarantine.remove(index) {
+                held = held.saturating_sub(evicted.data.len() as u64);
+            }
+            self.quarantine_evicted += 1;
         }
         self.quarantine.push_back(QuarantinedRow {
             kind,
@@ -1709,14 +1957,16 @@ impl VerseFabric {
         });
     }
 
-    /// Index of the oldest held row of the author with the most held rows (ties: the earliest such row); runs only at the cap.
-    fn largest_holders_oldest_index(&self) -> Option<usize> {
+    /// Index of the oldest held row of the author holding the most rows, or the most bytes when
+    /// `by_bytes` (ties: the earliest such row); runs only at a cap.
+    fn largest_holders_oldest_index(&self, by_bytes: bool) -> Option<usize> {
         let mut per_author: HashMap<&str, (usize, usize)> = HashMap::new();
         for (index, held) in self.quarantine.iter().enumerate() {
+            let weight = if by_bytes { held.data.len() } else { 1 };
             per_author
                 .entry(held.author_id.as_str())
-                .and_modify(|(count, _)| *count += 1)
-                .or_insert((1, index));
+                .and_modify(|(total, _)| *total += weight)
+                .or_insert((weight, index));
         }
         per_author
             .into_values()
@@ -2711,6 +2961,24 @@ mod tests {
             1
         );
 
+        // §byte-bounds: the byte cap trips like the entry cap — a few rows a quarter of
+        // the cap each evict the flooder's oldest (by bytes), never the editor's row.
+        let evicted_before = fabric.quarantine_evicted();
+        let pad = "x".repeat((crate::byte_bounds::QUARANTINE_BYTE_CAP / 4) as usize);
+        for i in 0..6 {
+            let mut big = shard_change(&format!("p1/big{i}/1"), "did:key:flooder", &["did:key:flooder"]);
+            big.data = serde_json::to_vec(&serde_json::json!({"shard": big.record_id, "pad": pad})).unwrap();
+            fabric.note_entry("v1", &big);
+        }
+        let held: u64 = fabric.quarantine.iter().map(|q| q.data.len() as u64).sum();
+        assert!(held <= crate::byte_bounds::QUARANTINE_BYTE_CAP, "the quarantine never holds more than its byte cap");
+        assert!(fabric.quarantine.len() < QUARANTINE_CAP, "the byte cap tripped, not the entry cap");
+        assert!(fabric.quarantine_evicted() > evicted_before, "byte evictions are counted like entry evictions");
+        assert!(
+            fabric.quarantine.iter().any(|held| held.author_id == editor),
+            "the editor's pending row survives a byte flood"
+        );
+
         // The owner grants Editor: the re-materialization admits the held row,
         // and the editor is queued for the §2.5 re-read (which recovers any row
         // that was never held).
@@ -2739,6 +3007,53 @@ mod tests {
         assert!(fabric.drain_rejudge_queue().is_empty());
         fabric.note_entry("v1", &role_change(&petal_scope, editor, OWNER, "editor", false, 3));
         assert!(fabric.drain_reread_queue().contains(&editor.to_string()));
+
+        // The kept-role-row bound is far above a real statement: MAX_GRANT_WINDOWS windows,
+        // 256-byte ids and the widest numbers still encode in under a quarter of it.
+        let long_id = "z".repeat(256);
+        let window = fe_policy::GrantWindow { role: fe_policy::GrantedRole::Manager, since: u64::MAX, until: u64::MAX };
+        let widest = fe_policy::RoleStatementPayload {
+            scope: fe_policy::build_scope(&long_id, Some(&long_id), Some(&long_id)),
+            peer_did: long_id.clone(),
+            grantor_did: long_id.clone(),
+            role: "manager".into(),
+            revoked: false,
+            hlc: u64::MAX,
+            editor_since: Some(u64::MAX),
+            manager_since: Some(u64::MAX),
+            windows: vec![window; fe_policy::MAX_GRANT_WINDOWS],
+        };
+        let widest_bytes = serde_json::to_vec(&widest).unwrap().len() as u64;
+        assert!(widest_bytes * 4 <= crate::byte_bounds::MAX_KEPT_ROLE_ROW_BYTES, "{widest_bytes} bytes");
+
+        // Kept rows evict fairly (§byte-bounds): a row over the byte cap is refused, never
+        // flushing other authors; at a cap the largest author loses its own oldest; each loss
+        // owes the verse one re-seed.
+        let row = |record: &str, author: &str, bytes: u64| crate::replicator::RowChange {
+            table: "node".into(),
+            record_id: record.into(),
+            content_hash: [0; 32],
+            author_id: author.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: vec![b'n'; bytes as usize],
+        };
+        let cap = crate::byte_bounds::KEPT_ROWS_BYTE_CAP;
+        let mut kept = KeptRows::default();
+        kept.keep(row("honest-1", "did:key:honest", 1024));
+        kept.keep(row("honest-2", "did:key:other", 1024));
+        kept.keep(row("huge", "did:key:flooder", cap + 1));
+        assert_eq!((kept.dropped(), kept.reseed_pending()), (1, true), "the oversized row is refused and owes a re-seed");
+        kept.keep(row("flood-1", "did:key:flooder", cap / 2));
+        kept.keep(row("flood-2", "did:key:flooder", cap / 2));
+        assert_eq!(kept.dropped(), 2, "the flooder's own oldest makes room, nobody else's");
+        let now = std::time::Instant::now();
+        assert!(kept.take_reseed(now) && !kept.take_reseed(now), "one owed re-seed, not one per drop");
+        kept.keep(row("flood-3", "did:key:flooder", cap / 2));
+        assert!(kept.reseed_pending() && !kept.take_reseed(now), "a second loss waits out RESEED_COOLDOWN");
+        assert!(kept.take_reseed(now + RESEED_COOLDOWN));
+        let survivors: Vec<String> = std::iter::from_fn(|| kept.pop().map(|(_, change)| change.record_id)).collect();
+        assert_eq!(survivors, vec!["honest-1", "honest-2", "flood-3"]);
     }
 
     #[test]

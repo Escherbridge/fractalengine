@@ -70,7 +70,7 @@ struct RelayLab {
 impl RelayLab {
     async fn start(member_seeds: &[u8]) -> Self {
         let gate = RelayMembershipGate::new(GateSettings {
-            limits: GateLimits { max_clients: 16, max_connections_per_endpoint: 2 },
+            limits: GateLimits { max_clients: 16, max_connections_per_endpoint: 2, max_served_verses: 4 },
             served_verses: ServedVerses::Listed([VERSE.to_string()].into()),
             hosted_verses: None,
             log_client_ips: false,

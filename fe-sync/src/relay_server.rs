@@ -102,6 +102,14 @@ impl RelayServeProfile {
         }
     }
 
+    /// Served-verse cap (`GateLimits::max_served_verses`).
+    pub fn max_served_verses(self) -> usize {
+        match self {
+            Self::Operator => 4096,
+            Self::Desktop => 64,
+        }
+    }
+
     fn default_client_rx_bytes_per_second(self) -> u32 {
         match self {
             Self::Operator => 2 * 1024 * 1024,
@@ -148,18 +156,31 @@ pub enum CertMode {
 pub enum ServedVerses {
     /// An explicit verse-id list; every id must be hosted locally.
     Listed(BTreeSet<String>),
-    /// Every verse this node hosts at start; the set is frozen then, so a later-hosted verse needs a restart.
+    /// Every verse this node hosts; the gate re-binds the hosted set while running (`rebind_hosted_verses`).
     AllHosted,
 }
 
 impl ServedVerses {
-    /// `AllHosted` serves only verses in the hosted set; no hosted set serves nothing.
-    fn serves(&self, verse_id: &str, hosted: Option<&BTreeSet<String>>) -> bool {
-        match self {
-            Self::Listed(verses) => verses.contains(verse_id),
-            Self::AllHosted => hosted.is_some_and(|hosted| hosted.contains(verse_id)),
+    /// Verses served over `hosted`: a listed verse only while hosted (all listed when no hosted set is bound); `AllHosted` is the hosted set, or nothing without one.
+    fn served_set(&self, hosted: Option<&BTreeSet<String>>) -> BTreeSet<String> {
+        match (self, hosted) {
+            (Self::Listed(verses), Some(hosted)) => verses.intersection(hosted).cloned().collect(),
+            (Self::Listed(verses), None) => verses.clone(),
+            (Self::AllHosted, Some(hosted)) => hosted.clone(),
+            (Self::AllHosted, None) => BTreeSet::new(),
         }
     }
+}
+
+/// `candidates` bounded to `cap`: verses already served keep their place, new ones enter in id order while room remains.
+fn bound_served(candidates: BTreeSet<String>, previous: &BTreeSet<String>, cap: usize) -> BTreeSet<String> {
+    if candidates.len() <= cap {
+        return candidates;
+    }
+    let (kept, new): (Vec<String>, Vec<String>) = candidates.into_iter().partition(|verse| previous.contains(verse));
+    let refused = kept.len() + new.len() - cap;
+    tracing::warn!(cap, refused, "served verse cap reached: these verses are not served (their members are denied) until others are deleted");
+    kept.into_iter().chain(new).take(cap).collect()
 }
 
 /// Live-connection caps the gate enforces (iroh's own accept caps are unimplemented).
@@ -167,6 +188,8 @@ impl ServedVerses {
 pub struct GateLimits {
     pub max_clients: usize,
     pub max_connections_per_endpoint: usize,
+    /// Most verses served at once (each served desktop verse keeps a replica and its gossip topic open).
+    pub max_served_verses: usize,
 }
 
 /// Validated embedded-relay settings read once at startup.
@@ -447,6 +470,7 @@ impl RelayServeConfig {
                     RELAY_SERVE_MAX_CONN_PER_ENDPOINT_ENV,
                     profile.default_max_connections_per_endpoint(),
                 )?,
+                max_served_verses: profile.max_served_verses(),
             },
             client_rx_bytes_per_second: parse_non_zero_u32(
                 lookup,
@@ -478,9 +502,9 @@ impl RelayServeConfig {
                 if hosted.is_empty() {
                     return Err(RelayServeError::EmptyVerseSet);
                 }
-                tracing::warn!(
+                tracing::info!(
                     hosted = hosted.len(),
-                    "{RELAY_SERVE_VERSES_ENV}=hosted serves only the verses hosted now (the set is frozen at start; restart to serve later ones)"
+                    "{RELAY_SERVE_VERSES_ENV}=hosted serves the hosted verses; a verse hosted or dropped later is re-bound without a restart"
                 );
             }
         }
@@ -809,7 +833,10 @@ type AdmitHook = Arc<dyn Fn(&RelayMembershipGate, &str) + Send + Sync>;
 
 /// Members-only access control: admits an endpoint iff its DID holds explicit Viewer+ in a served verse (OD-4).
 pub struct RelayMembershipGate {
+    /// Start-time settings; `hosted_verses` there is only the initial value of `served`.
     settings: GateSettings,
+    /// (hosted set, served set): the served set is what admission reads, re-bound by `rebind_hosted_verses`.
+    served: Mutex<(Option<BTreeSet<String>>, BTreeSet<String>)>,
     state: Mutex<GateState>,
     eviction_wake: tokio::sync::Notify,
     #[cfg(test)]
@@ -827,7 +854,13 @@ impl std::fmt::Debug for RelayMembershipGate {
 impl RelayMembershipGate {
     /// A gate that denies everyone until the first snapshot arrives.
     pub fn new(settings: GateSettings) -> Arc<Self> {
+        let served = bound_served(
+            settings.served_verses.served_set(settings.hosted_verses.as_ref()),
+            &BTreeSet::new(),
+            settings.limits.max_served_verses,
+        );
         Arc::new(Self {
+            served: Mutex::new((settings.hosted_verses.clone(), served)),
             settings,
             state: Mutex::new(GateState {
                 generation: 0,
@@ -862,6 +895,41 @@ impl RelayMembershipGate {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn lock_served(&self) -> std::sync::MutexGuard<'_, (Option<BTreeSet<String>>, BTreeSet<String>)> {
+        self.served.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The hosted set currently bound (`None` until one is supplied).
+    pub fn hosted_verse_ids(&self) -> Option<BTreeSet<String>> {
+        self.lock_served().0.clone()
+    }
+
+    /// Re-binds the hosted set while running (RF-OPEN-4) and re-applies `snapshot`: a newly served verse's members are admitted and a dropped verse's members evicted, with no restart. Returns the served set.
+    pub fn rebind_hosted_verses(
+        &self,
+        hosted: BTreeSet<String>,
+        snapshot: Option<&RelayAdmissionSnapshot>,
+    ) -> BTreeSet<String> {
+        let served = {
+            let mut bound = self.lock_served();
+            let next = bound_served(
+                self.settings.served_verses.served_set(Some(&hosted)),
+                &bound.1,
+                self.settings.limits.max_served_verses,
+            );
+            if next != bound.1 {
+                tracing::info!(served = next.len(), was = bound.1.len(), "relay served verses re-bound");
+            }
+            *bound = (Some(hosted), next.clone());
+            next
+        };
+        // Without a snapshot nothing was ever admitted, so there is nothing to widen or evict.
+        if let Some(snapshot) = snapshot {
+            self.apply_snapshot(snapshot);
+        }
+        served
+    }
+
     /// Current snapshot generation (bumped by every snapshot and revoke).
     pub fn generation(&self) -> u64 {
         self.lock().generation
@@ -887,11 +955,7 @@ impl RelayMembershipGate {
 
     /// Verse ids this gate admits members through (the set a consent screen should list).
     pub fn served_verse_ids(&self) -> BTreeSet<String> {
-        match (&self.settings.served_verses, &self.settings.hosted_verses) {
-            (ServedVerses::Listed(verses), _) => verses.clone(),
-            (ServedVerses::AllHosted, Some(hosted)) => hosted.clone(),
-            (ServedVerses::AllHosted, None) => BTreeSet::new(),
-        }
+        self.lock_served().1.clone()
     }
 
     /// Non-member denials seen so far (never fed to the breaker).
@@ -915,9 +979,12 @@ impl RelayMembershipGate {
     pub fn apply_snapshot(&self, snapshot: &RelayAdmissionSnapshot) {
         let now = Instant::now();
         let mut admitted = HashSet::new();
-        for (verse_id, members) in &snapshot.members_by_verse {
-            if self.settings.served_verses.serves(verse_id, self.settings.hosted_verses.as_ref()) {
-                admitted.extend(members.iter().cloned());
+        {
+            let bound = self.lock_served();
+            for (verse_id, members) in &snapshot.members_by_verse {
+                if bound.1.contains(verse_id) {
+                    admitted.extend(members.iter().cloned());
+                }
             }
         }
         let mut evicted = Vec::new();
@@ -1495,6 +1562,17 @@ pub fn push_snapshot(snapshot: RelayAdmissionSnapshot) {
     *buffered = Some(snapshot);
 }
 
+/// The gate [`install_gate`] registered, if any.
+pub fn installed_gate() -> Option<Arc<RelayMembershipGate>> {
+    RELAY_GATE.get().cloned()
+}
+
+/// Re-binds `gate`'s hosted set against the newest buffered snapshot (the buffer lock orders it against a concurrent push).
+pub fn rebind_hosted_verses(gate: &RelayMembershipGate, hosted: BTreeSet<String>) -> BTreeSet<String> {
+    let buffered = lock_latest_snapshot();
+    gate.rebind_hosted_verses(hosted, buffered.as_ref())
+}
+
 /// Revokes a DID: dropped from the buffered snapshot (fail closed for a late gate) and revoked on the installed gate.
 pub fn push_revoke(did: &str) {
     let mut buffered = lock_latest_snapshot();
@@ -1547,6 +1625,18 @@ pub struct ServedReplicaPins {
     _private: (),
 }
 
+impl ServedReplicaPins {
+    /// Replaces the pinned set while the relay runs (a verse became or stopped being servable); the sync loop opens the added ones and releases the dropped ones.
+    pub fn replace(&self, replicas: Vec<ServedReplica>) {
+        let mut pinned = lock_served_replicas();
+        if pinned.1 == replicas {
+            return;
+        }
+        pinned.0 = pinned.0.wrapping_add(1);
+        pinned.1 = replicas;
+    }
+}
+
 impl Drop for ServedReplicaPins {
     fn drop(&mut self) {
         let mut pinned = lock_served_replicas();
@@ -1565,6 +1655,12 @@ pub(crate) struct ServedReplicaOpener {
     pins: Vec<ServedReplica>,
     served: BTreeSet<String>,
     last_requested: HashMap<String, Instant>,
+    /// Pinned verses whose replica is open only for the relay (its own open, or a close it deferred).
+    relay_only: BTreeSet<String>,
+    /// Opens this opener queued that the open arm has not handled yet.
+    queued_opens: BTreeSet<String>,
+    /// Unpinned verses whose relay-only replica the sync loop must close.
+    released: Vec<String>,
 }
 
 impl ServedReplicaOpener {
@@ -1583,11 +1679,45 @@ impl ServedReplicaOpener {
     fn set_pins(&mut self, generation: u64, pins: Vec<ServedReplica>) {
         self.seen_generation = Some(generation);
         self.pins = pins;
-        self.served = self.pins.iter().map(|pin| pin.verse_id.clone()).collect();
+        let served: BTreeSet<String> = self.pins.iter().map(|pin| pin.verse_id.clone()).collect();
+        // A replica kept open only for the relay closes with its pin; one the host or a lease owns stays open.
+        for verse_id in self.served.difference(&served) {
+            if self.relay_only.remove(verse_id) {
+                self.released.push(verse_id.clone());
+            }
+        }
+        self.served = served;
         self.last_requested.retain(|verse_id, _| self.served.contains(verse_id));
         if !self.pins.is_empty() {
             tracing::info!(verses = self.pins.len(), "embedded relay pinned its served verse replicas open");
         }
+    }
+
+    /// The open arm is handling an open for `verse_id`: the opener's own makes the replica relay-only, any other hands it to its opener.
+    pub(crate) fn note_open(&mut self, verse_id: &str) {
+        if !self.queued_opens.remove(verse_id) {
+            self.relay_only.remove(verse_id);
+        } else if self.served.contains(verse_id) {
+            self.relay_only.insert(verse_id.to_string());
+        } else {
+            // Unpinned while the open was queued.
+            self.released.push(verse_id.to_string());
+        }
+    }
+
+    /// An open this opener asked for never reached the command queue.
+    pub(crate) fn open_not_queued(&mut self, verse_id: &str) {
+        self.queued_opens.remove(verse_id);
+    }
+
+    /// A close skipped because the relay serves `verse_id`: its replica is now open only for the relay.
+    pub(crate) fn defer_close(&mut self, verse_id: &str) {
+        self.relay_only.insert(verse_id.to_string());
+    }
+
+    /// Released verses whose relay-only replica should now be closed (taken once).
+    pub(crate) fn take_released(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.released)
     }
 
     /// Open commands for pinned verses whose replica is closed, at most one per verse per [`SERVED_REPLICA_RETRY`].
@@ -1614,6 +1744,7 @@ impl ServedReplicaOpener {
                 continue;
             }
             self.last_requested.insert(pin.verse_id.clone(), now);
+            self.queued_opens.insert(pin.verse_id.clone());
             opens.push(crate::messages::SyncCommand::OpenVerseReplica {
                 verse_id: pin.verse_id.clone(),
                 namespace_id: pin.namespace_id.clone(),
@@ -1672,6 +1803,7 @@ mod tests {
             limits: GateLimits {
                 max_clients,
                 max_connections_per_endpoint,
+                max_served_verses: RelayServeProfile::Desktop.max_served_verses(),
             },
             served_verses: ServedVerses::Listed([VERSE.to_string()].into()),
             hosted_verses: None,
@@ -1877,9 +2009,52 @@ mod tests {
         // Entry 15: AllHosted admits only hosted verses, and nothing without a hosted set.
         let hosted: BTreeSet<String> = [VERSE.to_string()].into();
         let all_hosted = ServedVerses::AllHosted;
-        assert!(all_hosted.serves(VERSE, Some(&hosted)), "a hosted verse is served");
-        assert!(!all_hosted.serves(OTHER_VERSE, Some(&hosted)), "a joined, unhosted verse is not served");
-        assert!(!all_hosted.serves(VERSE, None), "no hosted set serves nothing");
+        assert_eq!(all_hosted.served_set(Some(&hosted)), hosted, "only the hosted verse is served, never a joined one");
+        assert!(all_hosted.served_set(None).is_empty(), "no hosted set serves nothing");
+
+        // RF-OPEN-4: a verse hosted after the relay started is served, and its members admitted, with no restart; a dropped one is released.
+        let live_gate = RelayMembershipGate::new(GateSettings {
+            limits: GateLimits {
+                max_clients: 16,
+                max_connections_per_endpoint: 2,
+                max_served_verses: 2,
+            },
+            served_verses: ServedVerses::AllHosted,
+            hosted_verses: Some(hosted.clone()),
+            log_client_ips: false,
+        });
+        let both_verses = snapshot(&[(VERSE, &[1]), (OTHER_VERSE, &[6])]);
+        live_gate.apply_snapshot(&both_verses);
+        let (_live_map, live_url, live_server) = iroh::test_utils::run_relay_server_with_access(false, live_gate.clone())
+            .await
+            .expect("in-process relay");
+        let live_relay = EmbeddedRelay::adopt_running_server(live_server, live_gate.clone());
+        let before_create = relay_client(6, &live_url).await;
+        assert!(
+            is_denied_with(&before_create, "not_member").await,
+            "a verse created after start is not served before the re-bind"
+        );
+        let created: BTreeSet<String> = [VERSE.to_string(), OTHER_VERSE.to_string()].into();
+        assert_eq!(live_gate.rebind_hosted_verses(created.clone(), Some(&both_verses)), created);
+        let after_create = relay_client(6, &live_url).await;
+        assert!(is_admitted(&after_create).await, "its member is admitted by the running relay");
+        let over_cap: BTreeSet<String> = [VERSE, OTHER_VERSE, "01JVERSE0000000000000000CC"].map(str::to_string).into();
+        assert_eq!(
+            live_gate.rebind_hosted_verses(over_cap, Some(&both_verses)),
+            created,
+            "at max_served_verses a new verse waits and the served ones keep their place"
+        );
+        assert_eq!(live_gate.rebind_hosted_verses(hosted.clone(), Some(&both_verses)), hosted);
+        assert!(
+            tracked_drops_to_zero(&live_gate, &after_create.id()).await,
+            "a verse no longer servable evicts its members"
+        );
+        let after_delete = relay_client(6, &live_url).await;
+        assert!(is_denied_with(&after_delete, "not_member").await, "and their reconnect is denied");
+        for endpoint in [before_create, after_create, after_delete] {
+            endpoint.close().await;
+        }
+        live_relay.shutdown().await;
 
         // sync-relay-1: a served verse the host never navigated into gets its replica (and so its role view) opened,
         // and a navigation close cannot drop it while the relay serves it.
@@ -1912,6 +2087,34 @@ mod tests {
         opener.set_pins(2, Vec::new());
         assert!(opener.opens_due(|_| false, now + SERVED_REPLICA_RETRY * 2).is_empty());
         assert!(!opener.keeps_open(NEVER_NAVIGATED), "a stopped relay releases its pins");
+
+        // RF-OPEN-4: unpinning closes a replica kept open only for the relay, never one the host has open.
+        const RELAY_ONLY: &str = "verse-relay-only";
+        const HOST_VIEWED: &str = "verse-host-viewed";
+        const CLOSE_DEFERRED: &str = "verse-close-deferred";
+        let pin = |verse_id: &str| ServedReplica {
+            verse_id: verse_id.to_string(),
+            namespace_id: format!("ns-{verse_id}"),
+            namespace_secret: None,
+        };
+        opener.set_pins(3, vec![pin(RELAY_ONLY), pin(HOST_VIEWED), pin(CLOSE_DEFERRED)]);
+        let later = now + SERVED_REPLICA_RETRY * 3;
+        let opens = opener.opens_due(|verse_id| verse_id != RELAY_ONLY, later);
+        assert_eq!(opens.len(), 1, "only the closed served replica is opened");
+        opener.note_open(RELAY_ONLY);
+        opener.note_open(HOST_VIEWED);
+        opener.defer_close(CLOSE_DEFERRED);
+        opener.set_pins(4, vec![pin(HOST_VIEWED)]);
+        let mut released = opener.take_released();
+        released.sort();
+        assert_eq!(
+            released,
+            vec![CLOSE_DEFERRED.to_string(), RELAY_ONLY.to_string()],
+            "the relay's own open and a deferred navigation close are released with their pins"
+        );
+        assert!(opener.keeps_open(HOST_VIEWED) && !opener.keeps_open(RELAY_ONLY));
+        opener.set_pins(5, Vec::new());
+        assert!(opener.take_released().is_empty(), "the replica the host opened stays open when its pin goes");
 
         for endpoint in [fresh_viewer, stranger, other_verse_member, member_second_session, third, fourth] {
             endpoint.close().await;

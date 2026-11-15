@@ -438,8 +438,12 @@ Own-author rows are filtered downstream by the inbound handler like any
 other row. Mock-backed replicas (offline) snapshot their in-memory rows, so
 tests exercise the same seam.
 
+**Byte bound (2026-11-14, §byte-bounds).** The pass walks
+`VerseReplicator::snapshot_index` (metadata only, same replay order) and reads
+one row's bytes at a time through `load_entry`; it never holds the verse.
+
 **Self-drain capacity rule (F20 finding 1 — regression-tested).** The
-snapshot is UNBOUNDED, so the reconciliation pass must apply entries
+snapshot is UNBOUNDED in entries, so the reconciliation pass must apply entries
 DIRECTLY through `handle_inbound_row_change` (which `try_send`s to the DB
 channel with drop-and-count) — it must NEVER await a send into the
 aggregated inbound stream, whose only drainer is the very command loop
@@ -1508,7 +1512,7 @@ the iroh impl and the service.
 **`IrohBlobTransport`** (over the `DocsStack` fs store + endpoint; `from_stack`).
 `add` keeps a `TempTag` until `set_tag` covers the blob (the named tag is a
 `HashAndFormat::hash_seq`, so it protects root + children; the fs store has
-no GC by default, but everything we keep is tagged anyway). Fetches dial the
+reclaim (§blob-reclaim) honours tags and HashSeq children, so everything we keep is tagged). Fetches dial the
 provider with `Endpoint::connect(EndpointAddr, iroh_blobs::ALPN)` — the
 `ProviderRef` must parse as `EndpointAddr` JSON (never a URL), and a full
 `EndpointAddr` carries its own addresses, so no `add_peer_addr` round-trip
@@ -2300,10 +2304,12 @@ A host open during a lease takes ownership. `PublicationLeases` is the pure stat
 
 ## §rejudge-on-demotion (QA-0121, 2026-11-07)
 
-`VerseFabric` queues every DID whose role fell. The loop reads that DID's `node/` keys,
-then every author's entry for those keys from the snapshot, and sends ONE
-`DbCommand::RejudgeReplicatedNodes` batch per verse (`send_rejudge_batch`; fe-database
-`src/AGENTS.md` §write-time-role).
+`VerseFabric` queues every DID whose role fell. The loop finds that DID's `node/` keys in the
+snapshot index, reads every author's entry for those keys, and sends them as
+`DbCommand::RejudgeReplicatedNodes` chunks (`send_rejudge_batch`; fe-database
+`src/AGENTS.md` §write-time-role). Chunking is §byte-bounds: the DB handler judges each
+`(record_id, candidates)` on its own, so chunks need no "final" marker, but one node's
+candidates never split across chunks.
 
 Per-key clock (per_key_clock_20261113): the DB plane re-judges clocked rows locally
 (`field_clock::rejudge`, fe-database `src/AGENTS.md` §per-key-clock), so this batch now serves
@@ -2319,12 +2325,190 @@ Critic fixes, 2026-11-07:
   channel keeps it for the loop's kept-work tick (`KEPT_WORK_RETRY`, 1 s, armed only while
   such work exists). A `role` row a full DB channel refused is kept on the fabric
   (`keep_unsent_role_row`, cap 4096) and resent in order BEFORE any re-judge batch, so the
-  DB plane never judges with a stale role view.
+  DB plane never judges with a stale role view. A kept role row that is lost (refused or
+  evicted, §byte-bounds "Kept role rows") owes the verse a role re-sync, which also runs
+  before any re-judge sends or acks.
 - **No grant-cycling bypass (QA-0131).** The empowerment re-read replays only
   `role/__shards/__holders/verse/petal`; a risen author's scene rows go to the DB as a
   `restore_only` re-judge, which admits a version only if its author held Editor when it was
   written. Replaying `node/` through the current role would admit rows written while the
   author was revoked.
+
+## §byte-bounds — every inbound queue has a byte cap beside its entry cap (2026-11-14)
+
+A published row is one docs entry whose content is a blob, bounded by the DB plane at
+`2 * MAX_NODE_BYTES + headroom` (about 144-176 KiB at today's 64 KiB node limit, and meant to
+grow). Entry caps alone let a queue hold `cap x row bound` bytes, so each queue below also
+carries a byte cap (`byte_bounds.rs`). The caps are in bytes, independent of the row bound.
+
+| Queue | Entry cap | Byte cap | When the byte cap trips |
+|---|---|---|---|
+| Live subscription (`replicator.rs` pump channel + the aggregated inbound stream, per verse) | 1,024 rows (`LIVE_ROWS_CAP`) | 64 MiB (`LIVE_ROWS_BYTE_CAP`) | the pump waits, like a full channel; nothing drops |
+| `KeptRows` (QA-0138, per verse) | 4,096 live, compaction at 8,192 | 64 MiB live, compaction at 128 MiB held (`KEPT_ROWS_BYTE_CAP`); a row over 64 MiB is not kept | fair eviction (below), warn + `KeptRows::dropped`; one re-seed of the verse is owed |
+| Kept `role` rows (QA-0132, per verse) | 4,096 | 16 MiB (`UNSENT_ROLE_ROWS_BYTE_CAP`); a row over 16 KiB (`MAX_KEPT_ROLE_ROW_BYTES`) is not kept | fair eviction, counted (`kept_role_rows_dropped` / `_refused`); a role re-sync is owed |
+| Role/petal quarantine (§role-view, per verse) | 1,024 | 16 MiB (`QUARANTINE_BYTE_CAP`) | fair eviction, weighted by bytes; `quarantine_evicted` counts it |
+| Reconciliation replay (`seed_reconciliation`) | whole index | one row (`SeedReport::peak_window_bytes`) | n/a: rows load one at a time |
+| Re-judge (`send_rejudge_batch`) | 256 nodes per command (`REJUDGE_CHUNK_NODES`) | 4 MiB per command, 16 MiB per turn, turn starts only with at most 8 queued DB commands | the pass resumes next turn from the fabric's cursor |
+| DB command channel (fe-runtime `ChannelHandles`, shared with GUI/API) | 256 commands | 64 MiB of row payload in flight (`DB_COMMAND_BYTE_CAP`) | the send reads as `Full`: a row is kept (`KeptRows` / kept `role` rows), a re-judge chunk waits at its cursor |
+
+How each works:
+
+- **Live gate.** `subscribe` creates a fresh `ByteGate` per subscription. The pump charges each
+  row's bytes before its channel send (`GatedSender`); the sync thread's forwarder wraps the row
+  in a `ByteLease` that rides the aggregated stream as `InboundRow`, and the lease drops when the
+  command loop has handled the row. So the gate covers pump channel + forwarder + aggregated
+  slot. A row larger than the cap passes an empty gate alone. A re-subscribe abandons the old
+  gate with whatever it still counted. Mock and virtual replicas return no gate (release on a
+  gate nobody charged saturates at zero).
+- **KeptRows** tracks live and held bytes (superseded and evicted copies stay held until
+  popped, trimmed at the front, or compacted). A row over the byte cap is never kept (it would
+  flush every other author). At either cap, `fair_eviction_victim` (`sharding.rs`) evicts the
+  oldest row of the author holding the most bytes (byte trip) or rows (count trip), and never
+  another author's LAST kept row; with no such victim the incoming row is refused. Every loss
+  sets `reseed_pending` (one flag per verse, not one per drop). The loop's
+  `reseed_dropped_rows` runs one `seed_reconciliation` pass once that verse's kept rows are
+  all on the channel and the channel has drained (`db_channel_drained`), at most every
+  `RESEED_COOLDOWN` (10 s), so a user who stays in the verse gets the rows without a reopen.
+  A closed replica forgets the debt (its next open replays every row).
+- **Kept role rows (the revoke path).** A role statement is small: one with
+  `MAX_GRANT_WINDOWS` windows, 256-byte ids and the widest numbers encodes in well under 4 KiB,
+  so `MAX_KEPT_ROLE_ROW_BYTES` (16 KiB) refuses only padded rows. Eviction is the same fair
+  rule, so a member flooding the kept role rows evicts only its own; an owner's single revoke
+  is never displaced by another author. Any loss calls `request_role_resync`: before the next
+  re-judge (demotion or restore) runs or acks, `resync_role_rows` re-reads every author's
+  `role/` row from the replica index (sorted by `(record_id, author)`, one row loaded and sent
+  at a time, resuming after its cursor when the channel reads `Full`) straight into the DB
+  thread. It is the all-author form of the §2.5 empowerment re-read (`entries_by_author`
+  replays one DID; this replays the whole `role` table, an `ALL_AUTHOR_TABLES` member). A loss
+  during a pass re-runs the pass once it ends (`RoleResync::restarts`, warned on each restart;
+  passes are paced by the 1 s kept-work tick, never a busy loop). So a dropped revoke reaches the DB plane before
+  any re-judge acknowledges the demotion, with no replica reopen.
+- **Left as is.** Sybil authors (many DIDs, one per flooded row) defeat per-author fairness
+  in the quarantine and the kept rows; what they push out is still in the replica and comes
+  back through the empowerment re-read, the role re-sync or the owed re-seed. A just-opened
+  replica can see one transient close-and-reopen; the reopen replays it
+  (`seed_reconciliation`), so nothing is lost.
+- **Quarantine** evicts the author holding the most rows (count trip) or the most bytes (byte
+  trip), oldest first, so one flooder with huge rows cannot flush other authors.
+- **Reconciliation.** `snapshot_index` holds metadata only (`SnapshotEntry::metadata`); the
+  replay loads one row, applies it, drops it. The node pass is still sorted by timestamp, all
+  authors, and the `role`/`binding` all-author passes are unchanged, so order and completeness
+  match the old `snapshot()`. Scene-asset prefetch keeps only `(author, petal, hash)` per
+  forwarded asset row (`SceneAssetRef`) for the post-pass role judgment. Rows the DB channel
+  refuses go to `KeptRows` and its caps apply. A replica that indexes metadata entries must
+  override `load_entry` (the default yields `None` for them).
+- **DB command bytes.** Every byte-carrying send (`ApplyReplicatedRow` in
+  `handle_inbound_row_change`, `resend_unsent_rows`, `resend_unsent_role_rows`; the
+  `RejudgeReplicatedNodes` flush in `send_rejudge_batch`) goes through
+  `byte_bounds::try_send_db`, which charges `DbCommand::payload_bytes()` on the channel's
+  `DbCommandBytes` first. Over the cap it returns `TrySendError::Full` without sending, so
+  the existing full-channel paths (keep and count, resend on the `KEPT_WORK_RETRY` tick, re-judge
+  cursor, role re-sync cursor, owed re-seed) apply unchanged and identically; a refused send
+  releases its charge, and the DB thread's command lane releases the rest (fe-runtime
+  `src/AGENTS.md` §db-command-bytes). Bulk work (a re-judge turn, a re-seed) starts only when
+  `db_channel_drained` holds: at most `REJUDGE_MAX_QUEUED` commands queued AND the gate at most
+  half full. The gate cannot stick while the DB thread runs: every command it hands out or
+  supersedes releases its bytes. It does stick once the DB thread has stopped (its lookahead
+  and channel are never released), and then reads `Full` instead of `Disconnected`, so kept
+  rows wait on the 1 s tick instead of being cleared; only a stopped DB thread reaches that
+  state, so no safeguard was added. The gate is thread-scoped
+  (`scope_db_command_bytes`, set once at the top of `spawn_sync_thread_with_sources`): the sync
+  thread is a current-thread runtime, so every send it makes runs on that one OS thread, and the
+  counter does not have to be threaded through the ~60 internal call sites that take
+  `&Option<Sender<DbCommand>>`. A function called from another thread (a unit test) sends
+  ungated unless it opens its own scope, as `inbound_row_change_keeps_and_resends_on_full_db_channel` does.
+- **Reclaimed node blobs.** `WriteRowEntry` for a `node` row whose blob is gone logs at debug:
+  fe-database deletes a node's previous published row blob once a newer one is enqueued
+  (`scene_publication/reclaim.rs`), so a superseded entry finding its blob missing is expected.
+  Every other table keeps the warning.
+- **Re-judge.** Chunks are planned per node in `record_id` order. A node whose candidates exceed
+  4 MiB travels alone. `VerseFabric::rejudge_cursor_mut(restore_only)` keeps
+  `(dids, last node queued)` per pass kind; a different DID set restarts the pass (re-judging a
+  node twice is idempotent). A full channel leaves the cursor at the last accepted chunk.
+
+What is still unbounded: the snapshot index (O(entries), about 200 bytes each); one row's own
+size (iroh-docs downloads any content size and the pump reads it whole; `MAX_ROW_CONTENT_BYTES`
+caps only the re-fetch path); `entries_by_author` for one author (the §2.5 re-read, the R1
+re-assert, the asset prefetch on empowerment). The DB command channel is now byte-gated for
+the rows this thread sends (above), the DB lane's lookahead included; commands from other
+threads stay count-bounded only.
+
+## §blob-reclaim — superseded row content is deleted after a grace (2026-11-14)
+
+iroh-docs keeps ONE entry per `(namespace, author, key)` (`RECORDS_TABLE` key), so an overwrite
+leaves the previous content blob unreferenced; before this, nothing deleted it. Reclaim uses
+iroh-blobs' own GC (`Options::gc`, the only public deletion path in 0.103.1: `Blobs::delete` is
+crate-private): `DocsStack::spawn_with_gc` sets a `GcConfig` whose protect callback
+(`reclaim_protect_cb`) adds, before each mark-and-sweep:
+
+1. every content hash of every docs entry, through iroh-docs' `ProtectCallbackHandler`
+   (`Docs::persistent(..).protect_handler(..)`);
+2. every hash the scene-asset classification names (`SceneAssetGate::protected_hashes`):
+   fetched scene copies carry no tag;
+3. every tag's hash and a HashSeq tag's children (tileset publish/download tags, scene-asset
+   retention roots), listed by us so a just-untagged blob gets its grace too; the library mark
+   adds tags and temp tags again;
+4. every other present blob first seen unreferenced less than `grace` ago (`ReclaimLedger`).
+
+5. at the END of the callback (`reclaim_tail`): every blob not in the first listing (it arrived
+   during the pass, so it is inside its grace by definition), then iroh-docs' content hashes
+   read a second time. The blob re-list runs before the docs re-read on purpose: an inbound
+   entry lands before its content, so a blob arriving after the re-list is caught by the
+   re-read whenever its entry landed before that re-read.
+
+Deleted: a blob present for at least `grace` with no reference above. Any source that cannot
+answer (docs engine gone, store listing failed, scene classification failed or unreadable,
+store not yet published) aborts the pass, so nothing is deleted on partial knowledge. The
+grace covers an in-flight transfer of the old content to a peer.
+
+The GC race (what the grace does NOT cover). iroh-blobs 0.103.1 `run_gc` calls the protect
+callback, then `gc_run_once`: `clear_protected` (empties the fs store's set of hashes written
+since the last clear, which `delete` skips), mark (tags and temp tags, HashSeq children),
+sweep (lists the store again, deletes every unprotected hash). A blob written after the
+callback's last listing and before `clear_protected` is in none of those. Closed:
+- this node's own row writes: `IrohDocsReplicator::write_row` adds the row blob under its own
+  temp tag, writes the entry with `set_hash`, and hands the tag to `DocsStack`
+  (`FreshRowTags`, at most 4,096), which releases every held tag when the NEXT pass's
+  callback starts. Passes run one after another, so by then the pass that could have raced
+  the write has swept, and the new pass's docs read sees the entry.
+- tileset and scene-asset retention: tags and temp tags, marked by the library itself.
+
+Remaining window: from the callback's final docs re-read to the library's `clear_protected`
+(the callback's return plus one message to the store's metadata actor). A blob lost there must
+have had its docs entry land after the re-read AND its content downloaded and committed inside
+that window (an inbound row), or be a fetched scene copy written inside it before its
+classification. fe-sync cannot close it: `gc_run_once`, `clear_protected` and `Blobs::delete`
+are crate-private in 0.103.1, and a temp tag can only be taken for a hash already known.
+Defaults: a pass every 10 min, 30 min grace (`BlobGcPolicy`); `FE_SYNC_BLOB_GC=off` disables
+reclaim (and the fresh-row tags with it).
+
+Lifecycle: iroh-blobs' GC task holds a store handle, so a store no longer ends when its last
+handle drops. The router's shutdown already runs `BlobsProtocol::shutdown`, which shuts the
+store down (the metadata actor drops redb, the file lock, before it replies). A second
+`Store::shutdown` then goes to a dead actor and returns `Err`, so `close_reclaiming_store`
+treats `Err` as closed too: in the fs store `Shutdown` is answered only through the metadata
+actor, so an error means that actor is gone, and a store without it can delete nothing.
+`DocsStack::shutdown` (and `Drop`, best effort) set `store_closed` and release the fresh-row
+tags. The GC task cannot be stopped explicitly: iroh-blobs spawns `run_gc` on the store's own
+runtime, keeps no handle, and sleeps a full interval before each callback. At that next tick
+the callback returns `Continue` into the closed store, `clear_protected` fails, and the task
+ends (up to one interval after shutdown; tests see the callback count, `gc_callbacks`, stop
+growing). The fs actor ends only when every store handle is gone, and it owns its own GC
+config: `FsStore::load_with_opts` (iroh-blobs 0.103.1 `fs.rs`) clones `options.gc` for the
+task and moves `Arc::new(options)` into the actor. A store handle captured by the callback
+would therefore keep the actor alive from inside (a cycle). So the callback reads its store
+from a `ReclaimStoreSlot` (`Mutex<Option<Store>>`) that `close_reclaiming_store` empties; once
+the GC task has ended and the stack's handles drop, the fs actor, its open data/outboard files
+and the store's runtime threads go. No in-process path removes or migrates `<p2p>` after shutdown: the only removal
+helper, fe-database `clear_local_storage`, has no caller and targets the database dir, and the
+legacy-store migration runs only inside `DocsStack::spawn`. So the lingering fs actor holds no
+lock anything waits on; redb, the only exclusive lock, is already released.
+
+Two copies of a published row: the database crate's canonical `FsBlobStore` (`data/blobs`,
+written by fe-database `publisher.rs` `add_blob`) belongs to fe-database and its own asset GC;
+fe-sync never deletes from it. The iroh store (`<p2p dir>/blobs`) belongs to fe-sync; only
+this reclaim deletes from it, and fe-database never touches it. A row republished after its
+iroh copy was reclaimed is re-added from the canonical copy by `handle_write_row_entry`.
 
 ## §stable-port — a restarted node keeps its address (QA-0145, 2026-11-07)
 
@@ -2460,7 +2644,8 @@ Which advertised relays this node may use, and how far (`fe_sync::relay_trust`, 
 - Auto-home toggle: `set_auto_home_relay` is called from `relay_serve_bridge::register_settings` (`fractalengine/src/relay_serve_bridge.rs:89`), which runs at `main.rs:138`, before the sync thread spawns (`main.rs:419`). Hazard B (`net_diagnostics.rs:135`): open verses whose adverts omit this node's advertised home relay.
 - Custom-relay strip: on `Custom` the reconciler's tiers hold only the configured URLs (`relay_reconcile.rs:79-83`). A peer's n0 home relay is outside the allowlist, so `filter_peer_addr` strips it unless a Manager advertises that relay and it enters the DialOnly tier.
 - Local-only names: a single-label name or one ending in `LOCAL_ONLY_DOMAIN_SUFFIXES` (`.local`, `.home.arpa`, `.internal`, `.lan`) resolves to `RelayReach::Private` and needs the private-relay opt-in (`fe-runtime/src/relay_advertisement.rs:367-376`).
-- Resolve-checked DialOnly allowlist (`sync_thread.rs`, `RelayAdoption::allowlist`, `filter_resolvable`): each DialOnly host name is resolved through `dial_only_relay_allowed` under `ADVERTISED_RELAY_RESOLVE_TIMEOUT` (5 s). Verdicts are cached for `DIAL_ONLY_VERDICT_TTL` (10 min) and refreshed ahead once past half of it, so a healthy host never drops out. Configured, Default and inserted (Pinned) entries are not re-resolved. Residual: iroh makes the connection, so DNS can rebind after this check.
+- Resolve-checked DialOnly allowlist (`sync_thread.rs`, `RelayAdoption::allowlist`, `filter_resolvable`): each DialOnly host name is resolved through `dial_only_relay_allowed` under `ADVERTISED_RELAY_RESOLVE_TIMEOUT` (5 s). Verdicts are cached for `DIAL_ONLY_VERDICT_TTL` (10 min) and refreshed ahead once past half of it, so a healthy host never drops out. Configured, Default and inserted (Pinned) entries are not re-resolved. The cached verdict only decides the allowlist; the connection itself is judged again (next item).
+- Connect-time judgment (security inbox 17 / RF-OPEN-9, 2026-11-14; `relay_dns.rs`): iroh resolves a relay host itself when it dials (`iroh-relay` `client/tls.rs` `dial_happy_eyeballs` through the endpoint's `DnsResolver`), so a host that answered the check with a public address could answer the dial with a private one (DNS rebinding). `SyncEndpoint::bind` gives iroh a `DnsResolver::custom` decorator (`judging_resolver`) over the system resolver (`Endpoint::Builder::dns_resolver`, iroh-1.3.0 `src/endpoint.rs:695`; `Resolver` trait, iroh-dns-1.3.0 `src/dns.rs:105`). Every IPv4/IPv6 lookup of a judged host is checked with the pre-check's rules: an inserted advertised relay (Pinned / HomeEligible) must resolve only to public addresses (`RelayHostRule::PublicOnly`), a DialOnly one only to addresses the process policy accepts (`RelayHostRule::DialOnly`; loopback and link-local never). A family with any refused address resolves to nothing, so iroh has nothing to dial and the connect fails with `NoResponse`. The judged hosts come from the reconciler on each re-plan pass (`RelayAdoption::judged_relay_hosts`) and are pushed with `SyncEndpoint::set_judged_relay_hosts` before the allowlist widens. Configured and Default relay hosts are exempt; any other host (TXT lookups, a proxy) is answered unchanged. Order: `judge_planned_relays` pushes the plan's hosts BEFORE any op runs (a planned insert is already PublicOnly when `insert_relay` lets iroh resolve it; a planned removal stays PublicOnly until it has left the map), and the pass pushes again after the ops, before the allowlist widens. Withdrawn hosts stay judged, since a live connection may redial them; at `JUDGED_RELAY_HOST_CAP` (1024) only the longest-withdrawn host leaves, one at a time (`RelayHostJudge` stamps each host with the last update that named it current), and a current host never does. Every host in the relay map is current at every push, so churning adverts can push out only hosts withdrawn longer ago than every other judged host. The resolver adds no lookups and never runs on the sync loop; the off-loop pre-check keeps `RELAY_LOOKUP_LIMIT`. Residual: an HTTP(S) proxy configured for iroh resolves the relay host on its side, outside this judgment.
 - Off-loop lookups (sync-relay-2, 2026-11-14): the reconcile pass never awaits DNS. `relay_check_now` decides what needs no DNS (a bad URL, an IP literal); a host name becomes a `(url, RelayCheck)` lookup that the loop spawns after the pass (`take_lookups`, at most `RELAY_LOOKUP_LIMIT` = 8 in flight, one per key, each under the 5 s budget). The verdict returns through the `relay_lookup_rx` select arm (`record_lookup`), which sets `replan`. The next pass re-plans from the CURRENT adverts and only then consumes the verdict: an Insert uses it only if the plan still names that URL, the allowlist only for URLs still DialOnly, and `finish_pass` drops every unconsumed verdict. So a verdict for a withdrawn or re-moded URL is never applied. Address rules are unchanged (`resolve_public_relay` / `dial_only_relay_allowed` run inside the task). A refused insert cools down for `INSERT_REFUSAL_COOLDOWN` (2 min) instead of re-resolving every 30 s tick. With healthy DNS the result is the same, one loop pass later.
 
 ## §gossip-signing
@@ -2487,9 +2672,11 @@ The embedded members-only relay (`fe_sync::relay_server`, feature `relay-server`
 - `FE_RELAY_SERVE_ACCESS` accepts only `members` (or unset). Any open value refuses to start.
 - Profiles `RelayServeProfile::{Operator, Desktop}`. Default client caps are 1024 and 64. The desktop profile has a denial breaker (counting distinct denied endpoints per minute) (`BREAKER_DENIALS_PER_MINUTE` = 600, `BREAKER_HOT_MINUTES` = 3) with a `DESKTOP_BREAKER_COOLDOWN` of 600 s.
 - Breaker input: only GlobalCap denials, counted once per distinct endpoint per 60 s window (`global_cap_sources`, bounded 4096), so one endpoint feeds the listener-closing breaker at most once a minute. PerEndpointCap denials are single-source (an admitted member can make them alone): they go to a bounded `MemberThrottle` (4096 entries, blocked entries evicted last); more than 10 in 60 s blocks that endpoint for 30 s doubling to 600 s (strikes reset after 600 s quiet) and the listener is untouched. NotMember denials go to the bounded `NonMemberTracker` (log rate-limit + count only). `CloseListener` is reachable only from more than 600 distinct admitted endpoints being global-cap denied per minute for 3 minutes, which one endpoint cannot produce.
-- `ServedVerses::AllHosted` admits through `GateSettings.hosted_verses` (the node's hosted set) only, not every verse in the admission snapshot; no hosted set admits nothing. The set is fixed at start, so a verse hosted later is served after a relay restart. `served_verse_ids()` is what a consent screen lists.
+- `ServedVerses::AllHosted` admits through the node's hosted set only, not every verse in the admission snapshot; no hosted set admits nothing. `Listed` serves the listed verses that are still hosted. `served_verse_ids()` is what a consent screen lists.
+- Served-set refresh (RF-OPEN-4, 2026-11-14): `GateSettings.hosted_verses` is only the start value. `RelayMembershipGate::rebind_hosted_verses` (module form `relay_server::rebind_hosted_verses`, which re-applies the buffered snapshot under its lock) replaces the hosted set while the relay runs: a newly served verse's members are admitted from the current snapshot, and a dropped verse's members are evicted by the running reconciler and denied on reconnect. Nothing the snapshot does not name is admitted, so a new verse stays fail-closed until its role view arrives. The rule is unchanged and re-run on a trigger, never on a timer. Desktop: the rule is "verses this node created" (`load_owned_verse_ids`, `None` on a read error). A failed read never stands for "owns nothing": at start the gate thread retries (`OWNED_VERSES_START_ATTEMPTS` x `OWNED_VERSES_RETRY`) and gives up rather than serve an empty set; on refresh `relay_serve_bridge::serve_refreshes` keeps the applied set and retries after `OWNED_VERSES_RETRY` without a new wake. An empty set is applied only from a successful read. A Bevy system (`relay_serve_bridge::request_served_set_refresh`) sees `DbResult::VerseCreated` or `DbResult::EntityDeleted { Verse }` and wakes the relay thread over a coalescing channel; the thread re-runs the query and calls `RelayServeHandle::keep_served_replicas_open` (gate first, then `ServedReplicaPins::replace`). Operator binary: every stored verse is hosted, so `fractalengine-relay` `relay_serve::rebind_hosted_on_verse_change` adds a created verse and removes a deleted one through `installed_gate()`.
+- Served-verse cap: `GateLimits::max_served_verses`, from `RelayServeProfile::max_served_verses` (Desktop 64, Operator 4096; each served desktop verse keeps a replica and its gossip topic open). At the cap the verses already served keep their place and new ones are not served (their members are denied), with one warning per re-bind (`bound_served`).
 - Hosted set per binary (sync-relay-4, 2026-11-14): the desktop serves only verses it created (`fractalengine/src/main.rs::load_owned_verse_ids`, entry 15). The operator binary `fractalengine-relay` hosts every verse in its store (`load_hosted_verse_ids`) by design: a dedicated relay replicates verses created elsewhere and joined on purpose (`fractalengine-relay/src/replicas.rs` opens a replica for each), so an owner-only rule would serve nothing. The operator's consent is `FE_RELAY_SERVE=1`, and `FE_RELAY_SERVE_VERSES=<ids>` narrows it.
-- Served replicas (sync-relay-1, 2026-11-14): admission comes from a verse's fabric, and a fabric only exists and stays current while its replica is open. The desktop opens replicas from navigation, so after start `RelayServeHandle::keep_served_replicas_open` pins every served verse (`relay_server::keep_served_replicas_open`, guard released with the handle). The sync loop's `ServedReplicaOpener` re-reads the pins by generation, opens any pinned replica that is closed (self-sent `OpenVerseReplica`, at most once per verse per `SERVED_REPLICA_RETRY` = 30 s, which also heals a lease close or a failed open), and makes the close arm skip `CloseVerseReplica` for a pinned verse. `RelayAdmissionPusher::refresh` adds served verses to its hosted set, so a served verse with no fabric yet shows up as unconverged (still denied) and is logged once. The pins are opened before the dial-back, which rides those verses' topics. Residual: a replica opened only for the relay stays open after the relay stops, until the user navigates in and out or exits.
+- Served replicas (sync-relay-1, 2026-11-14): admission comes from a verse's fabric, and a fabric only exists and stays current while its replica is open. The desktop opens replicas from navigation, so after start `RelayServeHandle::keep_served_replicas_open` pins every served verse (`relay_server::keep_served_replicas_open`, guard released with the handle). The sync loop's `ServedReplicaOpener` re-reads the pins by generation, opens any pinned replica that is closed (self-sent `OpenVerseReplica`, at most once per verse per `SERVED_REPLICA_RETRY` = 30 s, which also heals a lease close or a failed open), and makes the close arm skip `CloseVerseReplica` for a pinned verse. `RelayAdmissionPusher::refresh` adds served verses to its hosted set, so a served verse with no fabric yet shows up as unconverged (still denied) and is logged once. The pins are opened before the dial-back, which rides those verses' topics. Release (RF-OPEN-4): the opener tracks which pinned replicas are open only for the relay (`relay_only`: its own open, recognized through `queued_opens` in `note_open`, or a navigation or lease close it deferred with `defer_close`). When a verse leaves the pins (`set_pins`), only those replicas are handed to the loop (`take_released`) and closed inline at the top of the loop, like a lease expiry. A replica the host opened is never closed by an unpin, and a host open still queued re-opens it. A failed self-send is forgotten (`open_not_queued`) so a later host open is not mistaken for the relay's. Relay-only replicas also close when the relay stops (the pins drop to empty). Residual: a served verse whose open always fails still retries every 30 s.
 - Client IP logging is opt-in (`FE_RELAY_SERVE_LOG_IPS`). Abuse log lines are rate-limited per `ABUSE_LOG_WINDOW` (60 s).
 - Certificates: `FE_RELAY_SERVE_CERT_MODE` selects ACME (`FE_RELAY_SERVE_ACME_CONTACT`, `FE_RELAY_SERVE_ACME_STAGING`) or supplied files (`FE_RELAY_SERVE_CERT_PATH`, `FE_RELAY_SERVE_KEY_PATH`).
 - The desktop serves a relay only after consent and a passing reachability self-test (fe-ui §app-settings).

@@ -1,6 +1,7 @@
 pub mod bevy_asset_reader;
 pub mod blob_store;
 pub mod blob_transport;
+pub mod byte_bounds;
 pub mod cache;
 pub mod compute;
 pub mod dialback_prober;
@@ -21,6 +22,7 @@ pub mod reachability;
 pub mod reconciliation;
 pub mod relay_advertise;
 pub mod relay_config;
+pub mod relay_dns;
 pub mod relay_reconcile;
 #[cfg(feature = "relay-server")]
 pub mod relay_server;
@@ -41,7 +43,7 @@ pub mod write_policy;
 pub use bevy_asset_reader::BlobAssetReader;
 pub use blob_store::FsBlobStore;
 pub use blob_transport::IrohBlobTransport;
-pub use docs_engine::{p2p_data_dir, DocsStack, P2P_DIR_ENV_VAR};
+pub use docs_engine::{p2p_data_dir, BlobGcPolicy, DocsStack, BLOB_GC_ENV_VAR, P2P_DIR_ENV_VAR};
 pub use endpoint::bound_endpoint_count;
 pub use fe_database::invite::VerseInvite;
 pub use lifecycle::{
@@ -54,7 +56,7 @@ pub use relay_config::{
 };
 pub use replicator::{
     IncomingEntryApplicator, IrohDocsReplicator, IrohPetalReplicator, MockVerseReplicator,
-    PetalReplicator, RowChange, VerseReplicator,
+    PetalReplicator, RowChange, SnapshotEntry, VerseReplicator,
 };
 pub use sharding::{
     PeerDeclaration, ShardId, ShardLedgerEntry, VerseFabric, PEER_DECL_TABLE, SHARD_TABLE,

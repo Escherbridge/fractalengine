@@ -68,6 +68,36 @@ pub struct RowChange {
     pub data: Vec<u8>,
 }
 
+/// One replica entry from [`VerseReplicator::snapshot_index`]: metadata now, row bytes on demand.
+#[derive(Debug, Clone)]
+pub struct SnapshotEntry {
+    /// The row; `data` stays empty until [`VerseReplicator::load_entry`] reads it.
+    pub change: RowChange,
+    /// Bytes the row holds once loaded.
+    pub content_len: u64,
+    deferred: bool,
+}
+
+impl SnapshotEntry {
+    /// An entry whose bytes are already in memory.
+    pub fn loaded(change: RowChange) -> Self {
+        let content_len = change.data.len() as u64;
+        Self { change, content_len, deferred: false }
+    }
+
+    /// An entry whose `content_len` row bytes are read on demand; a replica that indexes
+    /// such entries overrides [`VerseReplicator::load_entry`] (the default yields `None`).
+    pub fn metadata(mut change: RowChange, content_len: u64) -> Self {
+        change.data = Vec::new();
+        Self { change, content_len, deferred: true }
+    }
+
+    /// Whether the row bytes still have to be read.
+    pub fn is_deferred(&self) -> bool {
+        self.deferred
+    }
+}
+
 /// Whether a serialized row JSON represents a tombstoned (soft-deleted) node —
 /// i.e. it carries a non-null `tombstone` field (FR-1), or the payload is
 /// empty (the iroh-docs `del` marker — an empty entry is a deletion). Used to
@@ -156,6 +186,32 @@ pub trait VerseReplicator: Send + Sync {
     /// Entries whose content has not finished downloading are omitted (they
     /// arrive through the live pump when the content lands).
     fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>>;
+
+    /// [`VerseReplicator::snapshot`]'s entries in the same replay order, as metadata whose
+    /// row bytes load one at a time through [`VerseReplicator::load_entry`] (§byte-bounds).
+    /// The default wraps the in-memory snapshot (test doubles, the sim transport).
+    fn snapshot_index(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<SnapshotEntry>>> {
+        Box::pin(async move {
+            Ok(self
+                .snapshot()
+                .await?
+                .into_iter()
+                .map(SnapshotEntry::loaded)
+                .collect())
+        })
+    }
+
+    /// The indexed entry with its row bytes; `None` when its content is not local yet
+    /// (the live pump delivers it when the download lands).
+    fn load_entry(&self, entry: SnapshotEntry) -> ReplicatorFuture<'_, Option<RowChange>> {
+        Box::pin(async move { (!entry.deferred).then_some(entry.change) })
+    }
+
+    /// Byte gate the live pump of the latest `subscribe` charges per row; the consumer
+    /// releases each row's bytes once handled. `None`: the subscription is not byte-gated.
+    fn live_byte_gate(&self) -> Option<Arc<crate::byte_bounds::ByteGate>> {
+        None
+    }
 
     /// Entries authored by `author_id` whose table matches one of
     /// `prefixes` (each a bare table name, e.g. `"role"` or `"role/"` —
@@ -542,6 +598,8 @@ pub struct IrohDocsReplicator {
     author: RwLock<Option<AuthorId>>,
     /// Abort handle of the live-event pump spawned by the last `subscribe`.
     pump: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Byte gate of the live pump spawned by the last `subscribe` (§byte-bounds).
+    live_gate: Mutex<Option<Arc<crate::byte_bounds::ByteGate>>>,
     /// Why `open_document` failed **on an online stack** (F20 finding 4).
     ///
     /// Set by the sync thread's open handler via [`Self::mark_open_failed`]:
@@ -631,6 +689,7 @@ impl IrohDocsReplicator {
             doc: RwLock::new(None),
             author: RwLock::new(None),
             pump: Mutex::new(None),
+            live_gate: Mutex::new(None),
             open_failed: RwLock::new(None),
             join_readiness: RwLock::new(Arc::new(JoinReadiness::default())),
         }
@@ -847,9 +906,26 @@ impl IrohDocsReplicator {
                 tracing::debug!(ns = %doc.id().fmt_short(), key = %key, "unchanged row not rewritten");
                 return Ok(());
             }
-            doc.set_bytes(author, key.as_bytes().to_vec(), data.to_vec())
-                .await
-                .map_err(|e| anyhow::anyhow!("set_bytes {key}: {e}"))?;
+            match self.engine_holder.stack().filter(|stack| stack.reclaims()) {
+                // §blob-reclaim: our own temp tag outlives the write until the next reclaim pass starts.
+                Some(stack) => {
+                    let tag = stack
+                        .blob_store()
+                        .add_bytes(data.to_vec())
+                        .temp_tag()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("adding row blob {key}: {e}"))?;
+                    doc.set_hash(author, key.as_bytes().to_vec(), tag.hash(), data.len() as u64)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("set_hash {key}: {e}"))?;
+                    stack.hold_fresh_row_blob(tag);
+                }
+                None => {
+                    doc.set_bytes(author, key.as_bytes().to_vec(), data.to_vec())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("set_bytes {key}: {e}"))?;
+                }
+            }
             tracing::debug!(ns = %doc.id().fmt_short(), key = %key, "row written");
         }
         Ok(())
@@ -926,6 +1002,7 @@ impl VerseReplicator for IrohDocsReplicator {
             }
             let Some(doc) = self.live_doc() else {
                 tracing::debug!(ns = %self.namespace_id, "subscribe on mock fallback");
+                *self.live_gate.lock().unwrap_or_else(|error| error.into_inner()) = None;
                 return VerseReplicator::subscribe(&self.inner).await;
             };
             let Some(stack) = self.engine_holder.stack() else {
@@ -936,8 +1013,11 @@ impl VerseReplicator for IrohDocsReplicator {
                 .subscribe()
                 .await
                 .map_err(|e| anyhow::anyhow!("doc subscribe: {e}"))?;
-            let (tx, rx) = mpsc::channel::<RowChange>(1024);
+            let (tx, rx) = mpsc::channel::<RowChange>(LIVE_ROWS_CAP);
             if let Some(old) = self.pump.lock().unwrap_or_else(|error| error.into_inner()).take() { old.abort(); }
+            // A fresh gate per subscription: bytes charged by an aborted pump die with its gate.
+            let gate = crate::byte_bounds::ByteGate::new(crate::byte_bounds::LIVE_ROWS_BYTE_CAP);
+            *self.live_gate.lock().unwrap_or_else(|error| error.into_inner()) = Some(gate.clone());
             self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).invalidated.store(true, Ordering::Release);
             self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).alive.store(false, Ordering::Release);
             let readiness = Arc::new(JoinReadiness::default());
@@ -945,7 +1025,7 @@ impl VerseReplicator for IrohDocsReplicator {
             let handle = tokio::spawn(pump_live_events(
                 Box::pin(stream),
                 stack.blob_store().clone(),
-                tx,
+                GatedSender { tx, gate: Some(gate) },
                 readiness,
                 Some(doc.clone()),
                 Some(Arc::new(crate::blob_transport::IrohBlobTransport::from_stack(stack))),
@@ -962,6 +1042,19 @@ impl VerseReplicator for IrohDocsReplicator {
 
     fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
         Box::pin(async move {
+            let index = self.snapshot_index().await?;
+            let mut out = Vec::with_capacity(index.len());
+            for entry in index {
+                if let Some(change) = self.load_entry(entry).await {
+                    out.push(change);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn snapshot_index(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<SnapshotEntry>>> {
+        Box::pin(async move {
             // F20 finding 4: a failed online open has no document to
             // snapshot — error loudly rather than replaying mock rows.
             if let Some(reason) = self.open_error() {
@@ -969,19 +1062,15 @@ impl VerseReplicator for IrohDocsReplicator {
             }
             let Some(doc) = self.live_doc() else {
                 tracing::debug!(ns = %self.namespace_id, "snapshot on mock fallback");
-                return VerseReplicator::snapshot(&self.inner).await;
+                return VerseReplicator::snapshot_index(&self.inner).await;
             };
-            let Some(stack) = self.engine_holder.stack() else {
-                anyhow::bail!("document open but stack unavailable");
-            };
-            let blobs = stack.blob_store().clone();
 
             // Latest entry per key (a key may have been written by several
             // authors); `include_empty` keeps `Doc::del` tombstones in the set.
             let latest_query = iroh_docs::store::Query::single_latest_per_key()
                 .include_empty()
                 .build();
-            let mut out = collect_query_rows(&doc, &blobs, latest_query).await;
+            let mut out = collect_query_index(&doc, latest_query).await;
             // RP-5 §2.5 step 3: `role` statements must be read from ALL
             // authors — `single_latest_per_key` picks the single physically
             // newest entry for a KEY across every author who wrote it, so a
@@ -993,12 +1082,14 @@ impl VerseReplicator for IrohDocsReplicator {
             // with every author's entry under the `role/` prefix. Extension
             // `binding/` rows get the same pass (B1): the key names its
             // author_did, and a forged entry on it must not hide the real one.
-            out.retain(|c| !ALL_AUTHOR_TABLES.contains(&c.table.as_str()) && c.table != "node");
+            out.retain(|e| {
+                !ALL_AUTHOR_TABLES.contains(&e.change.table.as_str()) && e.change.table != "node"
+            });
             for table in ALL_AUTHOR_TABLES {
                 let all_authors_query = iroh_docs::store::Query::key_prefix(format!("{table}/"))
                     .include_empty()
                     .build();
-                out.extend(collect_query_rows(&doc, &blobs, all_authors_query).await);
+                out.extend(collect_query_index(&doc, all_authors_query).await);
             }
             // QA-0100: a node's transform is an `edit_seq` register merged by the
             // DB, so a (re)joining peer must see EVERY author's entry — the newest
@@ -1007,11 +1098,25 @@ impl VerseReplicator for IrohDocsReplicator {
             let node_query = iroh_docs::store::Query::key_prefix("node/")
                 .include_empty()
                 .build();
-            let mut nodes = collect_query_rows(&doc, &blobs, node_query).await;
-            nodes.sort_by_key(|change| change.timestamp);
+            let mut nodes = collect_query_index(&doc, node_query).await;
+            nodes.sort_by_key(|entry| entry.change.timestamp);
             out.extend(nodes);
             Ok(out)
         })
+    }
+
+    fn load_entry(&self, entry: SnapshotEntry) -> ReplicatorFuture<'_, Option<RowChange>> {
+        Box::pin(async move {
+            if !entry.deferred {
+                return Some(entry.change);
+            }
+            let stack = self.engine_holder.stack()?;
+            load_deferred_entry(stack.blob_store(), entry).await
+        })
+    }
+
+    fn live_byte_gate(&self) -> Option<Arc<crate::byte_bounds::ByteGate>> {
+        self.live_gate.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
 
     fn entries_by_author(
@@ -1564,8 +1669,34 @@ async fn fetch_row_content(
     Err(last_error)
 }
 
+/// Rows one live subscription queues before its pump waits (the entry cap beside the byte gate).
+const LIVE_ROWS_CAP: usize = 1024;
+
+/// The live pump's output: the entry-capped channel plus the subscription's byte gate (§byte-bounds).
+struct GatedSender {
+    tx: mpsc::Sender<RowChange>,
+    gate: Option<Arc<crate::byte_bounds::ByteGate>>,
+}
+
+impl GatedSender {
+    /// Charge the row's bytes, then queue it; `Err` once the receiver is gone.
+    async fn send(&self, change: RowChange) -> Result<(), ()> {
+        let bytes = change.data.len() as u64;
+        if let Some(gate) = &self.gate {
+            gate.acquire(bytes).await;
+        }
+        if self.tx.send(change).await.is_err() {
+            if let Some(gate) = &self.gate {
+                gate.release(bytes);
+            }
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
 /// Emit the rows waiting on one content blob; `false` once the receiver is gone.
-async fn emit_waiting_rows(out: &mpsc::Sender<RowChange>, waiting: Vec<PendingContent>, data: &[u8]) -> bool {
+async fn emit_waiting_rows(out: &GatedSender, waiting: Vec<PendingContent>, data: &[u8]) -> bool {
     for meta in waiting {
         let change = RowChange {
             table: meta.table,
@@ -1617,17 +1748,25 @@ fn author_id_from_did_key(did: &str) -> anyhow::Result<AuthorId> {
     Ok(AuthorId::from(verifying_key.to_bytes()))
 }
 
-/// Shared `doc.get_many(query)` → `Vec<RowChange>` loop, used by both
-/// `snapshot` passes (single-latest-per-key, then the §2.5 all-authors
-/// `role/` pass) and by `entries_by_author` (once per table prefix). A
-/// `get_many` failure or a malformed key is a loud warn, never a
-/// propagated error — the same best-effort stance the single pass this
-/// replaces already took per entry.
+/// `doc.get_many(query)` → rows with their bytes (index, then one load per entry). Used by
+/// `entries_by_author` once per table prefix; a failed read is a warn, never an error.
 async fn collect_query_rows(
     doc: &Doc,
     blobs: &iroh_blobs::api::Store,
     query: iroh_docs::store::Query,
 ) -> Vec<RowChange> {
+    let mut out = Vec::new();
+    for entry in collect_query_index(doc, query).await {
+        if let Some(change) = load_deferred_entry(blobs, entry).await {
+            out.push(change);
+        }
+    }
+    out
+}
+
+/// `doc.get_many(query)` → entry metadata only: tombstones complete, content rows deferred
+/// (§byte-bounds). A `get_many` failure or a malformed key is a loud warn, never an error.
+async fn collect_query_index(doc: &Doc, query: iroh_docs::store::Query) -> Vec<SnapshotEntry> {
     let stream = match doc.get_many(query).await {
         Ok(s) => s,
         Err(e) => {
@@ -1650,50 +1789,49 @@ async fn collect_query_rows(
             tracing::warn!(key = %key, "replica entry key not in table/id form — skipped");
             continue;
         };
-        let meta = (
-            table.to_string(),
-            record_id.to_string(),
-            *entry.content_hash().as_bytes(),
-            author_did_key(&entry.author()),
-            entry.timestamp(),
-        );
-        if entry.record().is_empty() {
+        let empty = entry.record().is_empty();
+        let change = RowChange {
+            table: table.to_string(),
+            record_id: record_id.to_string(),
+            content_hash: *entry.content_hash().as_bytes(),
+            author_id: author_did_key(&entry.author()),
+            timestamp: entry.timestamp(),
             // Deletion marker: no content to read.
-            out.push(RowChange {
-                table: meta.0,
-                record_id: meta.1,
-                content_hash: meta.2,
-                author_id: meta.3,
-                timestamp: meta.4,
-                is_tombstone: true,
-                data: Vec::new(),
-            });
-            continue;
-        }
-        match read_blob_bytes(blobs, &entry.content_hash()).await {
-            Ok(data) => {
-                let data = data.to_vec();
-                out.push(RowChange {
-                    table: meta.0,
-                    record_id: meta.1,
-                    content_hash: meta.2,
-                    author_id: meta.3,
-                    timestamp: meta.4,
-                    is_tombstone: row_is_tombstone(&data),
-                    data,
-                });
-            }
-            Err(e) => {
-                // Content not local yet — the live pump emits it when the
-                // download completes, so nothing is lost.
-                tracing::debug!(
-                    key = %key,
-                    "replica query: content not local — deferred to live pump: {e}"
-                );
-            }
-        }
+            is_tombstone: empty,
+            data: Vec::new(),
+        };
+        out.push(if empty {
+            SnapshotEntry::loaded(change)
+        } else {
+            SnapshotEntry::metadata(change, entry.content_len())
+        });
     }
     out
+}
+
+/// Read a deferred entry's bytes; `None` when the content is not local yet.
+async fn load_deferred_entry(blobs: &iroh_blobs::api::Store, entry: SnapshotEntry) -> Option<RowChange> {
+    if !entry.deferred {
+        return Some(entry.change);
+    }
+    let mut change = entry.change;
+    let hash = iroh_blobs::Hash::from_bytes(change.content_hash);
+    match read_blob_bytes(blobs, &hash).await {
+        Ok(data) => {
+            change.data = data.to_vec();
+            change.is_tombstone = row_is_tombstone(&change.data);
+            Some(change)
+        }
+        Err(e) => {
+            // Content not local yet — the live pump emits it when the
+            // download completes, so nothing is lost.
+            tracing::debug!(
+                key = %format!("{}/{}", change.table, change.record_id),
+                "replica query: content not local — deferred to live pump: {e}"
+            );
+            None
+        }
+    }
 }
 
 /// Read one blob's full content bytes from the iroh-blobs store.
@@ -1787,7 +1925,7 @@ fn confirm_peer(readiness: &JoinReadiness, peer: iroh::EndpointId) {
 async fn pump_live_events(
     mut stream: std::pin::Pin<Box<dyn Stream<Item = anyhow::Result<LiveEvent>> + Send>>,
     blobs: iroh_blobs::api::Store,
-    out: mpsc::Sender<RowChange>,
+    out: GatedSender,
     readiness: Arc<JoinReadiness>,
     resync: Option<DocHandle>,
     fetcher: Option<Arc<crate::blob_transport::IrohBlobTransport>>,
@@ -2214,6 +2352,29 @@ mod tests {
             *blake3::hash(payload).as_bytes(),
             "content hash must still cover the payload bytes"
         );
+
+        // §byte-bounds: the live pump's byte gate trips like its entry cap — the pump
+        // waits (nothing dropped) until the consumer releases a handled row's bytes.
+        let row_bytes = (crate::byte_bounds::LIVE_ROWS_BYTE_CAP / 4 + 1) as usize;
+        let gate = crate::byte_bounds::ByteGate::new(crate::byte_bounds::LIVE_ROWS_BYTE_CAP);
+        let (tx, mut live_rx) = mpsc::channel::<RowChange>(LIVE_ROWS_CAP);
+        let out = GatedSender { tx, gate: Some(gate.clone()) };
+        let big = |n: u8| RowChange { data: vec![n; row_bytes], ..change.clone() };
+        for n in 0..3 {
+            out.send(big(n)).await.expect("under the byte cap");
+        }
+        let parked = tokio::time::timeout(std::time::Duration::from_millis(200), out.send(big(3))).await;
+        assert!(parked.is_err(), "a fourth large row waits although the entry cap has room");
+        assert!(gate.used() <= gate.cap(), "the subscription never holds more than its byte cap");
+        let first = live_rx.recv().await.expect("first row");
+        drop(crate::byte_bounds::ByteLease::adopt(gate.clone(), first.data.len() as u64));
+        out.send(big(3)).await.expect("released bytes admit the waiting row");
+        let delivered: Vec<u8> = std::iter::once(first)
+            .chain(std::iter::from_fn(|| live_rx.try_recv().ok()))
+            .map(|row| row.data[0])
+            .collect();
+        assert_eq!(delivered, vec![0, 1, 2, 3], "every row arrives once, in order");
+        assert!(gate.peak() <= gate.cap());
     }
 
     #[tokio::test]
@@ -2664,7 +2825,7 @@ mod tests {
             .chain(futures_lite::stream::pending());
         let (error_tx, _error_rx) = mpsc::channel(1);
         let error_pump = tokio::spawn(pump_live_events(
-            Box::pin(errors), stack_b.blob_store().clone(), error_tx, readiness.clone(), None, None, None,
+            Box::pin(errors), stack_b.blob_store().clone(), GatedSender { tx: error_tx, gate: None }, readiness.clone(), None, None, None,
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -3005,12 +3166,17 @@ mod tests {
         let Some(ep) = bind_loopback_endpoint(44).await else {
             return; // sandboxed environment without UDP — tolerated
         };
+        // §blob-reclaim: passes every 200 ms, a superseded row survives 3 s of grace.
+        let reclaim = crate::docs_engine::BlobGcPolicy {
+            interval: Some(std::time::Duration::from_millis(200)),
+            grace: std::time::Duration::from_secs(3),
+        };
         let stack = Arc::new(
-            DocsStack::spawn(ep, tmp.path().join("p2p"))
+            DocsStack::spawn_with_gc(ep, tmp.path().join("p2p"), reclaim)
                 .await
                 .expect("stack"),
         );
-        let holder = Arc::new(IrohDocsEngineHolder::online(stack));
+        let holder = Arc::new(IrohDocsEngineHolder::online(stack.clone()));
 
         let secret = [9u8; 32];
         // The production form: verse.namespace_id = derive_namespace_id.
@@ -3037,6 +3203,53 @@ mod tests {
             .write_row("node", "node-1", br#"{"node_id":"node-1","name":"n"}"#)
             .await
             .expect("row written");
+
+        // §byte-bounds: the index carries metadata only; a row's bytes load on demand.
+        let index = writer.snapshot_index().await.expect("index");
+        let node_entry = index.iter().find(|e| e.change.table == "node").expect("node entry").clone();
+        assert!(node_entry.is_deferred() && node_entry.change.data.is_empty(), "no row bytes in the index");
+        assert_eq!(node_entry.content_len, br#"{"node_id":"node-1","name":"n"}"#.len() as u64);
+        let loaded = writer.load_entry(node_entry).await.expect("content is local");
+        assert_eq!(loaded.data, br#"{"node_id":"node-1","name":"n"}"#.to_vec());
+
+        // §blob-reclaim: overwriting the row leaves its old blob unreferenced; it outlives
+        // the grace, then goes, while live rows and a tagged tileset (root + child) stay.
+        use fe_runtime::blob_transport::BlobTransport as _;
+        let status = |hash: iroh_blobs::Hash| {
+            let store = stack.blob_store().clone();
+            async move { store.blobs().status(hash).await.expect("status") }
+        };
+        let complete = |status: &iroh_blobs::api::blobs::BlobStatus| {
+            matches!(status, iroh_blobs::api::blobs::BlobStatus::Complete { .. })
+        };
+        let tileset = crate::blob_transport::IrohBlobTransport::from_stack(&stack);
+        let bundle = tileset.add(Bytes::from_static(b"tileset bundle")).await.expect("bundle");
+        let tileset_root = tileset.add_hash_seq(&[bundle]).await.expect("root");
+        tileset.set_tag("fe/tileset/reclaim-check", tileset_root).await.expect("tag");
+        let old_row = iroh_blobs::Hash::new(br#"{"node_id":"node-1","name":"n"}"#);
+        let new_bytes = br#"{"node_id":"node-1","name":"renamed"}"#;
+        writer.write_row("node", "node-1", new_bytes).await.expect("row overwritten");
+        let superseded_at = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if superseded_at.elapsed() < reclaim.grace {
+            assert!(complete(&status(old_row).await), "a superseded row outlives several passes inside its grace");
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while complete(&status(old_row).await) {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the superseded row blob is reclaimed after its grace");
+        assert!(superseded_at.elapsed() >= reclaim.grace);
+        for (hash, what) in [
+            (iroh_blobs::Hash::new(new_bytes), "the live row"),
+            (iroh_blobs::Hash::new(br#"{"verse_id":"verse-reopen","name":"Reopen Verse"}"#), "the manifest"),
+            (iroh_blobs::Hash::from_bytes(tileset_root), "the tileset root"),
+            (iroh_blobs::Hash::from_bytes(bundle), "the tileset bundle"),
+        ] {
+            assert!(complete(&status(hash).await), "{what} survives reclaim");
+        }
         writer.close().await.unwrap();
 
         // Second open: NO secret — the persisted doc must be found by the
@@ -3053,6 +3266,100 @@ mod tests {
         let snap = reader.snapshot().await.expect("snapshot of reopened doc");
         assert_eq!(snap.len(), 2, "manifest + node row both present");
         reader.close().await.unwrap();
+        assert_eq!(stack.fresh_row_tags_held(), 0, "a later pass released every fresh row's temp tag");
+
+        // §blob-reclaim shutdown: the router already shut the store down, so the stack marks it
+        // closed; the GC task's next callback continues into the closed store and the task ends,
+        // so the callback count stops growing (a live task calls it every 200 ms). A pass already
+        // past its callback at shutdown ends the task with no further call, so wait for a quiet
+        // second rather than for one more call.
+        stack.shutdown().await;
+        assert!(stack.blob_store_closed(), "a store the router shut down is marked closed");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let before = stack.gc_callbacks();
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if stack.gc_callbacks() == before {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("iroh-blobs' GC task ends after the stack shut down: its callback count stops growing");
+
+        // §blob-reclaim tail, through the library's real mark and sweep: a blob written after a
+        // pass's first listing (its temp tag already gone) survives that pass, while a stale
+        // blob the pass does not protect is swept.
+        use crate::docs_engine::{reclaim_listing, reclaim_tail};
+        use iroh_blobs::store::{GcConfig, ProtectCb, ProtectOutcome};
+        let tail_dir = tempfile::tempdir().unwrap();
+        // Emptied at the end, as `DocsStack` does, so the store's actor does not keep itself alive.
+        let tail_store: Arc<Mutex<Option<iroh_blobs::api::Store>>> = Arc::default();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mid_pass_blobs: Arc<Mutex<Vec<iroh_blobs::Hash>>> = Arc::default();
+        let (pass_tx, mut pass_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let no_docs: ProtectCb = Arc::new(|_| Box::pin(async { ProtectOutcome::Continue }));
+        let callback: ProtectCb = {
+            let (tail_store, finished, mid_pass_blobs) = (tail_store.clone(), finished.clone(), mid_pass_blobs.clone());
+            Arc::new(move |live| {
+                let finished_now = finished.load(Ordering::Acquire);
+                let (no_docs, mid_pass_blobs, pass_tx) = (no_docs.clone(), mid_pass_blobs.clone(), pass_tx.clone());
+                let pass = tail_store.lock().unwrap().clone().filter(|_| !finished_now).map(|store| {
+                    tokio::spawn(async move {
+                        let listing = reclaim_listing(no_docs.clone(), store.clone()).await.ok()??;
+                        let pass_number = mid_pass_blobs.lock().unwrap().len();
+                        let tag = store.add_bytes(format!("written mid-pass {pass_number}").into_bytes()).temp_tag().await.ok()?;
+                        let written = tag.hash();
+                        drop(tag);
+                        let mut protect: HashSet<iroh_blobs::Hash> = mid_pass_blobs.lock().unwrap().iter().copied().collect();
+                        reclaim_tail(no_docs, &store, &listing.present, &mut protect).await.ok()?;
+                        protect.contains(&written).then_some(())?;
+                        mid_pass_blobs.lock().unwrap().push(written);
+                        Some(protect)
+                    })
+                });
+                Box::pin(async move {
+                    if finished_now {
+                        return ProtectOutcome::Continue; // into the closed store: the GC task ends
+                    }
+                    let Some(pass) = pass else {
+                        return ProtectOutcome::Abort;
+                    };
+                    match pass.await {
+                        Ok(Some(protect)) => {
+                            live.extend(protect);
+                            let _ = pass_tx.send(());
+                            ProtectOutcome::Continue
+                        }
+                        _ => ProtectOutcome::Abort,
+                    }
+                })
+            })
+        };
+        let mut options = iroh_blobs::store::fs::options::Options::new(tail_dir.path());
+        options.gc = Some(GcConfig { interval: std::time::Duration::from_millis(50), add_protected: Some(callback) });
+        let fs_store = iroh_blobs::store::fs::FsStore::load_with_opts(tail_dir.path().join("blobs.db"), options)
+            .await
+            .expect("tail store");
+        let store = iroh_blobs::api::Store::from(fs_store.clone());
+        let stale = store.add_bytes(b"stale".to_vec()).temp_tag().await.expect("stale").hash();
+        *tail_store.lock().unwrap() = Some(store.clone());
+        for _ in 0..2 {
+            tokio::time::timeout(std::time::Duration::from_secs(10), pass_rx.recv())
+                .await
+                .expect("a reclaim pass ran");
+        }
+        // The second pass's callback started only after the first pass swept.
+        let first_mid = mid_pass_blobs.lock().unwrap()[0];
+        let status = |hash: iroh_blobs::Hash| {
+            let store = store.clone();
+            async move { store.blobs().status(hash).await.expect("status") }
+        };
+        assert!(complete(&status(first_mid).await), "a blob written mid-pass survives the sweep");
+        assert!(!complete(&status(stale).await), "an unprotected blob is swept: the passes really ran");
+        finished.store(true, Ordering::Release);
+        let _ = fs_store.shutdown().await;
+        tail_store.lock().unwrap().take();
     }
 
     /// F20/M1 finding 3 compatibility: a LEGACY `namespace_id` (the pre-fix

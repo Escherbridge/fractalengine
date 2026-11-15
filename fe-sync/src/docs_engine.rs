@@ -30,6 +30,7 @@ use iroh_blobs::provider::events::{
     AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode,
 };
 use iroh_blobs::store::fs::FsStore;
+use iroh_blobs::store::{GcConfig, ProtectCb, ProtectOutcome};
 use crate::scene_asset_gate::ServeDecision;
 use iroh_blobs::BlobsProtocol;
 use iroh_docs::protocol::Docs;
@@ -715,6 +716,273 @@ pub fn resolve_p2p_dir(env_value: Option<&str>) -> PathBuf {
     }
 }
 
+/// Disables blob reclaim when set to `off`, `0` or `false` (see `src/AGENTS.md` §blob-reclaim).
+pub const BLOB_GC_ENV_VAR: &str = "FE_SYNC_BLOB_GC";
+
+/// Blob-store reclaim settings (`src/AGENTS.md` §blob-reclaim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobGcPolicy {
+    /// Time between reclaim passes; `None` disables reclaim.
+    pub interval: Option<std::time::Duration>,
+    /// How long a blob stays unreferenced before a pass may delete it.
+    pub grace: std::time::Duration,
+}
+
+impl BlobGcPolicy {
+    /// Default time between passes.
+    pub const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    /// Default grace before an unreferenced blob is deleted.
+    pub const DEFAULT_GRACE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+    /// No reclaim (the pre-2026-11-14 behavior).
+    pub fn disabled() -> Self {
+        Self { interval: None, grace: Self::DEFAULT_GRACE }
+    }
+
+    /// The default policy unless [`BLOB_GC_ENV_VAR`] turns reclaim off.
+    pub fn from_env() -> Self {
+        let off = std::env::var(BLOB_GC_ENV_VAR).ok().is_some_and(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false")
+        });
+        if off { Self::disabled() } else { Self::default() }
+    }
+}
+
+impl Default for BlobGcPolicy {
+    fn default() -> Self {
+        Self { interval: Some(Self::DEFAULT_INTERVAL), grace: Self::DEFAULT_GRACE }
+    }
+}
+
+/// Reclaim grace bookkeeping: when each unreferenced blob was first seen unreferenced.
+#[derive(Debug, Default)]
+struct ReclaimLedger {
+    first_unreferenced: HashMap<iroh_blobs::Hash, std::time::Instant>,
+}
+
+impl ReclaimLedger {
+    /// The `present` blobs outside `referenced` still inside their grace (protect them this
+    /// pass); blobs that are gone or referenced again are forgotten.
+    fn still_in_grace(
+        &mut self,
+        present: &[iroh_blobs::Hash],
+        referenced: &HashSet<iroh_blobs::Hash>,
+        now: std::time::Instant,
+        grace: std::time::Duration,
+    ) -> Vec<iroh_blobs::Hash> {
+        let mut seen = HashMap::new();
+        let mut protect = Vec::new();
+        for hash in present.iter().filter(|hash| !referenced.contains(*hash)) {
+            let first = self.first_unreferenced.get(hash).copied().unwrap_or(now);
+            seen.insert(*hash, first);
+            if now.saturating_duration_since(first) < grace {
+                protect.push(*hash);
+            }
+        }
+        self.first_unreferenced = seen;
+        protect
+    }
+}
+
+/// One reclaim pass's view of the store: iroh-docs' live content hashes first, then every
+/// blob present (a blob made after the docs listing is still seen, so it is graced), then
+/// every hash a tag holds (a HashSeq tag's children included). `None` when iroh-docs aborts.
+pub(crate) async fn reclaim_listing(
+    docs_cb: ProtectCb,
+    store: iroh_blobs::api::Store,
+) -> Result<Option<ReclaimListing>> {
+    use futures_lite::StreamExt as _;
+    let mut docs_live = HashSet::new();
+    if matches!((docs_cb)(&mut docs_live).await, ProtectOutcome::Abort) {
+        return Ok(None);
+    }
+    let present = list_blob_hashes(&store).await?;
+    let mut tagged = HashSet::new();
+    let tags = store
+        .tags()
+        .list()
+        .await
+        .map_err(|e| anyhow::anyhow!("listing tags: {e}"))?;
+    let mut tags = std::pin::pin!(tags);
+    while let Some(tag) = tags.next().await {
+        let tag = tag.map_err(|e| anyhow::anyhow!("listing tags: {e}"))?;
+        tagged.insert(tag.hash);
+        if !tag.format.is_raw() {
+            if let Ok(bytes) = store.blobs().get_bytes(tag.hash).await {
+                if let Some(seq) = iroh_blobs::hashseq::HashSeq::new(bytes) {
+                    tagged.extend(seq.iter());
+                }
+            }
+        }
+    }
+    Ok(Some(ReclaimListing { docs_live, present, tagged }))
+}
+
+/// Every blob hash the store holds now.
+async fn list_blob_hashes(store: &iroh_blobs::api::Store) -> Result<Vec<iroh_blobs::Hash>> {
+    store
+        .blobs()
+        .list()
+        .hashes()
+        .await
+        .map_err(|e| anyhow::anyhow!("listing blobs: {e}"))
+}
+
+/// What [`reclaim_listing`] saw.
+pub(crate) struct ReclaimListing {
+    docs_live: HashSet<iroh_blobs::Hash>,
+    pub(crate) present: Vec<iroh_blobs::Hash>,
+    tagged: HashSet<iroh_blobs::Hash>,
+}
+
+/// The end of a reclaim pass (§blob-reclaim): protect every blob not in `first_present` (it
+/// arrived during the pass, so it is inside its grace), then re-read docs content hashes.
+/// The blob re-list runs before the docs re-read, so an inbound entry (its entry lands before
+/// its content) is caught by one or the other. `false` when iroh-docs aborts.
+pub(crate) async fn reclaim_tail(
+    docs_cb: ProtectCb,
+    store: &iroh_blobs::api::Store,
+    first_present: &[iroh_blobs::Hash],
+    live: &mut HashSet<iroh_blobs::Hash>,
+) -> Result<bool> {
+    let first: HashSet<&iroh_blobs::Hash> = first_present.iter().collect();
+    let arrived: Vec<iroh_blobs::Hash> = list_blob_hashes(store)
+        .await?
+        .into_iter()
+        .filter(|hash| !first.contains(hash))
+        .collect();
+    live.extend(arrived);
+    Ok(!matches!((docs_cb)(live).await, ProtectOutcome::Abort))
+}
+
+/// Most fresh-row temp tags held between two reclaim passes; past it the oldest is released.
+const FRESH_ROW_TAG_CAP: usize = 4096;
+
+/// Temp tags on row blobs this node just wrote (§blob-reclaim). Each is held until the next
+/// reclaim pass starts: passes run one after another, so by then the pass that might have
+/// raced the write has swept, and the new pass's docs read sees the row's entry.
+#[derive(Clone, Default)]
+pub(crate) struct FreshRowTags(Arc<Mutex<std::collections::VecDeque<iroh_blobs::api::TempTag>>>);
+
+impl FreshRowTags {
+    fn hold(&self, tag: iroh_blobs::api::TempTag) {
+        let mut tags = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if tags.len() >= FRESH_ROW_TAG_CAP {
+            tags.pop_front();
+        }
+        tags.push_back(tag);
+    }
+
+    fn release_all(&self) {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).len()
+    }
+}
+
+/// One reclaim pass's protect set (§blob-reclaim): [`reclaim_listing`], then scene, tags and
+/// grace, then [`reclaim_tail`]. `None` when iroh-docs aborts.
+async fn reclaim_pass(
+    docs_cb: ProtectCb,
+    store: iroh_blobs::api::Store,
+    scene: Option<Vec<fe_runtime::blob_store::BlobHash>>,
+    ledger: Arc<Mutex<ReclaimLedger>>,
+    grace: std::time::Duration,
+) -> Result<Option<HashSet<iroh_blobs::Hash>>> {
+    let Some(listing) = reclaim_listing(docs_cb.clone(), store.clone()).await? else {
+        return Ok(None);
+    };
+    let Some(scene) = scene else {
+        anyhow::bail!("scene classification unavailable");
+    };
+    let mut live = listing.docs_live;
+    live.extend(scene.into_iter().map(iroh_blobs::Hash::from_bytes));
+    live.extend(listing.tagged);
+    let in_grace = ledger
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .still_in_grace(&listing.present, &live, std::time::Instant::now(), grace);
+    let graced = in_grace.len();
+    live.extend(in_grace);
+    // Tail last, so the window left before the library's sweep starts at its docs re-read.
+    let protected_before_tail = live.len();
+    if !reclaim_tail(docs_cb, &store, &listing.present, &mut live).await? {
+        return Ok(None);
+    }
+    let tail_added = live.len().saturating_sub(protected_before_tail);
+    tracing::debug!(
+        present = listing.present.len(),
+        protected = live.len(),
+        in_grace = graced,
+        tail_added,
+        "blob reclaim pass"
+    );
+    Ok(Some(live))
+}
+
+/// The reclaim callback's store handle. The fs actor owns its GC config (iroh-blobs 0.103.1
+/// `fs.rs` `load_with_opts` moves `Arc::new(options)` into the actor), so a handle held by the
+/// callback would keep that actor alive forever: the slot is emptied when the store closes.
+type ReclaimStoreSlot = Arc<Mutex<Option<iroh_blobs::api::Store>>>;
+
+/// The reclaim pass's protect callback: live document content (iroh-docs), classified scene
+/// assets, tag-held hashes, every unreferenced blob still inside its grace, and blobs that
+/// arrived while the pass listed. Any source that cannot answer aborts the pass, so nothing is
+/// deleted on partial knowledge. Once the store was shut down (`closed`) the pass continues
+/// into the closed store, whose first request fails and ends iroh-blobs' GC task (an aborted
+/// pass would loop forever). `passes` counts invocations.
+fn reclaim_protect_cb(
+    docs_cb: ProtectCb,
+    store: ReclaimStoreSlot,
+    gate: BlobAccessGate,
+    grace: std::time::Duration,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    fresh_rows: FreshRowTags,
+    passes: Arc<std::sync::atomic::AtomicU64>,
+) -> ProtectCb {
+    let ledger = Arc::new(Mutex::new(ReclaimLedger::default()));
+    Arc::new(move |live| {
+        passes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let store_closed = closed.load(std::sync::atomic::Ordering::Acquire);
+        // The previous pass has swept: every held fresh row's entry is visible to this one.
+        fresh_rows.release_all();
+        let scene = gate.scene_assets().protected_hashes();
+        // Started here so the returned future captures only `Sync` handles.
+        let pass = store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .filter(|_| !store_closed)
+            .map(|store| tokio::spawn(reclaim_pass(docs_cb.clone(), store, scene, ledger.clone(), grace)));
+        Box::pin(async move {
+            if store_closed {
+                return ProtectOutcome::Continue;
+            }
+            let Some(pass) = pass else {
+                return ProtectOutcome::Abort;
+            };
+            match pass.await {
+                Ok(Ok(Some(protected))) => {
+                    live.extend(protected);
+                    ProtectOutcome::Continue
+                }
+                Ok(Ok(None)) => ProtectOutcome::Abort,
+                Ok(Err(error)) => {
+                    tracing::warn!("blob reclaim skipped: {error:#}");
+                    ProtectOutcome::Abort
+                }
+                Err(error) => {
+                    tracing::warn!("blob reclaim skipped: pass task failed: {error}");
+                    ProtectOutcome::Abort
+                }
+            }
+        })
+    })
+}
+
 /// The full P2P protocol stack owned by an online sync thread.
 ///
 /// The [`Router`] accepts all three ALPNs so inbound peer connections are
@@ -733,6 +1001,19 @@ pub struct DocsStack {
     /// The sync thread updates it via [`DocsStack::blob_access_gate`] as
     /// verses open/close and their role views settle.
     blob_access_gate: BlobAccessGate,
+    /// Reclaim runs: iroh-blobs' GC task holds a store handle, so the stack ends the store itself.
+    reclaim: bool,
+    /// The store was already told to shut down.
+    shutdown_sent: std::sync::atomic::AtomicBool,
+    /// The store finished shutting down (read by the reclaim callback).
+    store_closed: Arc<std::sync::atomic::AtomicBool>,
+    /// The reclaim callback's store handle, emptied at close to break the actor cycle.
+    reclaim_store: ReclaimStoreSlot,
+    /// Reclaim callback invocations (it stops growing once iroh-blobs' GC task has ended).
+    #[cfg_attr(not(test), allow(dead_code))]
+    gc_passes: Arc<std::sync::atomic::AtomicU64>,
+    /// Temp tags on row blobs this node just wrote, released by the next reclaim pass.
+    fresh_rows: FreshRowTags,
 }
 
 impl DocsStack {
@@ -756,6 +1037,15 @@ impl DocsStack {
     /// anywhere, and reconciliation replays would re-attribute rows to that
     /// role-less identity (denied outside the bootstrap window).
     pub async fn spawn(endpoint: iroh::Endpoint, data_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::spawn_with_gc(endpoint, data_dir, BlobGcPolicy::from_env()).await
+    }
+
+    /// [`DocsStack::spawn`] with an explicit blob reclaim policy (§blob-reclaim).
+    pub async fn spawn_with_gc(
+        endpoint: iroh::Endpoint,
+        data_dir: impl AsRef<Path>,
+        gc: BlobGcPolicy,
+    ) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         // redb and the docs author storage need the parent dir to exist;
         // the blobs fs store creates its own subtree. A 0.35-written store is
@@ -782,18 +1072,47 @@ impl DocsStack {
             );
         }
 
-        let blob_store = FsStore::load(data_dir.join("blobs"))
-            .await
-            .map_err(|e| anyhow::anyhow!("opening persistent iroh-blobs store: {e}"))?;
         // RP-5 step 6 / AC-21(e): the blob-ALPN request filter (closes
         // `AGENTS.md` §tileset-security "Risk 2"). Built fresh per stack —
         // the sync thread populates it as verses open and their role views
         // settle (`DocsStack::blob_access_gate`). Seeded from its persisted
-        // state BEFORE the router accepts a single request (OF-6b).
+        // state BEFORE the router accepts a single request (OF-6b), and
+        // before the blob store, whose reclaim pass protects its scene assets.
         let gate_path = data_dir.join(BLOB_GATE_FILE);
         let blob_access_gate = tokio::task::spawn_blocking(move || BlobAccessGate::load(gate_path))
             .await
             .context("joining blob access gate load task")?;
+        // Reclaim (§blob-reclaim): the library GC, protected by iroh-docs' live content
+        // hashes plus our own sources; it aborts until the store handle is published below.
+        let (docs_protect, docs_protect_cb) = iroh_docs::engine::ProtectCallbackHandler::new();
+        let reclaim_store: ReclaimStoreSlot = Arc::default();
+        let store_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fresh_rows = FreshRowTags::default();
+        let gc_passes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let blobs_root = data_dir.join("blobs");
+        let mut blob_options = iroh_blobs::store::fs::options::Options::new(&blobs_root);
+        blob_options.gc = gc.interval.map(|interval| GcConfig {
+            interval,
+            add_protected: Some(reclaim_protect_cb(
+                docs_protect_cb,
+                reclaim_store.clone(),
+                blob_access_gate.clone(),
+                gc.grace,
+                store_closed.clone(),
+                fresh_rows.clone(),
+                gc_passes.clone(),
+            )),
+        });
+        let blob_store = FsStore::load_with_opts(blobs_root.join("blobs.db"), blob_options)
+            .await
+            .map_err(|e| anyhow::anyhow!("opening persistent iroh-blobs store: {e}"))?;
+        *reclaim_store.lock().unwrap_or_else(|error| error.into_inner()) =
+            Some(iroh_blobs::api::Store::from(blob_store.clone()));
+        let mut store_on_error = StoreOnError(
+            gc.interval
+                .is_some()
+                .then(|| (blob_store.clone(), store_closed.clone(), reclaim_store.clone())),
+        );
         let blob_events = spawn_blob_access_filter(blob_access_gate.clone());
         let blobs = BlobsProtocol::new(&blob_store, Some(blob_events));
         let gossip = Gossip::builder()
@@ -808,6 +1127,7 @@ impl DocsStack {
             .max_message_size(crate::distributed_query::GOSSIP_MAX_MESSAGE_SIZE)
             .spawn(endpoint.clone());
         let docs = Docs::persistent(data_dir.clone())
+            .protect_handler(docs_protect)
             .spawn(
                 endpoint.clone(),
                 iroh_blobs::api::Store::from(blob_store.clone()),
@@ -856,6 +1176,12 @@ impl DocsStack {
             router,
             data_dir,
             blob_access_gate,
+            reclaim: store_on_error.0.take().is_some(),
+            shutdown_sent: std::sync::atomic::AtomicBool::new(false),
+            store_closed,
+            reclaim_store,
+            gc_passes,
+            fresh_rows,
         })
     }
 
@@ -921,8 +1247,87 @@ impl DocsStack {
     /// The endpoint close stays with the caller (`SyncEndpoint::shutdown`)
     /// so the existing sync-thread shutdown order is preserved.
     pub async fn shutdown(&self) {
+        // The router runs `BlobsProtocol::shutdown`, which already shuts the blob store down.
         if let Err(e) = self.router.shutdown().await {
             tracing::warn!("P2P router shutdown error: {e}");
+        }
+        self.fresh_rows.release_all();
+        if self.reclaim && !self.shutdown_sent.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            close_reclaiming_store(self.blob_store.clone(), self.store_closed.clone(), self.reclaim_store.clone())
+                .await;
+        }
+    }
+
+    /// Whether blob reclaim runs on this stack (§blob-reclaim).
+    pub(crate) fn reclaims(&self) -> bool {
+        self.reclaim
+    }
+
+    /// Keep a row blob this node just wrote from reclaim until the next pass starts (§blob-reclaim).
+    pub(crate) fn hold_fresh_row_blob(&self, tag: iroh_blobs::api::TempTag) {
+        if self.reclaim {
+            self.fresh_rows.hold(tag);
+        }
+    }
+
+    /// The store was shut down and the reclaim callback lets iroh-blobs' GC task end.
+    pub fn blob_store_closed(&self) -> bool {
+        self.store_closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Fresh-row temp tags held now (§blob-reclaim).
+    #[cfg(test)]
+    pub(crate) fn fresh_row_tags_held(&self) -> usize {
+        self.fresh_rows.len()
+    }
+
+    /// Reclaim callback invocations so far: it stops growing once iroh-blobs' GC task has ended.
+    #[cfg(test)]
+    pub(crate) fn gc_callbacks(&self) -> u64 {
+        self.gc_passes.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Shut a reclaiming store down, then let its GC task see it closed (§blob-reclaim). `Err` is
+/// closed too: the fs store answers `Shutdown` only through its metadata actor, so an error
+/// means that actor (and redb with it) is already gone, as after `BlobsProtocol::shutdown`.
+/// The callback's store handle is dropped too, so the fs actor ends once the GC task has.
+async fn close_reclaiming_store(
+    store: FsStore,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    slot: ReclaimStoreSlot,
+) {
+    if let Err(e) = store.shutdown().await {
+        tracing::debug!("blob store already shut down: {e}");
+    }
+    slot.lock().unwrap_or_else(|error| error.into_inner()).take();
+    closed.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Ends a reclaiming store when the stack fails to assemble (its GC task keeps it alive).
+struct StoreOnError(Option<(FsStore, Arc<std::sync::atomic::AtomicBool>, ReclaimStoreSlot)>);
+
+impl Drop for StoreOnError {
+    fn drop(&mut self) {
+        let Some((store, closed, slot)) = self.0.take() else { return };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(close_reclaiming_store(store, closed, slot));
+        }
+    }
+}
+
+impl Drop for DocsStack {
+    /// With reclaim on, the GC task keeps the store alive past its last handle: end it here.
+    fn drop(&mut self) {
+        if !self.reclaim || self.shutdown_sent.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(close_reclaiming_store(
+                self.blob_store.clone(),
+                self.store_closed.clone(),
+                self.reclaim_store.clone(),
+            ));
         }
     }
 }

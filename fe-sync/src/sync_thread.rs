@@ -45,9 +45,10 @@ use crate::relay_config::{
 };
 use crate::relay_reconcile::{RelayOp, RelayReconcileInputs, RelayReconciler, RelaySource};
 use crate::relay_trust::evaluate_coverage;
+use crate::byte_bounds::{ByteGate, ByteLease};
 use crate::replicator::{
     IrohDocsEngineHolder, IrohDocsReplicator, IrohPetalReplicator, PetalReplicator,
-    ReplicatorFuture, RowChange, VerseReplicator,
+    ReplicatorFuture, RowChange, SnapshotEntry, VerseReplicator,
 };
 use crate::sharding::{
     PeerDeclaration, ShardId, VerseFabric, GOSSIP_SIG_VERSION, HOLDERS_TABLE, PEER_DECL_TABLE,
@@ -277,14 +278,16 @@ impl PublicationLeases {
 }
 
 /// Queue a lease's own open behind the host's commands (FIFO).
-fn send_lease_command(tx: &tokio::sync::mpsc::WeakSender<SyncCommand>, command: SyncCommand) {
+fn send_lease_command(tx: &tokio::sync::mpsc::WeakSender<SyncCommand>, command: SyncCommand) -> bool {
     let Some(tx) = tx.upgrade() else {
         tracing::debug!("Publication lease command dropped — sync thread stopping");
-        return;
+        return false;
     };
     if let Err(error) = tx.try_send(command) {
         tracing::warn!("Publication lease command not queued: {error}");
+        return false;
     }
+    true
 }
 
 /// Send a [`SyncEvent`] back to the main thread, warning on failure —
@@ -417,6 +420,10 @@ pub fn spawn_sync_thread(
 /// arms satisfy the same [`VerseReplicator`] contract, so the
 /// open/inbound/apply path is byte-identical between prod and sim; the enum
 /// only adds the open-phase lifecycle passthroughs the open sequence drives.
+/// One row on the aggregated inbound stream: its verse, the row, and the live byte gate's
+/// charge for it, released once the command loop handled the row (§byte-bounds).
+type InboundRow = (String, RowChange, Option<ByteLease>);
+
 enum AnyReplicator {
     Iroh(Box<IrohDocsReplicator>),
     Virtual(Box<dyn VirtualReplica>),
@@ -481,6 +488,27 @@ impl VerseReplicator for AnyReplicator {
         match self {
             Self::Iroh(r) => r.snapshot(),
             Self::Virtual(r) => r.snapshot(),
+        }
+    }
+
+    fn snapshot_index(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<SnapshotEntry>>> {
+        match self {
+            Self::Iroh(r) => r.snapshot_index(),
+            Self::Virtual(r) => r.snapshot_index(),
+        }
+    }
+
+    fn load_entry(&self, entry: SnapshotEntry) -> ReplicatorFuture<'_, Option<RowChange>> {
+        match self {
+            Self::Iroh(r) => r.load_entry(entry),
+            Self::Virtual(r) => r.load_entry(entry),
+        }
+    }
+
+    fn live_byte_gate(&self) -> Option<Arc<ByteGate>> {
+        match self {
+            Self::Iroh(r) => r.live_byte_gate(),
+            Self::Virtual(r) => r.live_byte_gate(),
         }
     }
 
@@ -636,6 +664,7 @@ pub fn spawn_sync_thread_with_transport(
         p2p_dir,
         virtual_transport,
         BlobFallbackSlot::default(),
+        None,
     )
 }
 
@@ -643,6 +672,8 @@ pub fn spawn_sync_thread_with_transport(
 /// byte source asked only after every peer missed (bindings.md §6
 /// `sync.tileset-source`); an empty slot is peers only. It never changes the
 /// transport, the relays or which peers are asked (AGENTS.md §tileset-transfer).
+/// `db_command_bytes` is the DB command channel's byte gate (`ChannelHandles::db_cmd_bytes`); `None` sends ungated
+/// (AGENTS.md §byte-bounds "DB command bytes").
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_sync_thread_with_sources(
     secret_key: iroh::SecretKey,
@@ -654,8 +685,11 @@ pub fn spawn_sync_thread_with_sources(
     p2p_dir: Option<PathBuf>,
     virtual_transport: Option<Arc<dyn VirtualTransportFactory>>,
     blob_fallback: BlobFallbackSlot,
+    db_command_bytes: Option<fe_runtime::channels::DbCommandBytes>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
+        // Every DB send of this thread's current-thread runtime runs here, so the gate is thread-scoped.
+        let _db_command_bytes = crate::byte_bounds::scope_db_command_bytes(db_command_bytes);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -936,7 +970,7 @@ pub fn spawn_sync_thread_with_sources(
             // pump forwards (verse_id, RowChange) here; the select! loop drains
             // it alongside commands.
             let (inbound_tx, mut inbound_rx) =
-                tokio::sync::mpsc::channel::<(String, RowChange)>(256);
+                tokio::sync::mpsc::channel::<InboundRow>(256);
 
             // Phase F.2: per-petal replica map.
             let mut petal_replicas: HashMap<String, Box<dyn PetalReplicator>> = HashMap::new();
@@ -1056,13 +1090,36 @@ pub fn spawn_sync_thread_with_sources(
                 // handler's own return — "the select loop drains it".
                 let reread_left = drain_reread_queues(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &docs_stack, Some(&mut scene_assets))
                     .await;
-                let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &db_cmd_tx).await;
+                let rejudge_left = drain_rejudge_queues(&mut fabrics, &replicas, &local_did, &db_cmd_tx).await;
                 let rows_left = !resend_unsent_rows(&mut fabrics, &db_cmd_tx, &mut scene_assets);
+                // §byte-bounds: kept rows dropped at a cap come back by one re-seed once drained.
+                let reseed_left = !rows_left
+                    && reseed_dropped_rows(&mut fabrics, &replicas, &local_did, &evt_tx, &db_cmd_tx, &mut scene_assets).await;
                 // NET-21: after the last select arm's inbound row and the re-read/re-judge drains above.
                 #[cfg(feature = "relay-server")]
                 {
                     for open in served_replicas.due_opens(|verse_id| replicas.contains_key(verse_id), std::time::Instant::now()) {
-                        send_lease_command(&lease_cmd_tx, open);
+                        let verse_id = match &open {
+                            SyncCommand::OpenVerseReplica { verse_id, .. } => verse_id.clone(),
+                            _ => continue,
+                        };
+                        if !send_lease_command(&lease_cmd_tx, open) {
+                            served_replicas.open_not_queued(&verse_id);
+                        }
+                    }
+                    // RF-OPEN-4: an unpinned verse's relay-only replica closes inline (a host open still queued re-opens it).
+                    for verse_id in served_replicas.take_released() {
+                        if !replicas.contains_key(&verse_id) {
+                            continue;
+                        }
+                        tracing::info!(verse_id, "relay no longer serves this verse; closing the replica it kept open");
+                        tileset_providers.forget_verse(&verse_id);
+                        scene_assets.close(&verse_id);
+                        handle_close_verse_replica(&mut replicas, &mut inbound_pumps, &verse_id).await;
+                        unsubscribe_from_verse_gossip_topic(&mut gossip_senders, &mut gossip_pumps, &verse_id);
+                        if let Some(stack) = &docs_stack {
+                            stack.blob_access_gate().forget_verse(&verse_id);
+                        }
                     }
                     relay_admission.refresh(&fabrics, served_replicas.served());
                 }
@@ -1086,7 +1143,7 @@ pub fn spawn_sync_thread_with_sources(
                     });
                 }
                 let prefetch_left = scene_assets.pump_prefetches();
-                let kept_work = reread_left || rejudge_left || rows_left || prefetch_left;
+                let kept_work = reread_left || rejudge_left || rows_left || reseed_left || prefetch_left;
                 tokio::select! {
                     // QA-0132/QA-0133: kept role work and the capped prefetch
                     // backlog are retried even when no event wakes the loop.
@@ -1107,6 +1164,7 @@ pub fn spawn_sync_thread_with_sources(
                             #[cfg(feature = "relay-server")]
                             if served_replicas.keeps_open(&verse_id) {
                                 tracing::debug!(verse_id, "lease ended; replica kept open: the embedded relay serves this verse");
+                                served_replicas.defer_close(&verse_id);
                                 continue;
                             }
                             tracing::info!(verse_id, "Publication lease ended; closing the replica this thread opened");
@@ -1178,7 +1236,8 @@ pub fn spawn_sync_thread_with_sources(
                     maybe_row = inbound_rx.recv() => {
                         // `None` (all pumps closed) needs no handling —
                         // commands still flow.
-                        if let Some((verse_id, change)) = maybe_row {
+                        // The lease returns the row's bytes to its live gate when this arm ends.
+                        if let Some((verse_id, change, _lease)) = maybe_row {
                             let fabric = fabrics.entry(verse_id.clone()).or_default();
                             let verdict = handle_inbound_row_change(
                                 fabric,
@@ -1387,6 +1446,8 @@ pub fn spawn_sync_thread_with_sources(
                             Some(command @ (SyncCommand::OpenVerseReplica { .. } | SyncCommand::JoinVerseReplica { .. })) => {
                                 if let SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } = &command {
                                     publication_leases.opened(verse_id, namespace_id, namespace_secret, bootstrap_peers);
+                                    #[cfg(feature = "relay-server")]
+                                    served_replicas.note_open(verse_id);
                                 }
                                 let (verse_id, namespace_id, namespace_secret, cmd_peers, join_reply) = match command {
                                     SyncCommand::OpenVerseReplica { verse_id, namespace_id, namespace_secret, bootstrap_peers } =>
@@ -1513,6 +1574,7 @@ pub fn spawn_sync_thread_with_sources(
                                 #[cfg(feature = "relay-server")]
                                 if served_replicas.keeps_open(&verse_id) {
                                     tracing::debug!(verse_id, "replica kept open: the embedded relay serves this verse");
+                                    served_replicas.defer_close(&verse_id);
                                     continue;
                                 }
                                 // S8b verse binding: ads learned on a verse
@@ -2211,6 +2273,33 @@ impl RelayAdoption {
         }
     }
 
+    /// Advertised relay hosts the endpoint's resolver judges on every lookup (in the map: public only; DialOnly: the process policy), and the configured / default hosts it never judges.
+    fn judged_relay_hosts(&self) -> (HashMap<String, crate::relay_dns::RelayHostRule>, BTreeSet<String>) {
+        use crate::relay_dns::RelayHostRule;
+        let host_of = |raw: &String| relay_host_of(raw);
+        let exempt: BTreeSet<String> = self
+            .reconciler
+            .configured()
+            .iter()
+            .chain(self.reconciler.defaults())
+            .filter_map(host_of)
+            .collect();
+        let inserted = self
+            .reconciler
+            .inserted()
+            .keys()
+            .filter(|url| self.reconciler.source_of(url) == Some(RelaySource::Advertised))
+            .map(|url| (url, RelayHostRule::PublicOnly));
+        let dial_only = self.reconciler.known().iter().map(|url| (url, RelayHostRule::DialOnly));
+        let mut hosts: HashMap<String, RelayHostRule> = HashMap::new();
+        for (url, rule) in inserted.chain(dial_only) {
+            if let Some(host) = host_of(url) {
+                hosts.entry(host).and_modify(|kept| *kept = (*kept).max(rule)).or_insert(rule);
+            }
+        }
+        (hosts, exempt)
+    }
+
     /// The periodic tick always re-plans (advert expiry is judged at read time).
     fn on_tick(&mut self, now: std::time::Instant) {
         self.health.release_cooled(now);
@@ -2415,6 +2504,9 @@ async fn reconcile_advertised_relays(
         auto_home: auto_home_relay(),
         home_health,
     });
+    if let Some(endpoint) = endpoint {
+        judge_planned_relays(adoption, &ops, endpoint);
+    }
     let mut known = 0usize;
     for op in ops {
         match op {
@@ -2425,6 +2517,9 @@ async fn reconcile_advertised_relays(
     }
 
     if let Some(endpoint) = endpoint {
+        // Removals took effect: hosts follow the plan (withdrawn ones stay judged), still before the allowlist widens.
+        let (judged_hosts, exempt_hosts) = adoption.judged_relay_hosts();
+        endpoint.set_judged_relay_hosts(judged_hosts, &exempt_hosts);
         let allowlist = adoption.allowlist(std::time::Instant::now());
         if allowlist != adoption.last_allowlist {
             endpoint.set_relay_allowlist(
@@ -2463,6 +2558,32 @@ async fn reconcile_advertised_relays(
         unadvertised_home_verses = adoption.unadvertised_home_verses.len(),
         "relay tiers reconciled"
     );
+}
+
+/// Push the plan's judged hosts before any op runs (§relay-trust): a planned insert is judged
+/// before iroh can first resolve it, and a planned removal keeps its in-map rule
+/// (`PublicOnly`) until it has left the map.
+fn judge_planned_relays(adoption: &RelayAdoption, ops: &[RelayOp], endpoint: &SyncEndpoint) {
+    use crate::relay_dns::RelayHostRule;
+    let (mut hosts, exempt) = adoption.judged_relay_hosts();
+    for op in ops {
+        if let RelayOp::Remove(raw) = op {
+            if let Some(host) = relay_host_of(raw) {
+                hosts
+                    .entry(host)
+                    .and_modify(|rule| *rule = (*rule).max(RelayHostRule::PublicOnly))
+                    .or_insert(RelayHostRule::PublicOnly);
+            }
+        }
+    }
+    endpoint.set_judged_relay_hosts(hosts, &exempt);
+}
+
+/// The normalized host name of a relay URL; `None` for an IP literal or a bad URL.
+fn relay_host_of(raw: &str) -> Option<String> {
+    raw.parse::<iroh::RelayUrl>()
+        .ok()
+        .and_then(|url| url.domain().map(crate::relay_dns::normalize_host))
 }
 
 /// Apply one planned insert: a demoted Default relay is restored verbatim, an advertised one enters tokenless after the public-address check.
@@ -2845,7 +2966,8 @@ fn handle_inbound_row_change(
         fabric.unsent_rows_mut().keep(change.clone());
         return InboundVerdict::Kept;
     }
-    match tx.try_send(DbCommand::ApplyReplicatedRow {
+    // §byte-bounds: a DB byte gate at its cap reads as a full channel, so the row is kept the same way.
+    match crate::byte_bounds::try_send_db(tx, DbCommand::ApplyReplicatedRow {
         verse_id: verse_id.to_string(),
         table: change.table.clone(),
         record_id: change.record_id.clone(),
@@ -2876,47 +2998,118 @@ fn handle_inbound_row_change(
     }
 }
 
+/// What one chunked re-judge call handed the DB thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RejudgeSent {
+    /// Nodes queued by this call.
+    rows: usize,
+    /// Every node of the pass is queued; `false` resumes from the cursor on a later turn.
+    complete: bool,
+}
+
 /// Hand the DB thread every scene key `dids` wrote, each with EVERY author's
-/// replica entry for it, as ONE command (QA-0121/QA-0131). `Err` means nothing
-/// was queued, so the caller keeps the DIDs (QA-0132).
+/// replica entry for it (QA-0121/QA-0131), in `RejudgeReplicatedNodes` chunks
+/// bounded by bytes and node count (§byte-bounds). A node's candidates never
+/// split across chunks (the DB judges each node from its own list alone). One
+/// call queues at most `REJUDGE_TURN_BYTES` (plus one chunk), and only while the
+/// DB channel holds at most `REJUDGE_MAX_QUEUED` commands; `cursor` records the
+/// last node queued so the next call resumes after it, and a full channel keeps
+/// the cursor where it was. `Err` means the replica or the channel failed (QA-0132).
 async fn send_rejudge_batch(
     replicator: &dyn VerseReplicator,
     tx: &crossbeam::channel::Sender<DbCommand>,
     verse_id: &str,
     dids: &[String],
     restore_only: bool,
-) -> Result<usize, String> {
-    let mut nodes: std::collections::BTreeMap<String, fe_runtime::messages::RejudgeCandidates> =
-        std::collections::BTreeMap::new();
-    for did in dids {
-        let entries = replicator
-            .entries_by_author(did, &["node/"])
-            .await
-            .map_err(|error| format!("reading {did}'s scene rows: {error}"))?;
-        nodes.extend(entries.into_iter().map(|change| (change.record_id, Vec::new())));
+    cursor: &mut Option<(Vec<String>, String)>,
+) -> Result<RejudgeSent, String> {
+    use crate::byte_bounds::{REJUDGE_CHUNK_BYTES, REJUDGE_CHUNK_NODES, REJUDGE_TURN_BYTES};
+    if !crate::byte_bounds::db_channel_drained(tx) {
+        // Earlier chunks (or rows, by bytes) still wait for the DB thread: queue nothing more this turn.
+        return Ok(RejudgeSent { rows: 0, complete: false });
     }
-    if nodes.is_empty() {
-        return Ok(0);
+    if cursor.as_ref().is_some_and(|(pass, _)| pass.as_slice() != dids) {
+        // A different DID set restarts the pass (re-judging a node twice is idempotent).
+        *cursor = None;
     }
-    let snapshot = replicator
-        .snapshot()
+    let after = cursor.as_ref().map(|(_, after)| after.clone());
+    let index = replicator
+        .snapshot_index()
         .await
         .map_err(|error| format!("replica snapshot: {error}"))?;
-    for change in snapshot {
-        if change.table == "node" && !change.data.is_empty() {
-            if let Some(candidates) = nodes.get_mut(&change.record_id) {
+    let mut groups: std::collections::BTreeMap<String, Vec<SnapshotEntry>> =
+        std::collections::BTreeMap::new();
+    for entry in index {
+        if entry.change.table == "node"
+            && after.as_deref().is_none_or(|after| entry.change.record_id.as_str() > after)
+        {
+            groups.entry(entry.change.record_id.clone()).or_default().push(entry);
+        }
+    }
+    groups.retain(|_, entries| entries.iter().any(|entry| dids.contains(&entry.change.author_id)));
+
+    let mut chunk: Vec<(String, fe_runtime::messages::RejudgeCandidates)> = Vec::new();
+    let mut chunk_bytes = 0u64;
+    let mut turn_bytes = 0u64;
+    let mut rows = 0usize;
+    let flush = |chunk: &mut Vec<(String, fe_runtime::messages::RejudgeCandidates)>| {
+        let nodes = std::mem::take(chunk);
+        let last = nodes.last().map(|(record_id, _)| record_id.clone());
+        match crate::byte_bounds::try_send_db(tx, DbCommand::RejudgeReplicatedNodes {
+            verse_id: verse_id.to_string(),
+            nodes,
+            restore_only,
+        }) {
+            Ok(()) => Ok(Some(last)),
+            Err(crossbeam::channel::TrySendError::Full(_)) => Ok(None),
+            Err(error) => Err(format!("DB command channel: {error}")),
+        }
+    };
+    for (record_id, entries) in groups {
+        let mut candidates = Vec::new();
+        let mut node_bytes = 0u64;
+        // A node counts when a re-judged author's entry is present: a deletion or local content.
+        let mut authored = false;
+        for entry in entries {
+            let Some(change) = replicator.load_entry(entry).await else { continue };
+            authored |= dids.contains(&change.author_id);
+            if !change.data.is_empty() {
+                node_bytes += change.data.len() as u64;
                 candidates.push((change.author_id, change.data));
             }
         }
+        if !authored {
+            continue;
+        }
+        if !chunk.is_empty()
+            && (chunk_bytes + node_bytes > REJUDGE_CHUNK_BYTES || chunk.len() >= REJUDGE_CHUNK_NODES)
+        {
+            let nodes = chunk.len();
+            match flush(&mut chunk)? {
+                Some(last) => {
+                    rows += nodes;
+                    turn_bytes += chunk_bytes;
+                    chunk_bytes = 0;
+                    *cursor = last.map(|last| (dids.to_vec(), last));
+                }
+                None => return Ok(RejudgeSent { rows, complete: false }),
+            }
+            if turn_bytes >= REJUDGE_TURN_BYTES {
+                return Ok(RejudgeSent { rows, complete: false });
+            }
+        }
+        chunk_bytes += node_bytes;
+        chunk.push((record_id, candidates));
     }
-    let rows = nodes.len();
-    tx.try_send(DbCommand::RejudgeReplicatedNodes {
-        verse_id: verse_id.to_string(),
-        nodes: nodes.into_iter().collect(),
-        restore_only,
-    })
-    .map_err(|error| format!("DB command channel: {error}"))?;
-    Ok(rows)
+    if !chunk.is_empty() {
+        let nodes = chunk.len();
+        match flush(&mut chunk)? {
+            Some(_) => rows += nodes,
+            None => return Ok(RejudgeSent { rows, complete: false }),
+        }
+    }
+    *cursor = None;
+    Ok(RejudgeSent { rows, complete: true })
 }
 
 /// Resend content rows a full DB channel refused, oldest first (QA-0138),
@@ -2939,7 +3132,7 @@ fn resend_unsent_rows(
                 row_bytes: change.data.clone(),
                 author_did: change.author_id.clone(),
             };
-            match tx.try_send(command) {
+            match crate::byte_bounds::try_send_db(tx, command) {
                 Ok(()) => {
                     if let Some(hash) = scene_asset_prefetch_hash(fabric, verse_id, &change) {
                         scene_assets.prefetch(verse_id, hash);
@@ -2978,7 +3171,7 @@ fn resend_unsent_role_rows(
                 row_bytes: change.data.clone(),
                 author_did: change.author_id.clone(),
             };
-            match tx.try_send(command) {
+            match crate::byte_bounds::try_send_db(tx, command) {
                 Ok(()) => {}
                 Err(crossbeam::channel::TrySendError::Full(_)) => {
                     kept.push_front(change);
@@ -2994,6 +3187,118 @@ fn resend_unsent_role_rows(
     true
 }
 
+/// Advance `fabric`'s owed role re-sync (§byte-bounds): every author's `role/` row from the
+/// replica index, sorted by `(record_id, author)` and sent one row at a time straight to the
+/// DB thread (own rows skipped, as on the inbound path), resuming after the cursor when the
+/// channel or its byte gate reads `Full`. True when nothing is owed any more.
+async fn resync_role_rows(
+    fabric: &mut VerseFabric,
+    replicator: &dyn VerseReplicator,
+    verse_id: &str,
+    local_did: &str,
+    tx: &crossbeam::channel::Sender<DbCommand>,
+) -> bool {
+    let slot = fabric.role_resync_mut();
+    let Some(pass) = slot.as_mut() else {
+        return true;
+    };
+    let index = match replicator.snapshot_index().await {
+        Ok(index) => index,
+        Err(error) => {
+            tracing::warn!(verse_id, "role re-sync: replica index unreadable, kept for retry: {error}");
+            return false;
+        }
+    };
+    let mut roles: Vec<SnapshotEntry> = index
+        .into_iter()
+        .filter(|entry| {
+            entry.change.table == fe_database::role_grants::ROLE_DOC_TABLE
+                && entry.change.author_id != local_did
+                && pass.after.as_ref().is_none_or(|(record, author)| {
+                    (entry.change.record_id.as_str(), entry.change.author_id.as_str())
+                        > (record.as_str(), author.as_str())
+                })
+        })
+        .collect();
+    roles.sort_by(|a, b| {
+        (&a.change.record_id, &a.change.author_id).cmp(&(&b.change.record_id, &b.change.author_id))
+    });
+    for entry in roles {
+        let position = (entry.change.record_id.clone(), entry.change.author_id.clone());
+        // A row whose content is not local yet arrives through the live pump.
+        if let Some(change) = replicator.load_entry(entry).await {
+            let command = DbCommand::ApplyReplicatedRow {
+                verse_id: verse_id.to_string(),
+                table: change.table,
+                record_id: change.record_id,
+                row_bytes: change.data,
+                author_did: change.author_id,
+            };
+            match crate::byte_bounds::try_send_db(tx, command) {
+                Ok(()) => {}
+                Err(crossbeam::channel::TrySendError::Full(_)) => return false,
+                Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    *slot = None;
+                    return true;
+                }
+            }
+        }
+        pass.after = Some(position);
+    }
+    if std::mem::take(&mut pass.again) {
+        // A row was lost again during the pass: start over on the next turn.
+        pass.after = None;
+        pass.restarts += 1;
+        tracing::warn!(verse_id, restarts = pass.restarts, "role re-sync restarts: a kept role row was lost during the pass");
+        return false;
+    }
+    tracing::info!(verse_id, "role re-sync: every role row re-read from the replica");
+    *slot = None;
+    true
+}
+
+/// Re-seed verses whose kept rows dropped some (§byte-bounds): once every kept row is on the
+/// channel and the channel has drained, one `seed_reconciliation` pass per verse at most every
+/// `RESEED_COOLDOWN`, so a user who stays in the verse still gets the rows. A closed replica
+/// forgets the debt (its next open replays every row). True while a re-seed is still owed.
+async fn reseed_dropped_rows(
+    fabrics: &mut HashMap<String, VerseFabric>,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    local_did: &str,
+    evt_tx: &dyn EventSink,
+    db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
+    scene_assets: &mut crate::scene_assets::SceneAssetJobs,
+) -> bool {
+    let Some(tx) = db_cmd_tx.as_ref() else {
+        return false;
+    };
+    let mut owed = false;
+    for (verse_id, fabric) in fabrics.iter_mut() {
+        if !fabric.unsent_rows_mut().reseed_pending() {
+            continue;
+        }
+        let Some(replicator) = replicas.get(verse_id) else {
+            fabric.unsent_rows_mut().forget_reseed();
+            continue;
+        };
+        if !fabric.unsent_rows_mut().is_empty()
+            || !crate::byte_bounds::db_channel_drained(tx)
+            || !fabric.unsent_rows_mut().take_reseed(std::time::Instant::now())
+        {
+            owed = true;
+            continue;
+        }
+        tracing::info!(verse_id, dropped = fabric.unsent_rows_mut().dropped(), "re-seeding a verse whose kept rows were dropped");
+        let report =
+            seed_reconciliation(replicator.as_ref(), verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
+        for hash in report.scene_asset_hashes {
+            scene_assets.prefetch(verse_id, hash);
+        }
+        owed |= fabric.unsent_rows_mut().reseed_pending();
+    }
+    owed
+}
+
 /// QA-0121 re-judge on demotion: for every DID whose role fell, the DB thread
 /// re-decides each scene key it wrote from EVERY author's replica entry, so a
 /// row admitted before the revoke arrived converges with peers that refused
@@ -3003,6 +3308,7 @@ fn resend_unsent_role_rows(
 async fn drain_rejudge_queues(
     fabrics: &mut HashMap<String, VerseFabric>,
     replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    local_did: &str,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
 ) -> bool {
     // The DB plane must hold every kept revoke before it judges against it.
@@ -3012,21 +3318,35 @@ async fn drain_rejudge_queues(
     let mut retry = false;
     for (verse_id, fabric) in fabrics.iter_mut() {
         let dids = fabric.pending_rejudges();
-        if dids.is_empty() {
+        if dids.is_empty() && !fabric.role_resync_pending() {
             continue;
         }
         let Some(tx) = db_cmd_tx.as_ref() else {
             // Offline/test mode: no DB plane holds rows to re-judge.
             fabric.ack_rejudges(&dids);
+            *fabric.role_resync_mut() = None;
             continue;
         };
         let Some(replicator) = replicas.get(verse_id) else {
             continue;
         };
-        match send_rejudge_batch(replicator.as_ref(), tx, verse_id, &dids, false).await {
-            Ok(rows) => {
-                tracing::info!(verse_id, demoted = dids.len(), rows, "Re-judging scene rows of demoted authors");
+        // A lost kept role row (a revoke, maybe) reaches the DB plane before any re-judge.
+        if !resync_role_rows(fabric, replicator.as_ref(), verse_id, local_did, tx).await {
+            retry = true;
+            continue;
+        }
+        if dids.is_empty() {
+            continue;
+        }
+        let cursor = fabric.rejudge_cursor_mut(false);
+        match send_rejudge_batch(replicator.as_ref(), tx, verse_id, &dids, false, cursor).await {
+            Ok(sent) if sent.complete => {
+                tracing::info!(verse_id, demoted = dids.len(), rows = sent.rows, "Re-judging scene rows of demoted authors");
                 fabric.ack_rejudges(&dids);
+            }
+            Ok(sent) => {
+                tracing::debug!(verse_id, rows = sent.rows, "re-judge of demoted authors continues on the next turn");
+                retry = true;
             }
             Err(error) => {
                 tracing::warn!(verse_id, "re-judge of demoted authors kept queued for retry: {error}");
@@ -3099,10 +3419,25 @@ async fn drain_reread_queues(
             done.clear();
         }
         if let (Some(tx), false) = (db_cmd_tx.as_ref(), done.is_empty()) {
-            if let Err(error) = send_rejudge_batch(replicator.as_ref(), tx, verse_id, &done, true).await {
-                tracing::warn!(verse_id, "scene restore after empowerment kept queued for retry: {error}");
+            // A lost kept role row: the restore is judged only after every role row is re-read.
+            if !resync_role_rows(fabric, replicator.as_ref(), verse_id, local_did, tx).await {
                 retry = true;
                 done.clear();
+            }
+        }
+        if let (Some(tx), false) = (db_cmd_tx.as_ref(), done.is_empty()) {
+            let cursor = fabric.rejudge_cursor_mut(true);
+            match send_rejudge_batch(replicator.as_ref(), tx, verse_id, &done, true, cursor).await {
+                Ok(sent) if sent.complete => {}
+                Ok(_) => {
+                    retry = true;
+                    done.clear();
+                }
+                Err(error) => {
+                    tracing::warn!(verse_id, "scene restore after empowerment kept queued for retry: {error}");
+                    retry = true;
+                    done.clear();
+                }
             }
         }
         // QA-0118: asset rows that arrived before their author's grant skipped
@@ -3155,23 +3490,44 @@ fn scene_asset_prefetch_hash(
     verse_id: &str,
     change: &RowChange,
 ) -> Option<fe_runtime::blob_store::BlobHash> {
-    if change.table != "asset" || change.is_tombstone || change.data.is_empty() {
-        return None;
+    SceneAssetRef::of(change)?.admitted_hash(fabric, verse_id)
+}
+
+/// What a scene-asset metadata row's prefetch judgment needs, without the row bytes.
+#[derive(Debug)]
+struct SceneAssetRef {
+    author_id: String,
+    petal_id: Option<String>,
+    content_hash: fe_runtime::blob_store::BlobHash,
+}
+
+impl SceneAssetRef {
+    /// The reference a scene-asset metadata row carries; `None` for any other row.
+    fn of(change: &RowChange) -> Option<Self> {
+        if change.table != "asset" || change.is_tombstone || change.data.is_empty() {
+            return None;
+        }
+        let row: serde_json::Value = serde_json::from_slice(&change.data).ok()?;
+        row.get(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER)?;
+        Some(Self {
+            author_id: change.author_id.clone(),
+            petal_id: row.get("petal_id").and_then(serde_json::Value::as_str).map(str::to_string),
+            content_hash: fe_runtime::blob_store::hash_from_hex(row.get("content_hash")?.as_str()?).ok()?,
+        })
     }
-    let row: serde_json::Value = serde_json::from_slice(&change.data).ok()?;
-    row.get(fe_runtime::scene_asset::SCENE_ASSET_ROW_MARKER)?;
-    let scope = row
-        .get("petal_id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|petal| fabric.petal_scope(verse_id, petal))
-        .unwrap_or_else(|| fe_policy::build_scope(verse_id, None, None));
-    if !fabric
-        .role_at(&change.author_id, &scope)
-        .is_at_least(fe_policy::RoleLevel::Editor)
-    {
-        return None;
+
+    /// The blob to prefetch when the role view holds the author at Editor+ (QA-0133).
+    fn admitted_hash(&self, fabric: &VerseFabric, verse_id: &str) -> Option<fe_runtime::blob_store::BlobHash> {
+        let scope = self
+            .petal_id
+            .as_deref()
+            .and_then(|petal| fabric.petal_scope(verse_id, petal))
+            .unwrap_or_else(|| fe_policy::build_scope(verse_id, None, None));
+        fabric
+            .role_at(&self.author_id, &scope)
+            .is_at_least(fe_policy::RoleLevel::Editor)
+            .then_some(self.content_hash)
     }
-    fe_runtime::blob_store::hash_from_hex(row.get("content_hash")?.as_str()?).ok()
 }
 
 /// Compatibility requests share the admitted, verified asynchronous scene job boundary.
@@ -3210,6 +3566,10 @@ pub(crate) fn handle_fetch_blob(
 /// select loop must never await a send into a stream only that select loop
 /// drains.**
 ///
+/// **Byte bound (§byte-bounds):** the pass walks the replica's metadata index and reads one
+/// row's bytes at a time, dropping them once handled; `SeedReport::peak_window_bytes` is the
+/// meter. Rows the full DB channel refuses land in the byte-capped `KeptRows`.
+///
 /// Best-effort: a snapshot failure is a loud warn, never fatal.
 async fn seed_reconciliation(
     replicator: &dyn VerseReplicator,
@@ -3218,21 +3578,30 @@ async fn seed_reconciliation(
     evt_tx: &dyn EventSink,
     db_cmd_tx: &Option<crossbeam::channel::Sender<DbCommand>>,
     fabric: &mut VerseFabric,
-) -> Vec<fe_runtime::blob_store::BlobHash> {
-    let entries = match replicator.snapshot().await {
-        Ok(entries) => entries,
+) -> SeedReport {
+    let index = match replicator.snapshot_index().await {
+        Ok(index) => index,
         Err(e) => {
             tracing::warn!(verse_id, "Reconciliation snapshot failed: {e}");
-            return Vec::new();
+            return SeedReport::default();
         }
     };
-    if entries.is_empty() {
-        return Vec::new();
+    if index.is_empty() {
+        return SeedReport::default();
     }
-    let total = entries.len();
+    let total = index.len();
+    // One row in flight: the meter admits each row alone and records the peak held.
+    let window = ByteGate::new(0);
     let mut forwarded = 0usize;
-    let mut forwarded_assets = Vec::new();
-    for change in entries {
+    let mut asset_refs = Vec::new();
+    for entry in index {
+        let bytes = entry.content_len;
+        let charged = window.try_acquire(bytes);
+        debug_assert!(charged, "the replay holds one row at a time");
+        let Some(change) = replicator.load_entry(entry).await else {
+            window.release(bytes);
+            continue;
+        };
         // The literal same inbound apply path the live pump's rows take:
         // own-author rows filtered here (loop prevention — the docs author
         // is the endpoint identity, so our own snapshot entries carry our
@@ -3241,23 +3610,39 @@ async fn seed_reconciliation(
         // the retention filter drops unhosted timeseries rows.
         let verdict =
             handle_inbound_row_change(fabric, verse_id, &change, local_did, evt_tx, db_cmd_tx);
-        if verdict == InboundVerdict::Forwarded && change.table == "asset" {
-            forwarded_assets.push(change);
+        if verdict == InboundVerdict::Forwarded {
+            asset_refs.extend(SceneAssetRef::of(&change));
         }
         forwarded += 1;
+        drop(change);
+        window.release(bytes);
     }
+    // QA-0133: judged against the role view the WHOLE snapshot converged to,
+    // so an asset row replayed before its author's grant is not skipped.
+    let report = SeedReport {
+        scene_asset_hashes: asset_refs
+            .iter()
+            .filter_map(|asset| asset.admitted_hash(fabric, verse_id))
+            .collect(),
+        peak_window_bytes: window.peak(),
+    };
     tracing::info!(
         verse_id,
         entries = total,
         forwarded,
+        peak_window_bytes = report.peak_window_bytes,
         "Reconciliation: replayed replica entries through the inbound apply path"
     );
-    // QA-0133: judged against the role view the WHOLE snapshot converged to,
-    // so an asset row replayed before its author's grant is not skipped.
-    forwarded_assets
-        .iter()
-        .filter_map(|change| scene_asset_prefetch_hash(fabric, verse_id, change))
-        .collect()
+    report
+}
+
+/// What one reconciliation replay did.
+#[derive(Debug, Default)]
+struct SeedReport {
+    /// Scene-asset blobs the replayed metadata references (QA-0118 prefetch).
+    scene_asset_hashes: Vec<fe_runtime::blob_store::BlobHash>,
+    /// Most row bytes the replay held at once (the §byte-bounds seam).
+    peak_window_bytes: u64,
 }
 
 /// R1: replay THIS node's own `verse/` and `petal/` entries by author after
@@ -3354,7 +3739,7 @@ async fn prepare_join_replica(
 async fn handle_open_verse_replica(
     replicas: &mut HashMap<String, Box<dyn VerseReplicator>>,
     inbound_pumps: &mut HashMap<String, tokio::task::AbortHandle>,
-    inbound_tx: tokio::sync::mpsc::Sender<(String, RowChange)>,
+    inbound_tx: tokio::sync::mpsc::Sender<InboundRow>,
     transport: &ReplicaTransport,
     verse_id: &str,
     namespace_id: &str,
@@ -3442,10 +3827,15 @@ async fn handle_open_verse_replica(
             Ok(rx) => {
                 let pump_verse_id = verse_id.to_string();
                 let pump_tx = inbound_tx.clone();
+                // The replica's pump charged each row on this gate; the lease releases it downstream.
+                let live_gate = replicator.live_byte_gate();
                 let pump = tokio::spawn(async move {
                     let mut rx = rx;
                     while let Some(change) = rx.recv().await {
-                        if pump_tx.send((pump_verse_id.clone(), change)).await.is_err() {
+                        let lease = live_gate
+                            .as_ref()
+                            .map(|gate| ByteLease::adopt(gate.clone(), change.data.len() as u64));
+                        if pump_tx.send((pump_verse_id.clone(), change, lease)).await.is_err() {
                             // Command loop dropped the aggregate stream — shutdown.
                             break;
                         }
@@ -3487,7 +3877,9 @@ async fn handle_open_verse_replica(
     let mut scene_asset_hashes = Vec::new();
     if replicator.open_error().is_none() {
         scene_asset_hashes =
-            seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
+            seed_reconciliation(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric)
+                .await
+                .scene_asset_hashes;
         reassert_own_rows(&replicator, verse_id, local_did, evt_tx, db_cmd_tx, fabric).await;
     }
 
@@ -3659,11 +4051,12 @@ async fn handle_write_row_entry(
     let blob_path = match blob_store.get_blob_path(content_hash) {
         Some(p) => p,
         None => {
-            tracing::warn!(
-                verse_id,
-                hash = %hex,
-                "WriteRowEntry: blob not found in store"
-            );
+            // A superseded node row's blob is reclaimed once a newer one is enqueued (§byte-bounds "Reclaimed node blobs").
+            if table == "node" {
+                tracing::debug!(verse_id, record_id, hash = %hex, "WriteRowEntry: blob not found in store");
+            } else {
+                tracing::warn!(verse_id, table, record_id, hash = %hex, "WriteRowEntry: blob not found in store");
+            }
             return;
         }
     };
@@ -5480,6 +5873,116 @@ mod tests {
         let kept = relay_entry(&endpoint, CONFIGURED_RELAY).await.expect("configured relay survives");
         assert_eq!(kept.auth_token.as_deref(), Some("operator-token"));
         endpoint.shutdown().await;
+
+        // Security inbox 17 (DNS rebinding): the check's public verdict is cached, but the resolution iroh dials with is judged again.
+        const REBIND_RELAY: &str = "https://rebind.example.org/";
+        const CONFIGURED_NAMED_RELAY: &str = "https://configured.example.org/";
+        let public = std::net::Ipv4Addr::new(203, 0, 113, 50);
+        let loopback = std::net::Ipv4Addr::LOCALHOST;
+        #[derive(Debug, Clone, Default)]
+        struct ScriptedDns(Arc<std::sync::Mutex<std::collections::VecDeque<std::net::Ipv4Addr>>>);
+        type Answer<T> = futures_lite::future::Boxed<Result<iroh::dns::BoxIter<T>, iroh::dns::DnsError>>;
+        impl iroh::dns::Resolver for ScriptedDns {
+            fn lookup_ipv4(&self, _host: String) -> Answer<std::net::Ipv4Addr> {
+                let next = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pop_front();
+                Box::pin(async move { Ok::<_, iroh::dns::DnsError>(Box::new(next.into_iter()) as iroh::dns::BoxIter<std::net::Ipv4Addr>) })
+            }
+            fn lookup_ipv6(&self, _host: String) -> Answer<std::net::Ipv6Addr> {
+                Box::pin(async { Ok::<_, iroh::dns::DnsError>(Box::new(std::iter::empty()) as iroh::dns::BoxIter<std::net::Ipv6Addr>) })
+            }
+            fn lookup_txt(&self, _host: String) -> Answer<iroh::dns::TxtRecordData> {
+                Box::pin(async { Ok::<_, iroh::dns::DnsError>(Box::new(std::iter::empty()) as iroh::dns::BoxIter<iroh::dns::TxtRecordData>) })
+            }
+            fn clear_cache(&self) {}
+            fn reset(&self) -> Box<dyn iroh::dns::Resolver> {
+                Box::new(self.clone())
+            }
+        }
+        // What iroh's relay dial (`dial_happy_eyeballs`) gets from the endpoint's resolver.
+        async fn dial_addresses(endpoint: &SyncEndpoint, raw: &str) -> Vec<std::net::IpAddr> {
+            let url: iroh::RelayUrl = raw.parse().expect("relay url");
+            let resolver = endpoint.inner().dns_resolver().expect("endpoint resolver");
+            let answers: Vec<Result<std::net::IpAddr, iroh::dns::DnsError>> = futures_lite::StreamExt::collect(Box::pin(
+                resolver.resolve_host_all(&url, std::time::Duration::from_secs(1)),
+            ))
+            .await;
+            answers.into_iter().filter_map(Result::ok).collect()
+        }
+        let answers = ScriptedDns::default();
+        answers.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend([public, loopback, loopback]);
+        let judged_endpoint = SyncEndpoint::with_inner_dns(
+            iroh::SecretKey::from_bytes(&[8u8; 32]),
+            &RelayConfig::Disabled,
+            iroh::dns::DnsResolver::custom(answers.clone()),
+        )
+        .await
+        .expect("endpoint binds with a scripted resolver");
+        let mut dial_adoption =
+            RelayAdoption::new(RelayReconciler::new(BTreeSet::from([CONFIGURED_NAMED_RELAY.to_string()])));
+        let ops = dial_adoption.reconciler.plan_tiers(&RelayReconcileInputs {
+            policy: &RelayAdvertisePolicy::DialOnly,
+            advertised: &adverts(&[("verse-a", &[REBIND_RELAY])]),
+            home_connected: None,
+            coverage: BTreeSet::new(),
+            auto_home: false,
+            home_health: RelayHealth::Unknown,
+        });
+        assert_eq!(ops, vec![RelayOp::Known(REBIND_RELAY.to_string())]);
+        // The off-loop check answered public: the host is allowlisted for DIAL_ONLY_VERDICT_TTL.
+        dial_adoption.record_lookup(REBIND_RELAY.to_string(), RelayCheck::DialOnly, Ok(()));
+        let (judged_hosts, exempt_hosts) = dial_adoption.judged_relay_hosts();
+        assert_eq!(exempt_hosts, BTreeSet::from(["configured.example.org".to_string()]));
+        judged_endpoint.set_judged_relay_hosts(judged_hosts, &exempt_hosts);
+        assert!(dial_adoption.allowlist(std::time::Instant::now()).contains(REBIND_RELAY), "the cached verdict allowlists the host");
+        assert_eq!(dial_addresses(&judged_endpoint, REBIND_RELAY).await, vec![std::net::IpAddr::V4(public)], "a public answer is dialled");
+        assert!(
+            dial_addresses(&judged_endpoint, REBIND_RELAY).await.is_empty(),
+            "the rebound loopback answer is refused at connect time even though the cached verdict still allowlists the host"
+        );
+        assert_eq!(
+            dial_addresses(&judged_endpoint, CONFIGURED_NAMED_RELAY).await,
+            vec![std::net::IpAddr::V4(loopback)],
+            "a host that is not an advertised relay is answered unchanged"
+        );
+        // A planned insert is judged before `insert_relay` runs: the pass pushes the plan's
+        // hosts (planned inserts PublicOnly) first, so a private second answer is never dialled.
+        const PINNED_REBIND_RELAY: &str = "https://pinned-rebind.example.org/";
+        let private = std::net::Ipv4Addr::new(10, 0, 0, 7);
+        let pinned_rebind_policy = RelayAdvertisePolicy::Pinned(vec![PINNED_REBIND_RELAY.to_string()]);
+        let ops = dial_adoption.reconciler.plan_tiers(&RelayReconcileInputs {
+            policy: &pinned_rebind_policy,
+            advertised: &adverts(&[("verse-a", &[PINNED_REBIND_RELAY])]),
+            home_connected: None,
+            coverage: BTreeSet::new(),
+            auto_home: false,
+            home_health: RelayHealth::Unknown,
+        });
+        assert_eq!(ops, vec![RelayOp::Insert(PINNED_REBIND_RELAY.to_string())]);
+        judge_planned_relays(&dial_adoption, &ops, &judged_endpoint);
+        answers.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend([public, private]);
+        assert_eq!(dial_addresses(&judged_endpoint, PINNED_REBIND_RELAY).await, vec![std::net::IpAddr::V4(public)]);
+        assert!(
+            dial_addresses(&judged_endpoint, PINNED_REBIND_RELAY).await.is_empty(),
+            "judged PublicOnly before the insert runs: a private second answer is refused"
+        );
+        dial_adoption.record_lookup(PINNED_REBIND_RELAY.to_string(), RelayCheck::Insertable, Ok(()));
+        apply(&mut dial_adoption, ops, &judged_endpoint).await;
+        assert!(dial_adoption.reconciler.is_inserted(PINNED_REBIND_RELAY), "the insert itself still runs");
+        judged_endpoint.shutdown().await;
+
+        // At the judged-host cap only the longest-withdrawn host leaves, one at a time, never a current one.
+        let judge = crate::relay_dns::RelayHostJudge::default();
+        let hosts = |names: &[String]| -> HashMap<String, crate::relay_dns::RelayHostRule> {
+            names.iter().map(|name| (name.clone(), crate::relay_dns::RelayHostRule::DialOnly)).collect()
+        };
+        let filler: Vec<String> = (0..crate::relay_dns::JUDGED_RELAY_HOST_CAP - 2).map(|n| format!("h{n}.example.org")).collect();
+        let (old, recent, new) = ("old.example.org".to_string(), "recent.example.org".to_string(), "new.example.org".to_string());
+        judge.update(hosts(&[old.clone()]), &BTreeSet::new());
+        judge.update(hosts(&[filler.clone(), vec![recent.clone()]].concat()), &BTreeSet::new());
+        judge.update(hosts(&[filler, vec![new.clone()]].concat()), &BTreeSet::new());
+        assert_eq!(judge.len(), crate::relay_dns::JUDGED_RELAY_HOST_CAP);
+        assert!(judge.rule(&old).is_none(), "the longest-withdrawn host made room");
+        assert!(judge.rule(&recent).is_some() && judge.rule(&new).is_some(), "a recently withdrawn host still redials judged");
     }
 
     #[test]
@@ -7506,6 +8009,31 @@ mod tests {
             ],
             "the superseded version is never applied; order of the live entries holds"
         );
+
+        // §byte-bounds "DB command bytes": a byte gate at its cap holds a row exactly like a full
+        // channel; once the DB side releases, the resend delivers it and the gate carries its bytes.
+        use fe_runtime::channels::{DbCommandBytes, DB_COMMAND_BYTE_CAP};
+        let gate = DbCommandBytes::default();
+        let _scope = crate::byte_bounds::scope_db_command_bytes(Some(gate.clone()));
+        gate.charge(DB_COMMAND_BYTE_CAP);
+        let verdict = handle_inbound_row_change(
+            fabrics.get_mut("verse-3").unwrap(),
+            "verse-3",
+            &change("node-gated", "gated"),
+            "did:key:local",
+            &evt_tx,
+            &db,
+        );
+        assert!(verdict == InboundVerdict::Kept, "a gate at its cap keeps the row");
+        assert!(db_rx.is_empty(), "the channel had room: only the byte gate held the row");
+        assert!(!resend_unsent_rows(&mut fabrics, &db, &mut jobs), "still at the cap: kept for retry");
+        gate.release(DB_COMMAND_BYTE_CAP);
+        assert!(resend_unsent_rows(&mut fabrics, &db, &mut jobs), "a released gate lets the row through");
+        let sent = db_rx.try_recv().expect("the held row is delivered");
+        let row_len = r#"{"name":"gated"}"#.len() as u64;
+        assert_eq!(sent.payload_bytes(), row_len, "a row command's payload is its row bytes");
+        assert_eq!(gate.current(), row_len, "the delivered row is charged until the DB thread takes it");
+        assert_eq!(DbCommand::LoadHierarchy.payload_bytes(), 0, "a command without rows carries no payload");
     }
 
     /// A2/A4 (offline holder — mock fallback): opening a verse replica
@@ -7514,7 +8042,7 @@ mod tests {
     async fn open_and_close_verse_replica_manage_replica_and_pump() {
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
         let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let mut pending = PendingWrites::default();
@@ -7592,7 +8120,7 @@ mod tests {
     async fn mock_replica_pump_feeds_inbound_stream_and_own_writes_are_filtered() {
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
         let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
         let mut pending = PendingWrites::default();
@@ -7627,7 +8155,7 @@ mod tests {
         // that sync-plane row first.
         let mut node_row = None;
         for _ in 0..4 {
-            let (verse_id, change) = inbound_rx
+            let (verse_id, change, _lease) = inbound_rx
                 .recv()
                 .await
                 .expect("pump forwarded rows into the inbound stream");
@@ -7677,7 +8205,7 @@ mod tests {
             Arc::new(crate::FsBlobStore::new(tmp.path().join("blobs")).expect("fs blob store"));
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
         let mut pending = PendingWrites::default();
@@ -8332,9 +8860,9 @@ mod tests {
             &db,
         );
         assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
-        assert!(drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "kept revoke: retry");
+        assert!(drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await, "kept revoke: retry");
         db_rx.try_recv().unwrap();
-        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "closed: wait for reopen");
+        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await, "closed: wait for reopen");
         assert!(matches!(
             db_rx.try_recv().unwrap(),
             DbCommand::ApplyReplicatedRow { ref table, .. } if table == "role"
@@ -8342,10 +8870,10 @@ mod tests {
         assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
         replicas.insert(verse_id.to_string(), Box::new(x_replica));
         db.as_ref().unwrap().try_send(DbCommand::LoadHierarchy).unwrap();
-        assert!(drain_rejudge_queues(&mut fabrics, &replicas, &db).await, "full channel: retry");
+        assert!(drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await, "full channel: retry");
         assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
         db_rx.try_recv().unwrap();
-        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, &db).await);
+        assert!(!drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await);
         assert!(fabrics[verse_id].pending_rejudges().is_empty());
         assert!(matches!(
             db_rx.try_recv().unwrap(),
@@ -8383,6 +8911,124 @@ mod tests {
         );
         assert!(sent.iter().any(|cmd| matches!(cmd, DbCommand::RejudgeReplicatedNodes { restore_only: true, .. })));
         assert!(fabrics[verse_id].pending_rereads().is_empty());
+
+        // §byte-bounds: demoting an author of many large scene rows re-judges them in
+        // chunks bounded by bytes and node count, across turns, every node exactly once.
+        let node_bytes = (crate::byte_bounds::REJUDGE_CHUNK_BYTES / 4 + 1) as usize;
+        let big_nodes = 20;
+        for n in 0..big_nodes {
+            replicas[verse_id]
+                .write_row("node", &format!("big-{n:02}"), &vec![b'n'; node_bytes])
+                .await
+                .unwrap();
+        }
+        fabrics.get_mut(verse_id).unwrap().note_entry(verse_id, &role_row(true, 7));
+        assert_eq!(fabrics[verse_id].pending_rejudges(), vec![x.to_string()]);
+        let (db_tx, db_rx) = crossbeam::channel::bounded(64);
+        let db = Some(db_tx);
+        let mut turns = 1;
+        while drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await {
+            turns += 1;
+            assert!(turns < 10, "the chunked pass finishes");
+        }
+        assert!(turns > 1, "a pass over one turn's byte budget resumes on the next turn");
+        assert!(fabrics[verse_id].pending_rejudges().is_empty());
+        let mut judged = Vec::new();
+        for command in db_rx.try_iter() {
+            if let DbCommand::RejudgeReplicatedNodes { nodes, restore_only: false, .. } = command {
+                let bytes: usize = nodes
+                    .iter()
+                    .flat_map(|(_, candidates)| candidates.iter().map(|(_, row)| row.len()))
+                    .sum();
+                assert!(bytes as u64 <= crate::byte_bounds::REJUDGE_CHUNK_BYTES, "a chunk stays within its byte bound");
+                assert!(nodes.len() <= crate::byte_bounds::REJUDGE_CHUNK_NODES);
+                judged.extend(nodes.into_iter().map(|(record_id, _)| record_id));
+            }
+        }
+        let mut expected: Vec<String> = (0..big_nodes).map(|n| format!("big-{n:02}")).collect();
+        expected.push("n1".to_string());
+        assert_eq!(judged, expected, "every node of the demoted author exactly once, in order");
+
+        // §byte-bounds: with the DB channel full, the owner revokes M; M floods kept role
+        // rows past the entry cap and a stranger sends one oversized role row. Neither
+        // displaces the owner's revoke, every loss owes a role re-sync, and the re-judge of
+        // M runs only after the revoke and every replica role row reached the DB channel.
+        let revoke_record = format!("{verse_scope}/{m}/{owner}");
+        let revoke = RowChange {
+            table: "role".into(),
+            record_id: revoke_record.clone(),
+            content_hash: [0; 32],
+            author_id: owner.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: serde_json::to_vec(&serde_json::json!({
+                "scope": verse_scope, "peer_did": m, "grantor_did": owner,
+                "role": "manager", "revoked": true, "hlc": 9,
+            }))
+            .unwrap(),
+        };
+        let stranger = "did:key:stranger";
+        let oversized = RowChange {
+            table: "role".into(),
+            record_id: format!("{verse_scope}/{x}/{stranger}"),
+            content_hash: [0; 32],
+            author_id: stranger.into(),
+            timestamp: 0,
+            is_tombstone: false,
+            data: vec![b' '; crate::byte_bounds::MAX_KEPT_ROLE_ROW_BYTES as usize + 1],
+        };
+        let m_replica = MockVerseReplicator::new(m);
+        m_replica.write_row("node", "m1", br#"{"node_id":"m1"}"#).await.unwrap();
+        m_replica.seed_all_authors_entry("role", &revoke.record_id, owner, &revoke.data);
+        m_replica.seed_all_authors_entry("role", &oversized.record_id, stranger, &oversized.data);
+        replicas.insert(verse_id.to_string(), Box::new(m_replica));
+        let (full_tx, _full_rx) = crossbeam::channel::bounded(1);
+        // Unbounded: the flood emits one RowApplied per row, far more than `evt_tx` holds.
+        let (flood_evt_tx, _flood_evt_rx) = crossbeam::channel::unbounded::<SyncEvent>();
+        let full = Some(full_tx);
+        full.as_ref().unwrap().try_send(DbCommand::LoadHierarchy).unwrap();
+        let fabric = fabrics.get_mut(verse_id).unwrap();
+        handle_inbound_row_change(fabric, verse_id, &revoke, "did:key:local", &flood_evt_tx, &full);
+        assert!(fabric.pending_rejudges().contains(&m.to_string()));
+        for n in 0..4100 {
+            let mut flood = role_row(false, 100 + n);
+            flood.author_id = m.into();
+            flood.record_id = format!("{verse_scope}/did:key:f{n}/{m}");
+            handle_inbound_row_change(fabric, verse_id, &flood, "did:key:local", &flood_evt_tx, &full);
+        }
+        handle_inbound_row_change(fabric, verse_id, &oversized, "did:key:local", &flood_evt_tx, &full);
+        assert!(fabric.kept_role_rows_dropped() > 0, "the flood trips the entry cap");
+        assert_eq!(fabric.kept_role_rows_refused(), 1, "the oversized row is never kept");
+        assert!(fabric.role_resync_pending());
+        assert!(
+            fabric.unsent_role_rows_mut().iter().any(|row| row.author_id == owner),
+            "the owner's only kept row survives another author's flood"
+        );
+        assert!(fabric.unsent_role_rows_mut().iter().all(|row| row.data.len() as u64 <= crate::byte_bounds::MAX_KEPT_ROLE_ROW_BYTES));
+        let (db_tx, db_rx) = crossbeam::channel::bounded(8192);
+        let db = Some(db_tx);
+        let mut sent = Vec::new();
+        for _ in 0..10 {
+            let more = drain_rejudge_queues(&mut fabrics, &replicas, "did:key:local", &db).await;
+            sent.extend(db_rx.try_iter());
+            if !more {
+                break;
+            }
+        }
+        let position = |found: &dyn Fn(&DbCommand) -> bool| sent.iter().position(found);
+        let rejudge = position(&|cmd| matches!(cmd, DbCommand::RejudgeReplicatedNodes { restore_only: false, .. }))
+            .expect("M's scene rows are re-judged");
+        let revoke_sent = position(&|cmd| {
+            matches!(cmd, DbCommand::ApplyReplicatedRow { record_id, author_did, .. } if *record_id == revoke_record && author_did == owner)
+        })
+        .expect("the owner's revoke reaches the DB plane");
+        let reread = position(&|cmd| {
+            matches!(cmd, DbCommand::ApplyReplicatedRow { author_did, row_bytes, .. } if author_did == stranger && row_bytes.len() == oversized.data.len())
+        })
+        .expect("the role re-sync re-reads the refused row from the replica");
+        assert!(revoke_sent < rejudge && reread < rejudge, "the re-judge sees the revoke and every role row");
+        assert!(!fabrics[verse_id].role_resync_pending());
+        assert!(fabrics[verse_id].pending_rejudges().is_empty());
     }
 
     /// T12: a flood of strangers' `__shards` rows can evict a legitimately
@@ -8791,6 +9437,115 @@ mod tests {
             restarted.shards["p1/a/0"].row_count, 1,
             "catalog restoration admits the persisted ledger without re-ingesting or counting readings"
         );
+
+        // §byte-bounds: a replica whose rows together far exceed one row is replayed from
+        // its metadata index, one row's bytes at a time — every row once, in index order.
+        struct LazySnapshot {
+            rows: usize,
+            row_bytes: usize,
+            loads: std::sync::atomic::AtomicUsize,
+        }
+        impl VerseReplicator for LazySnapshot {
+            fn write_row(
+                &self,
+                _table: &str,
+                _record_id: &str,
+                _data: &[u8],
+            ) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn subscribe(
+                &self,
+            ) -> ReplicatorFuture<'_, anyhow::Result<tokio::sync::mpsc::Receiver<RowChange>>>
+            {
+                Box::pin(async { unreachable!("not used in this test") })
+            }
+            fn snapshot(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<RowChange>>> {
+                Box::pin(async { unreachable!("the replay never materializes the whole replica") })
+            }
+            fn snapshot_index(&self) -> ReplicatorFuture<'_, anyhow::Result<Vec<SnapshotEntry>>> {
+                let index = (0..self.rows)
+                    .map(|n| {
+                        let row = change("node", &format!("node-{n:03}"), "did:key:peer", b"");
+                        SnapshotEntry::metadata(row, self.row_bytes as u64)
+                    })
+                    .collect();
+                Box::pin(async move { Ok(index) })
+            }
+            fn load_entry(&self, entry: SnapshotEntry) -> ReplicatorFuture<'_, Option<RowChange>> {
+                self.loads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut row = entry.change;
+                row.data = vec![b' '; self.row_bytes];
+                Box::pin(async move { Some(row) })
+            }
+            fn close(&self) -> ReplicatorFuture<'_, anyhow::Result<()>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let lazy = LazySnapshot {
+            rows: 64,
+            row_bytes: (crate::byte_bounds::KEPT_ROWS_BYTE_CAP / 256) as usize,
+            loads: Default::default(),
+        };
+        // Unbounded: every replayed row emits `RowApplied`, more than the bounded channel above holds.
+        let (lazy_evt_tx, _lazy_evt_rx) = crossbeam::channel::unbounded::<SyncEvent>();
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(lazy.rows);
+        let report = seed_reconciliation(&lazy, "verse-big", local, &lazy_evt_tx, &Some(db_tx), &mut VerseFabric::default()).await;
+        assert_eq!(report.peak_window_bytes, lazy.row_bytes as u64, "the replay holds one row's bytes at a time");
+        assert!(report.peak_window_bytes * 8 < (lazy.rows * lazy.row_bytes) as u64);
+        assert_eq!(lazy.loads.load(std::sync::atomic::Ordering::Relaxed), lazy.rows, "each row is read once");
+        let replayed: Vec<String> = db_rx
+            .try_iter()
+            .filter_map(|cmd| match cmd {
+                DbCommand::ApplyReplicatedRow { record_id, .. } => Some(record_id),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<String> = (0..lazy.rows).map(|n| format!("node-{n:03}")).collect();
+        assert_eq!(replayed, expected, "every row once, in index order");
+
+        // KeptRows' byte cap trips like its entry cap when the DB thread is busy: the
+        // oldest kept rows wait for the next open (counted), the newest stay in order.
+        let heavy = LazySnapshot {
+            rows: 8,
+            row_bytes: (crate::byte_bounds::KEPT_ROWS_BYTE_CAP / 4 + 1) as usize,
+            loads: Default::default(),
+        };
+        let (db_tx, _db_rx) = crossbeam::channel::bounded::<DbCommand>(1);
+        let mut busy = VerseFabric::default();
+        seed_reconciliation(&heavy, "verse-busy", local, &lazy_evt_tx, &Some(db_tx), &mut busy).await;
+        let kept = busy.unsent_rows_mut();
+        assert!(kept.held_bytes() <= crate::byte_bounds::KEPT_ROWS_BYTE_CAP);
+        assert_eq!(kept.dropped(), 4, "one row sent, three kept, four dropped at the byte cap");
+        // Another author's row over the byte cap is refused instead of flushing the kept rows.
+        let huge = vec![b'h'; crate::byte_bounds::KEPT_ROWS_BYTE_CAP as usize + 1];
+        kept.keep(change("node", "huge", "did:key:flooder", &huge));
+        assert_eq!(kept.dropped(), 5);
+        assert!(kept.reseed_pending(), "a drop owes the verse one re-seed");
+        let survivors: Vec<String> = std::iter::from_fn(|| kept.pop().map(|(_, row)| row.record_id)).collect();
+        assert_eq!(survivors, vec!["node-005", "node-006", "node-007"]);
+        // Once the kept rows are out and the channel drained, the owed re-seed replays the
+        // replica: the dropped rows come back without a reopen, and nothing stays owed.
+        let heavy_rows = heavy.rows;
+        let mut fabrics: HashMap<String, VerseFabric> = HashMap::from([("verse-busy".to_string(), busy)]);
+        let replicas: HashMap<String, Box<dyn VerseReplicator>> =
+            HashMap::from([("verse-busy".to_string(), Box::new(heavy) as Box<dyn VerseReplicator>)]);
+        let (scene_tx, _scene_rx) = crossbeam::channel::bounded(8);
+        let (publication_tx, _) = tokio::sync::mpsc::channel(1);
+        let mut jobs = crate::scene_assets::SceneAssetJobs::new(
+            Arc::new(MockBlobStore::new()),
+            None,
+            Default::default(),
+            None,
+            crate::event_outbox::EventOutbox::new(scene_tx),
+            publication_tx,
+        );
+        let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(2 * heavy_rows);
+        let owed = reseed_dropped_rows(&mut fabrics, &replicas, local, &lazy_evt_tx, &Some(db_tx), &mut jobs).await;
+        assert!(!owed, "the re-seed ran and nothing is owed");
+        let replayed = db_rx.try_iter().filter(|cmd| matches!(cmd, DbCommand::ApplyReplicatedRow { .. })).count();
+        assert_eq!(replayed, heavy_rows, "every replica row is replayed once");
+        assert!(!fabrics.get_mut("verse-busy").unwrap().unsent_rows_mut().reseed_pending());
     }
 
     /// An empty replica (nothing ever replicated in) is a silent no-op.
@@ -8847,7 +9602,7 @@ mod tests {
 
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
         let blob_store: BlobStoreHandle = Arc::new(MockBlobStore::new());
@@ -8908,7 +9663,7 @@ mod tests {
     async fn offline_open_failure_keeps_mock_fallback() {
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         let (db_tx, db_rx) = crossbeam::channel::bounded::<DbCommand>(8);
@@ -9222,7 +9977,7 @@ mod tests {
 
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let engine_holder = Arc::new(IrohDocsEngineHolder::new()); // offline → mock
         let (evt_tx, _evt_rx) = crossbeam::channel::bounded(8);
         let mut pending = PendingWrites::default();
@@ -9425,7 +10180,7 @@ mod tests {
         let ns_id = hex::encode(fe_database::derive_namespace_id(&ns_secret));
         let mut replicas: HashMap<String, Box<dyn VerseReplicator>> = HashMap::new();
         let mut inbound_pumps: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
-        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<(String, RowChange)>(16);
+        let (inbound_tx, _inbound_rx) = tokio::sync::mpsc::channel::<InboundRow>(16);
         let (evt_tx, evt_rx) = crossbeam::channel::bounded(8);
         let mut pending = PendingWrites::default();
 

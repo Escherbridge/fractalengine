@@ -147,6 +147,31 @@ impl SceneAssetGate {
         }))
     }
 
+    /// Every hash the classification names (assets and their retention roots, pending writes
+    /// included); `None` while it is unreadable or failed, so blob reclaim skips the pass.
+    pub(crate) fn protected_hashes(&self) -> Option<Vec<BlobHash>> {
+        if self.0.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut out = Vec::new();
+        {
+            let class = self.0.class.lock().unwrap_or_else(|e| e.into_inner());
+            if class.deny_unknown {
+                return None;
+            }
+            for (key, bindings) in &class.hashes {
+                out.extend(fe_runtime::blob_store::hash_from_hex(key).ok());
+                for binding in bindings {
+                    out.push(binding.asset_hash);
+                    out.push(fe_runtime::blob_transport::hash_seq_root(&[binding.asset_hash]));
+                }
+            }
+        }
+        let pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner());
+        out.extend(pending.keys().filter_map(|key| fe_runtime::blob_store::hash_from_hex(key).ok()));
+        Some(out)
+    }
+
     pub(crate) fn set_authorizer(&self, authorizer: SceneBlobAuthorizer) {
         *self.0.authorizer.write().unwrap_or_else(|e| e.into_inner()) = Some(authorizer);
     }
