@@ -18,7 +18,8 @@ use crate::actions::{UiAction, UiManager};
 use crate::panels::widgets::{clipped_value, confirm_button, role_denial_reason, role_gated};
 use crate::plugin::LocalUserRole;
 use crate::terrain_map::dto::{
-    AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto, TilesetAccess,
+    AvailableTilesetDto, DownloadStatus, HexonManagerTab, InstalledTilesetDto, RegistryListState,
+    TilesetAccess,
 };
 use crate::terrain_map::PetalMapState;
 use crate::theme;
@@ -49,7 +50,7 @@ pub fn render_hexon_manager(
     active_petal_id: Option<&str>,
     active_verse_id: Option<&str>,
     downloads: &crate::terrain_map::dto::DownloadProgressMap,
-    registry_url: Option<&str>,
+    registry_url: &str,
     local_role: &LocalUserRole,
 ) -> bool {
     let file_dialogs = ui_mgr.file_dialogs.clone();
@@ -68,6 +69,7 @@ pub fn render_hexon_manager(
         // stays in the struct unused rather than being removed here.
         pending_remove: ref mut _pending_remove,
         ref mut registry_uri_buf,
+        ref mut registry,
     } = ui_mgr.active_dialog
     else {
         return false;
@@ -122,39 +124,26 @@ pub fn render_hexon_manager(
 
             ui.add_space(8.0);
 
-            // "Install from registry" (PAS-P5 S7b, A6/A9): disabled with a
-            // calm hint when no registry is configured, rather than a faked
-            // control (ui_ux §6) — `AppSettings.hexon_registry_url` is the
-            // only source of `registry_url`, so this control is the field's
-            // real, live consumer.
+            // Install by id: the default registry is always configured, so this is always enabled.
             ui.vertical(|ui| {
-                ui.add_enabled_ui(registry_url.is_some(), |ui| {
-                    ui.add(
-                        crate::ui_shell::layout_policy::text_input(ui, registry_uri_buf)
-                            .hint_text("map ID or ID@version")
-                            .desired_width((ui.available_width() - 120.0).max(64.0)),
-                    )
-                    .named(ui, "Registry map ID and optional version");
-                    let can_install = registry_url.is_some() && !registry_uri_buf.trim().is_empty();
-                    if ui
-                        .add_enabled(
-                            can_install,
-                            egui::Button::new("Install from registry").fill(theme::BG_SAVE),
-                        ).observed(ui)
-                        .clicked()
-                    {
-                        actions.push(UiAction::HexonInstallFromRegistry(
-                            registry_uri_buf.trim().to_string(),
-                        ));
-                        registry_uri_buf.clear();
-                    }
-                });
-                if registry_url.is_none() {
-                    ui.label(
-                        egui::RichText::new("Set a registry URL in Settings → Network")
-                            .small()
-                            .color(theme::TEXT_MUTED),
-                    );
+                ui.add(
+                    crate::ui_shell::layout_policy::text_input(ui, registry_uri_buf)
+                        .hint_text("map ID or ID@version")
+                        .desired_width((ui.available_width() - 120.0).max(64.0)),
+                )
+                .named(ui, "Registry map ID and optional version");
+                let can_install = !registry_uri_buf.trim().is_empty();
+                if ui
+                    .add_enabled(
+                        can_install,
+                        egui::Button::new("Install from registry").fill(theme::BG_SAVE),
+                    ).observed(ui)
+                    .clicked()
+                {
+                    actions.push(UiAction::HexonInstallFromRegistry(
+                        registry_uri_buf.trim().to_string(),
+                    ));
+                    registry_uri_buf.clear();
                 }
             });
 
@@ -209,7 +198,16 @@ pub fn render_hexon_manager(
                         );
                     }
                     HexonManagerTab::Available => {
-                        render_available_tab(ui, available_tilesets, &filter_lower, &mut actions);
+                        render_available_tab(
+                            ui,
+                            available_tilesets,
+                            installed_tilesets,
+                            registry,
+                            registry_url,
+                            downloads,
+                            &filter_lower,
+                            &mut actions,
+                        );
                     }
                     HexonManagerTab::Downloads => {
                         render_downloads_tab(ui, downloads, &mut actions);
@@ -590,7 +588,106 @@ fn render_scale_controls(
     }
 }
 
+/// Available tab: the registry's packages (Registry group), then maps offered by P2P peers.
+#[allow(clippy::too_many_arguments)]
 fn render_available_tab(
+    ui: &mut egui::Ui,
+    tilesets: &[AvailableTilesetDto],
+    installed: &[InstalledTilesetDto],
+    registry: &mut RegistryListState,
+    registry_url: &str,
+    downloads: &crate::terrain_map::dto::DownloadProgressMap,
+    filter: &str,
+    actions: &mut Vec<UiAction>,
+) {
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            render_registry_group(ui, registry, registry_url, installed, downloads, filter, actions);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Peers").color(theme::TEXT_SECTION).strong());
+            render_peer_tilesets(ui, tilesets, filter, actions);
+        });
+}
+
+/// The Registry group: distinct loading, error (with Retry), empty and listed states.
+fn render_registry_group(
+    ui: &mut egui::Ui,
+    registry: &mut RegistryListState,
+    registry_url: &str,
+    installed: &[InstalledTilesetDto],
+    downloads: &crate::terrain_map::dto::DownloadProgressMap,
+    filter: &str,
+    actions: &mut Vec<UiAction>,
+) {
+    ui.label(egui::RichText::new("Registry").color(theme::TEXT_SECTION).strong())
+        .on_hover_text(registry_url);
+    if let Some(error) = registry.error.clone() {
+        ui.label(egui::RichText::new(error).color(egui::Color32::from_rgb(200, 80, 80)));
+        if ui
+            .add(egui::Button::new("Retry").fill(theme::BG_BUTTON))
+            .named(ui, "Retry registry listing")
+            .clicked()
+        {
+            registry.loading = true;
+            registry.error = None;
+            actions.push(UiAction::HexonRefreshList);
+        }
+        return;
+    }
+    if registry.loading || !registry.loaded {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Loading registry...");
+        });
+        return;
+    }
+    if registry.rows.is_empty() {
+        ui.label(egui::RichText::new("No packages published yet").color(theme::TEXT_MUTED));
+        return;
+    }
+    for row in &registry.rows {
+        let title = if row.name.is_empty() { row.hexon_id.as_str() } else { row.name.as_str() };
+        if !filter.is_empty()
+            && !title.to_lowercase().contains(filter)
+            && !row.hexon_id.to_lowercase().contains(filter)
+        {
+            continue;
+        }
+        let uri = format!("{}@{}", row.hexon_id, row.version);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(title).strong())
+                .on_hover_text(format!("{}\n{}", row.hexon_id, row.publisher_did));
+            ui.label(
+                egui::RichText::new(format!("v{} · {}", row.version, format_size(row.size_bytes)))
+                    .small()
+                    .color(theme::TEXT_MUTED),
+            );
+            let installing = downloads.get(&uri).is_some_and(|download| {
+                matches!(
+                    download.status,
+                    DownloadStatus::Queued | DownloadStatus::Downloading | DownloadStatus::Verifying
+                )
+            });
+            if installed.iter().any(|map| map.hexon_id == row.hexon_id) {
+                ui.label(egui::RichText::new("Installed").color(theme::TEXT_MUTED).italics());
+            } else if installing {
+                ui.label(egui::RichText::new("Installing...").color(theme::TEXT_MUTED).italics());
+            } else if ui
+                .add(egui::Button::new("Install").fill(theme::BG_SAVE))
+                .named(ui, format_args!("Install map {title} {}", row.version))
+                .clicked()
+            {
+                actions.push(UiAction::HexonInstallFromRegistry(uri.clone()));
+            }
+        });
+    }
+}
+
+/// Maps advertised by connected peers.
+fn render_peer_tilesets(
     ui: &mut egui::Ui,
     tilesets: &[AvailableTilesetDto],
     filter: &str,
@@ -606,9 +703,6 @@ fn render_available_tab(
         return;
     }
 
-    egui::ScrollArea::vertical()
-        .auto_shrink(false)
-        .show(ui, |ui| {
             egui::Grid::new("available_header")
                 .num_columns(6)
                 .striped(false)
@@ -678,7 +772,6 @@ fn render_available_tab(
                         ui.end_row();
                     }
                 });
-        });
 }
 
 fn render_downloads_tab(

@@ -8,7 +8,7 @@ pub mod manifest;
 
 pub use dto::{
     AvailableTilesetDto, DownloadProgress, DownloadProgressMap, DownloadStatus, HexonManagerTab,
-    InstalledTilesetDto, StorageInfoDto,
+    InstalledTilesetDto, RegistryListState, RegistryPackageRow, StorageInfoDto,
 };
 pub(crate) use events::drain_tileset_events;
 pub use manifest::{ManifestHexonEntry, PetalManifest};
@@ -166,6 +166,11 @@ pub enum HexonOp {
     /// are shown in the existing Downloads tab, keyed by `uri`.
     InstallFromRegistry {
         uri: String,
+    },
+    /// List the hosted registry's maps into `ActiveDialog::HexonManager.registry`
+    /// (background thread; `HexonOp::RefreshList` also triggers it with `query: None`).
+    ListRegistry {
+        query: Option<String>,
     },
 }
 

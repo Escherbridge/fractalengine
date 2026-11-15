@@ -327,8 +327,16 @@ pub(crate) fn transform_value(value: &Transform) -> NodeTransformValue {
     }
 }
 
-fn request_id() -> String {
-    format!("ui-undo-{}", ulid::Ulid::new())
+/// Correlation prefix of an ordinary edit; only these are adopted when a dead letter is retried.
+const EDIT_ID_PREFIX: &str = "ui-edit-";
+
+fn request_id(origin: Origin) -> String {
+    let prefix = match origin {
+        Origin::Normal => EDIT_ID_PREFIX,
+        Origin::Undo => "ui-undo-",
+        Origin::Redo => "ui-redo-",
+    };
+    format!("{prefix}{}", ulid::Ulid::new())
 }
 
 impl UndoState {
@@ -550,7 +558,7 @@ impl UndoState {
         db: &crossbeam::channel::Sender<DbCommand>,
     ) -> Result<String, String> {
         self.ready()?;
-        let id = request_id();
+        let id = request_id(origin);
         let (expected, target) = if origin == Origin::Undo {
             (&entry.after, &entry.before)
         } else {
@@ -651,7 +659,7 @@ impl UndoState {
         if Vec3::from_array(before).distance(Vec3::from_array(after)) < 0.0001 {
             return Ok(None);
         }
-        let id = request_id();
+        let id = request_id(Origin::Normal);
         self.pending = Some(Pending {
             request_id: id.clone(),
             resolve_id: None,
@@ -683,7 +691,7 @@ impl UndoState {
         self.sync(nav);
         self.ready()?;
         let before = rows.get(index).ok_or("Path point is unavailable")?.position;
-        let id = request_id();
+        let id = request_id(Origin::Normal);
         self.pending = Some(Pending {
             request_id: id.clone(),
             resolve_id: None,
@@ -734,7 +742,7 @@ impl UndoState {
                 return Err("Anchor metadata must be finite and smoothness must be 0..=1".into());
             }
         }
-        let id = request_id();
+        let id = request_id(Origin::Normal);
         self.pending = Some(Pending {
             request_id: id.clone(),
             resolve_id: None,
@@ -916,7 +924,7 @@ impl UndoState {
             return Err("Waiting for the path's stored points".into());
         }
         let entry = pending.entry.as_ref().unwrap();
-        let id = request_id();
+        let id = request_id(Origin::Normal);
         match db.try_send(DbCommand::ResolveCheckedNodeMutation {
             node_id: entry.node_id.clone(),
             petal_id: entry.petal_id.clone(),
@@ -946,6 +954,95 @@ impl UndoState {
                 .checked_sub(SAVE_TIMEOUT + std::time::Duration::from_millis(1))
                 .unwrap_or_else(Instant::now);
         }
+    }
+    /// Adopt a retried dead letter so its receipt records an Undo step (see actions/AGENTS.md
+    /// §scene-write-door). `Ok(false)`: not an ordinary undoable edit; `Err`: undoable but not adoptable.
+    pub(crate) fn adopt_retry(
+        &mut self,
+        retried: crate::actions::node::RetriedEdit,
+    ) -> Result<bool, &'static str> {
+        let DbCommand::CommitCheckedNodeMutation {
+            node_id,
+            mutation,
+            expected,
+            correlation_id,
+        } = retried.command
+        else {
+            return Ok(false);
+        };
+        if !correlation_id.starts_with(EDIT_ID_PREFIX) {
+            return Ok(false);
+        }
+        let before = match expected.before {
+            NodeEditBefore::Transform(value) => EditValue::Transform(value),
+            NodeEditBefore::PathPoints(value) => EditValue::PathPoints(value),
+        };
+        let after = match (&before, mutation) {
+            (
+                EditValue::Transform(_),
+                NodeMutation::FullTransform {
+                    position,
+                    rotation,
+                    scale,
+                },
+            ) => EditValue::Transform(NodeTransformValue {
+                position: position.map(f64::from),
+                rotation: Quat::from_euler(EulerRot::XYZ, rotation[0], rotation[1], rotation[2])
+                    .to_array(),
+                scale: scale.map(f64::from),
+            }),
+            (EditValue::PathPoints(_), NodeMutation::PropertySet { key, value })
+                if key == "gpx_points" =>
+            {
+                EditValue::PathPoints(value)
+            }
+            _ => return Ok(false),
+        };
+        let (Some(scope), Some(petal_id)) = (self.scope.clone(), self.petal_id.clone()) else {
+            return Err("no petal is open");
+        };
+        if expected.scope != scope || retried.petal.as_deref().is_some_and(|p| p != petal_id) {
+            return Err("the petal changed since the edit");
+        }
+        if let Some(pending) = self.pending.as_mut() {
+            if pending.request_id == correlation_id && pending.entry.is_some() {
+                // The failed attempt's pending is still ours: let the retry's receipt match it.
+                pending.resolve_id = None;
+                pending.started = Instant::now();
+                return Ok(true);
+            }
+            return Err("another edit is still saving");
+        }
+        self.pending = Some(Pending {
+            request_id: correlation_id,
+            resolve_id: None,
+            generation: self.generation,
+            entry: Some(Entry {
+                order: 0,
+                node_id,
+                petal_id,
+                scope,
+                before,
+                after,
+                before_version: expected.history_version,
+                after_version: None,
+            }),
+            path: None,
+            origin: Origin::Normal,
+            started: Instant::now(),
+            conflict: false,
+        });
+        Ok(true)
+    }
+    /// Confirm the pending edit with `receipt` as its saved state.
+    #[cfg(test)]
+    pub(crate) fn confirm_for_test(&mut self, receipt: &NodeMutationReceipt) -> Result<(), String> {
+        self.confirm_history(receipt, &receipt.state)
+    }
+    /// The mutation Undo would send for the newest entry.
+    #[cfg(test)]
+    pub(crate) fn undo_mutation_for_test(&self) -> Option<NodeMutation> {
+        self.undo.back().map(|entry| entry.before.mutation())
     }
     pub(crate) fn replay(
         &mut self,
@@ -1127,6 +1224,12 @@ pub(crate) fn observe_results(
 ) {
     undo.sync(&nav);
     let now = clock.elapsed_secs_f64();
+    // Before the results are read, so a retry's receipt in this batch finds its pending edit.
+    for retried in crate::actions::node::take_retried_edits() {
+        if let Err(reason) = undo.adopt_retry(retried) {
+            ui.show_advisory(format!("Retried edit saved but cannot be undone: {reason}"), now);
+        }
+    }
     for result in results.read() {
         match result {
             DbResult::NodeMutationCommitted {

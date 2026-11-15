@@ -889,6 +889,19 @@ Available / Downloads tabs (`dto.rs`, `events.rs`, `mod.rs`).
   `fractalengine/src/AGENTS.md` §tileset-p2p for the full host-side flow,
   shared verbatim by the headless relay's startup seeding.
 
+## §registry-browse — Registry group in the Hexon Manager's Available tab
+
+- **State.** `ActiveDialog::HexonManager.registry: RegistryListState` (`terrain_map/dto.rs`): `rows`
+  (`RegistryPackageRow`: id, version, name, size, publisher; at most `MAX_REGISTRY_ROWS`, text clipped to
+  `MAX_REGISTRY_TEXT_CHARS`), `loading`, `loaded`, `error`. Loading, error + Retry, "No packages published yet" and listed
+  are distinct states in `dialogs/hexon_manager.rs::render_registry_group`; peers' tilesets stay in the Peers group below.
+- **Ops.** `HexonOp::ListRegistry { query }` is drained on a background thread by the host (`fractalengine/src/AGENTS.md`
+  §tileset-p2p). `UiAction::HexonRefreshList` (dialog open, Refresh, Retry) queues `HexonOp::RefreshList`, which the host also
+  turns into a listing, so there is no poll and no extra `UiAction`. Install is the existing `HexonInstallFromRegistry("id@version")`;
+  a row is "Installed" when an installed map has the same `hexon_id` (versions are not compared).
+- **Default address.** `settings::DEFAULT_HEXON_REGISTRY_URL`; `resolve_hexon_registry_url` = env, then saved setting, then the default.
+  A blank saved value (previously "no registry configured") now means the default, and the default is never written to `settings.ron`.
+
 ## §residency-ledger — the D-74 node + stamp-group pointer-set (p2p_asset_streaming S8)
 
 `verse_manager/residency_ledger.rs` owns `ResidencyLedger`, the per-frame
@@ -1425,7 +1438,9 @@ advanced persisted version are required before recording/transferring an entry.
 First hydrated edits without a known version use atomic relevant-before CAS;
 receipts establish the version afterward. No-op/cancel/refusal records nothing.
 
-Every write identity is a restart-unique ui-undo-ULID. Timeout resolves its exact
+Every write identity is a restart-unique ULID with an origin prefix (`ui-edit-`, `ui-undo-`, `ui-redo-`);
+an accepted retry of a dead-lettered `ui-edit-` write is adopted into history (`adopt_retry`, see
+actions/AGENTS.md §scene-write-door). Timeout resolves its exact
 immutable fact without retrying the mutation. Known refusal also reads current
 authorized state before restoring display; an old optimistic before-state never
 overrides peer state. Failed reconciliation stays blocked/indeterminate. A later

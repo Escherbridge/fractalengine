@@ -227,3 +227,12 @@ targets" forever, or a manual-refresh error naming an "external transform previe
   (`db_results::committed::advance_to_stored_read`, monotonic; it never lowers a
   version), which also keeps the group-gimbal and stamp equality fences consistent.
   Journey: `db_results::tests::property_set_issues_readback_for_selected_node`.
+
+- **Per-frame work (2026-11-14).** `ui.rs` builds the shared-key summaries once per
+  capture (`SelectionDraft::property_rows`, keyed by `Arc::ptr_eq`, summaries clipped to 1 KiB) and checks the
+  draft JSON once per text change (`ValueCheck`, cleared on `TextEdit::changed`). The check uses encoded bytes
+  (`MAX_PROPERTY_BYTES`), not the coarse `char_limit`; over the limit shows "property exceeds N bytes" and disables Set.
+- **Too-large selection.** `SELECTION_TOO_LARGE` is the one message for the Undo/Redo reservation limit
+  (`MAX_EDITOR_BATCH_BYTES`), from the UI pre-check and from the database refusal (matched by
+  `BUDGET_REFUSAL_MARKER`); `PendingWrite::too_large` keeps it from being replaced by the generic "not committed"
+  text when the follow-up resolve reports the stored state unchanged.

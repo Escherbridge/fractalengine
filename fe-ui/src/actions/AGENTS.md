@@ -610,7 +610,7 @@ The retry door is the opt-in exception. `submit_scene_write_retrying` (`node.rs`
 full-channel write with bounded backoff, so the answer is `Waiting`, never `Busy`. Retries:
 `RETRY_ATTEMPTS` = 8 after the first send, delay doubling from `FIRST_RETRY_DELAY` (50 ms) up to
 `MAX_RETRY_DELAY` (2 s), about 7.2 s in total. A write that exhausts them is dead-lettered
-(`Settled::DeadLettered`) and its owner gets `RequestFailed` on its correlation id. Dead letters
+(`Settled::DeadLettered`) and its owner gets `RequestFailed` on its correlation id (an `ImportGltf`, which has none, answers `ImportGltfFailed` to its dialog owner; same for a refusal). Dead letters
 are session-only and capped at `DEAD_LETTER_CAP` (32); the oldest is dropped, counted in
 `evicted_edit_count()` and shown in the panel as "N older edits could not be kept". The door holds at most
 `WAITING_CAP` (64) writes; a new write past that is answered `Busy` (nothing queued, queued writes kept).
@@ -622,10 +622,18 @@ Retry and discard (`node.rs:612-619`): `retry_dead_letter` re-gates the stored c
 `retry_dead_letter_in` (`node.rs:659`), re-enters the queue with a fresh retry budget and keeps its
 correlation id; `discard_dead_letter` drops it for good. Retry submits non-blocking
 (`FullChannel::Report`): the letter leaves the list only on `Sent` or `Waiting`; `Busy`, `Closed` and
-`Refused` keep it listed with the reason, and the panel words `Busy` ("database is busy") apart from `Closed`. A retried dead letter has no owner: the dead
-letter already fired `RequestFailed` on its id, which `undo.rs` (`DbResult::RequestFailed` arm, `p.request_id ==
-*correlation_id`) reconciled and cleared, so the retry's later receipt matches no `undo.pending` and records no history.
-The unsaved-edits panel only toasts the retry (`panels/unsaved_edits.rs:116`).
+`Refused` keep it listed with the reason, and the panel words `Busy` ("database is busy") apart from `Closed`. A retried dead letter has no owner, but an
+accepted retry of an ordinary undoable edit is handed to undo: `retry_dead_letter_in` pushes the stored
+`CommitCheckedNodeMutation` onto `GuiDoorQueue.retried` (`RetriedEdit`, only on `Sent`/`Waiting`), and
+`undo.rs` `observe_results` drains it first each frame (`take_retried_edits` -> `UndoState::adopt_retry`), rebuilding
+the pending entry from the command itself (`expected.before` + `expected.history_version` = the before state at
+edit time, `mutation` = after). The entry is pushed only when the receipt arrives (`confirm_history`), exactly like a
+normal edit, so `Waiting`, a later refusal or a second dead-lettering record nothing. A node that changed after the
+failed edit makes the DB reject the retry on the stored precondition (`RequestFailed`, no entry), so the original
+before-state can never overwrite the later change; it is the exact state just before the retried write applies.
+Only correlation ids with the `ui-edit-` prefix qualify (undo and redo use `ui-undo-`/`ui-redo-`); property edits
+and anything not a transform or `gpx_points` write stay non-undoable. If another edit is still pending, the retry is
+saved without an Undo step and an advisory says so. The panel itself only toasts the retry (`panels/unsaved_edits.rs`).
 
 Petal hint for follow-up writes: `submit_scene_write_in` (`node.rs:540`) and
 `submit_scene_write_in_through` (`node.rs:545`) authorize against the petal the caller names. Writes
@@ -650,3 +658,12 @@ drive the door through them. Test-only hooks in `node.rs` (`cfg(test)`): `pump_g
 and `pump_gui_door_outcome_after` (`node.rs:772`) pump the GUI door after a delay, `GUI_DOOR_RETRY_ATTEMPTS`
 (`node.rs:761`) exposes the retry budget, and `GUI_DOOR_TEST_LOCK` (`node.rs:757`) serialises every test that
 touches the process-wide `GUI_DOOR`.
+
+### Write-budget refusal (`node.rs`)
+
+A write the DB refuses with the write-budget text (`fe_database::node_write_retry_after_ms`) arrives after the door
+sent it, so the door keeps its last 32 sent correlated writes (`GuiDoorQueue.sent`, `keep_sent`). The frame drain
+reads each `RequestFailed` with a `MessageCursor`; a budget refusal moves the matching sent write into the dead-letter
+list with reason `SAVING_TOO_FAST` and shows "<label> was not saved: Saving too fast, retry in a moment. It is
+listed under Unsaved edits." The owner already got the refusal, so no second reply is written. Retry re-gates the
+stored command like any dead letter. Uncorrelated writes (the gimbal transform) and writes the gate never judged are not kept.

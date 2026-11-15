@@ -1306,22 +1306,23 @@ fn render_network_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     );
 }
 
-/// Hosted hexon registry URL (PAS-P5 S7b, A6): a blank field means "not
-/// configured" (`None`), which the Hexon Manager's Available tab shows as a
-/// disabled "Install from registry" control rather than a faked one (ui_ux
-/// §6). `FE_HEXON_REGISTRY_URL` overrides whatever is saved here.
+/// Hosted hexon registry URL: a blank field saves `None` and uses `DEFAULT_HEXON_REGISTRY_URL`
+/// (shown as the hint); `FE_HEXON_REGISTRY_URL` overrides whatever is saved here.
 fn render_registry_setting(ui: &mut egui::Ui, app_settings: &mut AppSettings) {
     let buffer_id = ui.id().with("hexon_registry_url_buffer");
     let mut buffer = ui
         .data_mut(|data| data.get_temp::<String>(buffer_id))
         .unwrap_or_else(|| app_settings.hexon_registry_url.clone().unwrap_or_default());
     settings_row(ui, "Map registry", |ui, label| {
-        ui.add(crate::ui_shell::layout_policy::text_input(ui, &mut buffer).desired_width(220.0))
-            .labelled(ui, label)
-            .on_hover_text(
-                "Hosted map registry base URL, e.g. https://maps.example.com \
-                 (FE_HEXON_REGISTRY_URL overrides); blank = no registry configured",
-            );
+        ui.add(
+            crate::ui_shell::layout_policy::text_input(ui, &mut buffer)
+                .hint_text(crate::settings::DEFAULT_HEXON_REGISTRY_URL)
+                .desired_width(220.0),
+        )
+        .labelled(ui, label)
+        .on_hover_text(
+            "Hosted map registry base URL (FE_HEXON_REGISTRY_URL overrides); blank = default registry",
+        );
     });
     let trimmed = buffer.trim();
     let new_value = (!trimmed.is_empty()).then(|| trimmed.to_string());
@@ -1518,11 +1519,7 @@ fn render_maps_section(
             return;
         }
     }
-    // Resolved fresh every frame (cheap: one env read) so `FE_HEXON_REGISTRY_URL`
-    // enables the control even when the persisted setting is blank — same
-    // precedence as `resolve_hexon_registry_url`'s doc comment, applied here
-    // because (like the relay spec) the Settings UI only ever edits the
-    // persisted field, never the env-resolved effective one.
+    // Resolved fresh every frame (cheap: one env read): env, then saved setting, then the default registry.
     let env_registry_url = std::env::var(crate::settings::HEXON_REGISTRY_URL_ENV_VAR).ok();
     let registry_url = crate::settings::resolve_hexon_registry_url(
         env_registry_url.as_deref(),
@@ -1536,7 +1533,7 @@ fn render_maps_section(
         active_petal,
         active_verse,
         &downloads.0,
-        registry_url.as_deref(),
+        &registry_url,
         local_role,
     );
     if close {
@@ -1562,6 +1559,7 @@ fn seed_hexon_manager() -> ActiveDialog {
         loading: true,
         pending_remove: None,
         registry_uri_buf: String::new(),
+        registry: Default::default(),
     }
 }
 

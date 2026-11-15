@@ -594,16 +594,12 @@ fn sender_gate_drops_every_unauthorized_post_without_a_reply() {
 
     // PJ2's fixed rows (the `ipc-post` QA op, fixed sources and envelopes): each non-control row is exactly one origin
     // drop, never delivered or answered; control is heard and answered. Mutation check: a row posted from the admitted
-    // document with its live token (or `hidden` left visible) goes red here.
+    // document with its live token (or the Hidden row posted without hiding the bridge) goes red here.
     for row in IpcPostRow::ALL {
-        if row == IpcPostRow::Hidden {
-            page.bridge.set_visible(false);
-        }
+        // The bridge stays visible: the Hidden row itself must hide it for the post, then restore it.
+        assert!(page.bridge.is_visible(), "{row:?} starts from a visible bridge");
         let outcome = qa_rows::post_row(&page.bridge, &page.mounts, row, None, page.now).expect("an admitted bundle is open");
-        if row == IpcPostRow::Hidden {
-            assert!(!page.bridge.is_visible(), "the hidden row restores the prior (hidden) visibility");
-            page.bridge.set_visible(true);
-        }
+        assert!(page.bridge.is_visible(), "{row:?} restores the prior (visible) visibility");
         let heard = row == IpcPostRow::Control;
         assert_eq!(
             (outcome.dropped_origin_delta, outcome.delivered, outcome.replied),
@@ -1075,10 +1071,6 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     let bound_mount = mounts.current().expect("bound bundle");
     assert_eq!((&bound_mount.target, bound_mount.node_id.as_str()), (&bound, format!("binding:{PETAL}:{PACKAGE}").as_str()));
     assert_eq!(bound_mount.label, admitted_origin, "one origin per (publisher, package), whatever the scope");
-    // The by-name command carries no URL, path or hash and keys its chrome events by the same anchor the mount reports.
-    let open_bound = fe_webview::ipc::BrowserCommand::OpenBoundBundle { petal_id: PETAL.into(), package_id: PACKAGE.into() };
-    assert_eq!(open_bound.bundle_anchor().as_deref(), Some(bound_mount.node_id.as_str()));
-    assert!(!serde_json::to_string(&open_bound).unwrap().contains("url"));
     let bound_broker = FakeBroker::new();
     let bound_bridge = PortalBridge::new();
     let dyn_bound_broker: Arc<dyn PortalBroker> = bound_broker.clone();

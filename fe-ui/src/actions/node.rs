@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam::channel::{Sender, TrySendError};
 use fe_runtime::app::DbCommandSender;
-use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, NodeMutation};
+use fe_runtime::messages::{CallerAuth, DbCommand, DbResult, NativeImportRequest, NodeMutation};
 use fe_runtime::scene_hook_gate::SceneCallerKind;
 use fe_runtime::scene_write::{
     SceneAugments, SceneWrite, SceneWriteDoor, SceneWriteError, SceneWriteOutcome,
@@ -33,6 +33,10 @@ const WAITING_CAP: usize = 64;
 const STAYED_BUSY: &str = "Database stayed busy";
 /// Reason shown when the DB channel closed under a queued write.
 const CONNECTION_CLOSED: &str = "Database connection closed";
+/// Reason shown when the DB refused a sent write for the author's write budget.
+const SAVING_TOO_FAST: &str = "Saving too fast, retry in a moment";
+/// Sent correlated writes remembered so a late budget refusal can still be listed for Retry.
+const SENT_CAP: usize = DEAD_LETTER_CAP;
 
 /// How the door disposed of one GUI write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +150,7 @@ impl DeadLetters {
             label: origin.label,
             reason,
             correlation_id: origin.correlation_id.clone(),
+            import_request: import_request_of(&origin.original),
         };
         if self.letters.len() >= DEAD_LETTER_CAP {
             if let Some(dropped) = self.letters.pop_front() {
@@ -173,27 +178,63 @@ enum Settled {
     Refused {
         message: String,
         correlation_id: Option<String>,
+        /// The import dialog's owner for an `ImportGltf` (it has no correlation id).
+        import_request: Option<NativeImportRequest>,
     },
     /// Retries ran out or the channel closed; the write is in the dead-letter list.
     DeadLettered {
         label: &'static str,
         reason: &'static str,
         correlation_id: Option<String>,
+        import_request: Option<NativeImportRequest>,
     },
+}
+
+/// The dialog owner an `ImportGltf` carries; its failure answers `ImportGltfFailed`, not `RequestFailed`.
+fn import_request_of(command: &DbCommand) -> Option<NativeImportRequest> {
+    match command {
+        DbCommand::ImportGltf { request, .. } => request.clone(),
+        _ => None,
+    }
+}
+
+/// The failure reply for a refused or dead-lettered write: by correlation id, else the import owner.
+fn failure_reply(
+    error: String,
+    correlation_id: Option<String>,
+    import_request: Option<NativeImportRequest>,
+) -> Option<DbResult> {
+    match (correlation_id, import_request) {
+        (Some(correlation_id), _) => Some(DbResult::RequestFailed { error, correlation_id }),
+        (None, Some(request)) => Some(DbResult::ImportGltfFailed { request: Some(request), message: error }),
+        (None, None) => None,
+    }
+}
+
+/// A dead letter the door accepted again; undo adopts it so the saved edit can be undone.
+#[derive(Debug, Clone)]
+pub(crate) struct RetriedEdit {
+    pub(crate) command: DbCommand,
+    pub(crate) petal: Option<String>,
 }
 
 struct GuiDoorQueue {
     active_petal: Option<String>,
+    /// Accepted retries of checked node edits, drained by undo every frame.
+    retried: Vec<RetriedEdit>,
     /// FIFO: writes leave in submit order, so a later write never overtakes a gated or backing-off one.
     waiting: VecDeque<WaitingWrite>,
     refusals: Vec<String>,
     dead: DeadLetters,
+    /// Recently sent correlated writes, oldest first (see [`keep_sent`]).
+    sent: VecDeque<WriteOrigin>,
 }
 
 impl GuiDoorQueue {
     const fn new() -> Self {
         Self {
             active_petal: None,
+            retried: Vec::new(),
             waiting: VecDeque::new(),
             refusals: Vec::new(),
             dead: DeadLetters {
@@ -201,6 +242,7 @@ impl GuiDoorQueue {
                 next_id: 0,
                 evicted: 0,
             },
+            sent: VecDeque::new(),
         }
     }
 }
@@ -428,6 +470,7 @@ fn settle(
                 Delivery::Done(sent) => {
                     if sent == GuiSend::Sent {
                         stage_logged(augments);
+                        keep_sent(&mut lock(doors).sent, source.into_origin(original));
                     }
                     sent
                 }
@@ -467,6 +510,40 @@ fn queue_retry(
     GuiSend::Waiting
 }
 
+/// Remember a sent correlated write (bounded ring) so the DB's later budget refusal can dead-letter it.
+fn keep_sent(sent: &mut VecDeque<WriteOrigin>, origin: WriteOrigin) {
+    if origin.correlation_id.is_none() {
+        return;
+    }
+    if sent.len() >= SENT_CAP {
+        sent.pop_front();
+    }
+    sent.push_back(origin);
+}
+
+/// The correlation id of a `RequestFailed` that is the DB's write-budget refusal (not any other failure).
+fn budget_refusal_of(result: &DbResult) -> Option<&str> {
+    match result {
+        DbResult::RequestFailed { error, correlation_id }
+            if fe_database::node_write_retry_after_ms(error).is_some() =>
+        {
+            Some(correlation_id)
+        }
+        _ => None,
+    }
+}
+
+/// List a sent write the DB refused for the write budget as a dead letter (Retry keeps it); the owner already got the refusal.
+fn dead_letter_throttled(doors: &Mutex<GuiDoorQueue>, correlation_id: &str) -> Option<Settled> {
+    let mut queue = lock(doors);
+    let index = queue
+        .sent
+        .iter()
+        .rposition(|origin| origin.correlation_id.as_deref() == Some(correlation_id))?;
+    let origin = queue.sent.remove(index)?;
+    Some(queue.dead.push(origin, SAVING_TOO_FAST))
+}
+
 /// A create's node id is unknown here, so a create augment is dropped with a warning.
 fn stage_logged(augments: SceneAugments) {
     if augments.is_empty() {
@@ -484,6 +561,7 @@ fn advance(
     write: WaitingWrite,
     now: Instant,
     dead: &mut DeadLetters,
+    sent: &mut VecDeque<WriteOrigin>,
 ) -> Result<Settled, WaitingWrite> {
     if write.next_attempt.is_some_and(|at| now < at) {
         return Err(write);
@@ -507,6 +585,7 @@ fn advance(
             Ok(SceneWriteOutcome::Refused(refusal)) => {
                 return Ok(Settled::Refused {
                     message: refusal.message(),
+                    import_request: import_request_of(&origin.original),
                     correlation_id: origin.correlation_id,
                 });
             }
@@ -515,7 +594,10 @@ fn advance(
         Queued::Admitted(command, augments) => (command, augments),
     };
     match origin.sender.try_send(command) {
-        Ok(()) => Ok(Settled::Sent(augments)),
+        Ok(()) => {
+            keep_sent(sent, origin);
+            Ok(Settled::Sent(augments))
+        }
         Err(TrySendError::Full(command)) => {
             let attempts = attempts + 1;
             if attempts > RETRY_ATTEMPTS {
@@ -534,9 +616,9 @@ fn advance(
 
 /// Settle queue heads in submit order until one is held; dead letters land in the list here.
 fn pump_locked(queue: &mut GuiDoorQueue, now: Instant, settled: &mut Vec<Settled>) {
-    let GuiDoorQueue { waiting, dead, .. } = queue;
+    let GuiDoorQueue { waiting, dead, sent, .. } = queue;
     while let Some(head) = waiting.pop_front() {
-        match advance(head, now, dead) {
+        match advance(head, now, dead, sent) {
             Ok(done) => settled.push(done),
             Err(held) => {
                 waiting.push_front(held);
@@ -635,6 +717,11 @@ pub fn retry_dead_letter(id: u64) -> GuiSend {
     retry_dead_letter_in(&GUI_DOOR, id, Instant::now())
 }
 
+/// Retried checked edits accepted since the last call (empty and allocation-free almost always).
+pub(crate) fn take_retried_edits() -> Vec<RetriedEdit> {
+    std::mem::take(&mut lock(&GUI_DOOR).retried)
+}
+
 /// Drop a dead letter for good; false when no letter has that id.
 pub fn discard_dead_letter(id: u64) -> bool {
     discard_dead_letter_in(&GUI_DOOR, id)
@@ -698,6 +785,18 @@ fn retry_dead_letter_in(doors: &Mutex<GuiDoorQueue>, id: u64, now: Instant) -> G
         FullChannel::Report,
         now,
     );
+    if matches!(sent, GuiSend::Sent | GuiSend::Waiting)
+        && matches!(origin.original, DbCommand::CommitCheckedNodeMutation { .. })
+    {
+        let mut queue = lock(doors);
+        if queue.retried.len() >= DEAD_LETTER_CAP {
+            queue.retried.remove(0);
+        }
+        queue.retried.push(RetriedEdit {
+            command: origin.original.clone(),
+            petal: origin.petal.clone(),
+        });
+    }
     let kept_reason = match &sent {
         GuiSend::Sent | GuiSend::Waiting => None,
         GuiSend::Closed => Some(CONNECTION_CLOSED.to_owned()),
@@ -721,8 +820,14 @@ pub fn drain_gui_scene_writes(
     clock: bevy::prelude::Res<crate::notice::NoticeClock>,
     mut ui_mgr: bevy::prelude::ResMut<UiManager>,
     mut results: Option<bevy::prelude::ResMut<bevy::prelude::Messages<DbResult>>>,
+    mut cursor: bevy::prelude::Local<bevy::ecs::message::MessageCursor<DbResult>>,
 ) {
     let now = Instant::now();
+    // Budget refusals the DB sent back; read before this drain writes replies of its own.
+    let throttled: Vec<String> = results
+        .as_deref()
+        .map(|messages| cursor.read(messages).filter_map(budget_refusal_of).map(str::to_owned).collect())
+        .unwrap_or_default();
     let mut settled = Vec::new();
     let refusals = {
         let mut queue = door_queue();
@@ -737,8 +842,13 @@ pub fn drain_gui_scene_writes(
     for message in refusals {
         ui_mgr.show_advisory(message, now_secs);
     }
+    for correlation_id in throttled {
+        if let Some(Settled::DeadLettered { label, reason, .. }) = dead_letter_throttled(&GUI_DOOR, &correlation_id) {
+            ui_mgr.show_error(format!("{label} was not saved: {reason}. It is listed under Unsaved edits."), now_secs);
+        }
+    }
     for done in settled {
-        let (error, correlation_id) = match done {
+        let (error, correlation_id, import_request) = match done {
             Settled::Sent(augments) => {
                 stage_logged(augments);
                 continue;
@@ -746,28 +856,27 @@ pub fn drain_gui_scene_writes(
             Settled::Refused {
                 message,
                 correlation_id,
+                import_request,
             } => {
                 ui_mgr.show_advisory(message.clone(), now_secs);
-                (message, correlation_id)
+                (message, correlation_id, import_request)
             }
             Settled::DeadLettered {
                 label,
                 reason,
                 correlation_id,
+                import_request,
             } => {
                 bevy::log::warn!("a queued scene write was dead-lettered ({label}: {reason})");
                 ui_mgr.show_error(
                     format!("{label} was not saved: {reason}. It is listed under Unsaved edits."),
                     now_secs,
                 );
-                (format!("{label} was not saved: {reason}"), correlation_id)
+                (format!("{label} was not saved: {reason}"), correlation_id, import_request)
             }
         };
-        if let (Some(correlation_id), Some(results)) = (correlation_id, results.as_mut()) {
-            results.write(DbResult::RequestFailed {
-                error,
-                correlation_id,
-            });
+        if let (Some(reply), Some(results)) = (failure_reply(error, correlation_id, import_request), results.as_mut()) {
+            results.write(reply);
         }
     }
 }
@@ -807,18 +916,14 @@ pub(crate) fn pump_gui_door_outcome_after(delay: Duration) -> (usize, Vec<DbResu
             Settled::Refused {
                 message,
                 correlation_id,
-            } => correlation_id.map(|correlation_id| DbResult::RequestFailed {
-                error: message,
-                correlation_id,
-            }),
+                import_request,
+            } => failure_reply(message, correlation_id, import_request),
             Settled::DeadLettered {
                 label,
                 reason,
                 correlation_id,
-            } => correlation_id.map(|correlation_id| DbResult::RequestFailed {
-                error: format!("{label} was not saved: {reason}"),
-                correlation_id,
-            }),
+                import_request,
+            } => failure_reply(format!("{label} was not saved: {reason}"), correlation_id, import_request),
         })
         .collect();
     (count, failures)
@@ -1016,7 +1121,7 @@ mod tests {
             dead = pump_scene_door_at(&doors, second_at + Duration::from_secs(10 * u64::from(step)));
         }
         match dead.as_slice() {
-            [Settled::DeadLettered { label, reason, correlation_id }] => {
+            [Settled::DeadLettered { label, reason, correlation_id, .. }] => {
                 assert_eq!((*label, *reason), ("Property", STAYED_BUSY));
                 assert_eq!(correlation_id.as_deref(), Some("second"));
             }
@@ -1050,6 +1155,93 @@ mod tests {
         assert_eq!(retry_dead_letter_in(&doors, kept_id, second_at + Duration::from_secs(101)), GuiSend::Sent);
         assert_eq!(received_id(&rx).as_deref(), Some("kept"));
         assert!(dead_letter_views(&doors).is_empty(), "an accepted retry leaves the list");
+        assert!(lock(&doors).retried.is_empty(), "a property edit is not undoable, retried or not");
+
+        // An accepted retry of an undoable edit is adopted by undo; a refused one is not.
+        {
+            use fe_runtime::node_history::{
+                NodeEditBefore, NodeEditPrecondition, NodeMutationReceipt, NodeRowSnapshot,
+                NodeTransformValue, PersistStatus,
+            };
+            let mut nav = crate::navigation_manager::NavigationManager::default();
+            nav.navigate_to_verse("v", "V");
+            nav.navigate_to_fractal("f", "F");
+            nav.navigate_to_petal("door-journey-petal");
+            let mut undo = crate::undo::UndoState::default();
+            undo.synchronize_navigation(&nav);
+            let scope = fe_database::build_scope("v", Some("f"), Some("door-journey-petal"));
+            let edit = |id: &str| DbCommand::CommitCheckedNodeMutation {
+                node_id: "door-journey-node".into(),
+                mutation: NodeMutation::FullTransform {
+                    position: [1.0, 2.0, 3.0],
+                    rotation: [0.0; 3],
+                    scale: [1.0; 3],
+                },
+                expected: NodeEditPrecondition {
+                    scope: scope.clone(),
+                    history_version: Some(1),
+                    before: NodeEditBefore::Transform(NodeTransformValue {
+                        position: [0.0; 3],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0; 3],
+                    }),
+                },
+                correlation_id: id.to_owned(),
+            };
+            let edit_at = start + Duration::from_secs(400);
+            tx.send(DbCommand::Ping).unwrap();
+            let queued = submit_with(&doors, &door, &tx, edit("ui-edit-journey"), false, petal, FullChannel::Retry, edit_at);
+            assert_eq!(queued, GuiSend::Waiting);
+            for step in 1..=RETRY_ATTEMPTS {
+                pump_scene_door_at(&doors, edit_at + Duration::from_secs(10 * u64::from(step)));
+            }
+            let edit_letter = dead_letter_views(&doors)[0].id;
+            // Refused again (channel still full): nothing reaches undo, history stays empty.
+            assert_eq!(retry_dead_letter_in(&doors, edit_letter, edit_at + Duration::from_secs(100)), GuiSend::Busy);
+            assert!(lock(&doors).retried.is_empty());
+            assert_eq!(undo.history_counts(), (0, 0));
+            // Accepted: undo adopts it, the receipt records one step, and Undo restores the pre-edit transform.
+            assert!(matches!(rx.try_recv(), Ok(DbCommand::Ping)));
+            assert_eq!(retry_dead_letter_in(&doors, edit_letter, edit_at + Duration::from_secs(101)), GuiSend::Sent);
+            let mut adopted = std::mem::take(&mut lock(&doors).retried);
+            assert_eq!(adopted.len(), 1);
+            assert_eq!(undo.adopt_retry(adopted.remove(0)), Ok(true));
+            let receipt = NodeMutationReceipt {
+                node_id: "door-journey-node".into(),
+                history_version: 2,
+                state: NodeRowSnapshot {
+                    node_id: "door-journey-node".into(),
+                    petal_id: "door-journey-petal".into(),
+                    display_name: None,
+                    asset_id: None,
+                    position: [1.0, 2.0, 3.0],
+                    elevation: 0.0,
+                    rotation: vec![0.0; 3],
+                    scale: [1.0; 3],
+                    interactive: true,
+                    created_at: String::new(),
+                    edit_seq: 2,
+                    properties: serde_json::Map::new(),
+                    tombstone: None,
+                },
+                persist: PersistStatus::Committed,
+            };
+            assert_eq!(undo.confirm_for_test(&receipt), Ok(()));
+            assert_eq!(undo.history_counts(), (1, 0));
+            match undo.undo_mutation_for_test() {
+                Some(NodeMutation::FullTransform { position, scale, .. }) => {
+                    assert_eq!((position, scale), ([0.0; 3], [1.0; 3]));
+                }
+                other => panic!("Undo must restore the pre-edit transform, got {other:?}"),
+            }
+            // An undo-originated command is retried but never adopted as a new edit.
+            assert_eq!(
+                undo.adopt_retry(RetriedEdit { command: edit("ui-undo-journey"), petal: None }),
+                Ok(false)
+            );
+            assert_eq!(undo.history_counts(), (1, 0));
+            while rx.try_recv().is_ok() {}
+        }
 
         // Waiting at its cap answers Busy and keeps what is queued.
         {
@@ -1179,6 +1371,24 @@ mod tests {
             let sent = submit_in(&doors, &hooked, &tx, "p-active", property_write("active-petal"));
             assert_eq!(sent, GuiSend::Sent);
             assert_eq!(received_id(&rx).as_deref(), Some("active-petal"));
+
+            // Budget leg: only the DB's write-budget refusal lists a sent write for Retry; other failures do not.
+            let refusal = |error: String| DbResult::RequestFailed { error, correlation_id: "active-petal".into() };
+            assert_eq!(budget_refusal_of(&refusal("operation refused".into())), None);
+            let throttled = refusal(format!("{}; retry after 900 ms", fe_database::NODE_WRITE_BUDGET_EXCEEDED));
+            assert_eq!(budget_refusal_of(&throttled), Some("active-petal"));
+            assert!(dead_letter_throttled(&doors, "never-sent").is_none());
+            assert!(matches!(
+                dead_letter_throttled(&doors, "active-petal"),
+                Some(Settled::DeadLettered { reason: SAVING_TOO_FAST, .. })
+            ));
+            assert!(dead_letter_throttled(&doors, "active-petal").is_none(), "one refusal, one letter");
+            let listed = dead_letter_views(&doors);
+            assert_eq!(listed.len(), 1, "kept in Unsaved edits, not dropped");
+            assert_eq!(listed[0].reason, SAVING_TOO_FAST);
+            assert_eq!(retry_dead_letter_in(&doors, listed[0].id, Instant::now()), GuiSend::Sent);
+            assert_eq!(received_id(&rx).as_deref(), Some("active-petal"), "Retry sends the original edit again");
+            assert_eq!(door_counts(&doors), (0, 0));
         }
     }
 }

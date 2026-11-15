@@ -12,7 +12,36 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use fe_runtime::editor_batch::*;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
+
+const LISTED_PROPERTY_KEYS: usize = 100;
+const PROPERTY_SUMMARY_BYTES: usize = 1024;
+
+/// Per-key summary lines for one capture, built once per capture (not per frame).
+struct PropertyRows {
+    capture: Arc<EditorBatchCapture>,
+    rows: Vec<(String, String)>,
+    extra_keys: usize,
+}
+
+/// Parse and encoded size of the draft value, recomputed only when the text changes.
+pub(crate) struct ValueCheck {
+    pub(crate) bytes: usize,
+    pub(crate) value: Option<Value>,
+    pub(crate) too_large: bool,
+}
+
+impl ValueCheck {
+    pub(crate) fn of(text: &str) -> Self {
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return Self { bytes: text.len(), value: None, too_large: false };
+        };
+        // Encoded bytes (what the write path limits), not characters.
+        let bytes = serde_json::to_vec(&value).map_or(text.len(), |encoded| encoded.len());
+        let too_large = bytes > fe_sdk::property_schema::MAX_PROPERTY_BYTES;
+        Self { bytes, value: (!too_large).then_some(value), too_large }
+    }
+}
 
 pub(crate) struct SelectionDraft {
     translation: [String; 3],
@@ -21,6 +50,81 @@ pub(crate) struct SelectionDraft {
     group_name: String,
     property_key: String,
     property_value: String,
+    value_check: Option<ValueCheck>,
+    property_rows: Option<Arc<PropertyRows>>,
+    #[cfg(test)]
+    pub(crate) value_checks: usize,
+    #[cfg(test)]
+    pub(crate) row_builds: usize,
+}
+
+impl SelectionDraft {
+    /// Check of the current draft text; parsed again only after the text changed.
+    pub(crate) fn value_check(&mut self) -> &ValueCheck {
+        if self.value_check.is_none() {
+            #[cfg(test)]
+            {
+                self.value_checks += 1;
+            }
+            self.value_check = Some(ValueCheck::of(&self.property_value));
+        }
+        self.value_check.as_ref().expect("value check was just filled")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_property_value(&mut self, text: &str) {
+        self.property_value = text.to_owned();
+        self.value_check = None;
+    }
+
+    /// Key summaries for `capture`; rebuilt only when the capture is replaced.
+    fn property_rows(&mut self, capture: &Arc<EditorBatchCapture>) -> Arc<PropertyRows> {
+        if let Some(rows) = self.property_rows.as_ref().filter(|rows| Arc::ptr_eq(&rows.capture, capture)) {
+            return Arc::clone(rows);
+        }
+        #[cfg(test)]
+        {
+            self.row_builds += 1;
+        }
+        let keys = capture
+            .members
+            .iter()
+            .flat_map(|member| member.state.properties.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        let rows = keys
+            .iter()
+            .take(LISTED_PROPERTY_KEYS)
+            .map(|key| {
+                let summary = match property_presence(capture, key) {
+                    PropertyPresence::Common(value) => {
+                        format!("Common: {}", clipped(&value.to_string(), PROPERTY_SUMMARY_BYTES))
+                    }
+                    PropertyPresence::Mixed => "Mixed values".into(),
+                    PropertyPresence::Missing { present, total } => format!(
+                        "Present on {present}/{total}; missing on {}",
+                        total - present
+                    ),
+                };
+                (key.clone(), summary)
+            })
+            .collect();
+        let built = Arc::new(PropertyRows {
+            capture: Arc::clone(capture),
+            rows,
+            extra_keys: keys.len().saturating_sub(LISTED_PROPERTY_KEYS),
+        });
+        self.property_rows = Some(Arc::clone(&built));
+        built
+    }
+}
+
+/// `text` cut at a character boundary within `limit` bytes, with an ellipsis when cut.
+pub(crate) fn clipped(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let end = (0..=limit).rev().find(|&index| text.is_char_boundary(index)).unwrap_or(0);
+    format!("{}…", &text[..end])
 }
 impl Default for SelectionDraft {
     fn default() -> Self {
@@ -31,6 +135,12 @@ impl Default for SelectionDraft {
             group_name: String::new(),
             property_key: String::new(),
             property_value: String::new(),
+            value_check: None,
+            property_rows: None,
+            #[cfg(test)]
+            value_checks: 0,
+            #[cfg(test)]
+            row_builds: 0,
         }
     }
 }
@@ -330,20 +440,8 @@ fn render_form(
         if include_properties {
             ui.separator();
             ui.strong("Properties across the selection");
-            let keys = capture
-                .members
-                .iter()
-                .flat_map(|member| member.state.properties.keys().cloned())
-                .collect::<BTreeSet<_>>();
-            for key in keys.iter().take(100) {
-                let value = match property_presence(&capture, key) {
-                    PropertyPresence::Common(value) => format!("Common: {value}"),
-                    PropertyPresence::Mixed => "Mixed values".into(),
-                    PropertyPresence::Missing { present, total } => format!(
-                        "Present on {present}/{total}; missing on {}",
-                        total - present
-                    ),
-                };
+            let listed = state.draft.property_rows(&capture);
+            for (key, value) in &listed.rows {
                 ui.horizontal(|ui| {
                     if ui
                         .selectable_label(state.draft.property_key == *key, key)
@@ -352,14 +450,14 @@ fn render_form(
                     {
                         state.draft.property_key = key.clone();
                     }
-                    ui.add(egui::Label::new(&value).truncate())
-                        .on_hover_text(&value);
+                    ui.add(egui::Label::new(value).truncate())
+                        .on_hover_text(value);
                 });
             }
-            if keys.len() > 100 {
+            if listed.extra_keys > 0 {
                 ui.label(format!(
                     "{} more keys; enter a key below to edit it",
-                    keys.len() - 100
+                    listed.extra_keys
                 ));
             }
             ui.add_enabled(
@@ -369,15 +467,37 @@ fn render_form(
                     .char_limit(256),
             )
             .named(ui, "Selection property key");
-            ui.add_enabled(
-                editable,
-                egui::TextEdit::multiline(&mut state.draft.property_value)
-                    .hint_text("JSON value, including objects, arrays or null")
-                    .desired_rows(4)
-                    .char_limit(64 * 1024),
-            )
-            .named(ui, "Selection property JSON value");
-            let value = serde_json::from_str::<Value>(&state.draft.property_value);
+            // The character limit is a coarse guard; the byte check below is the real one.
+            let edited = ui
+                .add_enabled(
+                    editable,
+                    egui::TextEdit::multiline(&mut state.draft.property_value)
+                        .hint_text("JSON value, including objects, arrays or null")
+                        .desired_rows(4)
+                        .char_limit(fe_sdk::property_schema::MAX_PROPERTY_BYTES),
+                )
+                .named(ui, "Selection property JSON value");
+            if edited.changed() {
+                state.draft.value_check = None;
+            }
+            let (value_valid, value_bytes, value_too_large) = {
+                let check = state.draft.value_check();
+                (check.value.is_some(), check.bytes, check.too_large)
+            };
+            let byte_limit = fe_sdk::property_schema::MAX_PROPERTY_BYTES;
+            if value_too_large {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "property exceeds {byte_limit} bytes ({value_bytes} bytes encoded)"
+                        ))
+                        .color(crate::theme::STATUS_OFFLINE),
+                    )
+                    .wrap(),
+                );
+            } else if value_bytes * 5 >= byte_limit * 4 {
+                ui.small(format!("{value_bytes} / {byte_limit} bytes"));
+            }
             ui.horizontal_wrapped(|ui| {
                 for (label, set) in [
                     ("Set on all selected objects", true),
@@ -387,7 +507,7 @@ fn render_form(
                         .add_enabled(
                             editable
                                 && !state.draft.property_key.trim().is_empty()
-                                && (!set || value.is_ok()),
+                                && (!set || value_valid),
                             egui::Button::new(label).wrap(),
                         )
                         .observed(ui)
@@ -396,7 +516,12 @@ fn render_form(
                         let property = if set {
                             EditorPropertyEdit::Set {
                                 key: state.draft.property_key.trim().into(),
-                                value: value.as_ref().unwrap().clone(),
+                                value: state
+                                    .draft
+                                    .value_check()
+                                    .value
+                                    .clone()
+                                    .expect("set is enabled only for a valid value"),
                             }
                         } else {
                             EditorPropertyEdit::Delete {

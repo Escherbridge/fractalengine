@@ -386,24 +386,6 @@ fn dispatch_commands(
                     });
                 }
             },
-            BrowserCommand::OpenBoundBundle { petal_id, package_id } => {
-                let target = BundleTarget::Bound { petal_id, package_id };
-                match bundles.as_mut() {
-                    Some(host) => {
-                        let resolver = resolver.as_ref().map(|resolver| Arc::clone(&resolver.0));
-                        for event in host.open_target(target, resolver, &mut *backend) {
-                            events.write(event);
-                        }
-                    }
-                    None => {
-                        events.write(BrowserEvent::BundleState {
-                            node_id: target.anchor(),
-                            label: None,
-                            state: BundleState::Unavailable,
-                        });
-                    }
-                }
-            }
             BrowserCommand::CloseBundle => {
                 if let Some(host) = bundles.as_mut() {
                     for event in host.close(&mut *backend) {

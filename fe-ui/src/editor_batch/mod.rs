@@ -26,6 +26,10 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+/// Shown when a selection's node data cannot be reserved for Undo/Redo as one step (MAX_EDITOR_BATCH_BYTES).
+const SELECTION_TOO_LARGE: &str =
+    "This selection is too large to save as one step. Select fewer objects and try again.";
+use fe_runtime::editor_batch::BUDGET_REFUSAL_MARKER;
 const MAX_HISTORY: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +151,8 @@ struct PendingWrite {
     resolve_id: Option<String>,
     resolve_queued: bool,
     started: Instant,
+    /// The database refused the write for the Undo/Redo size limit.
+    too_large: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -730,7 +736,7 @@ impl EditorBatchState {
             * 2
             > MAX_EDITOR_BATCH_BYTES
         {
-            return Err("Selection exceeds the bounded Undo budget; select fewer objects".into());
+            return Err(SELECTION_TOO_LARGE.into());
         }
         self.submit(
             EditorBatchRequest {
@@ -780,6 +786,7 @@ impl EditorBatchState {
             resolve_id: None,
             resolve_queued: false,
             started: Instant::now(),
+            too_large: false,
         });
         self.capture = None;
         self.interaction = None;
@@ -1077,10 +1084,15 @@ impl EditorBatchState {
                     let unchanged =
                         validation::same_state(&resolution.current, &pending.request.capture);
                     if unchanged {
+                        let too_large = pending.too_large;
                         self.pending = None;
                         self.capture = None;
                         self.interaction = None;
-                        self.error = Some("Selection edit was not committed; the captured stored state is unchanged.".into());
+                        self.error = Some(if too_large {
+                            SELECTION_TOO_LARGE.into()
+                        } else {
+                            "Selection edit was not committed; the captured stored state is unchanged.".into()
+                        });
                         return Err(self.error.clone().unwrap());
                     }
                     let source = if resolution
@@ -1119,9 +1131,14 @@ impl EditorBatchState {
                 .as_ref()
                 .is_some_and(|pending| pending.id == *correlation_id) =>
             {
+                let too_large = error.contains(BUDGET_REFUSAL_MARKER);
+                let error = if too_large { SELECTION_TOO_LARGE.to_owned() } else { error.clone() };
+                if let Some(pending) = self.pending.as_mut() {
+                    pending.too_large = too_large;
+                }
                 self.error = Some(error.clone());
                 self.resolve(db)?;
-                Err(error.clone())
+                Err(error)
             }
             DbResult::RequestFailed {
                 correlation_id,

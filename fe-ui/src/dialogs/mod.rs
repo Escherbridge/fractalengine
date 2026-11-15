@@ -152,6 +152,8 @@ pub enum ActiveDialog {
         pending_remove: Option<String>,
         /// PAS-P5 S7b: the "Install from registry" URI text buffer.
         registry_uri_buf: String,
+        /// Registry browse group of the Available tab.
+        registry: crate::terrain_map::dto::RegistryListState,
     },
     PetalManifest {
         petal_id: String,

@@ -99,3 +99,30 @@ pub struct StorageInfoDto {
 
 /// A single download's progress, keyed by tileset ID.
 pub type DownloadProgressMap = HashMap<String, DownloadProgress>;
+
+/// Most registry rows kept from one listing; the rest are dropped.
+pub const MAX_REGISTRY_ROWS: usize = 200;
+/// Longest id / name / publisher text kept per registry row (chars).
+pub const MAX_REGISTRY_TEXT_CHARS: usize = 120;
+/// Longest registry error text kept (chars).
+pub const MAX_REGISTRY_ERROR_CHARS: usize = 300;
+
+/// One package offered by the hosted registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPackageRow {
+    pub hexon_id: String,
+    pub version: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub publisher_did: String,
+}
+
+/// Registry browse state in the Hexon Manager: written by the host listing op, read by the Available tab.
+#[derive(Debug, Clone, Default)]
+pub struct RegistryListState {
+    pub rows: Vec<RegistryPackageRow>,
+    pub loading: bool,
+    /// A listing has completed (successfully); distinguishes "empty registry" from "not asked yet".
+    pub loaded: bool,
+    pub error: Option<String>,
+}

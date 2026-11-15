@@ -159,7 +159,14 @@ impl RemoteRegistryClient {
             .send()
             .await
             .context("registry search request failed")?;
-        Self::unwrap_envelope(resp).await
+        let status = resp.status();
+        let body = self.get_capped_response(resp, MAX_SEARCH_RESPONSE_BYTES).await?;
+        let envelope: Envelope<Vec<RemoteHexonSummary>> =
+            serde_json::from_slice(&body).with_context(|| format!("invalid registry response (HTTP {status})"))?;
+        if !status.is_success() || !envelope.ok {
+            return Err(anyhow!("registry error (HTTP {status}): {}", envelope.error.unwrap_or_else(|| "unknown".into())));
+        }
+        envelope.data.ok_or_else(|| anyhow!("registry response missing data"))
     }
 
     /// Fetch the raw manifest for `uri` (`hexon_id` or `hexon_id@version`).
@@ -287,6 +294,9 @@ impl PartialHexonFetch for RemoteRegistryClient {
         self.get_capped(url, MAX_MEMBER_RESPONSE_BYTES).await
     }
 }
+
+/// Largest search response body read; a registry cannot stream an unbounded listing.
+const MAX_SEARCH_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Largest `/health` body read while probing the protocol.
 const MAX_HEALTH_BYTES: u64 = 16 * 1024;
@@ -531,4 +541,17 @@ pub fn remote_extension_source(
     let mut transport = RemoteProtocolV1Transport::new(base_url, None)?;
     transport.hexon_type = Some(PLUGIN_HEXON_TYPE);
     Ok(ProtocolV1Source::new(label, std::sync::Arc::new(transport), trust))
+}
+
+/// Blocking search of `base_url` (optional bearer `token`, `q` substring, `hexon_type` exact) for worker threads;
+/// errors are the registry's own text or a transport message.
+pub fn search_blocking(
+    base_url: &str,
+    token: Option<String>,
+    query: Option<&str>,
+    hexon_type: Option<&str>,
+) -> Result<Vec<RemoteHexonSummary>, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let client = RemoteRegistryClient::new(base_url, token);
+    runtime.block_on(client.search(query, None, hexon_type)).map_err(|e| format!("{e:#}"))
 }

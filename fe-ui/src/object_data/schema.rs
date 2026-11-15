@@ -183,7 +183,7 @@ impl SchemaState {
             return;
         }
         let result = (|| {
-            if self.draft.len() > fe_sdk::property_schema::MAX_PROPERTY_BYTES {
+            if self.draft.len() > fe_sdk::property_schema::MAX_SCHEMA_BYTES {
                 return Err("Schema exceeds the 64 KiB limit.".to_owned());
             }
             let value: Value = serde_json::from_str(&self.draft)
@@ -452,7 +452,7 @@ impl SchemaState {
         ui.small(format!(
             "Draft size: {} / {} bytes",
             self.draft().len(),
-            fe_sdk::property_schema::MAX_PROPERTY_BYTES
+            fe_sdk::property_schema::MAX_SCHEMA_BYTES
         ));
         let can_edit = role.can_manage();
         ui.add_enabled_ui(can_edit && self.request.is_none(), |ui| {
@@ -462,7 +462,7 @@ impl SchemaState {
                         .code_editor()
                         .desired_rows(12)
                         .desired_width(ui.available_width())
-                        .char_limit(65_536),
+                        .char_limit(fe_sdk::property_schema::MAX_SCHEMA_BYTES),
                 )
                 .named(ui, "Versioned enforced schema JSON")
                 .changed()

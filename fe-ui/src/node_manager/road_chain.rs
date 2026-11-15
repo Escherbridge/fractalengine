@@ -11,8 +11,8 @@ use super::curve::bezier_into;
 /// Defense-in-depth cap on buffered freeform drag samples.
 pub(crate) const MAX_FREEFORM_SAMPLES: usize = 8192;
 
-/// Two points closer than this (world units, XZ) are the same chain anchor.
-const ANCHOR_EPSILON: f32 = 1e-4;
+/// Two points closer than this (world units, XZ) are the same point (chain anchor and the overlay's zero-length ghost).
+pub(crate) const ANCHOR_EPSILON: f32 = 1e-4;
 
 /// How the next road segment is placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -173,6 +173,8 @@ pub struct RoadBuilderState {
     pub(crate) track_counter: u32,
     /// Undone point indices still to remove, ascending; issued highest first, one at a time.
     pub(crate) pending_removals: Vec<usize>,
+    /// The chain was ended while undone points were still queued; it finishes once they drain.
+    pub(crate) ending: bool,
     /// World units per real metre of the active petal map; NaN or 0 = no map.
     pub world_scale: f64,
 }
@@ -212,12 +214,33 @@ impl RoadBuilderState {
         self.freeform_samples.clear();
     }
 
+    /// End the chain; queued undo removals still run first (session kept until they drain).
     fn end_chain(&mut self) {
+        if self.pending_removals.is_empty() || self.session_track.is_none() {
+            self.abort_chain();
+            return;
+        }
+        self.clear_segment();
+        self.anchor = None;
+        self.log = ChainLog::default();
+        self.ending = true;
+    }
+
+    /// Drop the chain and any queued removals (the track is gone or belongs to another petal).
+    pub(crate) fn abort_chain(&mut self) {
         self.clear_segment();
         self.anchor = None;
         self.log = ChainLog::default();
         self.session_track = None;
         self.pending_removals.clear();
+        self.ending = false;
+    }
+
+    /// Finish a deferred end once the last queued removal has been issued.
+    pub(crate) fn settle_end(&mut self) {
+        if self.ending && self.pending_removals.is_empty() {
+            self.abort_chain();
+        }
     }
 }
 
@@ -231,6 +254,9 @@ pub(crate) enum RoadEvent {
     Backspace,
     SetMode(RoadMode),
     SetSettings(RoadSettings),
+    /// Tool switch: end the chain, letting queued undo removals finish.
+    End,
+    /// Petal switch or lost track: drop the chain and queued removals.
     Clear,
 }
 
@@ -247,7 +273,8 @@ fn is_finite_point(point: [f32; 3]) -> bool {
     point.iter().all(|value| value.is_finite())
 }
 
-fn same_anchor(a: [f32; 3], b: [f32; 3]) -> bool {
+/// Same ground point within [`ANCHOR_EPSILON`] (XZ); the overlay's zero-length test uses this too.
+pub(crate) fn same_anchor(a: [f32; 3], b: [f32; 3]) -> bool {
     (a[0] - b[0]).abs() <= ANCHOR_EPSILON && (a[2] - b[2]).abs() <= ANCHOR_EPSILON
 }
 
@@ -268,6 +295,11 @@ fn commit_points(state: &mut RoadBuilderState, mut points: Vec<[f32; 3]>) -> Vec
     if points.len() < minimum {
         return Vec::new();
     }
+    // A zero-length segment commits nothing and leaves the chain as it was.
+    let origin = if chaining { state.anchor } else { points.first().copied() };
+    if origin.is_some_and(|origin| points.iter().all(|&point| same_anchor(origin, point))) {
+        return Vec::new();
+    }
     state.log.record(&points);
     state.anchor = Some(end);
     if chaining {
@@ -283,6 +315,10 @@ fn on_click(state: &mut RoadBuilderState, point: [f32; 3]) -> Vec<RoadCommit> {
         state.anchor = Some(point);
         return Vec::new();
     };
+    // A click on the anchor would be a zero-length segment (the ghost is already red).
+    if state.settings.mode != RoadMode::Freeform && same_anchor(anchor, point) {
+        return Vec::new();
+    }
     match state.settings.mode {
         RoadMode::Straight => {
             let points = expand_segment(RoadMode::Straight, &[anchor, point], 0);
@@ -389,8 +425,12 @@ pub(crate) fn reduce(state: &mut RoadBuilderState, event: RoadEvent) -> Vec<Road
             state.settings = settings;
             Vec::new()
         }
-        RoadEvent::Clear => {
+        RoadEvent::End => {
             state.end_chain();
+            Vec::new()
+        }
+        RoadEvent::Clear => {
+            state.abort_chain();
             Vec::new()
         }
     }
@@ -519,6 +559,13 @@ mod tests {
     fn road_chain_session_journey() {
         let mut state = RoadBuilderState::default();
 
+        // Zero-length first segment creates no track and leaves the anchor as clicked.
+        reduce(&mut state, RoadEvent::Click(at(0.0, 0.0)));
+        let before = state.clone();
+        assert!(reduce(&mut state, RoadEvent::Click(at(0.0, 0.0))).is_empty());
+        assert_eq!(state, before);
+        reduce(&mut state, RoadEvent::Clear);
+
         // AC-1.1: first click opens the chain, second creates the track with 2 points.
         let out = drive(
             &mut state,
@@ -568,7 +615,22 @@ mod tests {
         // Placement waits until the queued removals have drained.
         assert!(reduce(&mut state, RoadEvent::Click(at(30.0, 30.0))).is_empty());
         assert!(state.pending.is_empty());
+        // Ending the chain mid-undo keeps the queue; the session finishes once it drains.
+        let queued = state.pending_removals.clone();
+        reduce(&mut state, RoadEvent::End);
+        assert!(!state.is_active() && state.ending && state.pending_removals == queued);
+        assert!(state.session_track.is_some());
         state.pending_removals.clear();
+        state.settle_end();
+        assert!(!state.ending && state.session_track.is_none() && state.log.is_empty());
+        state.session_track = Some("track-1".into());
+        state.log.record(&[at(0.0, 0.0), at(10.0, 0.0), at(10.0, 10.0)]);
+        state.anchor = Some(at(10.0, 10.0));
+
+        // A click on the anchor is a zero-length segment: nothing committed, chain unchanged.
+        let before = state.clone();
+        assert!(reduce(&mut state, RoadEvent::Click(at(10.0, 10.0))).is_empty());
+        assert_eq!(state, before);
 
         // AC-2.3: Escape clears pending first, then ends the chain.
         reduce(&mut state, RoadEvent::Click(at(15.0, 10.0)));

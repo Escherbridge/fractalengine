@@ -6,7 +6,9 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 use super::measure::measure_world_scale;
-use super::road_chain::{decimate_into, expand_segment_into, pending_length, RoadBuilderState, RoadMode};
+use super::road_chain::{
+    decimate_into, expand_segment_into, pending_length, same_anchor, RoadBuilderState, RoadMode,
+};
 use super::road_interaction::RoadHoverState;
 use super::road_snap::{Guide, SnapKind};
 use crate::geometry::{format_distance_m, meters_to_world, world_to_meters};
@@ -18,8 +20,6 @@ use crate::plugin::{ToolState, ViewportRect};
 use crate::terrain_map::PetalMapState;
 use crate::theme;
 
-/// Two chain points closer than this (world units, XZ) are the same point.
-const ZERO_LENGTH_EPSILON: f32 = 1e-4;
 /// Dashes drawn per guide line (one half-line each side of the origin).
 const GUIDE_DASHES_PER_HALF: usize = 24;
 /// Guide half-length floor and ceiling, world units.
@@ -68,12 +68,8 @@ pub(crate) fn classify_validity(
         return RoadValidity::NonFinite;
     }
     match state.anchor {
-        Some(anchor)
-            if (cursor[0] - anchor[0]).abs() <= ZERO_LENGTH_EPSILON
-                && (cursor[2] - anchor[2]).abs() <= ZERO_LENGTH_EPSILON =>
-        {
-            RoadValidity::ZeroLength
-        }
+        // Same test the reducer refuses a click on.
+        Some(anchor) if same_anchor(cursor, anchor) => RoadValidity::ZeroLength,
         _ => RoadValidity::Valid,
     }
 }

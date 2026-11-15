@@ -280,6 +280,12 @@ point counts, so undo-last-segment removes exactly what the last segment added. 
 than the chain tolerance (world units, XZ) are the same anchor. `road_overlay.rs` draws the ghost
 polyline, guides, snap ring and a cursor-tethered live length readout.
 
+A click on the anchor (the overlay's red `ZeroLength` ghost, same `ANCHOR_EPSILON` via `same_anchor`) commits
+nothing and leaves the state unchanged; `commit_points` also drops any all-coincident segment, so freeform
+holds too. Ending the chain (Escape, End road, tool switch = `RoadEvent::End`) while undo removals are queued
+sets `ending` and keeps the session until `issue_next_removal` drains them (`settle_end`); `RoadEvent::Clear`
+(petal switch, lost or foreign track) aborts and drops the queue so no removal reaches another petal's track.
+
 Undo is paced: Backspace queues one checked `PathRemovePoint` at a time, tail first
 (`issue_next_removal` in `road_interaction.rs`; `PointEditOrigin` must equal the live buffer for each
 remove), and placement is blocked while the queue drains (`road_chain.rs:344-348`). Undo also waits
@@ -405,8 +411,14 @@ NFR-2, `ui_ux.md §5`).
   `PathPointDrag`); Hold updates `drag_vec` from the y=0 ray hit and
   observes Alt (`pen_observe_alt`: the FIRST mid-drag Alt freezes `−drag_vec`
   as `frozen_in`; Alt already down at press sets `alt_seen` with NO frozen
-  value); Release runs the pure `pen_release_decision(drag_vec, alt_seen,
-  frozen_in, default_kind, PEN_DRAG_THRESHOLD_M = 0.15 m)`: below threshold
+  value); Release runs the pure `pen_release_decision(drag_vec, screen_drag_px,
+  alt_seen, frozen_in, default_kind, PEN_DRAG_THRESHOLD_PX = 6.0)`. Click versus
+  drag is decided by SCREEN travel (logical window px, press cursor to
+  latest/release cursor, `screen_travel`), never world distance, so slope and zoom
+  do not change the feel; 6 px is egui's `max_click_dist` default (no other
+  drag threshold exists in fe-ui). `drag_vec` stays 3D and only sizes the
+  handles. No cursor at press (touch/stylus without a hover position) leaves
+  the travel at 0, so the gesture is a click, as Hold already ignored it. Below threshold
   ⇒ `Corner` (legacy append) or `SmoothClick` per the tool-level default
   `ToolPanelState.pen_new_anchor_kind`; at/above without Alt ⇒
   `SymmetricDrag` (`handle_out = drag`, `handle_in = −drag`, kind

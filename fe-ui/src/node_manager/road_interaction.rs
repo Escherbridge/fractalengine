@@ -225,6 +225,17 @@ fn issue_next_removal(
     undo_busy: bool,
     ui_mgr: &mut UiManager,
 ) {
+    issue_next_removal_step(state, path_state, nav, undo_busy, ui_mgr);
+    state.settle_end();
+}
+
+fn issue_next_removal_step(
+    state: &mut RoadBuilderState,
+    path_state: &PathEditorState,
+    nav: &NavigationManager,
+    undo_busy: bool,
+    ui_mgr: &mut UiManager,
+) {
     let Some(&index) = state.pending_removals.last() else {
         return;
     };
@@ -232,9 +243,19 @@ fn issue_next_removal(
         state.session_track.as_deref(),
         path_state.editing_track_id.as_deref(),
     ) else {
+        // An ended chain whose track is no longer open can never drain: drop it.
+        if state.ending {
+            state.abort_chain();
+        }
         return;
     };
-    if session != editing || path_state.points_pending {
+    if session != editing {
+        if state.ending {
+            state.abort_chain();
+        }
+        return;
+    }
+    if path_state.points_pending {
         return;
     }
     let length = path_state.points.len();
@@ -293,13 +314,29 @@ pub(super) fn handle_road_interaction(
     }
     if petal_changed || tool.active_tool != Tool::Road {
         *freeform_drag = false;
-        if state.is_active() || !state.log.is_empty() {
-            reduce(&mut state, RoadEvent::Clear);
+        let chain_open = state.is_active() || !state.log.is_empty();
+        if petal_changed {
+            // Queued removals belong to the old petal's track: drop them.
+            if chain_open || state.ending {
+                reduce(&mut state, RoadEvent::Clear);
+            }
+        } else if chain_open {
+            // Tool switch: end the chain but let an in-progress undo finish.
+            reduce(&mut state, RoadEvent::End);
         }
         if hover.point.is_some() || hover.outcome.is_some() {
             *hover = RoadHoverState::default();
         }
         if tool.active_tool != Tool::Road {
+            if state.ending {
+                issue_next_removal(
+                    &mut state,
+                    &path_state,
+                    &nav,
+                    undo.as_deref().is_some_and(UndoState::is_pending),
+                    &mut ui_mgr,
+                );
+            }
             return;
         }
     }

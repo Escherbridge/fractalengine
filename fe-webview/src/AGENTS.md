@@ -65,10 +65,10 @@ This lifecycle never mounts a portal bundle, a scope's bound bundle included
 (bindings.md §6 `portal.open`). The one path is fe-ui's `UiAction::OpenBundle`
 (the `binding_offer.rs` Open button), because fe-ui then owns the host-drawn
 badge, Close, and the binary's 500 ms re-judge tick, which only runs while
-fe-ui's `PortalState` is a bundle. B10f's `OpenBoundBundle` message wrote
-`BrowserCommand::OpenBundle` behind fe-ui's back, so a bound bundle would have
-mounted with no badge and no kill-list re-judge. R-POR-IPC removed it
-(R-POR-10).
+fe-ui's `PortalState` is a bundle. A bound bundle opens only when the user opens
+it from its node; there is no automatic opening. The `OpenBoundBundle` command
+(B10f, then P-BOUND) is gone: nothing wrote it, and the by-name route would have
+mounted with no badge and no kill-list re-judge (R-POR-10, owner decision 2026-11-14).
 
 ## §petal-portal-deferred — validation-phase work
 
@@ -193,7 +193,7 @@ of scope for this track.
 
 ## §bound-bundle routing (extension_platform_20261107, turn 3)
 
-`dispatch_commands` mounts `BrowserCommand::OpenBoundBundle` through `BundleHost::open_target(BundleTarget::Bound)`;
-unavailable-backend reports use `bundle_anchor()` so bound anchors (`binding:<petal>:<package>`) report too.
+`BrowserCommand::OpenBoundBundle` is gone (owner decision 2026-11-14): `dispatch_commands` has no bound-open arm, and
+`BundleHost::open_target(BundleTarget::Bound)` is reachable only from tests until a node-driven bound open exists.
 `PortalBindingChanged { petal_id, package_id }` is the binary's signal that a binding or its installed build moved;
 `apply_portal_admission` turns it into `refresh_target`, which reloads only an open, unrevoked mount of that target.

@@ -85,9 +85,9 @@ pub struct PathPointDrag {
     origin:Option<crate::undo::PointEditOrigin>,
 }
 
-/// pen_curve_tool_20260722 (FR-4): drag distance below which a Pen release is
-/// a plain click (petal-local meters).
-pub(super) const PEN_DRAG_THRESHOLD_M: f32 = 0.15;
+/// Pointer travel (logical px, press to release) below which a Pen release is a plain click;
+/// egui's `max_click_dist` default. See AGENTS.md §pen-tool.
+pub(super) const PEN_DRAG_THRESHOLD_PX: f32 = 6.0;
 
 /// In-progress Pen press-drag placing a NEW anchor; resolved at Release by
 /// `pen_release_decision`. See AGENTS.md §pen-tool.
@@ -95,8 +95,12 @@ pub(super) const PEN_DRAG_THRESHOLD_M: f32 = 0.15;
 pub struct PenHandleDragState {
     /// Anchor position captured at press (y=0 plane hit, petal-local meters).
     pub anchor: [f32; 3],
-    /// Live drag vector (current y=0 plane hit − anchor).
+    /// Live drag vector (current y=0 plane hit − anchor); sizes the handles, not the click decision.
     pub drag_vec: [f32; 3],
+    /// Cursor at press (logical window px); `None` when the window reported no cursor.
+    pub press_cursor: Option<Vec2>,
+    /// Pointer travel since press (logical px); decides click versus drag.
+    pub screen_drag_px: f32,
     /// `true` once Alt has been observed during the gesture (press or hold).
     pub alt_seen: bool,
     /// Symmetric in-handle frozen at the FIRST mid-drag Alt observation
@@ -144,17 +148,24 @@ pub(super) enum PenReleaseDecision {
     },
 }
 
-/// Pure release decision: drag length vs `threshold`, Alt state, tool default.
+/// Logical-px distance from the press cursor to `cursor`; `fallback` when either is unknown.
+fn screen_travel(press: Option<Vec2>, cursor: Option<Vec2>, fallback: f32) -> f32 {
+    match (press, cursor) {
+        (Some(press), Some(cursor)) => press.distance(cursor),
+        _ => fallback,
+    }
+}
+
+/// Pure release decision: on-screen travel vs `threshold_px`, Alt state, tool default.
 fn pen_release_decision(
     drag_vec: [f32; 3],
+    screen_drag_px: f32,
     alt_seen: bool,
     frozen_in: Option<[f32; 3]>,
     default_kind: CornerKind,
-    threshold: f32,
+    threshold_px: f32,
 ) -> PenReleaseDecision {
-    let len =
-        (drag_vec[0] * drag_vec[0] + drag_vec[1] * drag_vec[1] + drag_vec[2] * drag_vec[2]).sqrt();
-    if len < threshold {
+    if screen_drag_px < threshold_px {
         return match default_kind {
             CornerKind::Corner => PenReleaseDecision::Corner,
             kind => PenReleaseDecision::SmoothClick { kind },
@@ -514,10 +525,11 @@ fn release_pen_gesture(
     );
     let decision = pen_release_decision(
         pen.drag_vec,
+        pen.screen_drag_px,
         pen.alt_seen,
         pen.frozen_in,
         default_kind,
-        PEN_DRAG_THRESHOLD_M,
+        PEN_DRAG_THRESHOLD_PX,
     );
     let prev = path_state.points.last().map(|p| p.position);
     if fate == PenGestureFate::Append {
@@ -825,7 +837,8 @@ pub(super) fn handle_path_point_interaction(
                 }
             }
         }
-        if let Some(pen) = pen_drag.active.take() {
+        if let Some(mut pen) = pen_drag.active.take() {
+            pen.screen_drag_px = screen_travel(pen.press_cursor, cursor, pen.screen_drag_px);
             release_pen_gesture(
                 pen,
                 tool_panel.pen_new_anchor_kind,
@@ -882,6 +895,7 @@ pub(super) fn handle_path_point_interaction(
         }
         if let Some(pen) = pen_drag.active.as_mut() {
             let Some(cursor_pos) = cursor else { return };
+            pen.screen_drag_px = screen_travel(pen.press_cursor, cursor, pen.screen_drag_px);
             let Ok(ray) = camera.viewport_to_world(cam_tx, cursor_pos) else {
                 return;
             };
@@ -1006,6 +1020,8 @@ pub(super) fn handle_path_point_interaction(
     pen_drag.active = Some(PenHandleDragState {
         anchor: [hit.x, hit.y, hit.z],
         drag_vec: [0.0; 3],
+        press_cursor: cursor,
+        screen_drag_px: 0.0,
         // Alt already down at press ⇒ Q8's "held from the initial press" case:
         // `alt_seen` without a frozen in-handle.
         alt_seen: keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight),
@@ -1175,6 +1191,8 @@ mod tests {
             PenHandleDragState {
                 anchor: [1.4, 5.0, -1.6],
                 drag_vec: [0.0; 3],
+                press_cursor: None,
+                screen_drag_px: 0.0,
                 alt_seen: false,
                 frozen_in: None,
                 press_track_id: Some("track".into()),
@@ -1388,14 +1406,18 @@ mod tests {
 
     #[test]
     fn release_below_threshold_defaults_to_corner_click() {
-        let d = pen_release_decision(
-            [0.1, 0.0, 0.05],
-            false,
-            None,
-            CornerKind::Corner,
-            PEN_DRAG_THRESHOLD_M,
-        );
-        assert_eq!(d, PenReleaseDecision::Corner);
+        // Same screen travel, flat ground versus a steep slope (large world Y): same decision.
+        for world_delta in [[0.1, 0.0, 0.05], [0.1, 5.0, 0.05]] {
+            let d = pen_release_decision(
+                world_delta,
+                PEN_DRAG_THRESHOLD_PX - 0.5,
+                false,
+                None,
+                CornerKind::Corner,
+                PEN_DRAG_THRESHOLD_PX,
+            );
+            assert_eq!(d, PenReleaseDecision::Corner);
+        }
     }
 
     #[test]
@@ -1404,10 +1426,11 @@ mod tests {
         // upgrades a plain click to an auto-derived smooth anchor.
         let d = pen_release_decision(
             [0.0; 3],
+            0.0,
             false,
             None,
             CornerKind::Smooth,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         assert_eq!(
             d,
@@ -1417,10 +1440,11 @@ mod tests {
         );
         let d = pen_release_decision(
             [0.0; 3],
+            0.0,
             false,
             None,
             CornerKind::Symmetric,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         assert_eq!(
             d,
@@ -1434,18 +1458,20 @@ mod tests {
     fn release_at_threshold_is_symmetric_drag() {
         // Exactly ON the threshold counts as a drag (below ⇒ click, at/above
         // ⇒ smooth) — the FR-4 boundary case.
+        // The world delta only sizes the handles; a tiny one still drags on enough screen travel.
         let d = pen_release_decision(
-            [PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
+            [0.01, 0.0, 0.0],
+            PEN_DRAG_THRESHOLD_PX,
             false,
             None,
             CornerKind::Corner,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         assert_eq!(
             d,
             PenReleaseDecision::SymmetricDrag {
-                handle_out: [PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
-                handle_in: [-PEN_DRAG_THRESHOLD_M, 0.0, 0.0],
+                handle_out: [0.01, 0.0, 0.0],
+                handle_in: [-0.01, 0.0, 0.0],
             }
         );
     }
@@ -1454,10 +1480,11 @@ mod tests {
     fn drag_without_alt_mirrors_the_in_handle() {
         let d = pen_release_decision(
             [2.0, 0.0, 1.0],
+            20.0,
             false,
             None,
             CornerKind::Corner,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         match d {
             PenReleaseDecision::SymmetricDrag {
@@ -1476,6 +1503,8 @@ mod tests {
         PenHandleDragState {
             anchor: [0.0; 3],
             drag_vec,
+            press_cursor: None,
+            screen_drag_px: 0.0,
             alt_seen,
             frozen_in: None,
             press_track_id: None,
@@ -1493,10 +1522,11 @@ mod tests {
         pen_observe_alt(&mut pen, true); // later Alt frames don't re-freeze
         let d = pen_release_decision(
             pen.drag_vec,
+            20.0,
             pen.alt_seen,
             pen.frozen_in,
             CornerKind::Corner,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         assert_eq!(
             d,
@@ -1516,10 +1546,11 @@ mod tests {
         pen_observe_alt(&mut pen, true); // never re-freezes once alt_seen
         let d = pen_release_decision(
             pen.drag_vec,
+            20.0,
             pen.alt_seen,
             pen.frozen_in,
             CornerKind::Corner,
-            PEN_DRAG_THRESHOLD_M,
+            PEN_DRAG_THRESHOLD_PX,
         );
         assert_eq!(
             d,

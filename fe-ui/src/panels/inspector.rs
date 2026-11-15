@@ -1628,6 +1628,9 @@ const PROPERTY_TYPES: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 const PROPERTY_CONFIRM_SECONDS: f64 = 30.0;
+/// An expanded stored value larger than this shows a preview and an explicit Edit action.
+const PROPERTY_INLINE_MAX_BYTES: usize = 16 * 1024;
+const PROPERTY_PREVIEW_BYTES: usize = 2 * 1024;
 
 #[derive(Default)]
 pub(crate) struct PropertyEditorState {
@@ -1635,6 +1638,17 @@ pub(crate) struct PropertyEditorState {
     drafts: BTreeMap<String, PropertyDraft>,
     add_error: Option<String>,
     pending_add: Option<(String, PropertyWrite)>,
+    stored_views: BTreeMap<String, StoredPropertyView>,
+    #[cfg(test)]
+    pub(crate) formats: usize,
+}
+
+/// Formatted text of one stored value, built when the value changes (not per frame).
+struct StoredPropertyView {
+    source: serde_json::Value,
+    text: String,
+    full_bytes: usize,
+    truncated: bool,
 }
 
 struct PropertyWrite {
@@ -1726,6 +1740,30 @@ impl PropertyDraft {
 }
 
 impl PropertyEditorState {
+    /// Cached display text for `key`; reformatted only when the stored value differs from the cached source.
+    fn stored_view(&mut self, key: &str, value: &serde_json::Value) -> &mut StoredPropertyView {
+        let fresh = self.stored_views.get(key).is_some_and(|view| &view.source == value);
+        if !fresh {
+            #[cfg(test)]
+            {
+                self.formats += 1;
+            }
+            let full = PropertyValueKind::format(value);
+            let full_bytes = full.len();
+            let truncated = full_bytes > PROPERTY_INLINE_MAX_BYTES;
+            let text = if truncated {
+                crate::editor_batch::ui::clipped(&full, PROPERTY_PREVIEW_BYTES)
+            } else {
+                full
+            };
+            self.stored_views.insert(
+                key.to_owned(),
+                StoredPropertyView { source: value.clone(), text, full_bytes, truncated },
+            );
+        }
+        self.stored_views.get_mut(key).expect("view was just stored")
+    }
+
     fn set_scope(&mut self, node_id: Option<&str>) -> bool {
         if self.node_id.as_deref() == node_id {
             return false;
@@ -1741,6 +1779,7 @@ impl PropertyEditorState {
         let object = properties.and_then(serde_json::Value::as_object);
         if let Some(object) = object {
             self.drafts.retain(|key, _| object.contains_key(key));
+            self.stored_views.retain(|key, _| object.contains_key(key));
         }
         for (key, draft) in &mut self.drafts {
             draft.reconcile(object.and_then(|object| object.get(key)), now);
@@ -2109,22 +2148,48 @@ fn render_property_row(
             render_property_draft(ui, key, value, draft, loading, can_edit, columns.height, actions);
         });
     } else if expanded && (value.is_object() || value.is_array()) {
+        let view = editor.stored_view(key, value);
+        let mut open_full_value = false;
         columns.expanded(ui, |ui| {
             ui.label(
                 egui::RichText::new(format!("Stored JSON for {key} (read only)"))
                     .small()
                     .color(theme::TEXT_DIM),
             );
-            let mut display = PropertyValueKind::format(value);
-            ui.add_enabled_ui(false, |ui| {
-                property_value_editor(
-                    ui,
-                    &mut display,
-                    PropertyValueKind::of(value),
-                    format_args!("Stored value of property {key}"),
+            if view.truncated {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} KiB value; showing the first {} KiB",
+                        view.full_bytes.div_ceil(1024),
+                        PROPERTY_PREVIEW_BYTES / 1024
+                    ))
+                    .small()
+                    .color(theme::TEXT_DIM),
                 );
-            });
+                ui.add(egui::Label::new(egui::RichText::new(&view.text).monospace().small()).wrap());
+                open_full_value = ui
+                    .add_enabled(
+                        can_edit && !loading,
+                        egui::Button::new("Edit full value")
+                            .wrap()
+                            .min_size(egui::Vec2::splat(columns.height)),
+                    )
+                    .named(ui, format_args!("Edit full value of property {key}"))
+                    .clicked();
+            } else {
+                ui.add_enabled_ui(false, |ui| {
+                    property_value_editor(
+                        ui,
+                        &mut view.text,
+                        PropertyValueKind::of(value),
+                        format_args!("Stored value of property {key}"),
+                    );
+                });
+            }
         });
+        if open_full_value {
+            editor.drafts.insert(key.to_owned(), PropertyDraft::new(value));
+        }
     }
 }
 
@@ -2694,6 +2759,21 @@ mod tests {
                         assert!(visible.width() * scale >= 20.0 && visible.height() * scale >= 20.0);
                     }
                 }
+            }
+            // Expanded rows format once per value change; a large multibyte value shows a bounded preview.
+            {
+                let mut editor = PropertyEditorState::default();
+                let stored = serde_json::json!({"a": [1, 2, 3]});
+                for _ in 0..5 {
+                    editor.stored_view("sensor", &stored);
+                }
+                assert_eq!(editor.formats, 1, "five frames of an unchanged value format once");
+                editor.stored_view("sensor", &serde_json::json!({"a": [1, 2, 4]}));
+                assert_eq!(editor.formats, 2, "a changed value formats again");
+                let large = serde_json::json!({"text": "é".repeat(PROPERTY_INLINE_MAX_BYTES)});
+                let view = editor.stored_view("large", &large);
+                assert!(view.truncated && view.full_bytes > PROPERTY_INLINE_MAX_BYTES);
+                assert!(view.text.len() <= PROPERTY_PREVIEW_BYTES + '…'.len_utf8(), "the preview is byte-bounded");
             }
             if scale == 2.0 {
                 let mut time = 1.0;
@@ -5322,6 +5402,14 @@ mod tests {
                 property_presence(&capture, "both-null"),
                 PropertyPresence::Common(Value::Null)
             );
+            // The draft is checked in encoded bytes, once per text change: 131073 two-byte characters exceed the limit.
+            let mut draft = crate::editor_batch::ui::SelectionDraft::default();
+            draft.set_property_value(&format!("\"{}\"", "é".repeat(fe_sdk::property_schema::MAX_PROPERTY_BYTES / 2 + 1)));
+            assert!(draft.value_check().too_large && draft.value_check().value.is_none());
+            assert_eq!(draft.value_checks, 1, "repeated frames reuse the check");
+            draft.set_property_value("{\"ok\":1}");
+            assert!(draft.value_check().value.is_some());
+            assert_eq!(draft.value_checks, 2);
             let (batch_tx, batch_rx) = crossbeam::channel::unbounded();
             let mut feedback = UiManager::default();
             feedback

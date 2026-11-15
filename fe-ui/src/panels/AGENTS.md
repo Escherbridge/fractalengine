@@ -1093,3 +1093,10 @@ The inspector sends no scene write itself: property, transform, URL and schema e
 - An unavailable reply shows a one-line reason instead of a blank plot: `NoMap` ("No terrain under this
   section yet.") and `WrongPetal` ("Waiting for this petal's map to load.") (`:254-262`). When the whole
   volume report is unavailable, the volume body shows the Maps prompt instead (`:222-227`).
+
+## Expanded stored property values (2026-11-14)
+`PropertyEditorState::stored_view` caches the formatted text of an expanded object/array row and reformats only when
+the stored value differs from the cached source (test builds count formats in `formats`). A value over
+`PROPERTY_INLINE_MAX_BYTES` (16 KiB) shows a `PROPERTY_PREVIEW_BYTES` preview, its size and an "Edit full value"
+button that opens the normal draft; small values keep the read-only editor. The per-frame cost left is one
+`Value` equality compare per expanded row; a revision counter set where properties arrive would remove it.
