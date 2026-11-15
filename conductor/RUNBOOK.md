@@ -140,7 +140,8 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
   existing seven screenshots; the user adds the DNS record; reach the demo node through `railway ssh`, never a
   public address. *Keys (never printed, user must back them up; ACL = the user only):*
   `%USERPROFILE%\.fractalengine\demo-node.key` (node identity seed, used to mint API tokens) and
-  `demo-node-share-signer.key` beside it. *Done since (same day, evening):* every chunk of R1-R11 has now run green at HEAD; the repeats ran with
+  `demo-node-share-signer.key` beside it. *Done since (same day, evening):* every chunk of R1-R11 has now passed (chunks that failed or did not build were repeated after their
+  fixes; chunks that passed the first time were not run again); the repeats ran with
   `-Jobs 1` (logs `.omc/logs/tests/rerun-20261115/`, `rerun-final-20261115/`, `rerun-last2-20261115/`). They
   turned up one more product bug, fixed: the petal readings summary sorted by `reading_id` without selecting
   it, a parse error on every call (`fe-database/src/handlers/petal_readings.rs`). Three stale tests were
