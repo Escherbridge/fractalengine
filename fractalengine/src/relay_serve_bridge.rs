@@ -10,6 +10,107 @@ fn namespace_id_from_secret(secret_hex: &str) -> Option<String> {
     Some(hex::encode(fe_database::derive_namespace_id(&secret)))
 }
 
+/// One pin per served verse that has a namespace id (row value, else derived from its stored secret).
+#[cfg(feature = "relay-server")]
+fn served_replica_pins(
+    served: BTreeSet<String>,
+    namespace_ids: &BTreeMap<String, Option<String>>,
+    secret_store: &dyn fe_identity::SecretStore,
+) -> Vec<fe_sync::relay_server::ServedReplica> {
+    let mut pins = Vec::new();
+    for verse_id in served {
+        let secret = match fe_database::get_namespace_secret(secret_store, &verse_id) {
+            Ok(secret) => secret,
+            Err(error) => {
+                tracing::warn!(verse_id, %error, "served verse namespace secret lookup failed");
+                None
+            }
+        };
+        let namespace_id = namespace_ids
+            .get(&verse_id)
+            .cloned()
+            .flatten()
+            .or_else(|| secret.as_deref().and_then(namespace_id_from_secret));
+        let Some(namespace_id) = namespace_id else {
+            tracing::warn!(
+                verse_id,
+                "served verse has no namespace id: its replica cannot open, so this relay refuses its members"
+            );
+            continue;
+        };
+        pins.push(fe_sync::relay_server::ServedReplica {
+            verse_id,
+            namespace_id,
+            namespace_secret: secret,
+        });
+    }
+    pins
+}
+
+/// Wakes the relay thread to re-run the served-set rule (a verse created or deleted); coalesced, never blocks a frame.
+#[derive(bevy::prelude::Resource, Clone)]
+pub struct ServedSetRefresh(crossbeam::channel::Sender<()>);
+
+/// The refresh signal (a Bevy resource) and the receiver the desktop relay thread waits on.
+pub fn served_set_refresh_channel() -> (ServedSetRefresh, crossbeam::channel::Receiver<()>) {
+    let (sender, receiver) = crossbeam::channel::bounded(1);
+    (ServedSetRefresh(sender), receiver)
+}
+
+/// Bevy system: a created or deleted verse asks the running relay to re-read its served set (RF-OPEN-4).
+pub fn request_served_set_refresh(
+    mut results: bevy::prelude::MessageReader<fe_runtime::messages::DbResult>,
+    refresh: bevy::prelude::Res<ServedSetRefresh>,
+) {
+    use fe_runtime::messages::{DbResult, EntityType};
+    let mut changed = false;
+    for result in results.read() {
+        changed |= matches!(
+            result,
+            DbResult::VerseCreated { .. } | DbResult::EntityDeleted { entity_type: EntityType::Verse, .. }
+        );
+    }
+    // Full: a refresh is already pending. Disconnected: no relay is running.
+    if changed && refresh.0.try_send(()).is_err() {
+        tracing::trace!("served-set refresh already pending or no relay running");
+    }
+}
+
+/// Wait before re-reading the owned verses after a failed read.
+pub const OWNED_VERSES_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Re-runs the served-set rule on every wake until `wakes` closes (RF-OPEN-4). A failed `read`
+/// (`None`) keeps the set already applied and retries after `retry` with no new wake; an empty
+/// set is applied only when the read succeeded (fe-sync `src/AGENTS.md` §peer-relay-server).
+pub fn serve_refreshes(
+    wakes: &crossbeam::channel::Receiver<()>,
+    retry: std::time::Duration,
+    mut read: impl FnMut() -> Option<BTreeMap<String, Option<String>>>,
+    mut apply: impl FnMut(&BTreeMap<String, Option<String>>),
+) {
+    let mut retry_owed = false;
+    loop {
+        let woke = if retry_owed {
+            !matches!(wakes.recv_timeout(retry), Err(crossbeam::channel::RecvTimeoutError::Disconnected))
+        } else {
+            wakes.recv().is_ok()
+        };
+        if !woke {
+            return;
+        }
+        match read() {
+            Some(owned) => {
+                apply(&owned);
+                retry_owed = false;
+            }
+            None => {
+                tracing::warn!("desktop relay keeps its served verses: the owned-verse read failed, retrying");
+                retry_owed = true;
+            }
+        }
+    }
+}
+
 /// What the startup gate decided about serving a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayServeDecision {
@@ -57,7 +158,7 @@ pub struct RelayServeHandle {
 }
 
 impl RelayServeHandle {
-    /// Pins every served verse's replica open (live role view, so members are admitted without the host navigating there) while this handle lives; see `fe-sync/src/AGENTS.md` §peer-relay-server "served replicas".
+    /// Binds the served set to `namespace_ids` (the verses this node owns) and pins their replicas open while this handle lives; call again whenever a verse is created or deleted (RF-OPEN-4). See `fe-sync/src/AGENTS.md` §peer-relay-server "served replicas".
     pub fn keep_served_replicas_open(
         &mut self,
         namespace_ids: &BTreeMap<String, Option<String>>,
@@ -65,34 +166,15 @@ impl RelayServeHandle {
     ) {
         #[cfg(feature = "relay-server")]
         {
-            let mut pins = Vec::new();
-            for verse_id in self.served_verse_ids() {
-                let secret = match fe_database::get_namespace_secret(secret_store, &verse_id) {
-                    Ok(secret) => secret,
-                    Err(error) => {
-                        tracing::warn!(verse_id, %error, "served verse namespace secret lookup failed");
-                        None
-                    }
-                };
-                let namespace_id = namespace_ids
-                    .get(&verse_id)
-                    .cloned()
-                    .flatten()
-                    .or_else(|| secret.as_deref().and_then(namespace_id_from_secret));
-                let Some(namespace_id) = namespace_id else {
-                    tracing::warn!(
-                        verse_id,
-                        "served verse has no namespace id: its replica cannot open, so this relay refuses its members"
-                    );
-                    continue;
-                };
-                pins.push(fe_sync::relay_server::ServedReplica {
-                    verse_id,
-                    namespace_id,
-                    namespace_secret: secret,
-                });
+            // Gate first: a verse leaving the set stops admitting before its pin is released.
+            let hosted: BTreeSet<String> = namespace_ids.keys().cloned().collect();
+            let served = fe_sync::relay_server::rebind_hosted_verses(self._relay.gate(), hosted);
+            let pins = served_replica_pins(served, namespace_ids, secret_store);
+            if let Some(held) = &self._served_pins {
+                held.replace(pins);
+            } else {
+                self._served_pins = Some(fe_sync::relay_server::keep_served_replicas_open(pins));
             }
-            self._served_pins = Some(fe_sync::relay_server::keep_served_replicas_open(pins));
         }
         #[cfg(not(feature = "relay-server"))]
         let _ = (namespace_ids, secret_store);
@@ -262,5 +344,55 @@ mod tests {
         for (feature, toggle, verdict, dialback, expected) in rows {
             assert_eq!(decide(feature, toggle, verdict, dialback), expected, "{feature} {toggle} {verdict:?} {dialback}");
         }
+
+        // RF-OPEN-4: creating or deleting a verse wakes the running relay to re-read its served set; other results do not.
+        use fe_runtime::messages::{DbResult, EntityType};
+        let (refresh, refresh_requests) = served_set_refresh_channel();
+        let mut app = bevy::prelude::App::new();
+        app.add_message::<DbResult>()
+            .insert_resource(refresh)
+            .add_systems(bevy::prelude::Update, request_served_set_refresh);
+        let mut deliver = |result: DbResult| {
+            app.world_mut().write_message(result);
+            app.update();
+            refresh_requests.try_recv().is_ok()
+        };
+        let created = DbResult::VerseCreated { id: "verse-new".into(), name: "New".into(), namespace_id: Some("ns".into()) };
+        assert!(deliver(created), "a created verse re-runs the served-set rule");
+        let fractal_deleted = DbResult::EntityDeleted { entity_type: EntityType::Fractal, entity_id: "fractal-1".into() };
+        assert!(!deliver(fractal_deleted), "a fractal delete leaves the served set alone");
+        let verse_deleted = DbResult::EntityDeleted { entity_type: EntityType::Verse, entity_id: "verse-new".into() };
+        assert!(deliver(verse_deleted), "a deleted verse re-runs the rule, which releases it");
+
+        // A failed owned-verse read keeps the served set (no empty set is applied) and is retried
+        // without a new wake; a successful read, even an empty one, is applied.
+        let owned = |ids: &[&str]| -> BTreeMap<String, Option<String>> {
+            ids.iter().map(|id| (id.to_string(), Some(format!("ns-{id}")))).collect()
+        };
+        let mut reads = std::collections::VecDeque::from([Some(owned(&["verse-a"])), None, Some(owned(&[]))]);
+        let applied = std::sync::Mutex::new(Vec::new());
+        let (wake, wakes) = crossbeam::channel::unbounded();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                serve_refreshes(
+                    &wakes,
+                    std::time::Duration::from_millis(10),
+                    || reads.pop_front().flatten(),
+                    |set| applied.lock().unwrap().push(set.clone()),
+                )
+            });
+            wake.send(()).unwrap();
+            wake.send(()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while applied.lock().unwrap().len() < 2 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            drop(wake);
+        });
+        assert_eq!(
+            applied.into_inner().unwrap(),
+            vec![owned(&["verse-a"]), owned(&[])],
+            "the failed read applied nothing; its retry applied the real (empty) set"
+        );
     }
 }

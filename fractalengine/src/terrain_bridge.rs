@@ -21,7 +21,7 @@ use fe_ui::plugin::{
     StorageInfoDto, UiManager,
 };
 use fe_ui::settings::AppSettings;
-use fe_ui::terrain_map::{DownloadProgress, DownloadStatus, TilesetDownloads};
+use fe_ui::terrain_map::{DownloadProgress, DownloadStatus, RegistryPackageRow, TilesetDownloads};
 
 pub(crate) fn discard_terminal_state(world: &mut World) {
     world.remove_resource::<InstallMetaVerdicts>();
@@ -475,6 +475,14 @@ pub enum HexonAssembleOutcome {
         uri: String,
         reason: String,
     },
+    /// A registry listing finished: the maps for the Available tab's Registry group.
+    RegistryListed {
+        rows: Vec<RegistryPackageRow>,
+    },
+    /// A registry listing failed; `reason` is the registry's error text or a transport message.
+    RegistryListFailed {
+        reason: String,
+    },
     /// W3b fixup (AC-30b): `HexonOp::Remove`'s `HexonStore::remove_tileset`
     /// moved off the Bevy main thread — it takes the same `write_lock` a
     /// worker install can hold across a write + `sync_all` of up to 1 GiB
@@ -762,7 +770,14 @@ pub fn drain_hexon_ops(
                     }
                 }));
             }
-            HexonOp::RefreshList => refresh = true,
+            HexonOp::RefreshList => {
+                refresh = true;
+                // Opening the manager and its Refresh/Retry buttons all send RefreshList: relist the registry too.
+                start_registry_listing(&mut ui_mgr, assemble_tx.as_deref(), &app_settings, None);
+            }
+            HexonOp::ListRegistry { query } => {
+                start_registry_listing(&mut ui_mgr, assemble_tx.as_deref(), &app_settings, query);
+            }
             HexonOp::AssembleDownload {
                 tileset_id,
                 index_path,
@@ -810,25 +825,10 @@ pub fn drain_hexon_ops(
                 // enable this even when the persisted setting is blank.
                 let env_registry_url =
                     std::env::var(fe_ui::settings::HEXON_REGISTRY_URL_ENV_VAR).ok();
-                let Some(registry_url) = fe_ui::settings::resolve_hexon_registry_url(
+                let registry_url = fe_ui::settings::resolve_hexon_registry_url(
                     env_registry_url.as_deref(),
                     app_settings.hexon_registry_url.as_deref(),
-                ) else {
-                    tracing::warn!(
-                        uri,
-                        "InstallFromRegistry dropped — no registry URL configured"
-                    );
-                    if tx
-                        .send(HexonAssembleOutcome::RegistryFailed {
-                            uri: uri.clone(),
-                            reason: "no hexon registry URL configured".to_string(),
-                        })
-                        .is_err()
-                    {
-                        tracing::warn!(uri, "InstallFromRegistry result channel closed");
-                    }
-                    continue;
-                };
+                );
                 downloads.0.insert(
                     uri.clone(),
                     DownloadProgress {
@@ -857,6 +857,68 @@ pub fn drain_hexon_ops(
     if refresh {
         refresh_installed_dialog(reg, &mut ui_mgr);
     }
+}
+
+/// The registry index's `hexon_type` spelling for map tilesets (`HexonType::TerrainTileset`, snake_case).
+const REGISTRY_MAP_TYPE: &str = "terrain_tileset";
+
+/// Longest version text kept from the network.
+const MAX_REGISTRY_VERSION_LEN: usize = 64;
+
+/// Bounded Registry-group rows from a search response: maps only, ids and versions installable, text clipped, row count capped.
+fn registry_rows(hits: Vec<fe_hexon::remote::RemoteHexonSummary>) -> Vec<RegistryPackageRow> {
+    use fe_ui::terrain_map::dto::{MAX_REGISTRY_ROWS, MAX_REGISTRY_TEXT_CHARS};
+    let clip = |text: String| -> String { text.chars().take(MAX_REGISTRY_TEXT_CHARS).collect() };
+    hits.into_iter()
+        .filter(|hit| {
+            hit.hexon_type == REGISTRY_MAP_TYPE
+                && fe_hexon::registry_source::valid_package_id(&hit.hexon_id)
+                && hit.version.len() <= MAX_REGISTRY_VERSION_LEN
+                && fe_hexon::registry_source::valid_version(&hit.version)
+        })
+        .take(MAX_REGISTRY_ROWS)
+        .map(|hit| RegistryPackageRow {
+            hexon_id: hit.hexon_id,
+            version: hit.version,
+            name: clip(hit.name),
+            size_bytes: hit.size_bytes,
+            publisher_did: clip(hit.publisher_did),
+        })
+        .collect()
+}
+
+/// Marks the open Hexon Manager's registry group loading and lists the registry on a background thread.
+fn start_registry_listing(
+    ui_mgr: &mut UiManager,
+    assemble_tx: Option<&HexonAssembleResultSender>,
+    app_settings: &AppSettings,
+    query: Option<String>,
+) {
+    let ActiveDialog::HexonManager { ref mut registry, .. } = ui_mgr.active_dialog else {
+        return;
+    };
+    let Some(tx) = assemble_tx.map(|sender| sender.0.clone()) else {
+        tracing::warn!("ListRegistry dropped — no result channel registered");
+        return;
+    };
+    registry.loading = true;
+    registry.error = None;
+    let env_registry_url = std::env::var(fe_ui::settings::HEXON_REGISTRY_URL_ENV_VAR).ok();
+    let registry_url = fe_ui::settings::resolve_hexon_registry_url(
+        env_registry_url.as_deref(),
+        app_settings.hexon_registry_url.as_deref(),
+    );
+    // Optional: an unset token means an anonymous listing.
+    let token = resolve_hexon_registry_token(std::env::var(HEXON_REGISTRY_TOKEN_ENV_VAR).ok().as_deref());
+    fe_runtime::maintenance::spawn_job(move || {
+        let outcome = match fe_hexon::remote::search_blocking(&registry_url, token, query.as_deref(), Some(REGISTRY_MAP_TYPE)) {
+            Ok(hits) => HexonAssembleOutcome::RegistryListed { rows: registry_rows(hits) },
+            Err(reason) => HexonAssembleOutcome::RegistryListFailed { reason },
+        };
+        if tx.send(outcome).is_err() {
+            tracing::warn!("ListRegistry result channel closed");
+        }
+    });
 }
 
 /// Verify + assemble + install one completed P2P download (background
@@ -1152,6 +1214,25 @@ pub fn drain_hexon_assemble_results(
                 refreshed = true;
                 if let Some(dl) = downloads.as_mut().and_then(|d| d.0.get_mut(&uri)) {
                     dl.status = DownloadStatus::Complete;
+                }
+            }
+            HexonAssembleOutcome::RegistryListed { rows } => {
+                if let ActiveDialog::HexonManager { ref mut registry, .. } = ui_mgr.active_dialog {
+                    registry.rows = rows;
+                    registry.loading = false;
+                    registry.loaded = true;
+                    registry.error = None;
+                }
+            }
+            HexonAssembleOutcome::RegistryListFailed { reason } => {
+                tracing::warn!(reason, "Registry listing failed");
+                if let ActiveDialog::HexonManager { ref mut registry, .. } = ui_mgr.active_dialog {
+                    registry.rows.clear();
+                    registry.loading = false;
+                    registry.loaded = false;
+                    registry.error = Some(
+                        reason.chars().take(fe_ui::terrain_map::dto::MAX_REGISTRY_ERROR_CHARS).collect(),
+                    );
                 }
             }
             HexonAssembleOutcome::RegistryFailed { uri, reason } => {

@@ -770,11 +770,14 @@ fe-terrain either (root `AGENTS.md` §petal-map, fe-sync `AGENTS.md`
   code — a preempted test thread letting the tiny worker finish first — so a
   rare red there is a scheduling flake, not a regression; re-run before
   bisecting.
+- **List the registry (`HexonOp::ListRegistry { query }`).** `terrain_bridge::start_registry_listing`
+  (also fired by `HexonOp::RefreshList`) runs `fe_hexon::remote::search_blocking` (type `terrain_tileset`,
+  optional `FE_HEXON_REGISTRY_TOKEN`, 4 MiB body cap) on a background thread; `registry_rows` bounds the rows and the
+  result returns as `HexonAssembleOutcome::RegistryListed`/`RegistryListFailed` into `ActiveDialog::HexonManager.registry`.
 - **Install from registry (PAS-P5 S7b, A9).** `HexonOp::InstallFromRegistry { uri }`
-  (queued by the Hexon Manager's "Install from registry" field, enabled only
-  when `AppSettings.hexon_registry_url`/`FE_HEXON_REGISTRY_URL` resolves to
-  something — `fe_ui::settings::resolve_hexon_registry_url`, same precedence
-  shape as the relay spec) is drained on its own background thread,
+  (queued by the Hexon Manager's "Install from registry" field or a Registry-group
+  row; the address is `fe_ui::settings::resolve_hexon_registry_url`: env, saved setting, then
+  the built-in default) is drained on its own background thread,
   `terrain_bridge::install_from_registry` (production, 2026-11-14):
   `RegistrySource::list` filtered to the requested id (a pinned `@version`
   must match) → `ProtocolV1Source::fetch_hexon_with_progress` →
@@ -1116,7 +1119,8 @@ Editor+-gated (RP-4) and every writer validates its `did:key` grammar
 `main.rs` calls `spawn_desktop_relay_gate` after the sync thread starts (`main.rs:419` then `:464`), on its own
 `desktop-relay-gate` thread with a 2-worker runtime. Order on that thread: `wait_for_self_test_verdict` polls
 `GetNetworkDiagnostics` until the verdict leaves `pending` (`None` when it never does; `relay-server` builds only);
-`load_owned_verse_ids` lists `verse` rows with `created_by` = the node DID (joined verses are never served); then
+`load_owned_verse_ids` lists `verse` rows with `created_by` = the node DID (joined verses are never served; `None` on a
+read error, retried and never served as an empty set, fe-sync `src/AGENTS.md` §peer-relay-server); then
 `relay_serve_bridge::maybe_start` runs with `provisional = verdict == "public"` in its `dialback_passed` slot, so a
 public verdict starts the listener before the dial-back (the probe needs a listening relay to reach). `confirm_dialback` asks a verse peer to dial `FE_RELAY_SERVE_HOSTNAME` (4 attempts with doubling waits: 65/130/260 s, the first beyond the responders' 60 s per-requester window; served verses' replicas are pinned open before the dial-back); a `ok: false` or no answer drops the handle and the relay stops. A confirmed relay is held (`let _relay`)
 and the thread parks until exit. The pure startup gate is `relay_serve_bridge::decide`: feature AND toggle AND
@@ -2226,7 +2230,52 @@ made a default-build reset quiesce half the app and then fail.
 - **Status.** `plugin_bridge::install_with` builds the `PluginManager`; the bridge admits packages (when the
   switch is on) through the governance gates. `main.rs` hands fe-api `plugin_bridge::api_extension_host` and
   `api_binding_host` (`ApiConfig::extension_host` / `binding_host`) and installs the process
-  `SceneHookGate` over `plugin_bridge::scene_hook_backend` before the API serves.
+  `SceneHookGate` over `plugin_bridge::scene_hook_backend` before the API serves. That backend also serves
+  import provisioning (§scene-hook-import).
+
+## §scene-hook-queue
+
+Every bound `scene.*` call fails closed since 2026-11-14 (fe-runtime `src/AGENTS.md` §scene-hook-gate, owner decision
+reversing OQ-B4). The binding worker is ONE thread serving every petal on the host, so its queue is an availability
+surface: under fail-closed, a caller that floods it could otherwise make everyone's hooked writes miss their deadline.
+
+- **Round-robin.** `BindingSignal::Scene` no longer runs inline. `absorb` pushes it into `SceneCallQueue`, one FIFO per
+  (petal, package, caller DID from `input.caller.did`), and `run` serves the queues in rotation for at most
+  `SCENE_SERVE_SLICE` (50 ms) between channel drains, so a call that arrives meanwhile joins the rotation instead of
+  waiting behind a whole backlog. One caller's backlog delays another caller's call by at most one call per busy
+  queue. Each call is bounded by its hook deadline (epoch interrupt in fe-plugin), and a call whose waiter gave up is
+  skipped at once (`reply.is_closed()`).
+- **Admission.** The gate refuses a caller that already holds `MAX_HOOK_CALLS_IN_FLIGHT` live calls at one binding
+  (`hook-busy`, 503, retryable), so a single queue never holds more than one full write per caller.
+- **Degraded instance.** `BindingView::scene_binding` answers for `Unresolved { reason: Degraded }` as well as
+  `Resolved`: the gate dispatches, `scene_call` faults ("no instance serves ..."), and the write is refused naming the
+  package. Before this change a degraded instance resolved to no binding, so every write in its scope passed unjudged.
+  A Manager's Disable (`Disabled`) or unbind (`Builtin`) still frees the scope; a hook crash itself restarts the
+  instance (fe-plugin src/wasm/AGENTS.md §hooks) and only degrades it when the restart fails. Imports keep treating
+  `Degraded` as `Unjudgeable` (409).
+
+## §scene-hook-import
+
+`plugin_bridge.rs` `SceneHooks::provision`/`release` serve fe-runtime's import judgment (fe-runtime `src/AGENTS.md`
+§scene-hook-import). They let the live resolution and the instance machinery answer for a petal that does not exist yet.
+
+- **Provisional overlay.** `PetalDirectory` has a second map of provisional petals, each holding the set of `hold` ids
+  keeping it. `get`, `contains` and `of_verse` include it, and the mirrored hierarchy always wins. `replace` (the 1 s
+  mirror) compares only the mirror, so the overlay survives it. At most `MAX_PROVISIONAL_PETALS` (4) distinct ids are
+  held at once; past that, a provision answers unavailable.
+- **Worker flow.** `BindingSignal::Provision` takes a hold and marks the verse dirty. `resolve_dirty` reloads the
+  verse's binding snapshot and reconciles with the provisional petal in the petal list (`settle_provisions`). After
+  `publish`, `answer_provisions` replies from the published cache: `BindingView::scene_judgeable` returns `Ok` when every
+  keyless `scene.*` point there is `Resolved` or `Builtin`, and `Unjudgeable` for `Unresolved`/`Elsewhere`. A snapshot
+  that fails to load answers `Unavailable`, so a stale or absent resolution is never read. Calls then go through the
+  usual `BindingSignal::Scene` path, which lazily starts the instance at `(provisional petal, package)`.
+  `BindingSignal::Release` drops the hold. When the last hold goes, the verse is re-resolved, and instances started
+  for the provisional petal stop, unless the import landed and the mirror now lists the petal.
+- **Exists.** An id the mirror knows at another address answers `ProvisionFailure::Exists`. The view is keyed by petal
+  id, so judging there would run another petal's hooks on the import's rows.
+- **Side effects to know.** While provisioned, the petal is resolved like any other. Eager hooks bound at the
+  fractal or verse start an instance there, and it counts toward the per-installation cap. The petal's points appear in
+  `GET .../bindings/effective` for that id. All of this ends with the release.
 - **Registry installs.** `terrain_bridge::install_from_registry` lists then `fetch_hexon_with_progress`es through
   `fe_hexon::remote::remote_source` (whole archive, 64 MiB cap, verified locally, byte progress forwarded). Trust is the operator-chosen
   registry: any valid seal, never unsigned; a plugin package is refused here (Extensions panel only).
@@ -2308,8 +2357,8 @@ How `main.rs` and `portal_host/mod.rs` hand governance state to the rest of the 
   (the revoke listener then calls `BundleHost::refresh_target`, which reloads the page). The view republishes for many
   unrelated reasons (lazy starts, blob pumping, navigation), so reloading on every generation would drop page state.
   A newly opened anchor records a baseline only; the anchor splits on the LAST ':' because petal ids may hold one.
-  `OpenBoundBundle` is mounted by fe-webview; at turn-3 HEAD no fe-ui action writes it yet (`UiAction::OpenBoundBundle`
-  only selects the node and opens the offer), so this path is idle until fe-ui does (R-BIN hand-off). A re-installed build under an unchanged binding is
+  `BrowserCommand::OpenBoundBundle` was removed (owner decision 2026-11-14): a bound bundle opens only when the user opens
+  it from its node (`UiAction::OpenBoundBundle` selects the node and opens the offer; the Open button mounts it). A re-installed build under an unchanged binding is
   the admission flow's business (new consent, `AdmissionSignal`), not this one.
 
 ## §admin-channel (turn 3)

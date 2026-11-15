@@ -300,7 +300,7 @@ fn main() {
     let fe_database::DbThread {
         join_handle: db_thread,
         shared_db,
-    } = match fe_database::spawn_db_thread_shared(
+    } = match fe_database::spawn_db_thread_gated(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -310,6 +310,8 @@ fn main() {
         Some(entity_change_tx.clone()),
         Some(DB_PATH.to_string()),
         Some(lifecycle_tx),
+        // The command channel's byte gate: the sync thread charges row bytes, the DB thread releases them.
+        ch.db_cmd_bytes.clone(),
     ) {
         Ok(db_thread) => db_thread,
         Err(e) => {
@@ -431,6 +433,7 @@ fn main() {
         // Production transport (never the sim lab's virtual one).
         None,
         blob_fallback.clone(),
+        Some(ch.db_cmd_bytes.clone()),
     );
 
     maintenance_services.push(fe_runtime::service_lifecycle::OwnedService::new("sync", Default::default(), sync_thread));
@@ -460,6 +463,8 @@ fn main() {
     }
 
     // NET-30: desktop relay-capable mode; consent, feature, self-test and dial-back are checked off the main thread.
+    // RF-OPEN-4: a created or deleted verse re-runs the served-set rule on the relay thread (system registered below).
+    let (served_set_refresh, served_set_refresh_rx) = relay_serve_bridge::served_set_refresh_channel();
     if app_settings.serve_relay {
         spawn_desktop_relay_gate(
             app_settings.clone(),
@@ -467,6 +472,7 @@ fn main() {
             shared_db.clone(),
             node_kp.to_did_key(),
             secret_store.clone(),
+            served_set_refresh_rx,
         );
     }
 
@@ -623,6 +629,8 @@ fn main() {
     app.init_resource::<fe_sync::StreamedTilesetEventBuffer>();
     app.init_resource::<fe_sync::SceneAssetEventBuffer>();
     app.add_systems(bevy::prelude::Update, fe_sync::drain_sync_events);
+    app.insert_resource(served_set_refresh);
+    app.add_systems(bevy::prelude::Update, relay_serve_bridge::request_served_set_refresh);
 
     // Insert identity, peer, and secret store resources
     app.insert_resource(NodeIdentity::new(node_kp));
@@ -1156,6 +1164,7 @@ fn spawn_desktop_relay_gate(
     db: fe_database::repo::Db,
     local_did: String,
     secret_store: Arc<dyn fe_identity::SecretStore>,
+    served_set_refresh: crossbeam::channel::Receiver<()>,
 ) {
     let spawned = std::thread::Builder::new().name("desktop-relay-gate".into()).spawn(move || {
         // Multi-thread: the relay's listener and reconciler tasks must keep running after `maybe_start` returns.
@@ -1173,7 +1182,17 @@ fn spawn_desktop_relay_gate(
         };
         let feature_built = cfg!(feature = "relay-server");
         let verdict = if feature_built { wait_for_self_test_verdict(&sync_command_sender) } else { None };
-        let owned_verses = runtime.block_on(load_owned_verse_ids(&db, local_did));
+        // A failed read never stands in for "owns nothing" (that would serve an empty set): retry, then give up.
+        let owned_verses = (0..OWNED_VERSES_START_ATTEMPTS).find_map(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(relay_serve_bridge::OWNED_VERSES_RETRY);
+            }
+            runtime.block_on(load_owned_verse_ids(&db, local_did.clone()))
+        });
+        let Some(owned_verses) = owned_verses else {
+            tracing::warn!("desktop relay not started: the verses this node owns could not be read");
+            return;
+        };
         let hosted_verses = owned_verses.keys().cloned().collect();
         // The dial-back probes the listening relay, so it can only run after a provisional start; a failed
         // confirmation stops the relay again (the pure gate still refuses everything before that point).
@@ -1195,6 +1214,13 @@ fn spawn_desktop_relay_gate(
             return;
         }
         tracing::info!("desktop relay confirmed reachable by a verse peer; serving until exit");
+        // RF-OPEN-4: the same rule, re-run on each verse create/delete; the channel closes when the app exits.
+        relay_serve_bridge::serve_refreshes(
+            &served_set_refresh,
+            relay_serve_bridge::OWNED_VERSES_RETRY,
+            || runtime.block_on(load_owned_verse_ids(&db, local_did.clone())),
+            |owned_verses| handle.keep_served_replicas_open(owned_verses, secret_store.as_ref()),
+        );
         let _relay = handle;
         loop {
             std::thread::park();
@@ -1229,11 +1255,14 @@ fn wait_for_self_test_verdict(sync_command_sender: &fe_sync::SyncCommandSender) 
     None
 }
 
-/// Verses this node created (owner DID = `local_did`) with their namespace ids: the only set a desktop relay may serve; joined verses are excluded (empty on a read error).
+/// Reads of the owned verses at relay start before the relay is given up.
+const OWNED_VERSES_START_ATTEMPTS: u32 = 6;
+
+/// Verses this node created (owner DID = `local_did`) with their namespace ids: the only set a desktop relay may serve; joined verses are excluded. `None` on a read error (never an empty set).
 async fn load_owned_verse_ids(
     db: &fe_database::repo::Db,
     local_did: String,
-) -> std::collections::BTreeMap<String, Option<String>> {
+) -> Option<std::collections::BTreeMap<String, Option<String>>> {
     let read = async {
         let mut response = db
             .query("SELECT verse_id, namespace_id FROM verse WHERE created_by = $did")
@@ -1243,17 +1272,18 @@ async fn load_owned_verse_ids(
         anyhow::Ok(response.take::<Vec<serde_json::Value>>(0)?)
     };
     match read.await {
-        Ok(rows) => rows
-            .into_iter()
-            .filter_map(|row| {
-                let verse_id = row.get("verse_id")?.as_str()?.to_string();
-                let namespace_id = row.get("namespace_id").and_then(|value| value.as_str()).map(str::to_string);
-                Some((verse_id, namespace_id))
-            })
-            .collect(),
+        Ok(rows) => Some(
+            rows.into_iter()
+                .filter_map(|row| {
+                    let verse_id = row.get("verse_id")?.as_str()?.to_string();
+                    let namespace_id = row.get("namespace_id").and_then(|value| value.as_str()).map(str::to_string);
+                    Some((verse_id, namespace_id))
+                })
+                .collect(),
+        ),
         Err(error) => {
             tracing::warn!(%error, "desktop relay gate could not list hosted verses");
-            std::collections::BTreeMap::new()
+            None
         }
     }
 }
@@ -1341,7 +1371,7 @@ fn drain_scene_changes_to_store(
     while let Ok(change) = receiver.0.try_recv() {
         // QA-0087: a refused persist re-broadcasts the last-good transform, so
         // the GUI's optimistic preview (and every WS client) rolls back.
-        if let fe_runtime::messages::SceneChange::TransformFailed { node_id, petal_id, position, rotation, scale } = &change {
+        if let fe_runtime::messages::SceneChange::TransformFailed { node_id, petal_id, position, rotation, scale, .. } = &change {
             if transforms.0.send(fe_runtime::messages::TransformUpdate {
                 node_id: node_id.clone(),
                 petal_id: petal_id.clone(),
