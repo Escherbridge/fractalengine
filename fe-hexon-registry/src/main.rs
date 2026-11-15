@@ -21,12 +21,20 @@ async fn main() -> anyhow::Result<()> {
     }
     std::fs::create_dir_all(&cfg.dir)?;
 
-    let store: Arc<dyn PackageStore> = Arc::new(FsPackageStore::new(cfg.dir.clone()));
+    let fs_store = FsPackageStore::new(cfg.dir.clone());
+    let swept = fs_store.remove_stale_temp_files();
+    if swept > 0 {
+        tracing::warn!(count = swept, "removed leftover publish temp files");
+    }
+    let store: Arc<dyn PackageStore> = Arc::new(fs_store);
     let entries = store.list().await?;
     tracing::info!(count = entries.len(), dir = %cfg.dir.display(), "indexed hexon packages");
 
     let state = Arc::new(
         RegistryState::with_store(store, cfg.token, cfg.readonly, entries)
+            .with_publish_token(cfg.publish_token)
+            .with_archive_concurrency(cfg.archive_concurrency)
+            .with_max_publish_bytes(cfg.max_publish_bytes)
             .with_public_blobs(cfg.public_blobs),
     );
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;

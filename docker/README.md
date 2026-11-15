@@ -104,7 +104,7 @@ From the repository root:
 
 ```bash
 podman build -f docker/Dockerfile.hexon-registry -t fe-hexon-registry .
-podman run -p 8790:8790 -v ./sample-hexons/dist:/data/hexons fe-hexon-registry
+podman run -p 8790:8790 -v ./sample-hexons/dist:/data/hexons   -e FE_REGISTRY_ALLOW_OPEN=1 -e FE_REGISTRY_PUBLISH_TOKEN=dev-publish-token fe-hexon-registry
 ```
 
 `sample-hexons/dist` is produced by:
@@ -135,9 +135,23 @@ Brings up the relay on `:8765` and the hexon registry on `:8790` with
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FE_REGISTRY_DIR` | `/data/hexons` | Directory scanned for `*.hexon` (non-recursive) |
-| `FE_REGISTRY_BIND` | `0.0.0.0:8790` | Listen address |
-| `FE_REGISTRY_TOKEN` | (unset) | Bearer token gating all `/api/v1` routes; unset = open access (warning logged) |
+| `FE_REGISTRY_BIND` | `0.0.0.0:$PORT`, else `0.0.0.0:8790` | Listen address; wins over `PORT` (the image sets neither, so a platform `PORT` takes effect) |
+| `FE_REGISTRY_TOKEN` | (unset) | Read token gating `/api/v1/hexons/*` reads (and publish when no publish token); unset requires `FE_REGISTRY_ALLOW_OPEN=1` |
+| `FE_REGISTRY_ALLOW_OPEN` | `false` | Explicit opt-in to serve reads with no token |
+| `FE_REGISTRY_PUBLISH_TOKEN` | (unset) | Bearer token for `POST /api/v1/hexons/publish` only; the read token does not authorize publish when this is set. Required for an open, writable registry |
 | `FE_REGISTRY_READONLY` | `false` | Reject `POST /api/v1/hexons/publish` when `true` |
+| `FE_REGISTRY_PUBLIC_BLOBS` | `false` | Serve every stored archive on `/blobs`, catalogue-listed or not |
+| `FE_REGISTRY_ARCHIVE_CONCURRENCY` | `4` | Concurrent archive reads (`/meta`, `/chunk`, `/member`, `/entries`, `/asset`, manifest); beyond it, 503 + `Retry-After` |
+| `FE_REGISTRY_MAX_PUBLISH_BYTES` | `67108864` (64 MiB) | Largest publish body; over it, 413 `payload_too_large` (the desktop client refuses packages over 64 MiB) |
+| `PORT` | (unset) | Container-platform listen port (used when `FE_REGISTRY_BIND` is unset) |
+
+Tokens are trimmed and must be at least 32 characters, or the service refuses to start.
+
+The runtime image is `alpine:3.22` and runs as root because the platform mounts its volume root-owned; a non-root `USER` needs the volume ownership (`/data/hexons`) arranged first.
+
+The image declares no `VOLUME`; mount storage at `/data/hexons` (or point `FE_REGISTRY_DIR` at the platform volume).
+
+A public deployment: open reads plus an operator publish token (`FE_REGISTRY_ALLOW_OPEN=1`, `FE_REGISTRY_PUBLISH_TOKEN=<secret>`), or `FE_REGISTRY_READONLY=1` instead of the publish token.
 | `RUST_LOG` | `info` | Log filter |
 
 ## Endpoints
@@ -150,4 +164,4 @@ Brings up the relay on `:8765` and the hexon registry on `:8790` with
 | GET | `/api/v1/hexons/{uri}/entries` | entries.json catalog |
 | GET | `/api/v1/hexons/{uri}/entries/{entry_id}/asset` | Stream one blob |
 | GET | `/api/v1/hexons/{uri}/download` | Stream the whole `.hexon` (`application/x-hexon+zip`) |
-| POST | `/api/v1/hexons/publish` | Upload raw `.hexon` bytes (409 on duplicate `id@version`) |
+| POST | `/api/v1/hexons/publish` | Upload raw `.hexon` bytes (publish token; 409 on duplicate `id@version`) |

@@ -69,6 +69,35 @@ pub fn maybe_spawn_embedded_relay(
     Ok(None)
 }
 
+/// Bevy system: every stored verse is hosted, so a created verse joins the running relay's hosted set and a deleted one leaves it (RF-OPEN-4); a no-op with no relay installed.
+#[cfg(feature = "relay-server")]
+pub fn rebind_hosted_on_verse_change(mut results: bevy::prelude::MessageReader<fe_runtime::messages::DbResult>) {
+    use fe_runtime::messages::{DbResult, EntityType};
+    let mut changes = Vec::new();
+    for result in results.read() {
+        match result {
+            DbResult::VerseCreated { id, .. } => changes.push((id.clone(), true)),
+            DbResult::EntityDeleted { entity_type: EntityType::Verse, entity_id } => changes.push((entity_id.clone(), false)),
+            _ => {}
+        }
+    }
+    if changes.is_empty() {
+        return;
+    }
+    let Some(gate) = fe_sync::relay_server::installed_gate() else {
+        return;
+    };
+    let mut hosted = gate.hosted_verse_ids().unwrap_or_default();
+    for (verse_id, stored) in changes {
+        if stored {
+            hosted.insert(verse_id);
+        } else {
+            hosted.remove(&verse_id);
+        }
+    }
+    fe_sync::relay_server::rebind_hosted_verses(&gate, hosted);
+}
+
 /// Config result to running relay: absent opt-in is `None`, a refused config is an error naming the reason (AC-2).
 #[cfg(feature = "relay-server")]
 fn spawn_from_config(

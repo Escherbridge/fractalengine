@@ -1,0 +1,26 @@
+# Keep every workspace member's Cargo.toml and src: cargo resolves the whole workspace.
+target
+**/target
+.git
+.github
+.omc
+.qa
+.mpg
+.claude
+.codex
+.pi
+.ruff_cache
+**/node_modules
+data
+docs
+research
+conductor
+qa
+fuzz
+packaging
+scripts
+sample-hexons
+tools/qa
+tools/duckdb
+tools/duckdb_cli.zip
+tools/branding

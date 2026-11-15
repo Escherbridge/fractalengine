@@ -343,6 +343,47 @@ async fn publish_rejects_duplicate() {
     assert_eq!(status, StatusCode::OK);
     let (status, _) = post_publish(&router, night_sky_hexon(), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    // A body over the configured cap is 413 with a stable code, before anything is stored.
+    let capped = build_router(Arc::new(
+        RegistryState::new(tmp.path().to_path_buf(), None, false, scan_dir(tmp.path()))
+            .with_max_publish_bytes(1024),
+    ));
+    let (status, body) = post_publish(&capped, vec![0u8; 4096], None).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error_text(&body), "payload_too_large");
+
+    // A publish that dies mid-write leaves nothing under the final name; a retry then succeeds
+    // and a second publish of the same slot still conflicts.
+    let store = FsPackageStore::new(tmp.path());
+    let blob = axum::body::Bytes::from_static(b"sealed-bytes");
+    let failed = store
+        .put_with_writer("half", "1.0.0", blob.clone(), |file, _| {
+            std::io::Write::write_all(file, b"se")?;
+            Err(std::io::Error::other("disk full"))
+        })
+        .await;
+    assert!(failed.is_err());
+    assert!(!tmp.path().join("half@1.0.0.hexon").exists());
+    let temp_files = || {
+        std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".fe-registry-tmp-"))
+            .count()
+    };
+    assert_eq!(temp_files(), 0, "a failed publish removes its temp file");
+    store.put("half", "1.0.0", blob.clone()).await.unwrap();
+    assert_eq!(std::fs::read(tmp.path().join("half@1.0.0.hexon")).unwrap(), blob.to_vec());
+    assert!(matches!(
+        store.put("half", "1.0.0", blob).await,
+        Err(StoreError::AlreadyExists)
+    ));
+    // A crash-leftover temp file is swept at startup and nothing else is touched.
+    std::fs::write(tmp.path().join(".fe-registry-tmp-crashed"), b"x").unwrap();
+    assert_eq!(store.remove_stale_temp_files(), 1);
+    assert_eq!(temp_files(), 0);
+    assert!(tmp.path().join("half@1.0.0.hexon").exists());
 }
 
 #[tokio::test]
@@ -397,6 +438,47 @@ async fn token_gates_api_when_set() {
     // Health stays public.
     let (status, _) = get(&router, "/health").await;
     assert_eq!(status, StatusCode::OK);
+
+    // Open reads + publish token: reads need no header, publish needs the publish token only.
+    let tmp = tempfile::tempdir().unwrap();
+    fixtures::write_fixture_set(tmp.path());
+    let open = build_router(Arc::new(
+        RegistryState::new(tmp.path().to_path_buf(), None, false, scan_dir(tmp.path()))
+            .with_publish_token(Some("pub-t0ken".to_string())),
+    ));
+    for uri in [
+        "/health",
+        "/api/v1/hexons/search",
+        "/api/v1/hexons/alpine-terrain@1.2.0",
+        "/api/v1/hexons/alpine-terrain@1.2.0/download",
+        "/api/v1/catalog/config.json",
+    ] {
+        let (status, _) = get(&open, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
+    let (status, _) = post_publish(&open, night_sky_hexon(), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = post_publish(&open, night_sky_hexon(), Some("s3cret")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = post_publish(&open, night_sky_hexon(), Some("pub-t0ken")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Both tokens set: the read token reads but cannot publish; the publish token publishes but cannot read.
+    let both = build_router(Arc::new(
+        RegistryState::new(
+            tmp.path().to_path_buf(),
+            Some("s3cret".to_string()),
+            false,
+            scan_dir(tmp.path()),
+        )
+        .with_publish_token(Some("pub-t0ken".to_string())),
+    ));
+    let (status, _) = post_publish(&both, petal_snapshot_hexon(), Some("s3cret")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = post_publish(&both, petal_snapshot_hexon(), Some("pub-t0ken")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = get(&both, "/api/v1/hexons/search").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 fn error_text(body: &[u8]) -> String {
@@ -639,6 +721,30 @@ async fn chunk_route_serves_bytes_matching_the_signed_index() {
     assert_eq!(body, mono);
     let (status, _) = get(&router, "/api/v1/hexons/mono/chunk/1").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Every archive permit held: archive reads answer 503 + Retry-After, streamed downloads still work,
+    // and the same read succeeds the moment the permits come back.
+    let state = Arc::new(
+        RegistryState::new(tmp.path().to_path_buf(), None, false, scan_dir(tmp.path()))
+            .with_archive_concurrency(2),
+    );
+    let limited = build_router(state.clone());
+    let held = state.archive.permits().acquire_many_owned(2).await.unwrap();
+    for uri in ["/api/v1/hexons/mono/chunk/0", "/api/v1/hexons/mono/meta"] {
+        let resp = limited
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert!(resp.headers().contains_key(header::RETRY_AFTER), "{uri}");
+    }
+    let (status, _) = get(&limited, "/api/v1/hexons/mono/download").await;
+    assert_eq!(status, StatusCode::OK);
+    drop(held);
+    let (status, body) = get(&limited, "/api/v1/hexons/mono/chunk/0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, mono);
 }
 
 #[tokio::test]
@@ -862,6 +968,10 @@ async fn reads_of_a_bomb_already_on_disk_fail_bounded() {
             "{uri}: {}",
             error_text(&body)
         );
+        // Internal failures never echo filesystem paths to the client.
+        let raw = String::from_utf8_lossy(&body);
+        assert!(!raw.contains(&*tmp.path().to_string_lossy()), "{uri}: {raw}");
+        assert!(!raw.contains(".hexon"), "{uri}: {raw}");
     }
 }
 
@@ -1010,14 +1120,29 @@ async fn catalogue_is_public_and_verbatim_behind_a_token() {
         dir: tmp.path().to_path_buf(),
         bind: "127.0.0.1:0".to_string(),
         token: None,
+        publish_token: None,
+        archive_concurrency: 4,
+        max_publish_bytes: 64 << 20,
         readonly: false,
         allow_open: false,
         public_blobs: false,
     };
     assert!(cfg.validate().is_err());
     cfg.allow_open = true;
+    // Open reads must be read-only or carry a publish token.
+    assert!(cfg.validate().is_err());
+    cfg.readonly = true;
     assert!(cfg.validate().is_ok());
+    cfg.readonly = false;
+    cfg.publish_token = Some("pub-t0ken-".repeat(4));
+    assert!(cfg.validate().is_ok());
+    cfg.publish_token = None;
     cfg.allow_open = false;
+    // A token shorter than 32 characters refuses startup.
     cfg.token = Some("s3cret".to_string());
+    assert!(cfg.validate().is_err());
+    cfg.token = Some("s3cret-".repeat(5));
     assert!(cfg.validate().is_ok());
+    cfg.publish_token = Some("short".to_string());
+    assert!(cfg.validate().is_err());
 }

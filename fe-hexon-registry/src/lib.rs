@@ -1,6 +1,7 @@
 //! Hosted hexon registry HTTP service — see `AGENTS.md` for design rationale.
 
 pub mod config;
+pub mod guard;
 pub mod index;
 pub mod limits;
 pub mod routes;

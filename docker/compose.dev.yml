@@ -26,7 +26,9 @@ services:
     environment:
       FE_REGISTRY_DIR: "/data/hexons"
       FE_REGISTRY_BIND: "0.0.0.0:8790"
-      # FE_REGISTRY_TOKEN: "dev-token"   # uncomment to gate all /api/v1 routes
+      FE_REGISTRY_ALLOW_OPEN: "1"           # anyone may search and download
+      FE_REGISTRY_PUBLISH_TOKEN: "dev-publish-token"   # publishing needs this bearer token
+      # FE_REGISTRY_TOKEN: "dev-token"   # uncomment to gate reads too
       # FE_REGISTRY_READONLY: "true"     # uncomment to reject publishes
       RUST_LOG: "info"
     restart: unless-stopped

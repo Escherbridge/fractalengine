@@ -7,6 +7,9 @@ use axum::body::Bytes;
 
 use crate::index::{self, HexonIndexEntry};
 
+/// Prefix of in-flight publish temp files (never ends in `.hexon`, so `scan_dir` ignores them).
+const TEMP_PREFIX: &str = ".fe-registry-tmp-";
+
 /// Largest catalogue document the filesystem store will read (matches a client's document cap).
 const MAX_CATALOG_DOC_BYTES: u64 = 16 << 20;
 
@@ -85,6 +88,16 @@ pub fn valid_catalog_path(path: &str) -> bool {
     !reserved
 }
 
+/// Process-unique temp file name inside the store directory.
+fn unique_temp_name() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{TEMP_PREFIX}{}-{nanos}-{n}", std::process::id())
+}
+
 /// Archives as `{dir}/{id}@{version}.hexon`; catalogue documents as plain files under `{dir}/catalog/`.
 pub struct FsPackageStore {
     dir: PathBuf,
@@ -93,6 +106,53 @@ pub struct FsPackageStore {
 impl FsPackageStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
+    }
+
+    /// Delete leftover publish temp files from a crash; returns how many were removed.
+    pub fn remove_stale_temp_files(&self) -> usize {
+        let Ok(read_dir) = std::fs::read_dir(&self.dir) else {
+            return 0;
+        };
+        read_dir
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(TEMP_PREFIX))
+            .filter(|e| std::fs::remove_file(e.path()).is_ok())
+            .count()
+    }
+
+    /// [`PackageStore::put`] with the temp-file writer injectable (tests drive a failing disk through this).
+    pub async fn put_with_writer<W>(
+        &self,
+        id: &str,
+        version: &str,
+        bytes: Bytes,
+        write: W,
+    ) -> Result<(), StoreError>
+    where
+        W: FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()> + Send + 'static,
+    {
+        if !portable_segment(id) || !portable_segment(version) {
+            return Err(StoreError::Invalid(format!("{id}@{version}")));
+        }
+        let dest = self.dir.join(format!("{id}@{version}.hexon"));
+        let temp = self.dir.join(unique_temp_name());
+        tokio::task::spawn_blocking(move || {
+            let staged = (|| {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp)?;
+                write(&mut file, &bytes)?;
+                file.sync_all()
+            })();
+            // hard_link fails when `dest` exists, so the slot is never overwritten.
+            let published = staged.and_then(|()| std::fs::hard_link(&temp, &dest));
+            let _ = std::fs::remove_file(&temp);
+            published
+        })
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?
+        .map_err(StoreError::from)
     }
 
     /// Directory holding the archives.
@@ -116,22 +176,10 @@ impl PackageStore for FsPackageStore {
     }
 
     async fn put(&self, id: &str, version: &str, bytes: Bytes) -> Result<(), StoreError> {
-        if !portable_segment(id) || !portable_segment(version) {
-            return Err(StoreError::Invalid(format!("{id}@{version}")));
-        }
-        let dest = self.dir.join(format!("{id}@{version}.hexon"));
-        tokio::task::spawn_blocking(move || {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&dest)?;
-            file.write_all(&bytes)?;
-            file.sync_all()
+        self.put_with_writer(id, version, bytes, |file, bytes| {
+            std::io::Write::write_all(file, bytes)
         })
         .await
-        .map_err(|e| StoreError::Backend(e.to_string()))?
-        .map_err(StoreError::from)
     }
 
     async fn catalog_doc(&self, path: &str) -> Result<Option<Bytes>, StoreError> {

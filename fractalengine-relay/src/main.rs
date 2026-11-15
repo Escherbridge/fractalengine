@@ -160,7 +160,7 @@ fn main() -> anyhow::Result<()> {
     let fe_database::DbThread {
         join_handle: _db_thread,
         shared_db,
-    } = match fe_database::spawn_db_thread_shared(
+    } = match fe_database::spawn_db_thread_gated(
         ch.db_cmd_rx,
         ch.db_res_tx,
         blob_store.clone(),
@@ -170,6 +170,8 @@ fn main() -> anyhow::Result<()> {
         Some(entity_change_tx.clone()),
         Some(db_path),
         None,
+        // The command channel's byte gate: the sync thread charges row bytes, the DB thread releases them.
+        ch.db_cmd_bytes.clone(),
     ) {
         Ok(db_thread) => db_thread,
         Err(e) => {
@@ -279,7 +281,7 @@ fn main() -> anyhow::Result<()> {
     let (sync_evt_tx, sync_evt_rx) = crossbeam::channel::bounded(256);
     tracing::info!(node_id = %iroh_secret.public(), "Starting sync thread");
 
-    let _sync_thread = fe_sync::spawn_sync_thread(
+    let _sync_thread = fe_sync::sync_thread::spawn_sync_thread_with_sources(
         iroh_secret,
         blob_store.clone(),
         sync_cmd_rx,
@@ -291,6 +293,10 @@ fn main() -> anyhow::Result<()> {
         Some(ch.db_cmd_tx.clone()),
         // Default data dir (FE_P2P_DIR env, `data/p2p`).
         None,
+        // Production transport; no extension blob source on the relay.
+        None,
+        fe_runtime::bevy_blob_reader::BlobFallbackSlot::default(),
+        Some(ch.db_cmd_bytes.clone()),
     );
 
     // M2/F7 (A17): API→sync distributed-query bridge — the relay answers
@@ -572,6 +578,9 @@ fn main() -> anyhow::Result<()> {
         replicas::open_replica_on_verse_created,
     );
     app.add_systems(bevy::prelude::Update, replicas::startup_replica_scan);
+    // RF-OPEN-4: the embedded relay serves a verse created (or stops serving one deleted) after it started.
+    #[cfg(feature = "relay-server")]
+    app.add_systems(bevy::prelude::Update, relay_serve::rebind_hosted_on_verse_change);
 
     // A8: turn the signal thread's flag into a clean Bevy exit (exit code 0).
     app.insert_resource(ShutdownRequested(shutdown_flag));

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::{
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{rejection::BytesRejection, DefaultBodyLimit, Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -13,15 +13,22 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::io::ReaderStream;
 use tower_http::trace::TraceLayer;
 
+use crate::config::DEFAULT_MAX_PUBLISH_BYTES;
+use crate::guard::{ArchiveGuard, DEFAULT_ARCHIVE_CONCURRENCY};
 use crate::index::{self, HexonIndexEntry};
 use crate::limits;
 use crate::store::{self, FsPackageStore, PackageStore, StoreError};
 
-/// Max accepted publish body (1 GiB — tilesets are large).
-const MAX_PUBLISH_BYTES: usize = 1 << 30;
+/// Whole-request deadline for non-publish routes (a streamed body is not cut once headers are out).
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Whole-request deadline for publish, body upload included.
+const PUBLISH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+/// Requests in flight across the whole router before new ones get 503.
+const MAX_INFLIGHT_REQUESTS: usize = 256;
 
 /// Registry protocol version advertised by `/health` and `/config.json`.
 pub const REGISTRY_PROTOCOL: u64 = 1;
@@ -59,12 +66,19 @@ pub struct RegistryState {
     /// Where archives and catalogue documents live.
     pub store: Arc<dyn PackageStore>,
     pub token: Option<String>,
+    /// Token gating only `publish`; when set, the read token does not authorize it.
+    pub publish_token: Option<String>,
     pub readonly: bool,
     pub index: tokio::sync::RwLock<Vec<HexonIndexEntry>>,
     /// Operator opt-in: `/blobs` serves every stored archive, listed in the catalogue or not.
     pub public_blobs: bool,
     /// Serializes publish's check → write → reindex (no continuity TOCTOU).
     publish_lock: tokio::sync::Mutex<()>,
+    /// Archive read permits + parsed-index cache (`AGENTS.md` §hardening).
+    pub archive: ArchiveGuard,
+    /// Largest accepted publish body, bytes.
+    pub max_publish_bytes: usize,
+    inflight: Arc<Semaphore>,
 }
 
 impl RegistryState {
@@ -88,11 +102,33 @@ impl RegistryState {
         Self {
             store,
             token,
+            publish_token: None,
             readonly,
             index: tokio::sync::RwLock::new(entries),
             public_blobs: false,
             publish_lock: tokio::sync::Mutex::new(()),
+            archive: ArchiveGuard::new(DEFAULT_ARCHIVE_CONCURRENCY),
+            max_publish_bytes: DEFAULT_MAX_PUBLISH_BYTES,
+            inflight: Arc::new(Semaphore::new(MAX_INFLIGHT_REQUESTS)),
         }
+    }
+
+    /// Gate `publish` with its own bearer token (see `AGENTS.md` §auth).
+    pub fn with_publish_token(mut self, publish_token: Option<String>) -> Self {
+        self.publish_token = publish_token;
+        self
+    }
+
+    /// Concurrent archive reads (default 4); drops the parsed-index cache.
+    pub fn with_archive_concurrency(mut self, permits: usize) -> Self {
+        self.archive = ArchiveGuard::new(permits);
+        self
+    }
+
+    /// Largest accepted publish body in bytes (default 64 MiB).
+    pub fn with_max_publish_bytes(mut self, bytes: usize) -> Self {
+        self.max_publish_bytes = bytes;
+        self
     }
 
     /// Serve every stored archive on `/blobs` (default off: only catalogue-listed builds are anonymous).
@@ -103,23 +139,25 @@ impl RegistryState {
 
     /// True when the request carries this registry's bearer token (never true without one).
     fn bearer_matches(&self, headers: &header::HeaderMap) -> bool {
-        let presented = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        self.token.as_deref().is_some_and(|expected| presented == Some(expected))
+        self.token.as_deref().is_some_and(|expected| bearer_ok(headers, expected))
     }
 }
 
 /// Build the registry router; `/health` and the catalogue (`/config.json` alias, `/api/v1/catalog/*`)
-/// are public, `/blobs/*` is public only for catalogue-listed builds, `/api/v1/hexons/*` is token-gated.
+/// are public, `/blobs/*` is public only for catalogue-listed builds, `/api/v1/hexons/*` reads are gated by
+/// the read token and `publish` by the publish token (else the read token).
 pub fn build_router(state: Arc<RegistryState>) -> Router {
-    let api = Router::new()
-        .route("/hexons/search", get(search))
+    // Publish has its own gate, layered on the route so it runs before the body extractor reads a byte.
+    let publish_route = Router::new()
         .route(
             "/hexons/publish",
-            post(publish).layer(DefaultBodyLimit::max(MAX_PUBLISH_BYTES)),
+            post(publish).layer(DefaultBodyLimit::max(state.max_publish_bytes)),
         )
+        .layer(middleware::from_fn_with_state(state.clone(), require_publish))
+        .layer(middleware::from_fn(publish_deadline));
+
+    let reads = Router::new()
+        .route("/hexons/search", get(search))
         .route("/hexons/{uri}", get(manifest))
         .route("/hexons/{uri}/meta", get(meta))
         .route("/hexons/{uri}/entries", get(entries))
@@ -127,7 +165,9 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
         .route("/hexons/{uri}/chunk/{seq}", get(chunk))
         .route("/hexons/{uri}/member/{*path}", get(member))
         .route("/hexons/{uri}/download", get(download))
-        .layer(middleware::from_fn_with_state(state.clone(), require_token));
+        .layer(middleware::from_fn_with_state(state.clone(), require_token))
+        .layer(middleware::from_fn(read_deadline));
+    let api = reads.merge(publish_route);
 
     Router::new()
         .route("/health", get(health))
@@ -135,6 +175,7 @@ pub fn build_router(state: Arc<RegistryState>) -> Router {
         .route("/api/v1/catalog/{*path}", get(catalog_doc))
         .route("/blobs/{file}", get(blob))
         .nest("/api/v1", api)
+        .layer(middleware::from_fn_with_state(state.clone(), limit_inflight))
         .layer(middleware::map_response(stamp_protocol))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -148,6 +189,34 @@ async fn stamp_protocol<B>(mut response: Response<B>) -> Response<B> {
     response
 }
 
+/// Global concurrency cap: 503 + `Retry-After` when too many requests are in flight.
+async fn limit_inflight(
+    State(state): State<Arc<RegistryState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    match Arc::clone(&state.inflight).try_acquire_owned() {
+        Ok(_slot) => next.run(req).await,
+        Err(_) => busy(),
+    }
+}
+
+/// Run `next` under `deadline`; a late handler answers 408.
+async fn with_deadline(deadline: std::time::Duration, req: Request, next: Next) -> Response {
+    match tokio::time::timeout(deadline, next.run(req)).await {
+        Ok(response) => response,
+        Err(_) => json_err(StatusCode::REQUEST_TIMEOUT, "request_timeout"),
+    }
+}
+
+async fn read_deadline(req: Request, next: Next) -> Response {
+    with_deadline(READ_DEADLINE, req, next).await
+}
+
+async fn publish_deadline(req: Request, next: Next) -> Response {
+    with_deadline(PUBLISH_DEADLINE, req, next).await
+}
+
 /// Bearer-token gate for `/api/v1` routes; no-op when no token is configured.
 async fn require_token(
     State(state): State<Arc<RegistryState>>,
@@ -155,16 +224,50 @@ async fn require_token(
     next: Next,
 ) -> Response {
     if let Some(expected) = &state.token {
-        let presented = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        if presented != Some(expected.as_str()) {
+        if !bearer_ok(req.headers(), expected) {
             return json_err(StatusCode::UNAUTHORIZED, "missing or invalid bearer token");
         }
     }
     next.run(req).await
+}
+
+/// Publish gate: read-only wins (403), then the publish token (else the read token) must match.
+async fn require_publish(
+    State(state): State<Arc<RegistryState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if state.readonly {
+        return json_err(StatusCode::FORBIDDEN, "registry is read-only");
+    }
+    if let Some(expected) = state.publish_token.as_ref().or(state.token.as_ref()) {
+        if !bearer_ok(req.headers(), expected) {
+            return json_err(StatusCode::UNAUTHORIZED, "missing or invalid bearer token");
+        }
+    }
+    let declared = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|len| len > state.max_publish_bytes as u64) {
+        return json_err(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+    }
+    next.run(req).await
+}
+
+/// True when `Authorization: Bearer <x>` carries exactly `expected` (constant-time compare).
+fn bearer_ok(headers: &header::HeaderMap, expected: &str) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|presented| constant_time_eq(presented.as_bytes(), expected.as_bytes()))
+}
+
+/// Length-checked XOR fold: no early exit on the first differing byte.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn json_err(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -188,7 +291,7 @@ fn json_doc(bytes: Bytes) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(Body::from(bytes))
-        .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .unwrap_or_else(|e| internal("response build failed", &e))
 }
 
 /// Contract v1 error envelope with a stable snake_case code.
@@ -372,49 +475,142 @@ async fn resolve_entry(state: &RegistryState, uri: &str) -> Option<HexonIndexEnt
     index::resolve(&state.index.read().await, uri).cloned()
 }
 
-/// Read a JSON file out of an indexed package's zip on a blocking thread.
-async fn zip_json(path: PathBuf, name: &'static str) -> anyhow::Result<serde_json::Value> {
-    tokio::task::spawn_blocking(move || index::read_zip_json(&path, name)).await?
+/// Reply to a failed archive read: details to the log, a stable code to the client.
+fn read_failure(e: &anyhow::Error) -> Response {
+    let text = format!("{e:#}");
+    tracing::error!(error = %text, "archive read failed");
+    if text.contains(limits::DECOMPRESSION_LIMIT_ERROR) {
+        json_err(StatusCode::INTERNAL_SERVER_ERROR, limits::DECOMPRESSION_LIMIT_ERROR)
+    } else {
+        json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    }
+}
+
+/// Log `detail` and answer a stable `internal_error` (no paths or I/O text reach the client).
+fn internal(context: &str, detail: &dyn std::fmt::Display) -> Response {
+    tracing::error!(error = %detail, "{context}");
+    json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+}
+
+/// 503 with `Retry-After`: every archive permit (or request slot) is in use.
+fn busy() -> Response {
+    let mut response = json_err(StatusCode::SERVICE_UNAVAILABLE, "busy");
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, header::HeaderValue::from_static("2"));
+    response
+}
+
+/// One archive permit, or the 503 to return.
+async fn archive_permit(state: &RegistryState) -> Result<OwnedSemaphorePermit, Response> {
+    state.archive.acquire().await.ok_or_else(busy)
+}
+
+/// Run blocking archive work holding `permit`; the permit comes back with the result so the
+/// response body can keep it until the bytes are drained.
+async fn run_blocking<T: Send + 'static>(
+    permit: OwnedSemaphorePermit,
+    work: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<(OwnedSemaphorePermit, T)> {
+    match tokio::task::spawn_blocking(move || (permit, work())).await {
+        Ok((permit, Ok(value))) => Ok((permit, value)),
+        Ok((_, Err(e))) => Err(e),
+        Err(e) => Err(anyhow::anyhow!("blocking task failed: {e}")),
+    }
+}
+
+/// `AsyncRead` over buffered bytes that keeps its archive permit until the body is dropped.
+struct HeldRead {
+    data: std::io::Cursor<Vec<u8>>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl tokio::io::AsyncRead for HeldRead {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.data), cx, buf)
+    }
+}
+
+/// Buffered bytes as a body whose archive permit lives until the client has drained it.
+fn held_response(
+    permit: OwnedSemaphorePermit,
+    bytes: Vec<u8>,
+    content_type: &'static str,
+    disposition: Option<String>,
+) -> Response {
+    let len = bytes.len();
+    let body = Body::from_stream(ReaderStream::new(HeldRead {
+        data: std::io::Cursor::new(bytes),
+        _permit: permit,
+    }));
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, len)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    if let Some(disposition) = disposition {
+        builder = builder.header(header::CONTENT_DISPOSITION, disposition);
+    }
+    builder
+        .body(body)
+        .unwrap_or_else(|e| internal("response build failed", &e))
+}
+
+/// `{ok, data}` envelope serialised up front so the permit can ride the body.
+fn json_held<T: Serialize>(permit: OwnedSemaphorePermit, data: T) -> Response {
+    match serde_json::to_vec(&ApiResponse::success(data)) {
+        Ok(bytes) => held_response(permit, bytes, "application/json", None),
+        Err(e) => internal("json serialisation failed", &e),
+    }
 }
 
 /// GET /api/v1/hexons/{uri} — raw manifest.json (latest version when unversioned).
 async fn manifest(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) -> Response {
-    let Some(entry) = resolve_entry(&state, &uri).await else {
-        return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
-    };
-    match zip_json(entry.path, "manifest.json").await {
-        Ok(m) => Json(ApiResponse::success(m)).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
-    }
+    json_member(&state, &uri, "manifest.json").await
 }
 
 /// GET /api/v1/hexons/{uri}/entries — raw entries.json content.
 async fn entries(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) -> Response {
-    let Some(entry) = resolve_entry(&state, &uri).await else {
+    json_member(&state, &uri, "entries.json").await
+}
+
+/// Serve one JSON member of an indexed package inside the `{ok,data}` envelope.
+async fn json_member(state: &RegistryState, uri: &str, name: &'static str) -> Response {
+    let Some(entry) = resolve_entry(state, uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
-    match zip_json(entry.path, "entries.json").await {
-        Ok(c) => Json(ApiResponse::success(c)).into_response(),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    let permit = match archive_permit(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match run_blocking(permit, move || index::read_zip_json(&entry.path, name)).await {
+        Ok((permit, value)) => json_held(permit, value),
+        Err(e) => read_failure(&e),
     }
 }
 
 /// GET /api/v1/hexons/{uri}/meta — the header-phase document (PAS-P5 §3.2):
-/// raw manifest + header-member text, no body/tile bytes. Built from the lazy
-/// `HexonArchiveIndex` reader (not `HexonArchive::import`, which is eager), so
-/// a multi-hundred-MiB tileset costs one small capped read, not a full load.
+/// raw manifest + header-member text, no body/tile bytes, from the cached lazy `HexonArchiveIndex`.
 async fn meta(State(state): State<Arc<RegistryState>>, Path(uri): Path<String>) -> Response {
     let Some(entry) = resolve_entry(&state, &uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
-    let result = tokio::task::spawn_blocking(move || {
-        fe_format::HexonArchiveIndex::open(&entry.path).map(|index| index.header_doc())
+    let permit = match archive_permit(&state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let reader = Arc::clone(&state);
+    match run_blocking(permit, move || {
+        Ok(reader.archive.open(&entry.path)?.header_doc())
     })
-    .await;
-    match result {
-        Ok(Ok(doc)) => Json(ApiResponse::success(doc)).into_response(),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    .await
+    {
+        Ok((permit, doc)) => json_held(permit, doc),
+        Err(e) => read_failure(&e),
     }
 }
 
@@ -439,23 +635,27 @@ fn safe_filename(raw: &str) -> String {
 /// that happens to be named e.g. `notes.html` from ever being rendered as
 /// same-origin HTML by a browser that follows the link — the stored-XSS rule
 /// CDL-SPEC10 A4 already applies to fe-api blobs (S3 critic amendment, step 6).
-fn octet_response(bytes: Vec<u8>, filename: &str) -> Response {
+fn octet_response(permit: OwnedSemaphorePermit, bytes: Vec<u8>, filename: &str) -> Response {
     let filename = safe_filename(filename);
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{filename}\""),
-        )
-        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .body(Body::from(bytes))
-        .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    held_response(
+        permit,
+        bytes,
+        "application/octet-stream",
+        Some(format!("attachment; filename=\"{filename}\"")),
+    )
+}
+
+/// What `/chunk/{seq}` resolved to.
+enum ChunkOut {
+    Bytes(Vec<u8>),
+    /// Monolithic archive, `seq == 0`: the whole file, streamed.
+    WholeFile,
+    Missing,
 }
 
 /// GET /api/v1/hexons/{uri}/chunk/{seq} — one container chunk's raw `.hexon`
-/// bytes; for a monolithic archive, `seq == 0` is the whole file (so a caller
-/// never needs to special-case layout) and anything else is 404.
+/// bytes; for a monolithic archive, `seq == 0` is the whole file (streamed, never buffered)
+/// and anything else is 404.
 async fn chunk(
     State(state): State<Arc<RegistryState>>,
     Path((uri, seq)): Path<(String, u32)>,
@@ -463,21 +663,33 @@ async fn chunk(
     let Some(entry) = resolve_entry(&state, &uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
+    let permit = match archive_permit(&state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let path = entry.path.clone();
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        let index = fe_format::HexonArchiveIndex::open(&path)?;
-        match index.layout() {
-            fe_format::Layout::Container { .. } => index.chunk(seq),
-            fe_format::Layout::Monolithic if seq == 0 => Ok(Some(std::fs::read(&path)?)),
-            fe_format::Layout::Monolithic => Ok(None),
-        }
+    let reader = Arc::clone(&state);
+    let filename = format!("chunk-{seq}.hexon");
+    match run_blocking(permit, move || {
+        let index = reader.archive.open(&path)?;
+        Ok(match index.layout() {
+            fe_format::Layout::Container { .. } => index
+                .chunk(seq)?
+                .map_or(ChunkOut::Missing, ChunkOut::Bytes),
+            fe_format::Layout::Monolithic if seq == 0 => ChunkOut::WholeFile,
+            fe_format::Layout::Monolithic => ChunkOut::Missing,
+        })
     })
-    .await;
-    match result {
-        Ok(Ok(Some(bytes))) => octet_response(bytes, &format!("chunk-{seq}.hexon")),
-        Ok(Ok(None)) => json_err(StatusCode::NOT_FOUND, format!("no chunk {seq} for {uri}")),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    .await
+    {
+        Ok((permit, ChunkOut::Bytes(bytes))) => octet_response(permit, bytes, &filename),
+        Ok((_, ChunkOut::WholeFile)) => {
+            stream_file(&entry.path, &filename, "application/octet-stream").await
+        }
+        Ok((_, ChunkOut::Missing)) => {
+            json_err(StatusCode::NOT_FOUND, format!("no chunk {seq} for {uri}"))
+        }
+        Err(e) => read_failure(&e),
     }
 }
 
@@ -494,28 +706,39 @@ async fn member(
     let Some(entry) = resolve_entry(&state, &uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
+    let permit = match archive_permit(&state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let file_path = entry.path.clone();
     let member_name = path.clone();
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        let index = fe_format::HexonArchiveIndex::open(&file_path)?;
+    let reader = Arc::clone(&state);
+    match run_blocking(permit, move || {
+        let index = reader.archive.open(&file_path)?;
         if !index.contains(&member_name) {
             return Ok(None);
         }
         index.read_member(&member_name)
     })
-    .await;
-    match result {
-        Ok(Ok(Some(bytes))) => {
+    .await
+    {
+        Ok((permit, Some(bytes))) => {
             let filename = path.rsplit('/').next().unwrap_or(&path);
-            octet_response(bytes, filename)
+            octet_response(permit, bytes, filename)
         }
-        Ok(Ok(None)) => json_err(StatusCode::NOT_FOUND, format!("no member {path} in {uri}")),
-        Ok(Err(e)) => json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok((_, None)) => json_err(StatusCode::NOT_FOUND, format!("no member {path} in {uri}")),
+        Err(e) => read_failure(&e),
     }
 }
 
-/// GET /api/v1/hexons/{uri}/entries/{entry_id}/asset — stream the entry's blob.
+/// What `/entries/{id}/asset` resolved to.
+enum AssetOut {
+    NoEntry,
+    Blob(Vec<u8>),
+    BlobMissing,
+}
+
+/// GET /api/v1/hexons/{uri}/entries/{entry_id}/asset — the entry's blob.
 async fn asset(
     State(state): State<Arc<RegistryState>>,
     Path((uri, entry_id)): Path<(String, String)>,
@@ -523,44 +746,49 @@ async fn asset(
     let Some(entry) = resolve_entry(&state, &uri).await else {
         return json_err(StatusCode::NOT_FOUND, format!("hexon not found: {uri}"));
     };
-    let catalog = match zip_json(entry.path.clone(), "entries.json").await {
-        Ok(c) => c,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    let permit = match archive_permit(&state).await {
+        Ok(p) => p,
+        Err(r) => return r,
     };
-    let hash = catalog
-        .get("entries")
-        .and_then(|e| e.as_array())
-        .and_then(|arr| {
-            arr.iter()
-                .find(|e| e.get("entry_id").and_then(|i| i.as_str()) == Some(&entry_id))
-        })
-        .and_then(|e| e.get("asset_hash"))
-        .and_then(|h| h.as_str())
-        .filter(|h| !h.is_empty())
-        .map(str::to_string);
-    let Some(hash) = hash else {
-        return json_err(
+    let wanted = entry_id.clone();
+    match run_blocking(permit, move || {
+        let catalog = index::read_zip_json(&entry.path, "entries.json")?;
+        let hash = catalog
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|e| e.get("entry_id").and_then(|i| i.as_str()) == Some(&wanted))
+            })
+            .and_then(|e| e.get("asset_hash"))
+            .and_then(|h| h.as_str())
+            .filter(|h| !h.is_empty())
+            .map(str::to_string);
+        let Some(hash) = hash else {
+            return Ok(AssetOut::NoEntry);
+        };
+        match index::read_zip_bytes(&entry.path, &format!("assets/{hash}")) {
+            Ok(bytes) => Ok(AssetOut::Blob(bytes)),
+            // A stored blob over the decompression limits is a server-side content fault, not a 404.
+            Err(e) if format!("{e:#}").contains(limits::DECOMPRESSION_LIMIT_ERROR) => Err(e),
+            Err(_) => Ok(AssetOut::BlobMissing),
+        }
+    })
+    .await
+    {
+        // W2b F6: the same nosniff+attachment protection `/chunk` and `/member` carry.
+        Ok((permit, AssetOut::Blob(bytes))) => {
+            octet_response(permit, bytes, &format!("asset-{entry_id}"))
+        }
+        Ok((_, AssetOut::NoEntry)) => json_err(
             StatusCode::NOT_FOUND,
             format!("entry not found or has no asset: {entry_id}"),
-        );
-    };
-
-    let path = entry.path.clone();
-    let zip_path = format!("assets/{hash}");
-    match tokio::task::spawn_blocking(move || index::read_zip_bytes(&path, &zip_path)).await {
-        // W2b F6: same nosniff+attachment protection `/chunk` and `/member`
-        // already carry (S3 deferral, never picked up by S8) — a stored
-        // asset blob is just as attacker-controlled a payload as a member.
-        Ok(Ok(bytes)) => octet_response(bytes, &format!("asset-{entry_id}")),
-        // A stored blob over the decompression limits is a server-side content fault, not a 404.
-        Ok(Err(e)) if format!("{e:#}").contains(limits::DECOMPRESSION_LIMIT_ERROR) => {
-            json_err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
-        }
-        Ok(Err(_)) => json_err(
+        ),
+        Ok((_, AssetOut::BlobMissing)) => json_err(
             StatusCode::NOT_FOUND,
             format!("blob missing for entry: {entry_id}"),
         ),
-        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => read_failure(&e),
     }
 }
 
@@ -572,20 +800,29 @@ async fn download(State(state): State<Arc<RegistryState>>, Path(uri): Path<Strin
     stream_hexon(&entry.path, &format!("{uri}.hexon")).await
 }
 
-/// Stream a `.hexon` file with nosniff + attachment (W2b F6; streamed, so the buffering `octet_response` is not reused).
+/// Stream a `.hexon` file as a download (W2b F6; streamed, so nothing is buffered).
 async fn stream_hexon(path: &std::path::Path, filename: &str) -> Response {
+    stream_file(path, filename, "application/x-hexon+zip").await
+}
+
+/// Stream a file with nosniff + attachment headers (constant memory, no archive permit needed).
+async fn stream_file(
+    path: &std::path::Path,
+    filename: &str,
+    content_type: &'static str,
+) -> Response {
     let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return internal("open failed", &e),
     };
     let len = match file.metadata().await {
         Ok(m) => m.len(),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return internal("stat failed", &e),
     };
     let filename = safe_filename(filename);
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/x-hexon+zip")
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, len)
         .header(
             header::CONTENT_DISPOSITION,
@@ -593,7 +830,7 @@ async fn stream_hexon(path: &std::path::Path, filename: &str) -> Response {
         )
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(Body::from_stream(ReaderStream::new(file)))
-        .unwrap_or_else(|e| json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .unwrap_or_else(|e| internal("response build failed", &e))
 }
 
 /// Chars allowed in on-disk package names (spec `hexon_id` charset + `+` for semver build meta).
@@ -620,10 +857,24 @@ fn contract_package_id(id: &str) -> bool {
 /// their committed digest all get 400. A `hexon_id` already indexed under a
 /// different (cryptographically verified) publisher DID gets 409: a second
 /// key may not "take over" someone else's id (AP-3.4 publish ownership).
-async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Response {
+async fn publish(
+    State(state): State<Arc<RegistryState>>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
     if state.readonly {
         return json_err(StatusCode::FORBIDDEN, "registry is read-only");
     }
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            let status = rejection.into_response().status();
+            return if status == StatusCode::PAYLOAD_TOO_LARGE {
+                json_err(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+            } else {
+                json_err(StatusCode::BAD_REQUEST, "unreadable_body")
+            };
+        }
+    };
     if body.is_empty() {
         return json_err(StatusCode::BAD_REQUEST, "empty body");
     }
@@ -634,7 +885,7 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
     let manifest = match manifest {
         Ok(Ok(m)) => m,
         Ok(Err(e)) => return json_err(StatusCode::BAD_REQUEST, format!("invalid .hexon: {e:#}")),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return internal("validate task failed", &e),
     };
 
     let field = |k: &str| manifest.get(k).and_then(|v| v.as_str()).map(str::to_string);
@@ -684,7 +935,7 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
             );
         }
         Ok(Err(e)) => return json_err(StatusCode::BAD_REQUEST, format!("{e}")),
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return internal("verify task failed", &e),
     };
 
     // Held until the reindex below: two concurrent publishes of one id can
@@ -726,12 +977,7 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
                 format!("already published: {id}@{version}"),
             );
         }
-        Err(e) => {
-            return json_err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write failed: {e}"),
-            );
-        }
+        Err(e) => return internal("publish write failed", &e),
     }
 
     // Full relist keeps the index consistent with the store contents.
@@ -740,7 +986,7 @@ async fn publish(State(state): State<Arc<RegistryState>>, body: Bytes) -> Respon
             tracing::info!(count = entries.len(), published = %format!("{id}@{version}"), "reindexed");
             *state.index.write().await = entries;
         }
-        Err(e) => return json_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return internal("reindex after publish failed", &e),
     }
     Json(ApiResponse::success(manifest)).into_response()
 }

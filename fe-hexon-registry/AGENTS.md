@@ -81,12 +81,20 @@ fallback otherwise.
 
 All config is env-driven for container parity with the relay:
 `FE_REGISTRY_DIR` (default `/data/hexons`), `FE_REGISTRY_BIND`
-(default `0.0.0.0:8790`), `FE_REGISTRY_TOKEN` (optional),
+(default `0.0.0.0:$PORT` when `PORT` is set and `FE_REGISTRY_BIND` is not, else `0.0.0.0:8790`;
+`resolve_bind`), `FE_REGISTRY_TOKEN` (optional read token), `FE_REGISTRY_PUBLISH_TOKEN` (optional publish-only token),
+`FE_REGISTRY_ARCHIVE_CONCURRENCY` (default 4) and `FE_REGISTRY_MAX_PUBLISH_BYTES` (default 64 MiB; §hardening),
 `FE_REGISTRY_READONLY` (`1`/`true`/`yes`), `FE_REGISTRY_ALLOW_OPEN`, `FE_REGISTRY_PUBLIC_BLOBS` (§auth). No config files.
 
 ### Auth model
 
-Single optional shared bearer token. When `FE_REGISTRY_TOKEN` is set, **all**
+Two optional bearer tokens (compared in constant time, `routes::bearer_ok`): a **read token** and a **publish token**.
+The hosted model is open reads (`FE_REGISTRY_ALLOW_OPEN=1`, no read token) plus `FE_REGISTRY_PUBLISH_TOKEN`: search and
+download need no header, publish needs the publish token. `publish` has its own `require_publish` layer on its route
+(reads keep `require_token`); it runs before the body extractor, so an unauthenticated caller can never stream the
+1 GiB body. `FE_REGISTRY_READONLY` answers 403 before any token matters. When a publish token is set the read token
+alone does NOT authorize publish; with only a read token, it still does (private deployments unchanged). `validate`
+refuses to start an open, writable registry with no publish token. Legacy single-token text follows: when `FE_REGISTRY_TOKEN` is set, **all**
 `/api/v1` routes require `Authorization: Bearer <token>` (401 otherwise);
 `/health` stays public for container health checks. When unset the registry is
 fully open and logs a startup warning — intended for local dev/test only.
@@ -150,6 +158,33 @@ joined onto a filesystem path, so a request such as `../../etc/passwd`
 simply fails to match any member and 404s; traversal is impossible by
 construction, not by charset-filtering the input.
 
+## §hardening (public deployment, 2026-11-14)
+
+Anonymous reads are the threat model, so every cost an anonymous caller can trigger is bounded:
+
+- **Archive permits** (`src/guard.rs`): one `Semaphore` (`FE_REGISTRY_ARCHIVE_CONCURRENCY`, default 4) guards every
+  blocking archive read (`/meta`, `/chunk`, `/member`, `/entries`, `/asset`, manifest). No permit within 250 ms is a
+  503 + `Retry-After`; nothing queues unboundedly. The permit rides the response body (`HeldRead`), so buffered bytes
+  are bounded by permits, not by how slowly a client drains them. HEAD runs the same handlers and takes a permit too.
+- **Index cache**: `ArchiveGuard::open` keeps parsed `HexonArchiveIndex` values keyed (path, length, mtime), at most 8
+  entries and 64 MiB of header text; member bodies are never cached. A replaced file has a new key, so it re-opens.
+- **No whole-file reads**: `/chunk/0` of a monolithic archive streams the file (`stream_file`) instead of `fs::read`.
+- **Deadlines and caps**: reads 30 s and publish 300 s (`read_deadline`/`publish_deadline`, `tokio::time::timeout`
+  around the handler; a streamed body is not cut once headers are out), and 256 requests in flight router-wide
+  (`limit_inflight`, 503). Own middleware, so no new tower-http feature or Cargo.lock change.
+- **Publish**: body cap `FE_REGISTRY_MAX_PUBLISH_BYTES` (default 64 MiB, the desktop client's install limit), enforced
+  by `Content-Length` in `require_publish` before the body is read and by `DefaultBodyLimit` for chunked bodies; both
+  answer 413 `payload_too_large`. `body.clone()` is a refcount bump on `Bytes`; the real copies are the extractor's
+  collect and `verify_archive`'s per-member buffers, both bounded by the cap and the decompression limits.
+- **Atomic write** (`FsPackageStore::put_with_writer`): temp file `.fe-registry-tmp-*` in the store dir, `sync_all`,
+  `hard_link` to `{id}@{version}.hexon` (fails if the name exists), temp removed on every path. `main` deletes leftover
+  temp files at startup. The store directory must therefore support hard links.
+- **Errors**: 5xx bodies are the stable code `internal_error` (or the decompression-limit message); detail goes to
+  `tracing` (`routes::internal`, `read_failure`). Client mistakes keep descriptive messages.
+- **Tokens**: trimmed, minimum 32 characters (`RegistryConfig::validate`).
+
+Residual: no per-IP rate limit (use the platform edge); a client that stalls mid-body holds one archive permit.
+
 ## §routes
 
 | Method | Path | Notes |
@@ -205,8 +240,9 @@ deep. `RegistryState::with_store` takes any store, `RegistryState::new` stays th
 
 ## §auth
 
-Default-deny: `RegistryConfig::validate` refuses to start without `FE_REGISTRY_TOKEN` unless `FE_REGISTRY_ALLOW_OPEN=1`.
-`require_token` guards the `/api/v1/hexons/*` routes (bearer compare); `/health`, `/config.json`, `/api/v1/catalog/*` and
+Default-deny: `RegistryConfig::validate` refuses to start without `FE_REGISTRY_TOKEN` unless `FE_REGISTRY_ALLOW_OPEN=1`,
+and refuses an open registry that is neither `FE_REGISTRY_READONLY` nor guarded by `FE_REGISTRY_PUBLISH_TOKEN` (see §design Auth model).
+`require_token` guards the `/api/v1/hexons/*` reads and `require_publish` guards `publish` (constant-time bearer compare); `/health`, `/config.json`, `/api/v1/catalog/*` and
 `/blobs/*` sit outside it because contract v1 rule 1.3 makes catalogue reads and downloads credential-free. Every response
 carries `X-Hexon-Registry-Protocol: 1`.
 
