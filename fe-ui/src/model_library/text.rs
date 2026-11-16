@@ -1,6 +1,6 @@
 //! Display-safe publisher text; see `fe-ui/src/model_library/AGENTS.md` §strings.
 
-/// Strip control and bidi/invisible format characters, collapse whitespace runs (newlines included) to one space, trim, and clip to `max_chars` with an ellipsis.
+/// Strip control characters and `fe_format::text::is_hidden_format` characters (the set the attribution gates use), collapse whitespace runs (newlines included) to one space, trim, and clip to `max_chars` with an ellipsis.
 pub fn display_text(input: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(input.len().min(max_chars.saturating_mul(4)));
     let mut count = 0usize;
@@ -10,7 +10,7 @@ pub fn display_text(input: &str, max_chars: usize) -> String {
             pending_space = count > 0;
             continue;
         }
-        if character.is_control() || is_hidden_format(character) {
+        if character.is_control() || fe_format::text::is_hidden_format(character) {
             continue;
         }
         let needed = if pending_space { 2 } else { 1 };
@@ -27,20 +27,6 @@ pub fn display_text(input: &str, max_chars: usize) -> String {
         count += 1;
     }
     out
-}
-
-/// Bidirectional marks, embeddings, overrides and isolates, plus zero-width spacing and the BOM.
-fn is_hidden_format(character: char) -> bool {
-    matches!(
-        character,
-        '\u{061C}'
-            | '\u{200B}'
-            | '\u{200E}'
-            | '\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}'
-    )
 }
 
 #[cfg(test)]

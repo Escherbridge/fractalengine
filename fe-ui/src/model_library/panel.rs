@@ -335,14 +335,17 @@ fn detail_view(ui: &mut egui::Ui, state: &mut ModelLibraryState, pending: &mut P
             Load::Ready(rows) => rows.iter().find(|row| row.uri == uri),
             _ => None,
         };
+        // Identity (title, signer) comes only from the verified header; the row supplies the image, size and install state.
+        if let Load::Ready(detail) = &*detail {
+            ui.add(
+                egui::Label::new(egui::RichText::new(detail.title.as_str()).strong().color(theme::TEXT_BRIGHT))
+                    .wrap(),
+            );
+        }
         if let Some(row) = row {
             ui.horizontal(|ui| {
                 thumbnail(ui, row, thumbnails, pending, DETAIL_THUMBNAIL);
                 ui.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(row.title.as_str()).strong().color(theme::TEXT_BRIGHT))
-                            .wrap(),
-                    );
                     ui.label(egui::RichText::new(row.size_label.as_str()).small().color(theme::TEXT_MUTED));
                     ui.horizontal_wrapped(|ui| install_action(ui, row, installs, installed, &mut intent));
                 });
@@ -350,7 +353,7 @@ fn detail_view(ui: &mut egui::Ui, state: &mut ModelLibraryState, pending: &mut P
             ui.add_space(6.0);
         }
         if let Some(detail) = load_state(ui, detail, "Loading details...", "Retry package details", &mut retry) {
-            detail_body(ui, detail, row.map(|row| row.publisher.as_str()));
+            detail_body(ui, detail);
         }
     }
 
@@ -365,8 +368,8 @@ fn detail_view(ui: &mut egui::Ui, state: &mut ModelLibraryState, pending: &mut P
     }
 }
 
-/// Signed licence, attribution, publisher and the models a package contains.
-fn detail_body(ui: &mut egui::Ui, detail: &ModelDetail, listed_publisher: Option<&str>) {
+/// Signed licence, attribution, signer and the models a package contains.
+fn detail_body(ui: &mut egui::Ui, detail: &ModelDetail) {
     if detail.listing_out_of_date {
         muted(ui, "Listing out of date");
     }
@@ -374,10 +377,12 @@ fn detail_body(ui: &mut egui::Ui, detail: &ModelDetail, listed_publisher: Option
         ui.add(egui::Label::new(egui::RichText::new(detail.description.as_str()).color(theme::TEXT_BRIGHT)).wrap());
         ui.add_space(6.0);
     }
-    if let Some(publisher) = detail.publisher_name.as_deref().or(listed_publisher) {
-        heading(ui, "Publisher");
+    heading(ui, "Signed by");
+    if let Some(publisher) = detail.publisher_name.as_deref() {
         clipped_value(ui, publisher, theme::TEXT_DIM);
     }
+    ui.add(egui::Label::new(egui::RichText::new(detail.signer_short.as_str()).small().color(theme::TEXT_DIM)))
+        .on_hover_text(detail.signer_full.as_str());
     heading(ui, "Licence");
     ui.label(egui::RichText::new(detail.licence.chip.as_str()).small().color(theme::TEXT_BRIGHT));
     if let Some(attribution) = &detail.licence.attribution {
@@ -559,7 +564,7 @@ fn credits_view(
 mod tests {
     use super::*;
     use crate::model_library::{
-        Credits, Licence, ModelEntryRow, ModelOp, ModelResult, ModelRow, InstalledPackage,
+        Credits, InstallPin, Licence, ModelEntryRow, ModelOp, ModelResult, ModelRow, InstalledPackage,
     };
     use crate::terrain_map::dto::RegistryPackageRow;
 
@@ -766,12 +771,49 @@ mod tests {
         assert_eq!(thumbnail_fetches, crate::model_library::MAX_THUMBNAIL_FETCHES, "five visible rows, four fetches in flight");
 
         // Install: progress shows on the row, then the package lands under Installed (F5).
+        // Detail shows the verified signer and name, never the row's, and flags the listing as out of date.
+        let signer = "did:key:z6MkVerifiedSignerOfTheLampBuild9xQ";
+        harness.state.open_detail("street-lamp@1.0.0", &mut harness.ops);
+        assert!(harness.take_ops().contains(&ModelOp::Detail { uri: "street-lamp@1.0.0".into() }));
+        harness.state.apply(ModelResult::Detail {
+            uri: "street-lamp@1.0.0".into(),
+            result: Ok(ModelDetail::new(
+                crate::model_library::VerifiedIdentity {
+                    hexon_id: "street-lamp",
+                    name: "Harbour lamp\u{202E}",
+                    signer_did: signer,
+                    content_hash: "c0ffee",
+                },
+                None,
+                None,
+                Licence::new(Some("attribution"), Some("CC-BY-4.0"), Some("Lamp by A. Maker\nCC BY 4.0")),
+                vec![ModelEntryRow::new("lamp", "Lamp", &[], true)],
+            )),
+        });
+        let text = harness.text();
+        assert!(text.contains("Harbour lamp") && !text.contains("Street lamp"), "{text}");
+        assert!(text.contains("did:key:z6MkVeri\u{2026}ild9xQ"), "shortened verified signer: {text}");
+        assert!(!text.contains("did:key:z6MkPublisher"), "the row's publisher is never shown: {text}");
+        assert!(text.contains("Listing out of date"), "{text}");
         harness.click("Install");
-        assert!(harness.take_ops().contains(&ModelOp::Install { uri: "oak-chair@1.0.0".into() }));
+        let pinned = harness.take_ops();
+        assert!(
+            pinned.contains(&ModelOp::Install {
+                uri: "street-lamp@1.0.0".into(),
+                pin: Some(InstallPin { content_hash: "c0ffee".into(), signer_did: signer.into() }),
+            }),
+            "an install from the reviewed detail is pinned to it: {pinned:?}"
+        );
+        harness.state.apply(ModelResult::Installed { uri: "street-lamp@1.0.0".into(), result: Err("Failed verification".into()) });
+        harness.click("Back");
+
+        harness.click("Install");
+        assert!(harness.take_ops().contains(&ModelOp::Install { uri: "oak-chair@1.0.0".into(), pin: None }));
         assert!(harness.text().contains("Installing"));
         harness.state.apply(ModelResult::Installed { uri: "oak-chair@1.0.0".into(), result: Ok(installed_chair()) });
         assert_eq!(harness.count("Installed"), 2, "the tab plus the installed row's status");
-        assert_eq!(harness.count("Install"), 2);
+        assert_eq!(harness.count("Install"), 1, "bench only; the refused lamp offers Retry install");
+        assert_eq!(harness.count("Retry install"), 1);
 
         // U7: a Viewer sees Place disabled with the role reason; a click places nothing.
         harness.click("Installed");

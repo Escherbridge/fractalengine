@@ -128,6 +128,9 @@ tags = []                      # optional; description, placeable (default true)
 - **Structure.** `fe_format::glb::check` per model (an external `uri` is a refusal: a pack must be self-contained) and
   `fe_hexon::thumbnail::decode` per thumbnail, the same decoder the app uses, so a pack never ships a preview the app
   would refuse.
+- **Attribution.** An Attribution licence needs attribution text with a visible character
+  (`fe_format::text::has_visible_text`, the predicate registry publish and the app's install also use), so a credit
+  of only zero-width, bidi or control characters is refused with the empty one.
 - **Build.** `HexonPackage::build` directly (not `HexonBuilder`) because the builder has no SPDX setter and the library
   chip needs `spdx_id`; manifest and entries are otherwise what the builder writes. Each entry carries
   `preview_image = "preview/<entry_id>.png"`; the PNG is the sealed `preview/<entry_id>.png` member.
@@ -170,7 +173,7 @@ The packed examples then go through `index build` (each listed) and `index verif
 model leg (`model_leg`, runs before that half): a two-model fixture folder (`tests/fixtures/model-pack/library.toml`;
 GLBs and PNGs are generated at run time) is packed, inspected, and refused after one flipped byte; then one table of
 refusals (unlisted GLB, symlink where the platform allows one, bad GLB, oversize, missing licence, empty attribution,
-oversize thumbnail, non-PNG thumbnail), each with its own reason and no output folder written. The
+invisible attribution, oversize thumbnail, non-PNG thumbnail), each with its own reason and no output folder written. The
 scaffold's pack/countersign/tamper/sandbox half runs when `FE_EXT_TEST_COMPONENT` names a built component. The
 examples carry only pure unit tests; their sandbox legs live here so no example crate builds the host stack.
 Guest-side unit tests: `cargo test --manifest-path tools/fe-ext/guest/Cargo.toml` (add `--features hooks` for the

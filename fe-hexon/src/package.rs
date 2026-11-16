@@ -136,20 +136,26 @@ impl HexonPackage {
     ///
     /// A tampered sealed archive is an error; an unsealed one opens with `signature_valid() == false`.
     pub fn open(bytes: &[u8]) -> Result<HexonPackageData, anyhow::Error> {
+        Self::open_with_budget(bytes, fe_format::limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES)
+    }
+
+    /// [`Self::open`] under a smaller total uncompressed budget (never larger than the archive cap).
+    pub fn open_with_budget(bytes: &[u8], total_budget: u64) -> Result<HexonPackageData, anyhow::Error> {
         use fe_format::integrity::MANIFEST_PATH;
         use fe_format::limits::{
             check_entry_count, MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_ENTRY_UNCOMPRESSED_BYTES,
             MAX_JSON_ENTRY_BYTES,
         };
 
-        let data = HexonArchive::import_with_budget(bytes, MAX_ARCHIVE_UNCOMPRESSED_BYTES)?;
+        let total_budget = total_budget.min(MAX_ARCHIVE_UNCOMPRESSED_BYTES);
+        let data = HexonArchive::import_with_budget(bytes, total_budget)?;
 
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
             .map_err(|e| anyhow::anyhow!("invalid ZIP archive: {}", e))?;
         check_entry_count(archive.len())?;
         // One decompression budget for every member read here (zip-bomb guard,
         // fe-format AGENTS.md §decompression-limits).
-        let mut budget = MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+        let mut budget = total_budget;
         let (json, binary) = (MAX_JSON_ENTRY_BYTES, MAX_ENTRY_UNCOMPRESSED_BYTES);
 
         // The signature is checked over the stored manifest bytes, never a re-serialization.

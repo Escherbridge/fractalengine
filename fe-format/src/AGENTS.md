@@ -435,6 +435,20 @@ as an object; it never decodes meshes, textures or accessors. Allocation beyond 
 - **Errors** (`GlbError`) are `Copy`; `Display` text names the rule, never file bytes.
 - No feature gate: builds with `--no-default-features`.
 
+## §text (`text.rs`)
+
+One character classification for publisher-supplied text, here because fe-format is the one crate the registry,
+fe-hexon, fe-ext and fe-ui all already depend on (no new edge between them).
+
+- `is_hidden_format(c)`: characters that render as nothing or reorder what follows: bidi marks, embeddings,
+  overrides and isolates, zero-width space and joiners, word joiner and invisible operators, soft hyphen, blank
+  fillers (Hangul fillers, braille blank), variation selectors, tag characters, BOM.
+- `has_visible_text(s)`: at least one character that is not whitespace, control or hidden. The attribution gates use
+  it (registry publish `check_model_license`, `fe-ext model pack`, `ModelLibrary::install`), so a licence whose
+  credit would display as nothing is refused at every door, not only after `trim()`.
+- fe-ui's `display_text` strips the same `is_hidden_format` set, so what a gate accepts is exactly what the panel
+  can show.
+
 ## §petal-snapshot (`snapshot.rs`)
 
 A petal snapshot is a `PetalSnapshot` hexon. Members: `manifest.json` (`hexon_type = petal_snapshot`),

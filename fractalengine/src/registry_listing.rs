@@ -27,14 +27,14 @@ pub fn registry_hits(hits: Vec<RemoteHexonSummary>, hexon_type: &str) -> Vec<Rem
         .collect()
 }
 
-/// One hit as a browse row with its name and publisher clipped and its credit sanitised.
+/// One hit as a browse row: name, publisher and credit pass the shared display-text cleaner (Maps and Models alike).
 pub fn package_row(hit: &RemoteHexonSummary) -> RegistryPackageRow {
     RegistryPackageRow {
         hexon_id: hit.hexon_id.clone(),
         version: hit.version.clone(),
-        name: clip(&hit.name),
+        name: display_text(&hit.name, MAX_REGISTRY_TEXT_CHARS),
         size_bytes: hit.size_bytes,
-        publisher_did: clip(&hit.publisher_did),
+        publisher_did: display_text(&hit.publisher_did, MAX_REGISTRY_TEXT_CHARS),
         attribution: credit_text(hit.attribution.as_deref()),
     }
 }
@@ -49,10 +49,6 @@ pub fn credit_text(attribution: Option<&str>) -> Option<String> {
 /// Bounded browse rows from a search response: one type only, ids and versions installable, text clipped, row count capped.
 pub fn registry_rows(hits: Vec<RemoteHexonSummary>, hexon_type: &str) -> Vec<RegistryPackageRow> {
     registry_hits(hits, hexon_type).iter().map(package_row).collect()
-}
-
-fn clip(text: &str) -> String {
-    text.chars().take(MAX_REGISTRY_TEXT_CHARS).collect()
 }
 
 #[cfg(test)]
@@ -110,11 +106,11 @@ mod tests {
                 Some(4),
             ),
             (
-                "name clipped to the text cap",
+                "name clipped to the text cap, plus the ellipsis",
                 vec![hit("clipped", "1.0.0", REGISTRY_MAP_TYPE, &long_name)],
                 REGISTRY_MAP_TYPE,
                 vec!["clipped"],
-                Some(MAX_REGISTRY_TEXT_CHARS),
+                Some(MAX_REGISTRY_TEXT_CHARS + 1),
             ),
             ("empty response", Vec::new(), REGISTRY_MAP_TYPE, Vec::new(), None),
         ];
@@ -138,5 +134,11 @@ mod tests {
         let credits: Vec<Option<String>> =
             registry_rows(vec![credited, blank], REGISTRY_MAP_TYPE).into_iter().map(|row| row.attribution).collect();
         assert_eq!(credits, vec![Some("Imagery by A. Maker".to_string()), None], "credit sanitised");
+
+        // Map row name and publisher: a bidi override cannot reorder the label or the hover text.
+        let mut spoofed = hit("spoofed", "1.0.0", REGISTRY_MAP_TYPE, "Harbour\u{202E}pam.exe");
+        spoofed.publisher_did = "did:key:\u{2066}z6Mk\u{200B}".into();
+        let row = &registry_rows(vec![spoofed], REGISTRY_MAP_TYPE)[0];
+        assert_eq!((row.name.as_str(), row.publisher_did.as_str()), ("Harbourpam.exe", "did:key:z6Mk"), "map row sanitised");
     }
 }

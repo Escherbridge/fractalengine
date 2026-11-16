@@ -2415,6 +2415,20 @@ thread and folds `ModelResult`s back into `ModelLibraryState`; `registry_listing
   `fe_hexon::thumbnail::decode` on the worker. Install downloads through `remote_source` (seal, id, version and content
   hash checked, 64 MiB cap; the configured registry is the trust root, unsigned content is never admitted) and
   `ModelLibrary::install` re-reads `license.json` from the verified archive, so the stored licence is the signed one.
+- **Header fetches** (security review 2026-11-15). The model library's `RemoteRegistryClient` is built
+  `with_header_cap(MODEL_HEADER_MAX_BYTES)` (2 MiB; a model header is a few KiB, the client default of 64 MiB stays for
+  maps and partial fetch). `HeaderCache` keeps up to `HEADER_CACHE_CAPACITY` (32) headers keyed by (registry url,
+  package uri), least recently used dropped. Only a header that passed `verified_header` is ever stored; a failed
+  fetch leaves the slot empty and the next op fetches again. Each slot's mutex is held during its fetch, so a Detail
+  and the row's Thumbnail started together fetch once.
+- **Review bound to install** (security review 2026-11-15). Detail derives an `InstallPin` from the verified header:
+  `signer_did` = the publisher DID the seal check returned (`FetchedHeader::publisher_did`), `content_hash` =
+  `fe_format::integrity::content_hash` of the signed manifest text (the registry's listing hash, which commits the
+  integrity root and so every member). `ModelOp::Install` carries the pin when the open detail is that package's; an
+  install from a browse row (no detail open) first takes the same cached verified header (`cached_header`) and pins to
+  it. After the download verifies, `check_pin` requires the sealed publisher and the recomputed content hash to equal
+  the pin before `ModelLibrary::install` runs, so a registry cannot show build A and deliver build B; a mismatch answers
+  `BUILD_CHANGED` and nothing is stored.
 - **Placement.** Place resolves a placeable entry whose blob is present, then sends `PlaceStoredGlb` through the GUI
   scene-write door at the camera's orbit focus. The request id carries `model-library-`; fe-ui's `GltfImported` /
   `ImportGltfFailed` arms route it to the panel (never the import dialog) and select the node through
@@ -2425,5 +2439,8 @@ thread and folds `ModelResult`s back into `ModelLibraryState`; `registry_listing
 - **Map credit line.** Registry rows carry `RemoteHexonSummary.attribution`; installed rows read `attribution` from
   the archive's coverage-checked `license.json` (`installed_attribution` in `terrain_bridge.rs`, one header read per
   installed map on each list refresh). Both pass through `registry_listing::credit_text` (`display_text`, 512 chars).
-- **Tests.** `model_library_bridge::tests::op_outcomes` (pure outcome mapping) and
-  `registry_listing::tests::registry_rows_table` (type filter, unsafe ids, clipping, row cap, credit sanitising); batch R11.
+  `package_row` cleans the row's name and publisher DID with the same `display_text` (120 chars), because the Maps
+  dialog paints them as label and hover text.
+- **Tests.** `model_library_bridge::tests::op_outcomes` (pure outcome mapping, pin match and mismatch, header cache
+  bound and no caching of failures) and `registry_listing::tests::registry_rows_table` (type filter, unsafe ids,
+  clipping, row cap, credit and map-row sanitising); batch R11.

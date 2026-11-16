@@ -18,6 +18,7 @@ pub mod portal_bundle;
 pub mod scale;
 pub mod signature;
 pub mod snapshot;
+pub mod text;
 #[cfg(test)]
 pub(crate) mod test_support;
 

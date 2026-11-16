@@ -672,11 +672,14 @@ async fn publish_outcomes() {
     assert!(!tmp.path().join("no-license@1.0.0.hexon").exists());
 
     // attribution licence with a blank attribution -> 400, nothing stored.
-    let blank = fe_format::License { attribution: Some("  ".into()), ..cc_by };
-    let (status, body) = post_publish(&router, model_hexon("blank-credit", Some(blank), card), None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
-    assert!(error_text(&body).contains("attribution"), "{}", error_text(&body));
-    assert!(!tmp.path().join("blank-credit@1.0.0.hexon").exists());
+    // Zero-width and bidi-only text counts as blank too (it would display as nothing).
+    for (id, credit) in [("blank-credit", "  "), ("invisible-credit", "\u{200B}\u{2066}\u{FEFF}\u{200D}")] {
+        let blank = fe_format::License { attribution: Some(credit.into()), ..cc_by.clone() };
+        let (status, body) = post_publish(&router, model_hexon(id, Some(blank), card), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{id}: {}", error_text(&body));
+        assert!(error_text(&body).contains("attribution"), "{id}: {}", error_text(&body));
+        assert!(!tmp.path().join(format!("{id}@1.0.0.hexon")).exists(), "{id} stored");
+    }
 
     // the rejected imposter version must never have been written or indexed.
     assert!(!tmp.path().join("night-sky@2.1.0.hexon").exists());

@@ -425,7 +425,12 @@ minus the file read, so it uses native import's code, not a second creation path
   resolves, the local DID holds Editor (`authorize_scope`, `NodeAccessGrant::Local`), the name is
   bounded and the position finite. A Viewer stops here. `verify_stored`: the hash parses, the store
   has the blob, its length equals `size_bytes`, its BLAKE3 equals the hash, it starts with the GLB
-  magic, and `admit_scene_bytes` passes it (the same KTX2 rule as native). Then
+  magic, `fe_format::glb::check` passes it with no external `uri` (security review 2026-11-15: the
+  container must be structurally sound, not only carry the magic), and `admit_scene_bytes` passes it
+  (the same KTX2 rule as native). `verify_stored` is reached only from `place_stored_glb_handler`, so
+  native import (`AdmittedSceneBlob::store`) keeps its existing, looser rules; the strict checker
+  (no third chunk, no trailing bytes) applies only to library models, which `fe-ext model pack` and
+  `ModelLibrary::install` already require to pass it. Then
   `object_creation::prepare` captures Editor, ancestry and schemas again and the transaction fences
   them. Every refusal before the commit writes nothing. A failed commit leaves the blob in place,
   as it was before placement.
@@ -445,7 +450,7 @@ appears in `command_lane.rs` `is_transparent` beside `GetPetalTerrain`. `PlaceSt
 Serve admissions.
 
 The op_log real-store journey (`op_log::tests::a_failing_statement_rolls_back_the_op_log_row_too`, batch R10)
-covers Viewer, missing-blob and wrong-size refusals with no rows written, a successful placement's
+covers Viewer, missing-blob, wrong-size and broken-structure (GLB magic, JSON chunk overrun) refusals with no rows written, a successful placement's
 node and asset rows, distinct credits, a removed node's model left out, and a Viewer-fenced credits read.
 
 ## Checked stamp promotion

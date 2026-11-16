@@ -320,7 +320,7 @@ fn license_from(section: Option<&LicenseSection>, problems: &mut Vec<String>) ->
         problems.push(format!("{LIBRARY_FILE} has no [license] table; a model package must state its licence"));
         return None;
     };
-    let attribution = section.attribution.as_deref().map(str::trim).filter(|text| !text.is_empty());
+    let attribution = section.attribution.as_deref().map(str::trim).filter(|text| fe_format::text::has_visible_text(text));
     let license_type = match section.kind.trim().to_ascii_lowercase().as_str() {
         "free" => LicenseType::Free,
         "attribution" if attribution.is_some() => LicenseType::Attribution,

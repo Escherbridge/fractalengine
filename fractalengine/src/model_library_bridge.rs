@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 
 use fe_hexon::manifest::{EntryKind, HexonType, License, LicenseType};
-use fe_hexon::model_library::{ModelLibrary, ModelLibraryError, ModelPackageSummary};
+use fe_hexon::model_library::{ModelLibrary, ModelLibraryError, ModelPackageSummary, MODEL_HEADER_MAX_BYTES};
 use fe_hexon::partial::{FetchStrategy, FetchedHeader, PartialFetchError, SharedSource};
 use fe_hexon::registry_source::{RegistryError, PACKAGE_MAX_BYTES};
 use fe_hexon::remote::RemoteRegistryClient;
@@ -16,8 +16,8 @@ use fe_runtime::blob_store::BlobStoreHandle;
 use fe_runtime::messages::{DbCommand, DbResult, NativeImportRequest};
 use fe_ui::model_library::text::display_text;
 use fe_ui::model_library::{
-    Credits, InstalledPackage, Licence, ModelDetail, ModelEntryRow, ModelLibraryState, ModelOp,
-    ModelResult, ModelRow, PendingModelOps, MAX_THUMBNAIL_FETCHES, THUMBNAIL_LIMIT_BYTES,
+    Credits, InstallPin, InstalledPackage, Licence, ModelDetail, ModelEntryRow, ModelLibraryState, ModelOp,
+    ModelResult, ModelRow, PendingModelOps, VerifiedIdentity, MAX_THUMBNAIL_FETCHES, THUMBNAIL_LIMIT_BYTES,
 };
 use fe_ui::navigation_manager::NavigationManager;
 use fe_ui::node_manager::{try_submit_scene_write, GuiSend};
@@ -44,6 +44,10 @@ const MAX_NODE_NAME_CHARS: usize = 120;
 const CREDITS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Prefix of the `ReadPetalAssetHashes` correlation ids this bridge mints.
 const CREDITS_CORRELATION_PREFIX: &str = "model-credits-";
+/// Verified headers kept for reuse by Detail, Thumbnail and Install; the least recently used is dropped.
+const HEADER_CACHE_CAPACITY: usize = 32;
+/// User-facing text when the downloaded build is not the reviewed one (signer or content hash).
+const BUILD_CHANGED: &str = "Not installed: the registry delivered a different build than the one reviewed";
 
 /// Identity of one op while it runs; a second op with the same key is not started.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,7 +69,7 @@ impl OpKey {
             ModelOp::ListInstalled => Self::Installed,
             ModelOp::Detail { uri } => Self::Detail(uri.clone()),
             ModelOp::Thumbnail { uri, .. } => Self::Thumbnail(uri.clone()),
-            ModelOp::Install { uri } => Self::Install(uri.clone()),
+            ModelOp::Install { uri, .. } => Self::Install(uri.clone()),
             ModelOp::Remove { uri } => Self::Remove(uri.clone()),
             ModelOp::Place { request_id, .. } => Self::Place(request_id.clone()),
             ModelOp::LoadCredits { petal_id } => Self::Credits(petal_id.clone()),
@@ -102,12 +106,54 @@ enum BridgeEvent {
     PlaceReady { key: OpKey, target: PlaceTarget },
 }
 
+/// One cache slot; its mutex is held while the header is fetched, so concurrent ops for one package fetch once.
+type HeaderSlot = Arc<Mutex<Option<Arc<FetchedHeader>>>>;
+
+/// Bounded LRU of VERIFIED headers keyed by (registry url, package uri); a failed fetch is never stored.
+#[derive(Default)]
+struct HeaderCache {
+    /// Most recently used first.
+    slots: Mutex<VecDeque<((String, String), HeaderSlot)>>,
+}
+
+impl HeaderCache {
+    /// The slot for `key`, now most recent; slots past capacity are dropped.
+    fn slot(&self, key: (String, String)) -> HeaderSlot {
+        let mut slots = self.slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = match slots.iter().position(|(held, _)| *held == key) {
+            Some(index) => slots.remove(index).map(|(_, slot)| slot).unwrap_or_default(),
+            None => HeaderSlot::default(),
+        };
+        slots.push_front((key, slot.clone()));
+        slots.truncate(HEADER_CACHE_CAPACITY);
+        slot
+    }
+
+    /// The cached header for `key`, else `fetch`'s verified header, which is then cached.
+    fn get_or_fetch(
+        &self,
+        key: (String, String),
+        fetch: impl FnOnce() -> Result<FetchedHeader, String>,
+    ) -> Result<Arc<FetchedHeader>, String> {
+        let slot = self.slot(key);
+        let mut held = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(header) = held.as_ref() {
+            return Ok(header.clone());
+        }
+        let header = Arc::new(fetch()?);
+        *held = Some(header.clone());
+        Ok(header)
+    }
+}
+
 /// Library, result channel and in-flight bookkeeping for the Models section (see `src/AGENTS.md` §model-library).
 #[derive(Resource)]
 pub struct ModelLibraryBridge {
     library: Arc<ModelLibrary>,
     /// Shared blob store; placement reads the stored GLB's size from it.
     blobs: BlobStoreHandle,
+    /// Verified headers shared by Detail, Thumbnail and Install.
+    headers: Arc<HeaderCache>,
     /// Serialises install and remove (the library's not-installed pre-check assumes one writer).
     write_lock: Arc<Mutex<()>>,
     tx: crossbeam::channel::Sender<BridgeEvent>,
@@ -123,6 +169,7 @@ impl ModelLibraryBridge {
         Self {
             library: Arc::new(library),
             blobs,
+            headers: Arc::new(HeaderCache::default()),
             write_lock: Arc::new(Mutex::new(())),
             tx,
             rx,
@@ -269,9 +316,10 @@ fn start_op(
     let library = bridge.library.clone();
     let write_lock = bridge.write_lock.clone();
     let blobs = bridge.blobs.clone();
+    let headers = bridge.headers.clone();
     let access = access.clone();
     fe_runtime::maintenance::spawn_job(move || {
-        let event = run_op(op, key, &library, &write_lock, &blobs, &access, &tx);
+        let event = run_op(op, key, &library, &write_lock, &blobs, &headers, &access, &tx);
         if tx.send(event).is_err() {
             tracing::warn!("Model library result channel closed");
         }
@@ -280,12 +328,14 @@ fn start_op(
 }
 
 /// The worker body: one op to its final event.
+#[allow(clippy::too_many_arguments)]
 fn run_op(
     op: ModelOp,
     key: OpKey,
     library: &ModelLibrary,
     write_lock: &Mutex<()>,
     blobs: &BlobStoreHandle,
+    headers: &HeaderCache,
     access: &RegistryAccess,
     tx: &crossbeam::channel::Sender<BridgeEvent>,
 ) -> BridgeEvent {
@@ -298,15 +348,15 @@ fn run_op(
             ModelResult::InstalledListed(Ok(library.list().iter().map(installed_package).collect()))
         }
         ModelOp::Detail { uri } => {
-            let result = fetch_detail(access, &uri);
+            let result = cached_header(headers, access, &uri).and_then(|header| detail_from_header(&header));
             ModelResult::Detail { uri, result }
         }
         ModelOp::Thumbnail { uri, member } => {
-            let result = fetch_thumbnail(access, &uri, &member);
+            let result = fetch_thumbnail(headers, access, &uri, &member);
             ModelResult::Thumbnail { uri, result }
         }
-        ModelOp::Install { uri } => {
-            let result = install_from_registry(library, write_lock, access, &uri, tx);
+        ModelOp::Install { uri, pin } => {
+            let result = install_from_registry(library, write_lock, headers, access, &uri, pin, tx);
             ModelResult::Installed { uri, result }
         }
         ModelOp::Remove { uri } => {
@@ -495,25 +545,48 @@ async fn verified_header(
         .map_err(|failure| fetch_failure_text(&failure.error))
 }
 
-/// Registry client as a partial-fetch source plus the strategy that verifies everything it serves.
+/// Registry client (header responses capped at `MODEL_HEADER_MAX_BYTES`) as a partial-fetch source, plus the verifying strategy.
 fn partial_client(access: &RegistryAccess) -> (Arc<RemoteRegistryClient>, Vec<SharedSource>, FetchStrategy) {
-    let client = Arc::new(RemoteRegistryClient::new(access.url.clone(), access.token.clone()));
+    let client = Arc::new(
+        RemoteRegistryClient::new(access.url.clone(), access.token.clone()).with_header_cap(MODEL_HEADER_MAX_BYTES),
+    );
     let source: SharedSource = client.clone();
     let sources = vec![source];
     (client, sources, FetchStrategy::new(fe_hexon::p2p::P2pConfig::default()))
 }
 
-/// Detail from the VERIFIED header only: licence, entries and publisher name never come from the listing.
-fn fetch_detail(access: &RegistryAccess, uri: &str) -> Result<ModelDetail, String> {
-    let (_client, sources, strategy) = partial_client(access);
-    let header = block_on(verified_header(&strategy, &sources, uri))??;
-    detail_from_header(&header)
+/// The verified header of `uri`, from the cache or one fetch that is cached only when it verifies.
+fn cached_header(headers: &HeaderCache, access: &RegistryAccess, uri: &str) -> Result<Arc<FetchedHeader>, String> {
+    headers.get_or_fetch((access.url.clone(), uri.to_owned()), || {
+        let (_client, sources, strategy) = partial_client(access);
+        block_on(verified_header(&strategy, &sources, uri))?
+    })
 }
 
+/// The build an install must match: the header's sealing signer and its manifest content hash.
+fn header_pin(header: &FetchedHeader) -> Result<InstallPin, String> {
+    let signer_did = header.publisher_did();
+    if signer_did.is_empty() {
+        return Err(VERIFICATION_FAILED.into());
+    }
+    let content_hash = fe_format::integrity::content_hash(header.doc.manifest.as_bytes())
+        .map_err(|_| VERIFICATION_FAILED.to_string())?;
+    Ok(InstallPin { content_hash, signer_did: signer_did.to_owned() })
+}
+
+/// The downloaded build must be sealed by the pinned signer and carry the pinned content hash.
+fn check_pin(pin: &InstallPin, served_signer: Option<&str>, served_content_hash: &str) -> Result<(), String> {
+    let same_signer = served_signer == Some(pin.signer_did.as_str());
+    let same_build = served_content_hash.eq_ignore_ascii_case(&pin.content_hash);
+    if same_signer && same_build { Ok(()) } else { Err(BUILD_CHANGED.into()) }
+}
+
+/// Detail from the VERIFIED header only: name, signer, licence, entries and publisher name never come from the listing.
 fn detail_from_header(header: &FetchedHeader) -> Result<ModelDetail, String> {
     if header.manifest.hexon_type != HexonType::Model {
         return Err("This package is not a model package".into());
     }
+    let pin = header_pin(header)?;
     let licence = match signed_header_member(header, "license.json")? {
         Some(text) => {
             let license: License = serde_json::from_str(text)
@@ -528,6 +601,12 @@ fn detail_from_header(header: &FetchedHeader) -> Result<ModelDetail, String> {
         .map(|entry| ModelEntryRow::new(&entry.entry_id, &entry.label, &entry.tags, entry.is_placeable))
         .collect();
     Ok(ModelDetail::new(
+        VerifiedIdentity {
+            hexon_id: &header.manifest.hexon_id,
+            name: &header.manifest.name,
+            signer_did: &pin.signer_did,
+            content_hash: &pin.content_hash,
+        },
         header.manifest.description.as_deref(),
         header.manifest.publisher_name.as_deref(),
         licence,
@@ -577,20 +656,16 @@ fn signed_preview_member(header: &FetchedHeader, member: &str) -> Result<(), Str
 
 /// Verified header, then the named preview member under the thumbnail cap, digest-checked, then decoded.
 fn fetch_thumbnail(
+    headers: &HeaderCache,
     access: &RegistryAccess,
     uri: &str,
     member: &str,
 ) -> Result<fe_hexon::thumbnail::Rgba, String> {
-    let (client, sources, strategy) = partial_client(access);
-    let (header, bytes) = block_on(async {
-        let header = verified_header(&strategy, &sources, uri).await?;
-        signed_preview_member(&header, member)?;
-        let bytes = client
-            .fetch_member_capped(&header.hexon_uri(), member, THUMBNAIL_LIMIT_BYTES)
-            .await
-            .map_err(|error| fetch_failure_text(&error))?;
-        Ok::<_, String>((header, bytes))
-    })??;
+    let header = cached_header(headers, access, uri)?;
+    signed_preview_member(&header, member)?;
+    let (client, _sources, _strategy) = partial_client(access);
+    let bytes = block_on(client.fetch_member_capped(&header.hexon_uri(), member, THUMBNAIL_LIMIT_BYTES))?
+        .map_err(|error| fetch_failure_text(&error))?;
     let coverage = header.verified.coverage().ok_or(VERIFICATION_FAILED)?;
     coverage
         .check_member(member, &bytes)
@@ -598,16 +673,28 @@ fn fetch_thumbnail(
     fe_hexon::thumbnail::decode(&bytes).map_err(|error| error.to_string())
 }
 
-/// Download (verified seal, id, version, content hash; 64 MiB cap) with progress, then install into the library.
+/// Pin (reviewed detail, else a fresh verified header), download (seal, id, version, content hash; 64 MiB cap) with progress, require the pin, then install.
 fn install_from_registry(
     library: &ModelLibrary,
     write_lock: &Mutex<()>,
+    headers: &HeaderCache,
     access: &RegistryAccess,
     uri: &str,
+    pin: Option<InstallPin>,
     tx: &crossbeam::channel::Sender<BridgeEvent>,
 ) -> Result<InstalledPackage, String> {
     let Some((wanted_id, wanted_version)) = uri.split_once('@') else {
         return Err("Not installed: the package version is missing".into());
+    };
+    let pin = match pin {
+        Some(pin) => pin,
+        None => {
+            let header = cached_header(headers, access, uri)?;
+            if header.manifest.hexon_type != HexonType::Model {
+                return Err("This package is not a model package".into());
+            }
+            header_pin(&header)?
+        }
     };
     // The operator-chosen registry is the trust anchor (any valid seal); unsigned content is never admitted.
     let trust = fe_hexon::registry_source::SourceTrust {
@@ -650,7 +737,12 @@ fn install_from_registry(
         progress(received, total);
     });
     let bytes = match fetched {
-        Ok(fe_hexon::registry_source::FetchedHexon::Content(content)) => content.bytes,
+        Ok(fe_hexon::registry_source::FetchedHexon::Content(content)) => {
+            check_pin(&pin, content.publisher_did.as_deref(), &content.content_hash).inspect_err(|_| {
+                tracing::warn!(uri, "Model install refused: the downloaded build is not the reviewed one");
+            })?;
+            content.bytes
+        }
         Ok(fe_hexon::registry_source::FetchedHexon::Plugin(_)) => {
             return Err("This package is an extension, not a model package".into());
         }
@@ -787,6 +879,16 @@ fn registry_error_text(error: &RegistryError) -> String {
 fn library_error_text(error: &ModelLibraryError) -> String {
     match error {
         ModelLibraryError::Unreadable(_) => format!("{VERIFICATION_FAILED}: the package could not be read"),
+        ModelLibraryError::InflatesTooLarge { limit } => {
+            format!("Too large to install: the package unpacks to more than {} MiB", limit / (1024 * 1024))
+        }
+        ModelLibraryError::InvalidModel { entry_id, .. } => {
+            format!("Not installed: model {} is not a valid GLB file", display_text(entry_id, MAX_NODE_NAME_CHARS))
+        }
+        ModelLibraryError::ExternalModelUri(entry_id) => format!(
+            "Not installed: model {} depends on files outside the package",
+            display_text(entry_id, MAX_NODE_NAME_CHARS)
+        ),
         ModelLibraryError::Unsigned => format!("{VERIFICATION_FAILED}: the package is not signed by its publisher"),
         ModelLibraryError::NotModel(_) => "This package is not a model package".into(),
         ModelLibraryError::LicenseMissing => "Not installed: the package has no licence".into(),
@@ -817,7 +919,7 @@ fn refusal_result(op: &ModelOp, reason: &str) -> ModelResult {
         ModelOp::ListInstalled => ModelResult::InstalledListed(Err(error)),
         ModelOp::Detail { uri } => ModelResult::Detail { uri: uri.clone(), result: Err(error) },
         ModelOp::Thumbnail { uri, .. } => ModelResult::Thumbnail { uri: uri.clone(), result: Err(error) },
-        ModelOp::Install { uri } => ModelResult::Installed { uri: uri.clone(), result: Err(error) },
+        ModelOp::Install { uri, .. } => ModelResult::Installed { uri: uri.clone(), result: Err(error) },
         ModelOp::Remove { uri } => ModelResult::Removed { uri: uri.clone(), result: Err(error) },
         ModelOp::Place { request_id, .. } => ModelResult::PlaceFailed { request_id: request_id.clone(), error },
         ModelOp::LoadCredits { petal_id } => ModelResult::Credits { petal_id: petal_id.clone(), result: Err(error) },
@@ -959,6 +1061,19 @@ mod tests {
         let place = |petal: Option<&str>, verse: Option<&str>| {
             describe_command(place_command(target("p1"), verse, Some("f1"), petal, [1.0, 2.0, 3.0]))
         };
+        let reviewed = InstallPin { content_hash: "ab".repeat(32), signer_did: "did:key:z6MkReviewed".into() };
+        let pin_outcome = |signer: Option<&str>, hash: &str| check_pin(&reviewed, signer, hash).err().unwrap_or_else(|| "ok".into());
+        // Header cache: a failed fetch is never stored (the next op fetches again); slots stay bounded.
+        let headers = HeaderCache::default();
+        let mut fetches = 0;
+        for index in 0..(HEADER_CACHE_CAPACITY + 8) {
+            let uri = if index < 2 { "chairs@1.0.0".to_string() } else { format!("pkg{index}@1.0.0") };
+            let _ = headers.get_or_fetch(("https://registry".into(), uri), || {
+                fetches += 1;
+                Err("offline".into())
+            });
+        }
+        let cached_slots = headers.slots.lock().unwrap().len();
 
         let cases: Vec<(&str, String, String)> = vec![
             // Detail / thumbnail fetch failures: every integrity failure reads the same (U2).
@@ -985,6 +1100,23 @@ mod tests {
                 format!("{VERIFICATION_FAILED}: the package is not signed by its publisher"),
             ),
             ("paid licence", library_error_text(&ModelLibraryError::LicensePaid), "Not supported in this build: paid licence".into()),
+            (
+                "inflates past the library budget",
+                library_error_text(&ModelLibraryError::InflatesTooLarge { limit: 256 * 1024 * 1024 }),
+                "Too large to install: the package unpacks to more than 256 MiB".into(),
+            ),
+            (
+                "malformed glb",
+                library_error_text(&ModelLibraryError::InvalidModel { entry_id: "chair\u{202E}".into(), reason: "x".into() }),
+                "Not installed: model chair is not a valid GLB file".into(),
+            ),
+            // Install pin: the download must be the reviewed build (signer and content hash), else nothing is stored.
+            ("pin: the reviewed build", pin_outcome(Some("did:key:z6MkReviewed"), &"AB".repeat(32)), "ok".into()),
+            ("pin: another build", pin_outcome(Some("did:key:z6MkReviewed"), &"cd".repeat(32)), BUILD_CHANGED.into()),
+            ("pin: another signer", pin_outcome(Some("did:key:z6MkOther"), &"ab".repeat(32)), BUILD_CHANGED.into()),
+            ("pin: unsigned download", pin_outcome(None, &"ab".repeat(32)), BUILD_CHANGED.into()),
+            ("failed header fetches are retried, never cached", fetches.to_string(), (HEADER_CACHE_CAPACITY + 8).to_string()),
+            ("header cache bounded", cached_slots.to_string(), HEADER_CACHE_CAPACITY.to_string()),
             ("already installed", library_error_text(&ModelLibraryError::AlreadyInstalled("chairs@1.0.0".into())), "Already installed".into()),
             // Placement: navigation must still be on the requested petal.
             ("place in the active petal", place(Some("p1"), Some("v1")), "place model-library-1 in v1/f1/p1 as Chair (512 B) at [1.0, 2.0, 3.0]".into()),

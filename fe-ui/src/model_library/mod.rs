@@ -182,26 +182,62 @@ impl ModelEntryRow {
     }
 }
 
-/// Signed facts of one package, read from its verified header.
+/// The reviewed build an install must match: the verified header's content hash and signer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallPin {
+    pub content_hash: String,
+    pub signer_did: String,
+}
+
+/// Identity facts of a verified header, as the bridge read them.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdentity<'a> {
+    pub hexon_id: &'a str,
+    /// Manifest name.
+    pub name: &'a str,
+    /// Publisher DID the seal check returned.
+    pub signer_did: &'a str,
+    /// BLAKE3 of the signed manifest with the signature blanked.
+    pub content_hash: &'a str,
+}
+
+/// Signed facts of one package, read from its verified header; never from the listing.
 #[derive(Debug, Clone)]
 pub struct ModelDetail {
+    /// Verified manifest name (sanitised; the id when blank).
+    pub title: String,
+    /// Verified signer DID, shortened for display.
+    pub signer_short: String,
+    /// Verified signer DID, sanitised, for hover text.
+    pub signer_full: String,
+    /// Raw verified identity an install is pinned to; never painted.
+    pub pin: InstallPin,
     pub description: String,
     pub publisher_name: Option<String>,
     pub licence: Licence,
     pub models: Vec<ModelEntryRow>,
-    /// The signed licence differs from the listing's claim.
+    /// The signed licence, signer or name differs from the listing's claim.
     pub listing_out_of_date: bool,
 }
 
 impl ModelDetail {
     /// `listing_out_of_date` is decided when folded against the listed row.
     pub fn new(
+        identity: VerifiedIdentity<'_>,
         description: Option<&str>,
         publisher_name: Option<&str>,
         licence: Licence,
         models: Vec<ModelEntryRow>,
     ) -> Self {
+        let signer_full = display_text(identity.signer_did, MAX_REGISTRY_TEXT_CHARS);
         Self {
+            title: title_text(identity.name, identity.hexon_id),
+            signer_short: short_did(&signer_full),
+            signer_full,
+            pin: InstallPin {
+                content_hash: identity.content_hash.to_owned(),
+                signer_did: identity.signer_did.to_owned(),
+            },
             description: display_text(description.unwrap_or_default(), MAX_DESCRIPTION_CHARS),
             publisher_name: non_empty(
                 publisher_name.map(|name| display_text(name, MAX_REGISTRY_TEXT_CHARS)),
@@ -211,6 +247,26 @@ impl ModelDetail {
             listing_out_of_date: false,
         }
     }
+
+    /// The listing disagrees with the verified header on licence, signer or name.
+    fn differs_from(&self, row: &ModelRow) -> bool {
+        row.licence != self.licence
+            || row.package.publisher_did != self.pin.signer_did
+            || row.title != self.title
+    }
+}
+
+/// First 16 and last 6 characters of a long DID around an ellipsis; short ones unchanged.
+fn short_did(did: &str) -> String {
+    const HEAD: usize = 16;
+    const TAIL: usize = 6;
+    let count = did.chars().count();
+    if count <= HEAD + TAIL + 1 {
+        return did.to_owned();
+    }
+    let head: String = did.chars().take(HEAD).collect();
+    let tail: String = did.chars().skip(count - TAIL).collect();
+    format!("{head}\u{2026}{tail}")
 }
 
 /// One package installed on this device.
@@ -284,8 +340,8 @@ pub enum ModelOp {
     Detail { uri: String },
     /// Fetch and decode one preview member (verified against the signed root).
     Thumbnail { uri: String, member: String },
-    /// Fetch, verify and install a package into the library.
-    Install { uri: String },
+    /// Fetch, verify and install a package; `pin` is the reviewed detail's build, else the bridge pins to a fresh verified header.
+    Install { uri: String, pin: Option<InstallPin> },
     /// Remove an installed package.
     Remove { uri: String },
     /// Place one model entry in the petal at the camera focus; `request_id` correlates the import result.
@@ -489,7 +545,7 @@ impl ModelLibraryState {
                 self.detail = match result {
                     Ok(mut detail) => {
                         if let Some(row) = self.row(&uri) {
-                            detail.listing_out_of_date = row.licence != detail.licence;
+                            detail.listing_out_of_date = detail.differs_from(row);
                         }
                         Load::Ready(detail)
                     }
@@ -615,12 +671,17 @@ impl ModelLibraryState {
         self.request_listing(ops);
     }
 
+    /// Queue an install, pinned to the open detail's verified build when it is this package's.
     fn install(&mut self, uri: &str, ops: &mut PendingModelOps) {
+        let pin = match (&self.selected, &self.detail) {
+            (Some(selected), Load::Ready(detail)) if selected == uri => Some(detail.pin.clone()),
+            _ => None,
+        };
         self.installs.insert(
             uri.to_owned(),
             InstallState::Running { received_bytes: 0, total_bytes: None },
         );
-        ops.0.push(ModelOp::Install { uri: uri.to_owned() });
+        ops.0.push(ModelOp::Install { uri: uri.to_owned(), pin });
     }
 
     fn remove(&mut self, uri: &str, ops: &mut PendingModelOps) {

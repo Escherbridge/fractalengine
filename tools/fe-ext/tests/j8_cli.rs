@@ -205,7 +205,7 @@ fn model_leg(root: &Path, key: &Path) {
 
     // Refusals: each names its own reason and leaves no output file, no output folder and no temp file behind.
     type Edit = fn(&Path) -> bool;
-    let refusals: [(&str, &str, Edit); 8] = [
+    let refusals: [(&str, &str, Edit); 9] = [
         ("unlisted-glb", "is not listed in library.toml", |dir| {
             std::fs::write(dir.join("spare.glb"), glb_bytes(3, 64)).unwrap();
             true
@@ -227,6 +227,15 @@ fn model_leg(root: &Path, key: &Path) {
         }),
         ("empty-attribution", "attribution is required", |dir| {
             let edited = MODEL_LIBRARY.replace("attribution = \"Chair and table by Acme Models, CC BY 4.0\"", "attribution = \"  \"");
+            std::fs::write(dir.join("library.toml"), edited).unwrap();
+            true
+        }),
+        // Zero-width, joiner, isolate and BOM characters only: shows as nothing, so it is no attribution.
+        ("invisible-attribution", "attribution is required", |dir| {
+            let edited = MODEL_LIBRARY.replace(
+                "attribution = \"Chair and table by Acme Models, CC BY 4.0\"",
+                "attribution = \"\\u200B\\u200D\\u2066\\uFEFF\"",
+            );
             std::fs::write(dir.join("library.toml"), edited).unwrap();
             true
         }),

@@ -103,6 +103,8 @@ pub struct RemoteRegistryClient {
     base_url: String,
     token: Option<String>,
     http: reqwest::Client,
+    /// `/meta` response cap; [`MAX_HEADER_RESPONSE_BYTES`] unless lowered with [`Self::with_header_cap`].
+    header_cap: u64,
 }
 
 impl RemoteRegistryClient {
@@ -118,7 +120,14 @@ impl RemoteRegistryClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token,
             http,
+            header_cap: MAX_HEADER_RESPONSE_BYTES,
         }
+    }
+
+    /// Lower the `/meta` response cap for this client (never above the default).
+    pub fn with_header_cap(mut self, cap: u64) -> Self {
+        self.header_cap = cap.min(MAX_HEADER_RESPONSE_BYTES);
+        self
     }
 
     /// GET with bearer auth applied when configured.
@@ -269,7 +278,7 @@ impl PartialHexonFetch for RemoteRegistryClient {
 
     async fn fetch_header(&self, uri: &str) -> Result<HeaderDoc, PartialFetchError> {
         let url = self.hexon_url(uri, &["meta"])?;
-        let body = self.get_capped(url, MAX_HEADER_RESPONSE_BYTES).await?;
+        let body = self.get_capped(url, self.header_cap).await?;
         let envelope: Envelope<HeaderDoc> = serde_json::from_slice(&body)
             .map_err(|e| PartialFetchError::Transport(format!("invalid /meta response: {e}")))?;
         match envelope {

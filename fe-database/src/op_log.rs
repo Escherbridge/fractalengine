@@ -4864,6 +4864,13 @@ mod tests {
         let size_refusal = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Wrong size",&model_hex,model_size + 1,[0.0;3],"did:qa").await
             .expect_err("a blob whose size differs from the command is refused");
         assert!(size_refusal.to_string().contains("expected"), "got: {size_refusal}");
+        // Valid magic, broken structure: the declared JSON chunk runs past the end of the file.
+        let mut broken_bytes = glb(br#"{"asset":{"version":"2.0","generator":"broken"}}"#);
+        broken_bytes[12..16].copy_from_slice(&4000u32.to_le_bytes());
+        let broken_hex = crate::hash_to_hex(&fe_runtime::blob_store::BlobStore::add_blob(&*placed_store, &broken_bytes).unwrap());
+        let broken_refusal = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Broken model",&broken_hex,broken_bytes.len() as u64,[0.0;3],"did:qa").await
+            .expect_err("a stored blob with GLB magic but a broken structure is refused");
+        assert!(broken_refusal.to_string().contains("not a valid GLB"), "got: {broken_refusal}");
         let mut inventory = url_db.query(place_inventory).await.unwrap().check().unwrap();
         assert_eq!(inventory.take::<Vec<serde_json::Value>>(0).unwrap(), assets_before, "refused placements write no asset row ({viewer_refusal})");
         assert_eq!(inventory.take::<Vec<serde_json::Value>>(1).unwrap(), nodes_before, "refused placements write no node");

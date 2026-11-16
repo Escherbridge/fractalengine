@@ -45,6 +45,21 @@ terrain lane's enum is untouched.
 - Install is library-wide and needs no role (spec D-3); Place is the Editor-gated step (U7), with
   the DB as the authority.
 
+## §detail-identity (security review 2026-11-15)
+
+The detail view's identity comes only from the verified header, never from the search row:
+`ModelDetail.title` is the signed manifest name (the id when blank), `signer_short` / `signer_full` the publisher DID
+the seal check returned (shown as the first 16 and last 6 characters, the full cleaned DID as plain hover text), and
+`publisher_name` the signed manifest's optional name. There is no fallback to the row's publisher or name: packages
+built by `fe-ext model pack` carry no publisher name, and the row is the registry's unverified claim. The row still
+supplies the thumbnail slot, size and install state. `listing_out_of_date` is set when the signed licence, the signer
+(compared with the row's publisher DID) or the cleaned name differs from the listing; the view then shows the verified
+values plus "Listing out of date".
+
+`ModelDetail.pin` (`InstallPin { content_hash, signer_did }`, raw, never painted) is what `ModelOp::Install` carries
+when the open detail is the package being installed; a browse-row install sends `pin: None` and the bridge pins to a
+freshly verified header (`fractalengine/src/AGENTS.md` §model-library "Review bound to install").
+
 ## §thumbnails
 
 The bridge fetches the preview member through the verified partial-fetch path and decodes it with
@@ -63,8 +78,10 @@ as a texture on first paint. Rules:
 
 Every publisher-controlled string (package name, description, tags, entry labels, attribution,
 SPDX id, publisher name and DID, error text) passes through `text::display_text` once, in the row
-constructors and `apply`, before it can reach the screen: control characters and bidirectional
-marks, embeddings, overrides and isolates (plus zero-width space and BOM) are stripped, whitespace
+constructors and `apply`, before it can reach the screen: control characters and every
+`fe_format::text::is_hidden_format` character (bidi marks, embeddings, overrides and isolates,
+zero-width and joiner characters, BOM and other invisible characters; the same set the attribution
+gates use, fe-format `src/AGENTS.md` §text) are stripped, whitespace
 runs including newlines collapse to one space, and the text is clipped with an ellipsis. Raw
 `hexon_id`, `version` and `entry_id` stay unsanitised only to address ops and are never painted.
 Publisher text is rendered as plain egui labels (styling only): never markdown, never a link.
@@ -74,6 +91,7 @@ Publisher text is rendered as plain egui labels (styling only): never markdown, 
 `text::tests::display_text_table` (sanitiser table) and `panel::tests::model_library_journey`
 (real egui frames over `show`: loading, error with Retry and a dropped stale reply, empty, listing
 with licence chips and a sanitised bidi name, too-large and paid rows without Install, the
-four-fetch thumbnail cap, install to Installed, Viewer Place disabled with the reason, Editor Place
+four-fetch thumbnail cap, a detail showing the verified name and shortened signer instead of the
+row's with "Listing out of date" and a pinned Install, install to Installed, Viewer Place disabled with the reason, Editor Place
 with its request id, no-petal reason, credits with a source not installed here).
 Batch: R11 `cargo test -p fe-ui --lib -- model_library::`.

@@ -163,11 +163,11 @@ pub fn check_model_license(bytes: &[u8]) -> std::result::Result<(), String> {
             let named = license
                 .get("attribution")
                 .and_then(|v| v.as_str())
-                .is_some_and(|a| !a.trim().is_empty());
+                .is_some_and(fe_format::text::has_visible_text);
             if named {
                 Ok(())
             } else {
-                Err("an attribution license requires a non-empty attribution".to_string())
+                Err("an attribution license requires visible attribution text".to_string())
             }
         }
         Some(_) => Ok(()),

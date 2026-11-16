@@ -134,7 +134,9 @@ Body is raw `.hexon` bytes. Validation is two gates, in order:
    id-takeover land on the same status code with different messages.
    **Model licence rule (ML-05):** after the seal verifies and before the lock, a `hexon_type = model` package is
    a 400 when it has no `license.json` (or no `license_type`), or when `license_type` is `attribution` and the
-   attribution is empty or whitespace (`index::check_model_license`). Other types are unchanged.
+   attribution has no visible character (`index::check_model_license` uses `fe_format::text::has_visible_text`, so
+   zero-width, bidi and control-only text is refused like whitespace; fe-format `src/AGENTS.md` §text). Other types
+   are unchanged. `publish_outcomes` covers a blank and an invisible credit.
 3. **(S8, 2026-10-14.)** The duplicate/continuity check, the write and the
    reindex run under `RegistryState::publish_lock`, and the file is created
    with `create_new` (an `AlreadyExists` is a 409). Before S8 the check read

@@ -382,7 +382,7 @@ impl AdmittedSceneBlob {
         Ok(Self { content_type, content_hash: hash_to_hex(&hash), size_bytes: bytes.len() })
     }
 
-    /// Placement: the stored blob must be present, a GLB, and match the hash and size it was named by.
+    /// Placement: the stored blob must be present, match the hash and size it was named by, and pass `fe_format::glb::check` with no external uri.
     fn verify_stored(
         blob_store: &BlobStoreHandle,
         content_hash: &str,
@@ -406,6 +406,9 @@ impl AdmittedSceneBlob {
             "stored model {canonical} does not match its hash and size"
         );
         anyhow::ensure!(bytes.starts_with(b"glTF"), "stored model {canonical} is not a GLB");
+        let facts = fe_format::glb::check(&bytes, fe_format::limits::MAX_ENTRY_UNCOMPRESSED_BYTES as usize)
+            .map_err(|refusal| anyhow::anyhow!("stored model {canonical} is not a valid GLB: {refusal}"))?;
+        anyhow::ensure!(!facts.external_uri, "stored model {canonical} depends on files outside itself");
         let content_type = admit_scene_bytes(&bytes, "glb", &canonical)?;
         Ok(Self { content_type, content_hash: canonical, size_bytes: bytes.len() })
     }

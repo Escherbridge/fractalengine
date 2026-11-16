@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use fe_format::limits::{DECOMPRESSION_LIMIT_ERROR, MAX_ENTRY_UNCOMPRESSED_BYTES};
 use fe_format::{split_hexon_uri, HexonArchiveIndex};
 
 use crate::handlers::model::handle_model_install;
@@ -12,12 +14,18 @@ use crate::manifest::{AssetEntry, EntryKind, HexonType, License, LicenseType};
 use crate::package::HexonPackage;
 use crate::registry::FsBlobStore;
 
+/// Largest total uncompressed bytes one model-library install reads out of a package (256 MiB).
+pub const MODEL_LIBRARY_MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+/// Largest registry `/meta` header response the model library reads (2 MiB).
+pub const MODEL_HEADER_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// File extension of an installed package.
 const PACKAGE_EXTENSION: &str = "hexon";
 /// Member holding the licence; read through the header reader.
 const LICENSE_MEMBER: &str = "license.json";
 /// Petal label passed to the model install handler (a library install belongs to no petal).
 const LIBRARY_SCOPE: &str = "library";
+/// Age past which a temp file is a crash leftover; younger ones may be another instance's install.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
 /// Distinguishes concurrent temp files inside one process.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -26,6 +34,8 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub enum ModelLibraryError {
     #[error("not a readable hexon package: {0}")]
     Unreadable(String),
+    #[error("package is too large once decompressed (model library limit {limit} bytes)")]
+    InflatesTooLarge { limit: u64 },
     #[error("package is not signed by its publisher")]
     Unsigned,
     #[error("package type is {0}, not model")]
@@ -42,6 +52,10 @@ pub enum ModelLibraryError {
     NoModels,
     #[error("model entry {0} has no asset in the package")]
     MissingAsset(String),
+    #[error("model entry {entry_id} is not a valid GLB: {reason}")]
+    InvalidModel { entry_id: String, reason: String },
+    #[error("model entry {0} depends on files outside the package")]
+    ExternalModelUri(String),
     #[error("{0} is already installed")]
     AlreadyInstalled(String),
     #[error("{0} is not installed")]
@@ -77,28 +91,37 @@ pub struct ModelPackageSummary {
 pub struct ModelLibrary {
     dir: PathBuf,
     blob_store: FsBlobStore,
+    /// Total uncompressed bytes an install may read; [`MODEL_LIBRARY_MAX_UNCOMPRESSED_BYTES`] outside tests.
+    uncompressed_budget: u64,
 }
 
 impl ModelLibrary {
-    /// Open (creating) `dir`; leftover temp files from a crashed install are removed.
+    /// Open (creating) `dir`; temp files older than an hour (crash leftovers) are removed.
     pub fn open(dir: impl Into<PathBuf>, blob_store: FsBlobStore) -> Result<Self, ModelLibraryError> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
         if let Ok(read) = std::fs::read_dir(&dir) {
             for item in read.flatten() {
                 let path = item.path();
-                if is_temp_file(&path) {
+                if is_temp_file(&path) && is_stale(&item) {
                     let _ = std::fs::remove_file(&path);
                 }
             }
         }
-        Ok(Self { dir, blob_store })
+        Ok(Self { dir, blob_store, uncompressed_budget: MODEL_LIBRARY_MAX_UNCOMPRESSED_BYTES })
     }
 
     /// Verify, store blobs and write the package atomically; an installed id and version is refused.
     pub fn install(&self, bytes: &[u8]) -> Result<ModelPackageSummary, ModelLibraryError> {
-        let package =
-            HexonPackage::open(bytes).map_err(|error| ModelLibraryError::Unreadable(format!("{error:#}")))?;
+        let budget = self.uncompressed_budget;
+        check_declared_size(bytes, budget)?;
+        let package = HexonPackage::open_with_budget(bytes, budget).map_err(|error| {
+            if error.chain().any(|cause| cause.to_string().contains(DECOMPRESSION_LIMIT_ERROR)) {
+                ModelLibraryError::InflatesTooLarge { limit: budget }
+            } else {
+                ModelLibraryError::Unreadable(format!("{error:#}"))
+            }
+        })?;
         if !package.signature_valid() {
             return Err(ModelLibraryError::Unsigned);
         }
@@ -114,8 +137,20 @@ impl ModelLibrary {
         }
         let mut model_count = 0usize;
         for entry in package.entries.iter().filter(|entry| entry.kind == EntryKind::Model) {
-            if !package.assets.contains_key(&entry.asset_hash) {
+            let Some(model) = package.assets.get(&entry.asset_hash) else {
                 return Err(ModelLibraryError::MissingAsset(entry.entry_id.clone()));
+            };
+            match fe_format::glb::check(model, MAX_ENTRY_UNCOMPRESSED_BYTES as usize) {
+                Ok(facts) if facts.external_uri => {
+                    return Err(ModelLibraryError::ExternalModelUri(entry.entry_id.clone()));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(ModelLibraryError::InvalidModel {
+                        entry_id: entry.entry_id.clone(),
+                        reason: error.to_string(),
+                    });
+                }
             }
             model_count += 1;
         }
@@ -125,7 +160,13 @@ impl ModelLibrary {
 
         handle_model_install(&package, LIBRARY_SCOPE, &self.blob_store)
             .map_err(|error| ModelLibraryError::Blobs(format!("{error:#}")))?;
-        write_atomic(&path, bytes)?;
+        match write_atomic(&path, bytes) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ModelLibraryError::AlreadyInstalled(uri));
+            }
+            Err(error) => return Err(error.into()),
+        }
         summarize(&path).map_err(|error| {
             let _ = std::fs::remove_file(&path);
             ModelLibraryError::Unreadable(format!("{error:#}"))
@@ -231,7 +272,7 @@ fn check_license(license: Option<&License>) -> Result<(), ModelLibraryError> {
     match license.license_type {
         LicenseType::Paid => Err(ModelLibraryError::LicensePaid),
         LicenseType::Attribution
-            if license.attribution.as_deref().is_none_or(|text| text.trim().is_empty()) =>
+            if license.attribution.as_deref().is_none_or(|text| !fe_format::text::has_visible_text(text)) =>
         {
             Err(ModelLibraryError::AttributionMissing)
         }
@@ -248,6 +289,31 @@ fn is_safe_name_part(part: &str) -> bool {
 fn is_temp_file(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("tmp")
         && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with('.'))
+}
+
+/// Last modified more than [`STALE_TEMP_AGE`] ago; an unreadable time counts as fresh (kept).
+fn is_stale(item: &std::fs::DirEntry) -> bool {
+    item.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > STALE_TEMP_AGE)
+}
+
+/// Refuse before any member is inflated when the central directory's declared sizes sum past `limit`.
+fn check_declared_size(bytes: &[u8], limit: u64) -> Result<(), ModelLibraryError> {
+    let unreadable = |error: &dyn std::fmt::Display| ModelLibraryError::Unreadable(error.to_string());
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| unreadable(&error))?;
+    fe_format::limits::check_entry_count(archive.len()).map_err(|error| unreadable(&error))?;
+    let mut declared = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive.by_index_raw(index).map_err(|error| unreadable(&error))?;
+        declared = declared.saturating_add(entry.size());
+        if declared > limit {
+            return Err(ModelLibraryError::InflatesTooLarge { limit });
+        }
+    }
+    Ok(())
 }
 
 /// Read a package's header (manifest, entries, licence) from disk; assets are never loaded.
@@ -283,16 +349,14 @@ fn summarize(path: &Path) -> anyhow::Result<ModelPackageSummary> {
     })
 }
 
-/// Temp file in the target directory, flush and sync, rename; the temp is removed on any failure.
+/// Temp file in the target directory, flush and sync, hard-link to `target` (fails with `AlreadyExists`, never overwrites), remove the temp.
 fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     let name = target.file_name().and_then(|name| name.to_str()).unwrap_or("package");
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = dir.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
-    let result = write_synced(&temp, bytes).and_then(|()| std::fs::rename(&temp, target));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
+    let result = write_synced(&temp, bytes).and_then(|()| std::fs::hard_link(&temp, target));
+    let _ = std::fs::remove_file(&temp);
     result
 }
 
@@ -317,13 +381,42 @@ mod tests {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
+    /// A GLB with one space-padded JSON chunk.
+    fn glb(json: &[u8]) -> Vec<u8> {
+        let padded = (json.len() + 3) & !3;
+        let total = 12 + 8 + padded;
+        let mut bytes = Vec::with_capacity(total);
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(total as u32).to_le_bytes());
+        bytes.extend_from_slice(&(padded as u32).to_le_bytes());
+        bytes.extend_from_slice(b"JSON");
+        bytes.extend_from_slice(json);
+        bytes.resize(total, b' ');
+        bytes
+    }
+
+    fn chair_glb() -> Vec<u8> {
+        glb(br#"{"asset":{"version":"2.0"},"meshes":[{}]}"#)
+    }
+
     fn model_package(id: &str, kind: HexonType, license: LicenseType, attribution: Option<&str>) -> Vec<u8> {
+        model_package_with(id, kind, license, attribution, &chair_glb())
+    }
+
+    fn model_package_with(
+        id: &str,
+        kind: HexonType,
+        license: LicenseType,
+        attribution: Option<&str>,
+        model: &[u8],
+    ) -> Vec<u8> {
         let did = fe_format::verifying_key_to_did(&key().verifying_key());
         let mut builder = HexonBuilder::new(id, did)
             .name("Chair")
             .hexon_type(kind)
             .license(license)
-            .add_entry_with_file("chair", EntryKind::Model, "glb", "Chair", b"glb-bytes-of-a-chair");
+            .add_entry_with_file("chair", EntryKind::Model, "glb", "Chair", model);
         if let Some(text) = attribution {
             builder = builder.attribution(text);
         }
@@ -361,9 +454,25 @@ mod tests {
     #[test]
     fn install_refusals_then_one_library_journey() {
         let root = tempfile::tempdir().unwrap();
-        let library =
-            ModelLibrary::open(root.path().join("models"), FsBlobStore::new(root.path().join("blobs"))).unwrap();
+        let models_dir = root.path().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        // Startup sweep: a crash leftover older than an hour goes; a fresh temp (another instance's install) stays.
+        let old_temp = models_dir.join(".old.hexon.1.0.tmp");
+        let fresh_temp = models_dir.join(".fresh.hexon.2.0.tmp");
+        std::fs::write(&old_temp, b"partial").unwrap();
+        std::fs::write(&fresh_temp, b"partial").unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        std::fs::File::options().write(true).open(&old_temp).unwrap().set_modified(two_hours_ago).unwrap();
+        // A 1 MiB budget stands in for the 256 MiB constant so the inflation row stays small.
+        let mut library = ModelLibrary::open(&models_dir, FsBlobStore::new(root.path().join("blobs"))).unwrap();
+        library.uncompressed_budget = 1024 * 1024;
+        assert!(!old_temp.exists() && fresh_temp.exists(), "only the stale temp is swept");
+        std::fs::remove_file(&fresh_temp).unwrap();
 
+        let mut inflating_json = br#"{"asset":{"version":"2.0"}}"#.to_vec();
+        inflating_json.resize(2 * 1024 * 1024, b' ');
+        let inflating = glb(&inflating_json);
+        let external = glb(br#"{"asset":{"version":"2.0"},"images":[{"uri":"wood.png"}]}"#);
         let refusals: Vec<(&str, Vec<u8>, &str)> = vec![
             ("wrong type", model_package("mat", HexonType::Material, LicenseType::Free, None), "NotModel"),
             ("no licence", unlicensed_package(), "LicenseMissing"),
@@ -373,12 +482,33 @@ mod tests {
                 model_package("attr", HexonType::Model, LicenseType::Attribution, Some("  ")),
                 "AttributionMissing",
             ),
+            (
+                "zero-width attribution",
+                model_package("zw", HexonType::Model, LicenseType::Attribution, Some("\u{200B}\u{2066}\u{FEFF}\u{200D}")),
+                "AttributionMissing",
+            ),
+            (
+                "over-budget inflation",
+                model_package_with("bomb", HexonType::Model, LicenseType::Free, None, &inflating),
+                "InflatesTooLarge",
+            ),
+            (
+                "malformed glb",
+                model_package_with("broken", HexonType::Model, LicenseType::Free, None, b"glTF-magic-then-nothing"),
+                "InvalidModel",
+            ),
+            (
+                "external-uri glb",
+                model_package_with("linked", HexonType::Model, LicenseType::Free, None, &external),
+                "ExternalModelUri",
+            ),
         ];
         for (label, bytes, variant) in refusals {
             let error = library.install(&bytes).expect_err(label);
             assert!(format!("{error:?}").starts_with(variant), "{label}: got {error}");
         }
         assert!(library.list().is_empty(), "refusals leave nothing installed");
+        assert!(!root.path().join("blobs").exists(), "refusals store no blob");
 
         let good = model_package("chair", HexonType::Model, LicenseType::Attribution, Some("Chair by Ada, CC-BY-4.0"));
         let installed = library.install(&good).expect("install");
@@ -387,6 +517,13 @@ mod tests {
             library.install(&good),
             Err(ModelLibraryError::AlreadyInstalled(uri)) if uri == "chair@0.1.0"
         ));
+        // Another build of the same id and version is refused, and the publish step never replaces the file.
+        let rival = model_package("chair", HexonType::Model, LicenseType::Attribution, Some("Rival chair"));
+        assert!(matches!(library.install(&rival), Err(ModelLibraryError::AlreadyInstalled(_))));
+        let installed_path = models_dir.join("chair@0.1.0.hexon");
+        let raced = write_atomic(&installed_path, &rival).expect_err("publishing over an installed file");
+        assert_eq!(raced.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&installed_path).unwrap(), good, "the first install is intact");
 
         let listed = library.list();
         assert_eq!(listed.len(), 1);
