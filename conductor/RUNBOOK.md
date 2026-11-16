@@ -111,6 +111,35 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-15 (late night) — REGISTRY HOLDS 30 PACKAGES; MODEL LIBRARY PHASES 1-3 DONE LOCALLY.** *Terrain:*
+  26 US landmark tilesets (`tileset-usa-<place>`, version 0.1.0, zoom pairs between 10-11 and 13-14, 12 to 41
+  MB each) are published beside the earlier Pacific Northwest one: 27 terrain tilesets, 724 MB in all. User
+  decision: publish now labelled `attribution` (USGS imagery is public domain, the elevation source asks for
+  attribution), with the credit inside each package, in the registry's search rows and on the website's
+  status page; **the in-app credit line for maps is owed as the next app task**. Sources, config, scripts and
+  the build report are outside every repo in `..\registry-content\terrain-us-v1\` (`REPORT.md`; `sealed\`
+  holds the published files). Build notes: the public tileset builder checkout does not compile (stale lock,
+  one missing struct field), so the maintained private copy was used; the builder hard-codes name,
+  description and tags and refuses `free`, so the unsealed archives were patched before sealing; USGS
+  answers 200 with a white tile over water and outside the US, so six regions were recropped to land (blank
+  tiles detected by JPEG size under 3000 bytes); Alaska has no imagery (Denali dropped). Publishing used
+  the registry's publish token read from its platform variable, never printed. *Model library* (track
+  `model_library_20261115`; spec, plan and partitions committed): ML-01..ML-07 are written, compile and are
+  committed locally: GLB structural check (`fe-format/src/glb.rs`), messages `PlaceStoredGlb` /
+  `ReadPetalAssetHashes` (`fe-runtime`), thumbnail decoder and `ModelLibrary` (`fe-hexon`), licence, credit
+  and preview on registry search rows plus the model-package publish rule (`fe-hexon-registry`, deployed),
+  placement through the one creation path and the credits read (`fe-database/src/handlers/crud.rs`
+  `create_from_admitted_blob`), and `fe-ext model pack` (`tools/fe-ext/src/model.rs`). Tests run and green:
+  the registry suite, the thumbnail, GLB and library table tests, and the J8 command-line journey with its
+  model leg. **Not yet run:** the R10 database chunk that holds the new placement and credits leg
+  (`op_log::tests::a_failing_statement_rolls_back_the_op_log_row_too`). Standing assumptions the user was
+  told: credits are worked out per device in version one, so only public-domain and CC0 models are published
+  until attribution travels with the scene (spec OQ-1); browsing needs a registry service, not a static
+  catalogue (OQ-2). Deferred with reasons: model packages cannot enter the static catalogue (`fe-ext index
+  build` accepts extension packages only). *Next:* Phase 4 (desktop Models section, ML-08/09, plus the maps
+  credit line), Phase 5 integration (ML-10; two tripwires in `metadata.json`), run R10 and the Phase 4 tests,
+  push (thirteen or so local commits; one push, then the haiku CI monitor), then source and pack the first
+  public-domain and CC0 model sets. Still owed by the user: the DKIM value for mail.
 - **2026-11-15 (night) — DIRECTION: A RICH PUBLIC REGISTRY AND AN IN-APP 3D LIBRARY; MARKETPLACE STAYS OUT OF
   THIS LAUNCH.** User decisions: (a) **build the in-app model library first** (browse, install, thumbnails,
   place in scene, plus a tool that packs a folder of models into a signed package), then fill the registry;
