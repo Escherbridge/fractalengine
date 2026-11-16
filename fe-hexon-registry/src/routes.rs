@@ -990,6 +990,17 @@ async fn publish(
         Err(e) => return internal("verify task failed", &e),
     };
 
+    // Model packages carry a licence the library shows; refuse before anything is written.
+    if field("hexon_type").as_deref() == Some("model") {
+        let license_bytes = body.clone();
+        match tokio::task::spawn_blocking(move || index::check_model_license(&license_bytes)).await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => return json_err(StatusCode::BAD_REQUEST, msg),
+            Err(e) => return internal("license check task failed", &e),
+        }
+    }
+
     // Held until the reindex below: two concurrent publishes of one id can
     // never both pass the duplicate/continuity check (see AGENTS.md §Publish validation).
     let _publishing = state.publish_lock.lock().await;

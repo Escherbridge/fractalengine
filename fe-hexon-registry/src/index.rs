@@ -28,6 +28,16 @@ pub struct HexonIndexEntry {
     /// Monolithic, or a signed chunk container (from `chunks/index.json`'s
     /// bundle count, read the same cheap way).
     pub layout: fe_format::Layout,
+    /// `license.json` `license_type` (`free` / `attribution` / `paid`); `None` without a readable licence.
+    pub license_type: Option<String>,
+    /// `license.json` `spdx_id`.
+    pub spdx_id: Option<String>,
+    /// `license.json` `attribution`, clipped to [`ATTRIBUTION_INDEX_CHARS`].
+    pub attribution: Option<String>,
+    /// Card image member path: first placeable entry's `preview_image`, else `icon.png`; only when present in the archive.
+    pub preview: Option<String>,
+    /// Uncompressed size of `preview` from the central directory.
+    pub preview_bytes: Option<u64>,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -72,6 +82,96 @@ fn try_read_zip_json(path: &Path, name: &str) -> Result<Option<serde_json::Value
             .map(Some)
             .with_context(|| format!("invalid JSON in {name}")),
         None => Ok(None),
+    }
+}
+
+/// Index-time clip for `license.json` `attribution`, in characters.
+pub const ATTRIBUTION_INDEX_CHARS: usize = 512;
+
+/// Licence and preview facts of one package; every failure leaves the field empty.
+#[derive(Default)]
+struct LibraryFacts {
+    license_type: Option<String>,
+    spdx_id: Option<String>,
+    attribution: Option<String>,
+    preview: Option<String>,
+    preview_bytes: Option<u64>,
+}
+
+/// Best-effort read of `license.json`, `entries.json` and the central directory; never fails the listing.
+fn library_facts(path: &Path) -> LibraryFacts {
+    let mut facts = LibraryFacts::default();
+    if let Ok(Some(license)) = try_read_zip_json(path, "license.json") {
+        let text = |key: &str| {
+            license
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        facts.license_type = text("license_type");
+        facts.spdx_id = text("spdx_id");
+        facts.attribution = text("attribution")
+            .map(|a| a.chars().take(ATTRIBUTION_INDEX_CHARS).collect::<String>());
+    }
+    let placeable_preview = match try_read_zip_json(path, "entries.json") {
+        Ok(Some(entries)) => entries
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .and_then(|list| {
+                list.iter()
+                    .filter(|e| e.get("is_placeable").and_then(|v| v.as_bool()) == Some(true))
+                    .find_map(|e| e.get("preview_image").and_then(|v| v.as_str()))
+                    .map(str::to_string)
+            }),
+        _ => None,
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return facts;
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return facts;
+    };
+    for candidate in placeable_preview.into_iter().chain(["icon.png".to_string()]) {
+        if let Ok(member) = archive.by_name(&candidate) {
+            facts.preview_bytes = Some(member.size());
+            facts.preview = Some(candidate);
+            break;
+        }
+    }
+    facts
+}
+
+/// Publish rule for `model` packages: `license.json` present, and `attribution` licences name an attribution.
+pub fn check_model_license(bytes: &[u8]) -> std::result::Result<(), String> {
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("invalid .hexon: {e}"))?;
+    let mut entry = match archive.by_name("license.json") {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => {
+            return Err("model packages require a license.json".to_string())
+        }
+        Err(e) => return Err(format!("cannot open license.json: {e}")),
+    };
+    let declared = entry.size();
+    let mut budget = limits::MAX_ARCHIVE_UNCOMPRESSED_BYTES;
+    let raw = limits::read_entry_capped(&mut entry, declared, limits::MAX_JSON_ENTRY_BYTES, &mut budget)
+        .map_err(|e| format!("cannot read license.json: {e:#}"))?;
+    let license: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|e| format!("invalid license.json: {e}"))?;
+    match license.get("license_type").and_then(|v| v.as_str()) {
+        Some("attribution") => {
+            let named = license
+                .get("attribution")
+                .and_then(|v| v.as_str())
+                .is_some_and(|a| !a.trim().is_empty());
+            if named {
+                Ok(())
+            } else {
+                Err("an attribution license requires a non-empty attribution".to_string())
+            }
+        }
+        Some(_) => Ok(()),
+        None => Err("license.json has no license_type".to_string()),
     }
 }
 
@@ -132,6 +232,7 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
         },
         None => fe_format::Layout::Monolithic,
     };
+    let facts = library_facts(path);
     Ok(HexonIndexEntry {
         hexon_id: s("hexon_id").context("manifest missing hexon_id")?,
         version: s("version").context("manifest missing version")?,
@@ -152,6 +253,11 @@ pub fn index_one(path: &Path) -> Result<HexonIndexEntry> {
         content_hash,
         sealed,
         layout,
+        license_type: facts.license_type,
+        spdx_id: facts.spdx_id,
+        attribution: facts.attribution,
+        preview: facts.preview,
+        preview_bytes: facts.preview_bytes,
         path: path.to_path_buf(),
     })
 }

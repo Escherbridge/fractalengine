@@ -37,6 +37,13 @@ Instead (`src/index.rs`):
   `fe_format::HexonArchiveIndex` — the same **lazy** header-phase reader S2
   built, never `HexonArchive::import` (still eager, still never used here).
 
+- **(ML-05, model library.)** `HexonIndexEntry` also carries `license_type`, `spdx_id`, `attribution` (clipped to
+  512 chars), `preview` and `preview_bytes`, appended after `layout` so earlier field names and order are stable;
+  all are `null` when absent. `index::library_facts` reads `license.json` and `entries.json` through the same capped
+  `try_read_zip_json`, and `preview_bytes` from the central directory: `preview` is the first placeable entry's
+  `preview_image`, else `icon.png`, and only when that member exists. Every failure (missing, oversized or
+  unparseable data) leaves the fields empty and the package listed. Search returns the entry as serialised.
+
 ### Decompression limits (REG-DECOMP, 2026-10-11; PAS-P5 S3)
 
 Every zip read is bounded (`src/limits.rs`; security audit 2026-07-31
@@ -125,6 +132,9 @@ Body is raw `.hexon` bytes. Validation is two gates, in order:
    cannot take over another's id, even under a brand-new version. Combined
    with the existing same-`id@version` 409, both duplicate-publish and
    id-takeover land on the same status code with different messages.
+   **Model licence rule (ML-05):** after the seal verifies and before the lock, a `hexon_type = model` package is
+   a 400 when it has no `license.json` (or no `license_type`), or when `license_type` is `attribution` and the
+   attribution is empty or whitespace (`index::check_model_license`). Other types are unchanged.
 3. **(S8, 2026-10-14.)** The duplicate/continuity check, the write and the
    reindex run under `RegistryState::publish_lock`, and the file is created
    with `create_new` (an `AlreadyExists` is a 409). Before S8 the check read

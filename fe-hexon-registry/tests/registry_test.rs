@@ -512,6 +512,20 @@ async fn publish_refuses_zip_bombs_without_storing_them() {
     assert_eq!(json_data(&body)["indexed"], 0);
 }
 
+/// A sealed `model` package with one placeable entry whose card image is the `assets/{hash}` member; `license` None omits `license.json`.
+fn model_hexon(id: &str, license: Option<fe_format::License>, preview: &[u8]) -> Vec<u8> {
+    let (mut chair, chair_blob) =
+        fixtures::asset_entry("chair", EntryKind::Model, "glb", b"glb chair bytes");
+    let (card, card_blob) = fixtures::asset_entry("chair_card", EntryKind::Model, "png", preview);
+    chair.is_placeable = true;
+    chair.preview_image = Some(format!("assets/{}", card_blob.0));
+    let manifest = fixtures::manifest(id, "1.0.0", HexonType::Model, "Chairs", "Chair pack", &["chair"]);
+    fixtures::seal(
+        HexonArchive::export(manifest, vec![chair, card], vec![chair_blob, card_blob], license, None, None, None)
+            .expect("model fixture export failed"),
+    )
+}
+
 /// Table-driven: the four PAS-P5 S3 publish outcomes beyond the existing
 /// duplicate/readonly/garbage/zip-bomb cases (those stay as their own tests
 /// above — "zip bomb → 400" is already fully covered there).
@@ -631,6 +645,38 @@ async fn publish_outcomes() {
     ));
     let (status, body) = post_publish(&router, off_grammar, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
+
+    // model packages: licence + preview publish and the search row carries them (ML-05).
+    let card = b"png card bytes";
+    let cc_by = fe_format::License {
+        license_type: fe_format::LicenseType::Attribution,
+        spdx_id: Some("CC-BY-4.0".into()),
+        attribution: Some("Chairs by Ada".into()),
+        ..Default::default()
+    };
+    let (status, body) = post_publish(&router, model_hexon("chair-pack", Some(cc_by.clone()), card), None).await;
+    assert_eq!(status, StatusCode::OK, "{}", error_text(&body));
+    let (_, body) = get(&router, "/api/v1/hexons/search?type=model").await;
+    let rows = json_data(&body);
+    let row = &rows.as_array().unwrap()[0];
+    assert_eq!(row["license_type"], "attribution");
+    assert_eq!(row["spdx_id"], "CC-BY-4.0");
+    assert_eq!(row["attribution"], "Chairs by Ada");
+    assert_eq!(row["preview"], format!("assets/{}", blake3::hash(card).to_hex()));
+    assert_eq!(row["preview_bytes"], card.len());
+
+    // no license.json -> 400, nothing stored.
+    let (status, body) = post_publish(&router, model_hexon("no-license", None, card), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
+    assert!(error_text(&body).contains("license.json"), "{}", error_text(&body));
+    assert!(!tmp.path().join("no-license@1.0.0.hexon").exists());
+
+    // attribution licence with a blank attribution -> 400, nothing stored.
+    let blank = fe_format::License { attribution: Some("  ".into()), ..cc_by };
+    let (status, body) = post_publish(&router, model_hexon("blank-credit", Some(blank), card), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", error_text(&body));
+    assert!(error_text(&body).contains("attribution"), "{}", error_text(&body));
+    assert!(!tmp.path().join("blank-credit@1.0.0.hexon").exists());
 
     // the rejected imposter version must never have been written or indexed.
     assert!(!tmp.path().join("night-sky@2.1.0.hexon").exists());
