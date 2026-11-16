@@ -352,6 +352,7 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::SetScopeHidden { correlation_id, .. }
         | DbCommand::SetPetalRenderDistance { correlation_id, .. }
         | DbCommand::GetPetalRenderDistance { correlation_id, .. }
+        | DbCommand::ReadPetalAssetHashes { correlation_id, .. }
         | DbCommand::EnrolLocalDevice { correlation_id, .. }
         | DbCommand::RevokeLocalDevice { correlation_id, .. }
         | DbCommand::RegisterDeviceFormat { correlation_id, .. }
@@ -397,6 +398,7 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::PetalVisibilityGroupsLoaded { correlation_id, .. }
         | DbResult::ScopeHiddenSet { correlation_id, .. }
         | DbResult::PetalRenderDistanceLoaded { correlation_id, .. }
+        | DbResult::PetalAssetHashes { correlation_id, .. }
         | DbResult::LocalDeviceEnrolled { correlation_id, .. }
         | DbResult::LocalDeviceRevoked { correlation_id, .. }
         | DbResult::DeviceFormatRegistered { correlation_id, .. }
@@ -471,6 +473,8 @@ enum ReplyKind {
     VisibilityGroups,
     /// `SetScopeHidden` replies (`ScopeHiddenSet`).
     ScopeHidden,
+    /// `ReadPetalAssetHashes` replies (`PetalAssetHashes`).
+    PetalAssetHashes,
     /// `Set`/`GetPetalRenderDistance` replies (`PetalRenderDistanceLoaded`).
     RenderDistance,
     /// `EnrolLocalDevice`/`RevokeLocalDevice` replies (`LocalDeviceEnrolled`/`LocalDeviceRevoked`).
@@ -545,6 +549,7 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         }
         SetScopeHidden { .. } => ReplyKind::ScopeHidden,
         SetPetalRenderDistance { .. } | GetPetalRenderDistance { .. } => ReplyKind::RenderDistance,
+        ReadPetalAssetHashes { .. } => ReplyKind::PetalAssetHashes,
         EnrolLocalDevice { .. } | RevokeLocalDevice { .. } => ReplyKind::DeviceEnrolment,
         RegisterDeviceFormat { .. } | ListDeviceFormats { .. } => ReplyKind::DeviceFormat,
         InsertDevicePayloads { .. } | ListDevicePayloads { .. } => ReplyKind::DevicePayload,
@@ -613,6 +618,7 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         PetalVisibilityGroupsLoaded { .. } => ReplyKind::VisibilityGroups,
         ScopeHiddenSet { .. } => ReplyKind::ScopeHidden,
         PetalRenderDistanceLoaded { .. } => ReplyKind::RenderDistance,
+        PetalAssetHashes { .. } => ReplyKind::PetalAssetHashes,
         LocalDeviceEnrolled { .. } | LocalDeviceRevoked { .. } => ReplyKind::DeviceEnrolment,
         DeviceFormatRegistered { .. }
         | DeviceFormatRejected { .. }

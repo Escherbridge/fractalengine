@@ -718,6 +718,21 @@ pub enum DbCommand {
         file_path: String,
         position: [f32; 3],
     },
+    /// Place a GLB already in the blob store as a node; replies `GltfImported` / `ImportGltfFailed` (src/AGENTS.md §place-stored-glb).
+    PlaceStoredGlb {
+        request: Option<NativeImportRequest>,
+        petal_id: String,
+        name: String,
+        /// 64-hex BLAKE3 hash of the stored blob; the DB thread verifies it is present.
+        content_hash: String,
+        size_bytes: u64,
+        position: [f32; 3],
+    },
+    /// Read the distinct asset `content_hash` values of a petal's live nodes (Viewer-fenced); replies `PetalAssetHashes`.
+    ReadPetalAssetHashes {
+        petal_id: String,
+        correlation_id: Option<String>,
+    },
     /// Register an asset row for a blob the API thread ALREADY wrote to the
     /// shared blob store. Metadata only — asset bytes never ride this channel
     /// (fe-api/AGENTS.md §asset-ingest). Replies `AssetCreated`.
@@ -1684,6 +1699,12 @@ pub enum DbResult {
         materialization: Option<CommittedNodeMaterialization>,
         /// Echoes `CreateNodeWithAsset.correlation_id`; `None` for GUI
         /// `ImportGltf` results (never routed to an API waiter).
+        correlation_id: Option<String>,
+    },
+    /// Reply to `ReadPetalAssetHashes`: distinct 64-hex asset hashes of the petal's live nodes (capped by the DB).
+    PetalAssetHashes {
+        petal_id: String,
+        content_hashes: Vec<String>,
         correlation_id: Option<String>,
     },
     /// Result of `CreateAsset` — the asset row now references the blob.

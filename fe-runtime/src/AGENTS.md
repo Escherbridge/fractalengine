@@ -13,6 +13,22 @@ the original `build_app`/`build_app_with_window` helpers retain their default cl
 `DbCommand::ImportGltf` carries an optional lease; the DB worker drops it after the real import handler returns.
 Normal/API/harness constructors use `None`. GPX/Hexon UI queues carry their own `DialogPath` until parsing finishes.
 
+## §place-stored-glb
+
+`DbCommand::PlaceStoredGlb { request, petal_id, name, content_hash, size_bytes, position }` places a GLB already in
+the blob store (an installed model package) through the same creation core as `ImportGltf`: the DB arm enters
+`import_gltf_handler`'s post-storage stage, so KTX2 admission, the local Editor check and the `object_creation`
+transaction are shared. It replies `GltfImported` / `ImportGltfFailed` and `request` is the same
+`NativeImportRequest` owner as `ImportGltf`; it carries no file lease (no file is read). It is a scene write: census
+row `scene.create` beside `ImportGltf`, with the same `petal_id` + `request.petal_id` carried-petal check. Like
+`ImportGltf` it is not charged to the node write budget and is not in `app.rs`'s `reply_kind_of_command` (uncorrelated
+GUI reply). `payload_bytes` is 0: only hash and size ride the channel, never bytes.
+
+`DbCommand::ReadPetalAssetHashes { petal_id, correlation_id }` is a read-only, Viewer-fenced query answered by
+`DbResult::PetalAssetHashes { petal_id, content_hashes, correlation_id }` (distinct hashes of live nodes' assets, capped
+by the DB at 1 024). It is a non-scene command (`census` classifies it `None`). The bridge maps hashes to installed
+packages locally (credits); no wire change.
+
 ## §scene-change
 
 `messages.rs::SceneChange` is the process-wide scene-delta contract. Every
@@ -1367,7 +1383,7 @@ cannot forget a hook: it either goes through the door or its command is not in t
 
 | Variant | Hooks | Note |
 |---|---|---|
-| `CreateNode`, `CreateNodeWithAsset`, `ImportGltf` | `scene.create` | name, position |
+| `CreateNode`, `CreateNodeWithAsset`, `ImportGltf`, `PlaceStoredGlb` | `scene.create` | name, position |
 | `CreateObject` | `scene.create` + `scene.property` | one property call per initial key, node null |
 | `ImportPetalSnapshot` | `scene.create` + `scene.transform` + `scene.property` | one create per node, one transform per node whose stored rotation or scale is not the default (the shape a live transform update sends, so a `scene.transform` hook can refuse an imported pose), one property call per initial key; positions are the stored `f64` values; capped by `MAX_HOOK_CALLS_PER_WRITE` (`scene_write.rs:19`) |
 | `DuplicateNode` | `scene.create` | `proposed.source` = the copied node |

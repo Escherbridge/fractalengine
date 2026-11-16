@@ -57,6 +57,7 @@ pub const SCENE_WRITE_CENSUS: &[CensusRow] = &[
     CensusRow { variant: "CreateNode", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "CreateNodeWithAsset", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "ImportGltf", hooks: "scene.create", note: "name, position" },
+    CensusRow { variant: "PlaceStoredGlb", hooks: "scene.create", note: "name, position" },
     CensusRow { variant: "CreateObject", hooks: "scene.create + scene.property", note: "one property call per initial key, node null" },
     CensusRow { variant: "ImportPetalSnapshot", hooks: "scene.create + scene.transform + scene.property", note: "one create per node, one transform per node with a non-default rotation or scale, one property call per initial key; judged strictly by judge_import" },
     CensusRow { variant: "DuplicateNode", hooks: "scene.create", note: "proposed.source = the copied node" },
@@ -659,6 +660,13 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
             name,
             position,
             ..
+        }
+        | DbCommand::PlaceStoredGlb {
+            request,
+            petal_id,
+            name,
+            position,
+            ..
         } => {
             let mut carried = vec![petal_id.as_str()];
             carried.extend(request.as_ref().map(|request| request.petal_id.as_str()));
@@ -842,6 +850,7 @@ fn census<'a>(petal: &str, command: &'a DbCommand) -> Option<Census<'a>> {
         | DbCommand::SetPetalRequirements { .. }
         | DbCommand::SetPetalTerrain { .. }
         | DbCommand::GetPetalTerrain { .. }
+        | DbCommand::ReadPetalAssetHashes { .. }
         | DbCommand::ReadTerrainApiCredential { .. }
         | DbCommand::SetPetalRenderDistance { .. }
         | DbCommand::GetPetalRenderDistance { .. }
