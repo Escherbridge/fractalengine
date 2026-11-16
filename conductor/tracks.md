@@ -119,6 +119,7 @@ Order: signing and release first, then agent QA, then the operator seams.
   consent check; in-app install now runs through extension_platform's Extensions panel (Install from file, Browse)
   over the `plugin_bridge` ops drain — [./tracks/plugin_host_revival_20261031/](./tracks/plugin_host_revival_20261031/)
 - [ ] **[per_key_clock_20261113](./tracks/per_key_clock_20261113/)** (P1, pending): per-key (HLC, author) clock for verse/fractal/petal rows and node fields; a replicated row is judged by its author's role at write time (QA-0165, user 2026-11-13); roots QA-0156/0166/0126.
+- [ ] **[model_library_20261115](./tracks/model_library_20261115/)** (P1, pending): in-app Models section (browse registry model packages with thumbnail, licence and attribution; install; place into the active petal; petal credits) plus `fe-ext model pack` for sealed, signed model packages; library before content (user 2026-11-15).
 
 ---
 
