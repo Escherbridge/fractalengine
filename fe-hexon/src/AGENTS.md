@@ -319,3 +319,19 @@ PetalSnapshot layout: fe-format/src/AGENTS.md §petal-snapshot; DB seam: fe-data
 ## §lint-scope
 
 `lib.rs` no longer has a crate-wide `#![allow(dead_code)]`. Each of the 14 modules that hold private functions carries its own `#[allow(dead_code)]` (`lib.rs:2-29`). New code must not widen these allows. Remove an allow when its module has no dead code left.
+
+## §model-library (`model_library.rs`, track `model_library_20261115` ML-04)
+
+`ModelLibrary` keeps installed model packages as `{id}@{version}.hexon` files in one directory, the way the tileset store keeps maps, and lists them by header only (`HexonArchiveIndex::open`, then `read_member("license.json")`), so a listing never loads an asset.
+
+- **Install order.** `HexonPackage::open` (caps, seal) -> must be signed -> type `model` -> licence rule -> safe file name -> not already installed -> every model entry has its asset in the archive -> `handle_model_install` (blobs into the shared content-addressed store) -> atomic file write. Everything refusable is checked before any blob or file is written. Blobs of a package whose file write then fails stay in the store; they are content-addressed and harmless.
+- **Licence rule (D-7).** `license.json` must exist (`LicenseMissing`), `paid` is refused (`LicensePaid`), `attribution` needs non-blank text (`AttributionMissing`). The same rule is applied at pack and at registry publish; the library repeats it because a package can come from any registry.
+- **Atomic write.** Temp file `.{name}.{pid}.{n}.tmp` in the target directory (same volume, so the rename cannot cross filesystems), written with `create_new`, flushed and `sync_all`ed, then renamed; the temp is removed on every failure path, and `open` sweeps dot-prefixed `.tmp` leftovers of a crash. An existing id and version is refused (`AlreadyInstalled`), never overwritten; the check is a pre-check, which is sound because one owner (the main binary's worker) installs.
+- **File names.** Ids and versions come from untrusted manifests and uris. `is_safe_name_part` is `fe_format::is_safe_path_id` with `+` allowed (build metadata); an unversioned uri is refused for `remove` and `entry`. `list` also requires the file stem to equal the manifest's `{id}@{version}`, so a renamed file cannot answer for another package.
+- **Remove** deletes the package file only. Blobs stay, because placed nodes keep referencing them by hash; `packages_for_hashes` then still names the installed package for credits, and returns nothing once removed (the UI shows "Source not installed here").
+- **List** skips unreadable files with a `warn!` instead of failing the whole list.
+- **Errors.** `ModelLibraryError` has one variant per refusal the UI words differently; its `Display` text is user-facing.
+
+## §thumbnail (`thumbnail.rs`, ML-03)
+
+`thumbnail::decode(bytes)` turns a registry preview into RGBA for an egui texture. The remote bytes are hostile, so the order is fixed and each step is cheaper than the next: byte cap 256 KiB (`MAX_THUMBNAIL_BYTES`), PNG signature, hand-read IHDR width and height at most 512 x 512 (`MAX_THUMBNAIL_SIDE`) before any decoder runs, then the `image` decoder under `image::Limits` (1 MiB allocation). Refusals are `ThumbnailError` variants; nothing panics on a lying header. The fetch side is `RemoteRegistryClient::fetch_member_capped(uri, path, cap)` in `remote.rs`, which refuses a larger `Content-Length` and stops streaming at the cap; `RemoteHexonSummary` carries `preview` (member path) and `preview_bytes` so the UI can skip an oversized preview without fetching it.

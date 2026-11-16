@@ -83,6 +83,19 @@ pub struct RemoteHexonSummary {
     /// BLAKE3 of the sealed manifest with the signature blanked; empty when the registry omits it.
     #[serde(default)]
     pub content_hash: String,
+    /// `free` / `attribution` / `paid` from the package licence; absent on older registries.
+    #[serde(default)]
+    pub license_type: Option<String>,
+    #[serde(default)]
+    pub spdx_id: Option<String>,
+    #[serde(default)]
+    pub attribution: Option<String>,
+    /// Member path of the card image (`preview/...` or `icon.png`).
+    #[serde(default)]
+    pub preview: Option<String>,
+    /// Uncompressed size of the preview member.
+    #[serde(default)]
+    pub preview_bytes: Option<u64>,
 }
 
 /// Client for the hosted hexon registry HTTP API.
@@ -279,9 +292,15 @@ impl PartialHexonFetch for RemoteRegistryClient {
     }
 
     async fn fetch_member(&self, uri: &str, path: &str) -> Result<Bytes, PartialFetchError> {
+        let url = self.member_url(uri, path)?;
+        self.get_capped(url, MAX_MEMBER_RESPONSE_BYTES).await
+    }
+}
+
+impl RemoteRegistryClient {
+    /// `/member/{path}` URL; a path with an empty, `.` or `..` component is `NotFound` so normalization never rewrites it.
+    fn member_url(&self, uri: &str, path: &str) -> Result<reqwest::Url, PartialFetchError> {
         let components: Vec<&str> = path.split('/').collect();
-        // No legitimate member path has an empty or dot component; refusing them
-        // here keeps URL normalization from ever rewriting the request.
         if components
             .iter()
             .any(|c| c.is_empty() || *c == "." || *c == "..")
@@ -290,8 +309,13 @@ impl PartialHexonFetch for RemoteRegistryClient {
         }
         let mut tail = vec!["member"];
         tail.extend(components);
-        let url = self.hexon_url(uri, &tail)?;
-        self.get_capped(url, MAX_MEMBER_RESPONSE_BYTES).await
+        self.hexon_url(uri, &tail)
+    }
+
+    /// One archive member, refused on a `Content-Length` over `cap` and cut off at `cap` while reading; bytes are unverified.
+    pub async fn fetch_member_capped(&self, uri: &str, path: &str, cap: u64) -> Result<Bytes, PartialFetchError> {
+        let url = self.member_url(uri, path)?;
+        self.get_capped(url, cap.min(MAX_MEMBER_RESPONSE_BYTES)).await
     }
 }
 

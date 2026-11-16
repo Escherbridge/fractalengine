@@ -28,3 +28,5 @@ pub mod remote;
 pub mod signature;
 #[allow(dead_code)]
 pub mod snapshot;
+pub mod thumbnail;
+pub mod model_library;
