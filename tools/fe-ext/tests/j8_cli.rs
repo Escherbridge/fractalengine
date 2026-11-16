@@ -64,6 +64,200 @@ fn bi_push_outcomes(trace: &Value) {
     node(trace, "sensor-1");
 }
 
+const MODEL_LIBRARY: &str = include_str!("fixtures/model-pack/library.toml");
+const PER_MODEL_LIMIT: u64 = 64 * 1024 * 1024;
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut low, mut high) = (1u32, 0u32);
+    for &byte in data {
+        low = (low + u32::from(byte)) % 65521;
+        high = (high + low) % 65521;
+    }
+    (high << 16) | low
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let mut body = kind.to_vec();
+    body.extend_from_slice(data);
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&crc32(&body).to_be_bytes());
+}
+
+/// A valid RGBA PNG of `width` x `height` with stored (uncompressed) zlib blocks, so its size is predictable.
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut raw = Vec::new();
+    for row in 0..height {
+        raw.push(0);
+        for column in 0..width {
+            raw.extend_from_slice(&[(row % 6 * 40) as u8, (column % 6 * 40) as u8, 128, 255]);
+        }
+    }
+    let mut zlib = vec![0x78, 0x01];
+    let mut blocks = raw.chunks(65535).peekable();
+    while let Some(block) = blocks.next() {
+        zlib.push(u8::from(blocks.peek().is_none()));
+        zlib.extend_from_slice(&(block.len() as u16).to_le_bytes());
+        zlib.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
+        zlib.extend_from_slice(block);
+    }
+    zlib.extend_from_slice(&adler32(&raw).to_be_bytes());
+    let mut header = Vec::new();
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 6, 0, 0, 0]);
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    png_chunk(&mut png, b"IHDR", &header);
+    png_chunk(&mut png, b"IDAT", &zlib);
+    png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+/// A structurally valid GLB whose BIN chunk is `bin_len` pseudo-random bytes (incompressible, so member data dominates the zip).
+fn glb_bytes(seed: u32, bin_len: usize) -> Vec<u8> {
+    let mut json = br#"{"asset":{"version":"2.0"},"meshes":[{}],"nodes":[{}]}"#.to_vec();
+    while json.len() % 4 != 0 {
+        json.push(b' ');
+    }
+    let mut state = seed.wrapping_mul(2_654_435_761).max(1);
+    let bin: Vec<u8> = (0..bin_len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    let total = 12 + 8 + json.len() + 8 + bin.len();
+    let mut out = b"glTF".to_vec();
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    out
+}
+
+/// A two-model pack folder: `library.toml`, `chair.glb`/`table.glb` and their thumbnails.
+fn model_folder(dir: &Path, library: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("library.toml"), library).unwrap();
+    for (name, seed) in [("chair", 1u32), ("table", 2)] {
+        std::fs::write(dir.join(format!("{name}.glb")), glb_bytes(seed, 48 * 1024)).unwrap();
+        std::fs::write(dir.join(format!("{name}.png")), png_bytes(4, 4)).unwrap();
+    }
+}
+
+/// Create a symlink; false when the platform or the account may not (Windows needs a privilege).
+fn make_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(not(any(unix, windows)))]
+    let made: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+    made.is_ok()
+}
+
+/// Model pack leg of J8: pack, inspect, tamper, then one table of refusals that each write nothing.
+fn model_leg(root: &Path, key: &Path) {
+    let key_arg = key.to_str().unwrap();
+    let folder = root.join("model-pack");
+    model_folder(&folder, MODEL_LIBRARY);
+    let out_dir = root.join("model-out");
+    let out_arg = format!("{}/", out_dir.display());
+    let packed = fe_ext(&["model", "pack", folder.to_str().unwrap(), "--key", key_arg, "--out", &out_arg], root);
+    assert!(packed.status.success(), "model pack: {}", stderr(&packed));
+    let line = |name: &str| stdout(&packed).lines().find_map(|line| line.strip_prefix(&format!("{name} ")).map(str::to_string));
+    let package = out_dir.join("acme.furniture-1.0.0.hexon");
+    assert!(package.is_file(), "pack names <id>-<version>.hexon: {}", stdout(&packed));
+    assert!(!stdout(&packed).contains(&std::fs::read_to_string(key).unwrap().trim().to_string()), "the key is never printed");
+
+    let inspected = fe_ext(&["inspect", package.to_str().unwrap(), "--json"], root);
+    assert!(inspected.status.success(), "inspect model: {}", stderr(&inspected));
+    let facts: Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert_eq!((facts["package_id"].as_str(), facts["kind"].as_str()), (Some("acme.furniture"), Some("model")));
+    assert_eq!(facts["models"], serde_json::json!(["chair", "table"]));
+    assert_eq!((facts["license"].as_str(), facts["spdx"].as_str()), (Some("attribution"), Some("CC-BY-4.0")));
+    assert_eq!(facts["content_hash"].as_str(), line("content_hash").as_deref(), "inspect reads the packed build");
+    assert_eq!(facts["publisher_did"].as_str(), line("publisher_did").as_deref());
+
+    let mut tampered = std::fs::read(&package).unwrap();
+    let middle = tampered.len() / 2;
+    tampered[middle] ^= 0xff;
+    let tampered_path = root.join("tampered-model.hexon");
+    std::fs::write(&tampered_path, tampered).unwrap();
+    assert!(!fe_ext(&["inspect", tampered_path.to_str().unwrap()], root).status.success(), "a flipped byte is refused");
+
+    // Refusals: each names its own reason and leaves no output file, no output folder and no temp file behind.
+    type Edit = fn(&Path) -> bool;
+    let refusals: [(&str, &str, Edit); 8] = [
+        ("unlisted-glb", "is not listed in library.toml", |dir| {
+            std::fs::write(dir.join("spare.glb"), glb_bytes(3, 64)).unwrap();
+            true
+        }),
+        ("symlink", "is a symlink", |dir| make_symlink(&dir.join("chair.glb"), &dir.join("spare.glb"))),
+        ("bad-glb", "is not a valid GLB", |dir| {
+            std::fs::write(dir.join("chair.glb"), b"this is not a glb").unwrap();
+            true
+        }),
+        ("oversize", "exceeds the 64 MiB", |dir| {
+            let file = std::fs::OpenOptions::new().write(true).open(dir.join("chair.glb")).unwrap();
+            file.set_len(PER_MODEL_LIMIT + 1).unwrap();
+            true
+        }),
+        ("missing-licence", "no [license] table", |dir| {
+            let (start, end) = (MODEL_LIBRARY.find("[license]").unwrap(), MODEL_LIBRARY.find("[[model]]").unwrap());
+            std::fs::write(dir.join("library.toml"), format!("{}{}", &MODEL_LIBRARY[..start], &MODEL_LIBRARY[end..])).unwrap();
+            true
+        }),
+        ("empty-attribution", "attribution is required", |dir| {
+            let edited = MODEL_LIBRARY.replace("attribution = \"Chair and table by Acme Models, CC BY 4.0\"", "attribution = \"  \"");
+            std::fs::write(dir.join("library.toml"), edited).unwrap();
+            true
+        }),
+        ("oversize-thumbnail", "larger than", |dir| {
+            std::fs::write(dir.join("chair.png"), png_bytes(300, 300)).unwrap();
+            true
+        }),
+        ("non-png-thumbnail", "not a PNG", |dir| {
+            std::fs::write(dir.join("chair.png"), b"GIF89a not a png").unwrap();
+            true
+        }),
+    ];
+    let mut refused_reasons = std::collections::BTreeSet::new();
+    for (name, reason, edit) in refusals {
+        let case = root.join(format!("refuse-{name}"));
+        model_folder(&case, MODEL_LIBRARY);
+        if !edit(&case) {
+            eprintln!("skipping the {name} row: this platform cannot create it here");
+            continue;
+        }
+        let case_out = root.join(format!("refuse-out-{name}"));
+        let case_out_arg = format!("{}/", case_out.display());
+        let refused = fe_ext(&["model", "pack", case.to_str().unwrap(), "--key", key_arg, "--out", &case_out_arg], root);
+        assert!(!refused.status.success(), "{name} should be refused");
+        assert!(stderr(&refused).contains(reason), "{name}: {}", stderr(&refused));
+        assert!(!case_out.exists(), "{name}: a refused pack writes nothing");
+        refused_reasons.insert(reason);
+    }
+    assert!(refused_reasons.len() >= 7, "each refusal carries its own reason: {refused_reasons:?}");
+}
+
 #[test]
 fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -202,6 +396,8 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         let wrong_pin = stdout(&fe_ext(&["keygen", root.join("other.key").to_str().unwrap()], root)).trim().to_string();
         assert!(!fe_ext(&["index", "verify", tree.to_str().unwrap(), "--index-key", &wrong_pin], root).status.success(), "a foreign index key is refused");
     }
+
+    model_leg(root, &key);
 
     // The scaffold's packaging half needs a built component: FE_EXT_TEST_COMPONENT points at the compiled
     // generated project (`fe-ext build` output). Without it the journey ends here.

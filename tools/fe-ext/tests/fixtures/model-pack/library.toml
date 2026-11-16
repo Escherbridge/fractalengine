@@ -1,0 +1,22 @@
+id = "acme.furniture"
+version = "1.0.0"
+name = "Acme furniture"
+description = "A chair and a table."
+tags = ["furniture", "indoor"]
+
+[license]
+type = "attribution"
+spdx = "CC-BY-4.0"
+attribution = "Chair and table by Acme Models, CC BY 4.0"
+
+[[model]]
+file = "chair.glb"
+thumbnail = "chair.png"
+label = "Chair"
+tags = ["seat"]
+
+[[model]]
+file = "table.glb"
+thumbnail = "table.png"
+label = "Table"
+auto_scale = true

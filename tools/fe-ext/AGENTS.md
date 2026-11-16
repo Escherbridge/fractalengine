@@ -18,6 +18,7 @@ in `docs/extensions/` and `fe-plugin/wit/fractal-plugin-2.wit`; this file holds 
 | `run --lab` | `src/lab.rs` | `--scenario <script.json> [--runs N] [--root DIR] [--out report.json]`: hosts the fleet-sim package as the fe-sim reading schedule (see §lab); `--runs` repeats the session and every fingerprint must equal the first. `--sandbox` and `--lab` are mutually exclusive. |
 | `admin <verb>` | `src/admin.rs` | Drives the running app over the LOCAL admin channel only (`fe_plugin::admin::transport`, instance picked by `FE_EXT_ADMIN_INSTANCE`); no token, URL or network fallback. Consent is never answered here: the reply names the pending consent and the GUI confirms it (docs/extensions/admin-channel.md). Exits non-zero when the app refuses or is not running. |
 | `index build\|verify` | `src/index.rs` | Writes and re-verifies a registry contract v1 static signed catalogue tree (`StaticIndexSource` end to end, pinned index key, index key never a publisher key). See §index. |
+| `model pack <folder> --key <seed> [--out <path>]` | `src/model.rs` | Seals a folder of GLB files plus `library.toml` into a signed model package; see §model-pack. `inspect` also reads model packages (it tries `model::inspect` first and falls back to the plugin reader). |
 | `keygen` | `src/key.rs` | A key is 64 hex characters (the ed25519 seed). Never overwrites. |
 
 ## §sandbox
@@ -93,6 +94,50 @@ package `updated_at`); `index verify TREE|URL --index-key did:key:..` runs the s
 (`run_index_with`). `validate` and `build` also run `check_provides`: a manifest declaring `provides` needs the hooks
 export (`missing-export`).
 
+## §model-pack
+
+`fe-ext model pack <folder> --key <seed file> [--out <file|folder/>]` (`src/model.rs`, track `model_library_20261115` ML-07,
+spec §5). Default output is `<id>-<version>.hexon` in the current directory (never inside the folder: a `dist/` subfolder
+would make the next pack refuse the folder). The module is declared in `main.rs` (binary-local); `lib.rs` is untouched.
+
+```toml
+id = "acme.furniture"          # registry package id; also the file-name stem
+version = "1.0.0"              # SemVer, no build metadata
+name = "Acme furniture"
+description = "optional"
+tags = ["furniture"]           # optional
+[license]                      # required
+type = "attribution"           # free | attribution (paid is refused)
+spdx = "CC-BY-4.0"             # optional
+attribution = "text shown to users"   # required for attribution
+[[model]]                      # at least one
+file = "chair.glb"             # entry_id = file stem
+thumbnail = "chair.png"        # PNG, one per model
+label = "Chair"
+tags = []                      # optional; description, placeable (default true) and auto_scale (default false) also optional
+```
+
+- **Validate everything, write nothing.** `prepare` collects every problem into one error list (not first-failure) and
+  returns before any output path is touched; the output folder is created only inside `write_atomically`.
+- **Folder rules.** Top-level regular files only: symlinks, subdirectories and non-UTF-8 names are refused (a link or a
+  junction could point out of the folder). Listed names must be one plain `Normal` path component (no separator, `..`,
+  drive or absolute path). Every `.glb` in the folder must be listed.
+- **Size checks use metadata first.** A GLB over 64 MiB (`MAX_ENTRY_UNCOMPRESSED_BYTES`) or a thumbnail over 256 KiB is
+  refused unread, so a hostile folder cannot make the packer read gigabytes. The packed archive is checked again against
+  `PACKAGE_MAX_BYTES` on the built bytes.
+- **Structure.** `fe_format::glb::check` per model (an external `uri` is a refusal: a pack must be self-contained) and
+  `fe_hexon::thumbnail::decode` per thumbnail, the same decoder the app uses, so a pack never ships a preview the app
+  would refuse.
+- **Build.** `HexonPackage::build` directly (not `HexonBuilder`) because the builder has no SPDX setter and the library
+  chip needs `spdx_id`; manifest and entries are otherwise what the builder writes. Each entry carries
+  `preview_image = "preview/<entry_id>.png"`; the PNG is the sealed `preview/<entry_id>.png` member.
+- **Re-verify, then write.** The built bytes go through `verify_archive(RequireSealed { pin: <key DID> })` and
+  `HexonPackage::open` (type, licence, one entry and asset and preview per model) before the atomic write: temp file in the
+  output directory, `sync_all`, rename; the temp is removed on every failure path.
+- **Key.** Read with `key::load` (the seed format `keygen` writes); it is never printed or put in an error.
+- **`index build`** still accepts only extension and web-bundle packages (it reads `plugin/extension.json`); model
+  packages are not listed by the static catalogue yet, so the licence fields are not copied there (deferred with it).
+
 ## Cargo.lock policy
 
 `tools/fe-ext` is a workspace member and resolves through the root `Cargo.lock`; it has no lock of its own. Each
@@ -122,6 +167,10 @@ printed, and `sign` under another key moving the content hash. With bi-push and 
 manifest over fleet-sim's hook-less component is refused `missing-export` by `validate` and by `pack` (nothing written).
 The packed examples then go through `index build` (each listed) and `index verify` against the index key (each
 `verified`, so `StaticIndexSource` fetched and checked every header and download), and a foreign pin is refused. The
+model leg (`model_leg`, runs before that half): a two-model fixture folder (`tests/fixtures/model-pack/library.toml`;
+GLBs and PNGs are generated at run time) is packed, inspected, and refused after one flipped byte; then one table of
+refusals (unlisted GLB, symlink where the platform allows one, bad GLB, oversize, missing licence, empty attribution,
+oversize thumbnail, non-PNG thumbnail), each with its own reason and no output folder written. The
 scaffold's pack/countersign/tamper/sandbox half runs when `FE_EXT_TEST_COMPONENT` names a built component. The
 examples carry only pure unit tests; their sandbox legs live here so no example crate builds the host stack.
 Guest-side unit tests: `cargo test --manifest-path tools/fe-ext/guest/Cargo.toml` (add `--features hooks` for the

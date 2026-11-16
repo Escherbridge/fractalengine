@@ -7,6 +7,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use fe_ext::{admin, index, inspect, key, lab, new, pack, project::Project, sandbox, validate};
 
+// Binary-local module: `lib.rs` is outside this task's files (see `AGENTS.md` §model-pack).
+mod model;
+
 #[derive(Parser)]
 #[command(name = "fe-ext", version, about = "Author, check, pack, sign and sandbox-run FractalEngine extensions")]
 struct Cli {
@@ -111,6 +114,9 @@ enum Cmd {
     /// Build or verify a registry contract v1 static signed catalogue tree.
     #[command(subcommand)]
     Index(index::IndexCmd),
+    /// Model library authoring: seal a folder of GLB files into a signed model package.
+    #[command(subcommand)]
+    Model(model::ModelCmd),
     /// Create a signing key file.
     Keygen {
         out: PathBuf,
@@ -179,7 +185,11 @@ fn run(cli: Cli) -> Result<()> {
             println!("countersigned {}", out.display());
         }
         Cmd::Inspect { package, json } => {
-            let facts = inspect::inspect(&std::fs::read(&package)?)?;
+            let bytes = std::fs::read(&package)?;
+            let facts = match model::inspect(&bytes)? {
+                Some(facts) => facts,
+                None => inspect::inspect(&bytes)?,
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&facts)?);
             } else if let Some(object) = facts.as_object() {
@@ -214,6 +224,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Admin(args) => admin::run_admin(args)?,
         Cmd::Index(command) => index::run_index(&command)?,
+        Cmd::Model(command) => model::run_model(&command)?,
         Cmd::Keygen { out } => println!("{}", key::generate(&out)?),
     }
     Ok(())
