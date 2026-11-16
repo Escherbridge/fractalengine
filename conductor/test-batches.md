@@ -139,7 +139,7 @@ missing `reqwest`/`tokio` symbols.
 | `fe-ui/src/verse_manager/db_results/terrain.rs` | 8 |
 | `fe-database/src/handlers/{petal_terrain,petal_render_distance}.rs`, `fe-database/tests/petal_render_distance_test.rs` | 16 |
 | `fe-api/src/terrain.rs`, `fe-api/tests/{terrain_mutation_test,petal_render_distance_api_test,hexon_tileset_test}.rs` | 18 |
-| `fractalengine/src/terrain_bridge.rs` | 40 |
+| `fractalengine/src/terrain_bridge.rs` (registry row-filter tests moved to `registry_listing::`, R11) | 40 |
 | `fe-renderer/src/{terrain_overlay,terrain_height}.rs` | 16 |
 
 **Subtotal ≈ 611**
@@ -406,10 +406,10 @@ cargo test -p fe-format -- --skip portal_bundle::
 cargo test -p fe-format --lib -- portal_bundle::
 cargo test -p fe-sdk
 cargo test -p fe-runtime --lib -- extension_binding::tests:: scene_hook_gate::tests::
-cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon
+cargo test -p fe-ui --lib -- atlas::dashboard atlas::model_editor atlas::search_bar atlas::tag_panel atlas::room_editor actions::hexon model_library::
 cargo test -p fe-ui --lib -- extensions::
 cargo test -p fe-plugin -- net::tests:: bindings::resolver::tests:: tick::tests::tick_journey_skips_counts_and_degrades_without_flushing
-cargo test -p fractalengine --bin fractalengine -- --skip extension_host::admin_channel::tests:: extension_host:: plugin_bridge::
+cargo test -p fractalengine --bin fractalengine -- --skip extension_host::admin_channel::tests:: extension_host:: plugin_bridge:: model_library_bridge:: registry_listing::
 cargo test -p fractalengine --bin fractalengine -- extension_ui_tests::
 cargo test -p fe-api --lib -- server::extension_mount_tests::
 cargo test -p fe-ui --lib -- panels::plugin_install_panel
@@ -418,6 +418,13 @@ cargo test -p fe-ui --lib -- panels::plugin_install_panel
 **Reach lines (turn 3 gate):** `extension_ui_tests::` (first-party extension UI registration in `fractalengine/src/main.rs`),
 `server::extension_mount_tests::` (fe-api extension route mount in `fe-api/src/server.rs`) and
 `panels::plugin_install_panel` (the superseded v1 consent modal's journey) matched no other batch filter.
+
+**Model library (model_library_20261115):** `model_library::` (fe-ui panel journey and `text::` sanitiser table) and
+`model_library_bridge:: registry_listing::` (binary outcome table; the map/model row filter moved here from
+`terrain_bridge.rs`, so its tests run in R11, not R4) are named filters above. `glb::` (fe-format) and `thumbnail::`,
+`model_library::` (fe-hexon) need no filter: the crate-wide `cargo test -p fe-format -- --skip portal_bundle::` and
+`cargo test -p fe-hexon -- --skip entitlement_client::tests:: --skip entitlement_gate::tests::` lines already run them
+(a positional filter there would narrow those lines to only these modules).
 
 **Portal bundle validator (fe-format):** `fe-format/src/portal_bundle.rs` tests (`portal_bundle::tests::`) run in the second line,
 and the first line skips them so they run once. Their coverage: validator refusal classes, capability digest, and the capability
@@ -571,6 +578,10 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `fe-ui/src/actions/path.rs` | R5 |
 | `fe-ui/src/actions/query.rs` | R3 |
 | `fe-ui/src/actions/hexon.rs` | R11 |
+| `fe-ui/src/model_library/**` (`mod.rs`, `text.rs`, `panel.rs`) | R11 |
+| `fractalengine/src/{model_library_bridge,registry_listing}.rs` | R11 |
+| `fe-format/src/glb.rs`, `fe-hexon/src/{thumbnail,model_library}.rs` | R11 (crate-wide lines) |
+| `tools/fe-ext/src/model.rs`, `tools/fe-ext/tests/fixtures/model-pack/**` | R11-STORE (`j8`) |
 | `fe-ui/src/extensions/**` | R11 |
 | `fe-plugin/src/admin/**`, `fractalengine/src/extension_host/admin_channel.rs`, `tools/fe-ext/src/admin.rs` | R11-ADMIN |
 | `fe-plugin/src/registry_client.rs`, `fe-hexon/src/registry_source.rs`, `fe-hexon-registry/**`, `tools/fe-ext/src/index.rs` | R11-STORE |
@@ -624,7 +635,7 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `extensions/{bi-push,device-adapter,fleet-sim}/**`, `tools/fe-ext/**` | R11 |
 | `fractalengine/src/{asset_bridge}.rs` | R2 |
 | `fractalengine/src/gpx_bridge.rs` | R5 |
-| `fractalengine/src/terrain_bridge.rs` | R4 |
+| `fractalengine/src/terrain_bridge.rs` | R4 (map row filter: `fractalengine/src/registry_listing.rs`, R11) |
 | `fractalengine/src/{plugin_bridge.rs,extension_host/**}` | R11 |
 | `fractalengine/src/{screenshot_bridge,vision_bridge}.rs` | R9 |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | R6 |

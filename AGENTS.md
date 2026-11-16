@@ -380,3 +380,5 @@ and per-tile lookup live in fe-format/fe-terrain (`fe-terrain/src/AGENTS.md`
 it never parses a `TilesetBundleIndex`, only verifies HashSeq children by hash.
 
 Licensed hexons: fe-hexon/src/AGENTS.md §entitlement (in-process) and fe-terrain/src/AGENTS.md §tileset-entitlement (tilesets).
+
+Model library (browse, install, place 3D model packages; map credit lines): fractalengine/src/AGENTS.md §model-library and fe-ui/src/model_library/AGENTS.md.
