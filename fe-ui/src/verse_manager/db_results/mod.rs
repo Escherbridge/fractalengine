@@ -59,6 +59,8 @@ pub(super) struct DescriptorCaches<'w, 's> {
     /// (not a 17th top-level param) — `apply_db_results` is already at Bevy's
     /// 16-`SystemParam` ceiling.
     ts_settings: ResMut<'w, crate::timeseries_settings::TimeseriesSettingsState>,
+    /// Models section: library Place outcomes arrive as `GltfImported` / `ImportGltfFailed`.
+    model_library: Option<ResMut<'w, crate::model_library::ModelLibraryState>>,
     spawned: Query<
         'w,
         's,
@@ -721,11 +723,18 @@ pub(super) fn apply_db_results(
                 &mut ui_mgr,
             ),
             DbResult::GltfImported {
-                request: Some(request), name, correlation_id: None, petal_id, ..
+                request: Some(request), name, correlation_id: None, petal_id, node_id, ..
             } => {
-                if request.petal_id == *petal_id && committed::from_gltf_import(result).is_some() {
+                if crate::model_library::is_library_request(&request.request_id) {
+                    finish_library_placement(request, node_id, petal_id, None, &mut node_mgr, caches.model_library.as_deref_mut());
+                } else if request.petal_id == *petal_id && committed::from_gltf_import(result).is_some() {
                     finish_gltf_import_request(request, name, &mut ui_mgr, &nav, caches.time.elapsed_secs_f64());
                 }
+            }
+            DbResult::ImportGltfFailed { request: Some(request), message }
+                if crate::model_library::is_library_request(&request.request_id) =>
+            {
+                finish_library_placement(request, "", "", Some(message), &mut node_mgr, caches.model_library.as_deref_mut());
             }
             DbResult::ImportGltfFailed { request, message } => query::handle_import_failure(
                 request.as_ref(), message, &mut ui_mgr, &local_role, &nav, caches.time.elapsed_secs_f64(),
@@ -1356,6 +1365,32 @@ fn finish_gltf_import_request(
     {
         ui_mgr.close_dialog();
         ui_mgr.show_toast(format!("Imported {name}"), now);
+    }
+}
+
+/// Fold a Models-section Place reply into its panel (never the import dialog); select the placed node once it spawns.
+fn finish_library_placement(
+    request: &fe_runtime::messages::NativeImportRequest,
+    node_id: &str,
+    petal_id: &str,
+    error: Option<&String>,
+    node_mgr: &mut crate::node_manager::NodeManager,
+    library: Option<&mut crate::model_library::ModelLibraryState>,
+) {
+    use crate::model_library::ModelResult;
+    let request_id = request.request_id.clone();
+    let outcome = match error {
+        Some(error) => ModelResult::PlaceFailed { request_id, error: error.clone() },
+        None => {
+            if request.petal_id == petal_id {
+                node_mgr.request_select_after_navigation(node_id, petal_id);
+            }
+            ModelResult::Placed { request_id }
+        }
+    };
+    match library {
+        Some(library) => library.apply(outcome),
+        None => bevy::log::warn!("Model library reply without ModelLibraryState: {outcome:?}"),
     }
 }
 

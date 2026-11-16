@@ -55,6 +55,8 @@ pub struct InstalledTilesetDto {
     pub access: TilesetAccess,
     /// Publisher's licence page; shown as a plain hyperlink, never fetched.
     pub verification_url: Option<String>,
+    /// Credit text from the archive's signed `license.json`, display-sanitised; shown as "Credit: ...".
+    pub attribution: Option<String>,
 }
 
 /// A tileset advertised by a peer but not yet installed locally.
@@ -115,6 +117,8 @@ pub struct RegistryPackageRow {
     pub name: String,
     pub size_bytes: u64,
     pub publisher_did: String,
+    /// Credit text from the listing (display only), display-sanitised; shown as "Credit: ...".
+    pub attribution: Option<String>,
 }
 
 /// Registry browse state in the Hexon Manager: written by the host listing op, read by the Available tab.

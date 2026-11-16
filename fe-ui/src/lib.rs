@@ -15,6 +15,7 @@ pub mod geometry;
 pub mod gimbal;
 pub mod gis;
 pub mod maintenance;
+pub mod model_library;
 pub(crate) mod invitations;
 pub mod gpx_ops;
 pub mod navigation_manager;

@@ -362,6 +362,9 @@ fn render_installed_map_card(
                 .small()
                 .color(theme::TEXT_MUTED),
             );
+            if let Some(credit) = ts.attribution.as_deref() {
+                credit_line(ui, credit);
+            }
             if petal_map.tileset_ids.iter().any(|id| id == &ts.hexon_id) {
                 if let Some(line) = map_source_line(&petal_map.effective_source()) {
                     ui.label(egui::RichText::new(line).small().color(theme::TEXT_MUTED));
@@ -683,7 +686,15 @@ fn render_registry_group(
                 actions.push(UiAction::HexonInstallFromRegistry(uri.clone()));
             }
         });
+        if let Some(credit) = row.attribution.as_deref() {
+            credit_line(ui, credit);
+        }
     }
+}
+
+/// One muted "Credit: ..." line under a map row; plain text, never a link (fe-ui/src/AGENTS.md §terrain-map).
+fn credit_line(ui: &mut egui::Ui, credit: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(format!("Credit: {credit}")).small().color(theme::TEXT_MUTED)).wrap());
 }
 
 /// Maps advertised by connected peers.

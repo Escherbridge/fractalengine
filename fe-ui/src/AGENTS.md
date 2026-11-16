@@ -82,6 +82,7 @@ These are fail-closed UI affordances; database/API authorization remains authori
 | `portal` | `PortalState` + the pure webview-rect-sync math (`compute_portal_rect`). See §portal — this is the browser-integration seam. |
 | `dialogs` | `ActiveDialog` (mutual-exclusion enum) + one render function per floating dialog/window. |
 | `terrain_map` | Petal-map state (`PetalMapState`), the hexon registry op queue (`HexonOp`/`PendingHexonOps`), Hexon Manager DTOs, the petal manifest type, and tileset-event draining. |
+| `model_library` | Models section (browse, install, place, credits): `ModelLibraryState`, `ModelOp`/`PendingModelOps`, the publisher-string sanitiser `text::display_text`, `panel::show`. See `model_library/AGENTS.md`; host side `fractalengine/src/AGENTS.md` §model-library. |
 | `asset_ops` | Node-asset download op queue (`AssetOp`/`PendingAssetOps`) + the result-status resource (`AssetDownloadStatus`) the main binary writes back to. See §asset-download. |
 | `gis` | `GisPanelState` (GIS Query panel resource, incl. `GisPanelTab`) + pure query-building/row-parsing/bbox-filter/layer-JSON/view-mode logic backing the GIS Query, Annotations & Layer Manager panel. See §gis-query-ui. |
 | `gpx_ops` | GPX track import op queue (`GpxOp`/`PendingGpxOps`) + the result-status resource (`GpxImportStatus`) the main binary writes back to. See §gpx-import. |
@@ -899,6 +900,10 @@ Available / Downloads tabs (`dto.rs`, `events.rs`, `mod.rs`).
   §tileset-p2p). `UiAction::HexonRefreshList` (dialog open, Refresh, Retry) queues `HexonOp::RefreshList`, which the host also
   turns into a listing, so there is no poll and no extra `UiAction`. Install is the existing `HexonInstallFromRegistry("id@version")`;
   a row is "Installed" when an installed map has the same `hexon_id` (versions are not compared).
+- **Credit line.** `RegistryPackageRow.attribution` and `InstalledTilesetDto.attribution` carry a map's credit text,
+  sanitised by the host with `model_library::text::display_text` (512 chars). `render_registry_group` and
+  `render_installed_map_card` show it as one muted plain-text line, "Credit: ...", under the row (never a link). The
+  registry row's credit is the listing's claim; the installed card's comes from the archive's signed `license.json`.
 - **Default address.** `settings::DEFAULT_HEXON_REGISTRY_URL`; `resolve_hexon_registry_url` = env, then saved setting, then the default.
   A blank saved value (previously "no registry configured") now means the default, and the default is never written to `settings.ron`.
 

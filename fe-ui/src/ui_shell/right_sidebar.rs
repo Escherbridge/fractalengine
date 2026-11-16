@@ -65,6 +65,8 @@ pub enum RightSidebarSection {
     Settings,
     /// Map manager (was `ActiveDialog::HexonManager`), FR-2.
     Maps,
+    /// Model library: browse, install, place, credits (`crate::model_library`).
+    Models,
     /// Visibility-Group management (D-10): create/rename/delete/toggle/reorder
     /// the active petal's Groups + selection membership. The left sidebar is
     /// read + toggle only; its "Add selection to group…" reveals this by slug.
@@ -73,13 +75,14 @@ pub enum RightSidebarSection {
 
 /// Every section, in rail order. Single source for the rail, the slug table,
 /// and the round-trip tests — a new variant that forgets a slug fails to build.
-pub const ALL_SECTIONS: [RightSidebarSection; 7] = [
+pub const ALL_SECTIONS: [RightSidebarSection; 8] = [
     RightSidebarSection::Inspector,
     RightSidebarSection::Options,
     RightSidebarSection::TerrainTools,
     RightSidebarSection::ProposalReport,
     RightSidebarSection::Settings,
     RightSidebarSection::Maps,
+    RightSidebarSection::Models,
     RightSidebarSection::Groups,
 ];
 
@@ -95,6 +98,7 @@ impl RightSidebarSection {
             RightSidebarSection::ProposalReport => "report",
             RightSidebarSection::Settings => "settings",
             RightSidebarSection::Maps => "maps",
+            RightSidebarSection::Models => "models",
             RightSidebarSection::Groups => "groups",
         }
     }
@@ -273,6 +277,7 @@ pub fn section_label(section: RightSidebarSection) -> &'static str {
         RightSidebarSection::ProposalReport => "Volume report",
         RightSidebarSection::Settings => "Settings",
         RightSidebarSection::Maps => "Maps",
+        RightSidebarSection::Models => "Models",
         RightSidebarSection::Groups => "Groups",
     }
 }
@@ -359,6 +364,9 @@ pub fn render_right_sidebar(
     // here — `drain_tileset_events` is the sole writer. Survives the Maps
     // section closing (moved out of `ActiveDialog::HexonManager`).
     downloads: &crate::terrain_map::TilesetDownloads,
+    // model_library_20261115: Models section state + op queue.
+    model_library: &mut crate::model_library::ModelLibraryState,
+    model_ops: &mut crate::model_library::PendingModelOps,
     // S6: session-only residency override, read/written by the Settings
     // section's "Session override" field (bundled by the caller, same
     // param-ceiling reason as `downloads`).
@@ -515,6 +523,14 @@ pub fn render_right_sidebar(
             app_settings,
             local_role,
         ),
+        Some(RightSidebarSection::Models) => render_models_section(
+            ctx,
+            state,
+            model_library,
+            model_ops,
+            local_role,
+            nav.active_petal_id.as_deref(),
+        ),
         Some(RightSidebarSection::Groups) => render_groups_section(
             ctx,
             state,
@@ -559,6 +575,7 @@ fn section_guard_key(section: RightSidebarSection) -> &'static str {
         RightSidebarSection::ProposalReport => "right.proposal_report",
         RightSidebarSection::Settings => "right.settings",
         RightSidebarSection::Maps => "right.maps",
+        RightSidebarSection::Models => "right.models",
         RightSidebarSection::Groups => "right.groups",
     }
 }
@@ -1543,6 +1560,20 @@ fn render_maps_section(
     }
 }
 
+/// Models section: the model library body inside the shared section chrome.
+fn render_models_section(
+    ctx: &egui::Context,
+    state: &mut RightSidebarState,
+    model_library: &mut crate::model_library::ModelLibraryState,
+    model_ops: &mut crate::model_library::PendingModelOps,
+    local_role: &LocalUserRole,
+    active_petal: Option<&str>,
+) {
+    section_chrome(ctx, state, RightSidebarSection::Models, |ui| {
+        crate::model_library::panel::show(ui, model_library, model_ops, local_role, active_petal);
+    });
+}
+
 /// A fresh, empty-loading `HexonManager` carrier for the Maps section to seed on
 /// open; the non-owned refresh/advertisement writers populate its fields.
 fn seed_hexon_manager() -> ActiveDialog {
@@ -1923,6 +1954,7 @@ fn section_icon(section: RightSidebarSection) -> Icon {
         RightSidebarSection::ProposalReport => Icon::Report,
         RightSidebarSection::Settings => Icon::Settings,
         RightSidebarSection::Maps => Icon::Maps,
+        RightSidebarSection::Models => Icon::Data,
         RightSidebarSection::Groups => Icon::Groups,
     }
 }
@@ -3218,7 +3250,7 @@ mod tests {
         }
     }
 
-    const ALL: [RightSidebarSection; 7] = ALL_SECTIONS;
+    const ALL: [RightSidebarSection; 8] = ALL_SECTIONS;
 
     #[test]
     fn portal_short_circuits_to_none_regardless_of_toggle_or_selection() {

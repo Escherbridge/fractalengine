@@ -302,6 +302,7 @@ mod tests {
             publisher_did: None,
             access: Default::default(),
             verification_url: None,
+            attribution: None,
         }
     }
 

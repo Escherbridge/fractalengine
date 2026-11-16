@@ -75,12 +75,12 @@ the function pure and testable.
 
 ## §right (FR-6) — precedence + the section-fn seam
 
-`RightSidebarSection = { Inspector, Options, TerrainTools, ProposalReport, Settings, Maps, Groups }`
+`RightSidebarSection = { Inspector, Options, TerrainTools, ProposalReport, Settings, Maps, Models, Groups }`
 is the mutually-exclusive right region — **one section at a time** (RATIFIED
 Q-2). `RightSidebarState.requested: Option<RightSidebarSection>` is the explicit
-toggle (topbar / in-panel rail); `None` means selection-default. The rail has 7
+toggle (topbar / in-panel rail); `None` means selection-default. The rail has 8
 glyphs sourced from `ALL_SECTIONS` (Inspector, Options, TerrainTools,
-ProposalReport, Settings, Maps, Groups — PathTools retired; Options hosts all
+ProposalReport, Settings, Maps, Models, Groups — PathTools retired; Options hosts all
 tool-specific controls). Settings is `render_settings_section` (the former
 floating Settings window, now the sole Settings surface); Maps is the former
 Hexon Manager dialog; Groups (slug `"groups"`, VIS-PH5 / D-10) is the ONE
@@ -122,6 +122,7 @@ what kept the P4 and P5 slices conflict-free):
 | ProposalReport | `render_proposal_report_section` | proposal report body (ex-"Proposal Report" window) | P4 |
 | Settings | `render_settings_section` | app-settings knobs (render distance, mesh budget) + the per-verse Timeseries Fabric controls (§timeseries-settings) | — |
 | Maps | — | map/hexon manager (ActiveDialog::HexonManager) | — |
+| Models | `render_models_section` | model library (`model_library::panel::show`: Browse / Installed / Credits); rail glyph `Icon::Data` | model_library_20261115 |
 | Groups | `render_groups_section` | Group create/rename/delete/eye/reorder (whole-registry `SetGroupRegistry`) + "Add selection to group" / "Remove from group" for the selected node (`SetNodeGroups`); empty Group shows "No members — select nodes and use Add to group" | VIS-PH5 |
 
 Migrated tool sections keep their logic + tests verbatim and their authority

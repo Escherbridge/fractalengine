@@ -1018,6 +1018,9 @@ impl Plugin for GardenerConsolePlugin {
         // out of `ActiveDialog::HexonManager` so closing the dialog can never
         // stall a download — see AGENTS.md §terrain-map.
         app.init_resource::<crate::terrain_map::TilesetDownloads>();
+        // Models section state + op queue; the binary's model_library_bridge drains the queue.
+        app.init_resource::<crate::model_library::ModelLibraryState>();
+        app.init_resource::<crate::model_library::PendingModelOps>();
         // Register BrowserCommand so MessageWriter<BrowserCommand> is usable.
         // fe-webview's WebViewPlugin also registers this; calling add_message
         // twice is idempotent.
@@ -1242,6 +1245,9 @@ struct MiscUiParams<'w> {
     // S4 (p2p_asset_streaming_20260718): active tileset downloads, read by
     // the Maps section (`terrain_map::drain_tileset_events` is the writer).
     downloads: ResMut<'w, crate::terrain_map::TilesetDownloads>,
+    // model_library_20261115: Models section state + its op queue.
+    model_library: ResMut<'w, crate::model_library::ModelLibraryState>,
+    model_ops: ResMut<'w, crate::model_library::PendingModelOps>,
     // S6: session-only per-petal render-distance override, read/written by
     // the Settings section's "Session override" field.
     render_override: ResMut<'w, crate::settings::PetalRenderOverride>,
@@ -1354,6 +1360,8 @@ fn gardener_ui_system(
         &mut misc.measure_state,
         &mut misc.road_state,
         &misc.downloads,
+        &mut misc.model_library,
+        &mut misc.model_ops,
         &mut misc.render_override,
         &mut misc.identity_banner,
         p2p.node_identity.as_deref(),

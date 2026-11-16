@@ -152,6 +152,9 @@ pub fn gardener_console(
     // S4 (p2p_asset_streaming_20260718): active tileset downloads — read by
     // the Maps section, written only by `terrain_map::drain_tileset_events`.
     downloads: &crate::terrain_map::TilesetDownloads,
+    // model_library_20261115: Models section state + op queue (bundled in `MiscUiParams`).
+    model_library: &mut crate::model_library::ModelLibraryState,
+    model_ops: &mut crate::model_library::PendingModelOps,
     // S6: session-only per-petal render-distance override (Settings section).
     render_override: &mut crate::settings::PetalRenderOverride,
     // F6: startup identity-degradation banner (persistent, click-to-dismiss
@@ -270,6 +273,8 @@ pub fn gardener_console(
         road_state,
         vis_state,
         downloads,
+        model_library,
+        model_ops,
         render_override,
         volume_report,
         section_profile,
@@ -856,6 +861,8 @@ mod tests {
         let mut measure_state = crate::node_manager::measure::MeasureState::default();
         let mut road_state = crate::node_manager::road_chain::RoadBuilderState::default();
         let downloads = crate::terrain_map::TilesetDownloads::default();
+        let mut model_library = crate::model_library::ModelLibraryState::default();
+        let mut model_ops = crate::model_library::PendingModelOps::default();
         let mut render_override = crate::settings::PetalRenderOverride::default();
         let mut identity_banner = crate::plugin::IdentityBanner::default();
         let volume_report = crate::panels::volume_report_panel::VolumeReportState::default();
@@ -910,6 +917,8 @@ mod tests {
                         &mut measure_state,
                         &mut road_state,
                         &downloads,
+                        &mut model_library,
+                        &mut model_ops,
                         &mut render_override,
                         &mut identity_banner,
                         None,
