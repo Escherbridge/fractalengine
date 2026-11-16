@@ -303,6 +303,10 @@ pub(crate) async fn delete_node_handler(db: &Db, node_id: &str) -> anyhow::Resul
 // Import GLTF
 // ---------------------------------------------------------------------------
 
+/// `(node_id, asset_id, asset_path, birth)` of a committed scene import.
+pub(crate) type SceneImport = (String, String, String, fe_runtime::messages::CommittedNodeMaterialization);
+
+/// Native GLTF import: admit, KTX2-check and store the file's bytes, then the shared post-storage stage.
 #[instrument(skip(db, blob_store))]
 pub(crate) async fn import_gltf_handler(
     db: &Db,
@@ -312,22 +316,122 @@ pub(crate) async fn import_gltf_handler(
     file_path: &str,
     position: [f32; 3],
     actor: &str,
-) -> anyhow::Result<(String, String, String, fe_runtime::messages::CommittedNodeMaterialization)> {
+) -> anyhow::Result<SceneImport> {
     crate::migration::mapping_inventory::record_bypass_for("ImportGltf");
-    let scope = require_petal_scope(db, petal_id, "ImportGltf").await?;
-    super::node_history::authorize_scope(db, &fe_runtime::node_history::NodeAccessGrant::Local,
-        actor, &scope, fe_policy::RoleLevel::Editor).await?;
-    anyhow::ensure!(!name.trim().is_empty() && name.len() <= 1024 && position.iter().all(|v| v.is_finite()),
-        "import requires a bounded name and finite position");
+    admit_scene_import(db, petal_id, name, position, actor, "ImportGltf").await?;
     let path = std::path::Path::new(file_path);
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("Could not read file {}: {e}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("glb");
-    let content_type = if ext == "glb" { "model/gltf-binary" } else { "model/gltf+json" };
-    fe_runtime::ktx2_guard::check_asset_bytes(&bytes, Some(ext))
-        .map_err(|refusal| anyhow::anyhow!("Import refused for {}: {refusal}", path.display()))?;
-    let hash = blob_store.add_blob(&bytes).map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
-    let imported = super::object_creation::ImportedSceneAsset::new(name, content_type, &hash_to_hex(&hash), bytes.len())?;
+    let blob = AdmittedSceneBlob::store(blob_store, &bytes, ext, &path.display())?;
+    create_from_admitted_blob(db, petal_id, name, blob, position, actor).await
+}
+
+/// Place a GLB already in the blob store (installed model package); see handlers/AGENTS.md §place-stored-glb.
+#[instrument(skip(db, blob_store))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn place_stored_glb_handler(
+    db: &Db,
+    blob_store: &BlobStoreHandle,
+    petal_id: &str,
+    name: &str,
+    content_hash: &str,
+    size_bytes: u64,
+    position: [f32; 3],
+    actor: &str,
+) -> anyhow::Result<SceneImport> {
+    admit_scene_import(db, petal_id, name, position, actor, "PlaceStoredGlb").await?;
+    let blob = AdmittedSceneBlob::verify_stored(blob_store, content_hash, size_bytes)?;
+    create_from_admitted_blob(db, petal_id, name, blob, position, actor).await
+}
+
+/// Pre-write admission both scene entries run first: petal scope, local Editor, bounded name and finite position.
+async fn admit_scene_import(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    position: [f32; 3],
+    actor: &str,
+    operation: &str,
+) -> anyhow::Result<()> {
+    let scope = require_petal_scope(db, petal_id, operation).await?;
+    super::node_history::authorize_scope(db, &fe_runtime::node_history::NodeAccessGrant::Local,
+        actor, &scope, fe_policy::RoleLevel::Editor).await?;
+    anyhow::ensure!(!name.trim().is_empty() && name.len() <= 1024 && position.iter().all(|v| v.is_finite()),
+        "import requires a bounded name and finite position");
+    Ok(())
+}
+
+/// Scene bytes that passed KTX2 admission and are in the blob store: the only input of the shared stage.
+struct AdmittedSceneBlob {
+    content_type: &'static str,
+    content_hash: String,
+    size_bytes: usize,
+}
+
+impl AdmittedSceneBlob {
+    /// Native import: KTX2-admit the file's bytes, then store them.
+    fn store(
+        blob_store: &BlobStoreHandle,
+        bytes: &[u8],
+        extension: &str,
+        source: &dyn std::fmt::Display,
+    ) -> anyhow::Result<Self> {
+        let content_type = admit_scene_bytes(bytes, extension, source)?;
+        let hash = blob_store.add_blob(bytes).map_err(|e| anyhow::anyhow!("blob_store.add_blob failed: {e}"))?;
+        Ok(Self { content_type, content_hash: hash_to_hex(&hash), size_bytes: bytes.len() })
+    }
+
+    /// Placement: the stored blob must be present, a GLB, and match the hash and size it was named by.
+    fn verify_stored(
+        blob_store: &BlobStoreHandle,
+        content_hash: &str,
+        size_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        let hash = hash_from_hex(content_hash)
+            .map_err(|e| anyhow::anyhow!("stored model hash is invalid: {e}"))?;
+        let canonical = hash_to_hex(&hash);
+        let path = blob_store
+            .get_blob_path(&hash)
+            .ok_or_else(|| anyhow::anyhow!("stored model {canonical} is not in the blob store"))?;
+        let stored_len = std::fs::metadata(&path)
+            .map_err(|e| anyhow::anyhow!("stored model {canonical} is unreadable: {e}"))?
+            .len();
+        anyhow::ensure!(stored_len == size_bytes,
+            "stored model {canonical} is {stored_len} bytes, expected {size_bytes}");
+        let bytes = std::fs::read(&path)
+            .map_err(|e| anyhow::anyhow!("stored model {canonical} is unreadable: {e}"))?;
+        anyhow::ensure!(
+            u64::try_from(bytes.len()).ok() == Some(size_bytes) && *blake3::hash(&bytes).as_bytes() == hash,
+            "stored model {canonical} does not match its hash and size"
+        );
+        anyhow::ensure!(bytes.starts_with(b"glTF"), "stored model {canonical} is not a GLB");
+        let content_type = admit_scene_bytes(&bytes, "glb", &canonical)?;
+        Ok(Self { content_type, content_hash: canonical, size_bytes: bytes.len() })
+    }
+}
+
+/// KTX2 admission (RUSTSEC-2026-0344) of scene bytes; returns the scene MIME for the extension.
+fn admit_scene_bytes(
+    bytes: &[u8],
+    extension: &str,
+    source: &dyn std::fmt::Display,
+) -> anyhow::Result<&'static str> {
+    fe_runtime::ktx2_guard::check_asset_bytes(bytes, Some(extension))
+        .map_err(|refusal| anyhow::anyhow!("Import refused for {source}: {refusal}"))?;
+    Ok(if extension == "glb" { "model/gltf-binary" } else { "model/gltf+json" })
+}
+
+/// Shared post-storage stage: asset row (local uploader), node, intention and baseline in one `object_creation` transaction.
+async fn create_from_admitted_blob(
+    db: &Db,
+    petal_id: &str,
+    name: &str,
+    blob: AdmittedSceneBlob,
+    position: [f32; 3],
+    actor: &str,
+) -> anyhow::Result<SceneImport> {
+    let imported = super::object_creation::ImportedSceneAsset::new(name, blob.content_type, &blob.content_hash, blob.size_bytes)?;
     let asset_id = imported.id().to_owned();
     let asset_path = imported.path().to_owned();
     let prepared = super::object_creation::prepare(db, super::object_creation::ObjectCreation {
@@ -339,6 +443,57 @@ pub(crate) async fn import_gltf_handler(
     let node_id = current.node.node_id.clone();
     tracing::info!(node_id, asset_id, "Imported scene metadata and initial history committed");
     Ok((node_id, asset_id, asset_path, current))
+}
+
+/// Most distinct asset hashes one `ReadPetalAssetHashes` returns.
+const PETAL_ASSET_HASH_LIMIT: usize = 1024;
+
+/// Distinct asset `content_hash` values of a petal's live nodes, Viewer-fenced before and after the read.
+#[instrument(skip(db))]
+pub(crate) async fn read_petal_asset_hashes(
+    db: &Db,
+    petal_id: &str,
+    local_did: &str,
+) -> anyhow::Result<Vec<String>> {
+    let scope = resolve_petal_scope_handler(db, petal_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("not found or not permitted"))?;
+    let grant = fe_runtime::node_history::NodeAccessGrant::Local;
+    super::node_history::authorize_scope(db, &grant, local_did, &scope, fe_policy::RoleLevel::Viewer).await?;
+    // GROUP BY makes the hashes distinct; the ORDER BY field is the selected one (SurrealDB refuses otherwise).
+    let mut response = db
+        .query(format!(
+            "SELECT content_hash FROM asset \
+             WHERE asset_id IN (SELECT VALUE asset_id FROM node WHERE petal_id = $petal AND tombstone = NONE AND asset_id != NONE) \
+             AND content_hash != NONE \
+             GROUP BY content_hash ORDER BY content_hash LIMIT {PETAL_ASSET_HASH_LIMIT}"
+        ))
+        .bind(("petal", petal_id.to_owned()))
+        .await?
+        .check()?;
+    let rows: Vec<serde_json::Value> = response.take(0)?;
+    let hashes = rows
+        .iter()
+        .filter_map(|row| row["content_hash"].as_str())
+        .filter(|hash| hash_from_hex(hash).is_ok())
+        .map(str::to_owned)
+        .collect();
+    // Re-check after the read so a role revoked mid-query cannot leak rows.
+    super::node_history::authorize_scope(db, &grant, local_did, &scope, fe_policy::RoleLevel::Viewer).await?;
+    Ok(hashes)
+}
+
+/// The DB thread's reply to `ReadPetalAssetHashes`.
+pub(crate) async fn read_petal_asset_hashes_reply(
+    db: &Db,
+    petal_id: String,
+    local_did: &str,
+    correlation_id: Option<String>,
+) -> DbResult {
+    match read_petal_asset_hashes(db, &petal_id, local_did).await {
+        Ok(content_hashes) => DbResult::PetalAssetHashes { petal_id, content_hashes, correlation_id },
+        Err(e) => super::correlated_failure(&correlation_id, format!("Read petal asset hashes failed: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------

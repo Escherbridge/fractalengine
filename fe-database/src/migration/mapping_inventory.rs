@@ -92,6 +92,7 @@ const OTHER_DISPATCHED_MUTATION_KINDS: &[&str] = &[
     "CreateAsset",
     "GcUnreferencedAssets",
     "CreateNodeWithAsset",
+    "PlaceStoredGlb",
     "ElevatedQuery",
     "EnrolLocalDevice",
     "RevokeLocalDevice",

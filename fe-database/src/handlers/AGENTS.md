@@ -408,6 +408,46 @@ Native import dialog ownership is echoed independently of asset/node commit and
 authorization. It is not a grant or an extra persistence boundary. Native failure
 is typed so a message prefix cannot finish a later request.
 
+## place-stored-glb
+
+`DbCommand::PlaceStoredGlb` places a GLB that an installed model package already put in the blob
+store (model library, `conductor/tracks/model_library_20261115/spec.md` §4.5). It is native import
+minus the file read, so it uses native import's code, not a second creation path.
+
+- **Split.** `crud.rs` cuts `import_gltf_handler` where the bytes are in the store. Before the cut,
+  each entry gets its bytes in: native reads the file, runs KTX2 admission and stores the bytes
+  (`AdmittedSceneBlob::store`); placement verifies a stored blob (`AdmittedSceneBlob::verify_stored`).
+  After the cut, both call `create_from_admitted_blob`: an `ImportedSceneAsset` row with the local
+  user as `owner_did` and the petal as anchor, then `object_creation::prepare` + `commit` (asset,
+  node, intention, baseline v1 in one transaction). `AdmittedSceneBlob` can only be built by those
+  two constructors, so the stage cannot see bytes that skipped KTX2 admission.
+- **Fences, in order.** `admit_scene_import` (both entries, before anything is written): the petal
+  resolves, the local DID holds Editor (`authorize_scope`, `NodeAccessGrant::Local`), the name is
+  bounded and the position finite. A Viewer stops here. `verify_stored`: the hash parses, the store
+  has the blob, its length equals `size_bytes`, its BLAKE3 equals the hash, it starts with the GLB
+  magic, and `admit_scene_bytes` passes it (the same KTX2 rule as native). Then
+  `object_creation::prepare` captures Editor, ancestry and schemas again and the transaction fences
+  them. Every refusal before the commit writes nothing. A failed commit leaves the blob in place,
+  as it was before placement.
+- **Budget and reply.** Same as `ImportGltf`: not admitted or charged by `NodeWriteDoor` (§write-budget;
+  the asset is local upload content). `lib.rs` handles both in one arm, so publication, `NodeAdded`,
+  the lifecycle event and `GltfImported`/`ImportGltfFailed` (prefix `Model placement failed`) are
+  shared. `request` is the panel's `NativeImportRequest`, echoed like the import dialog's.
+- **Not counted as a D-CL20 bypass.** `record_bypass_for` accepts only the six D-CL20 kinds.
+  `PlaceStoredGlb` belongs in `migration/mapping_inventory.rs` `OTHER_DISPATCHED_MUTATION_KINDS`.
+
+`ReadPetalAssetHashes` (credits) is `read_petal_asset_hashes`: Viewer at the petal scope before
+and after the read (as `petal_readings.rs`), then the distinct `content_hash` values of assets
+referenced by the petal's live (`tombstone = NONE`) nodes. `GROUP BY content_hash` makes them
+distinct, and the result is ordered by the selected field and capped at 1,024. It is a read: it
+appears in `command_lane.rs` `is_transparent` beside `GetPetalTerrain`. `PlaceStoredGlb`, like
+`ImportGltf`, is in neither lane list, so it publishes queued transforms first and blocks
+Serve admissions.
+
+The op_log real-store journey (`op_log::tests::a_failing_statement_rolls_back_the_op_log_row_too`, batch R10)
+covers Viewer, missing-blob and wrong-size refusals with no rows written, a successful placement's
+node and asset rows, distinct credits, a removed node's model left out, and a Viewer-fenced credits read.
+
 ## Checked stamp promotion
 
 The private GUI PromoteCheckedStamp adapter captures full source properties, path version, full
@@ -842,7 +882,7 @@ and the API can map the prefix to 429 with `Retry-After`. `SceneChange::Transfor
 `node_write_retry_after_ms` of the error (`lib.rs` `UpdateNodeTransform` arm): `Some` only for a budget refusal.
 
 **Not charged and not admitted** (system writes, or charged elsewhere): replica-open recovery and republish,
-re-judge, inbound applies (their own budget below), `ImportGltf` (asset upload quota),
+re-judge, inbound applies (their own budget below), `ImportGltf` and `PlaceStoredGlb` (asset upload quota),
 `AdoptSceneAsset`, deletes and tombstones (they end a node), plugin batches (`PluginCommit`, bounded by the
 plugin host), seeding and reconcile. The owner is not exempt: a runaway local script is the realistic case.
 

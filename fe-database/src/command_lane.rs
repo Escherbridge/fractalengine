@@ -278,6 +278,7 @@ fn is_transparent(command: &DbCommand) -> bool {
             | DbCommand::RawQuery { .. }
             | DbCommand::ExecuteTsPartial { .. }
             | DbCommand::GetPetalTerrain { .. }
+            | DbCommand::ReadPetalAssetHashes { .. }
             | DbCommand::GetPetalRenderDistance { .. }
             | DbCommand::UpdateNodeTransform { .. }
             | DbCommand::InsertIotReadings { .. }

@@ -4811,6 +4811,88 @@ mod tests {
         let denied_handle:crate::BlobStoreHandle = denied_store.clone();
         assert!(crate::handlers::crud::import_gltf_handler(&url_db,&denied_handle,"url-p","Viewer import",import_path.to_str().unwrap(),[0.0;3],"did:url-viewer").await.is_err());
         assert!(denied_store.is_empty(),"Viewer import refuses before blob storage");
+        // ML-06: placing an installed model's stored GLB enters the import's post-storage stage.
+        struct PlacedModelBlobs { root: std::path::PathBuf }
+        impl fe_runtime::blob_store::BlobStore for PlacedModelBlobs {
+            fn add_blob(&self, bytes: &[u8]) -> anyhow::Result<[u8; 32]> {
+                let hash = *blake3::hash(bytes).as_bytes();
+                let path = fe_runtime::blob_store::canonical_blob_path(&self.root, &hash);
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(path, bytes)?;
+                Ok(hash)
+            }
+            fn get_blob_path(&self, hash: &[u8; 32]) -> Option<std::path::PathBuf> {
+                let path = fe_runtime::blob_store::canonical_blob_path(&self.root, hash);
+                path.is_file().then_some(path)
+            }
+            fn has_blob(&self, hash: &[u8; 32]) -> bool { self.get_blob_path(hash).is_some() }
+            fn remove_blob(&self, _hash: &[u8; 32]) -> anyhow::Result<()> { Ok(()) }
+        }
+        let glb = |json: &[u8]| -> Vec<u8> {
+            let padded = (json.len() + 3) & !3;
+            let total = 12 + 8 + padded;
+            let mut bytes = Vec::with_capacity(total);
+            bytes.extend_from_slice(b"glTF");
+            bytes.extend_from_slice(&2u32.to_le_bytes());
+            bytes.extend_from_slice(&(total as u32).to_le_bytes());
+            bytes.extend_from_slice(&(padded as u32).to_le_bytes());
+            bytes.extend_from_slice(&0x4E4F534Au32.to_le_bytes());
+            bytes.extend_from_slice(json);
+            bytes.resize(total, 0x20);
+            bytes
+        };
+        let placed_dir = tempfile::tempdir().unwrap();
+        let placed_store = std::sync::Arc::new(PlacedModelBlobs { root: placed_dir.path().to_owned() });
+        let placed_blobs: crate::BlobStoreHandle = placed_store.clone();
+        let model_bytes = glb(br#"{"asset":{"version":"2.0"}}"#);
+        let model_hex = crate::hash_to_hex(&fe_runtime::blob_store::BlobStore::add_blob(&*placed_store, &model_bytes).unwrap());
+        let model_size = model_bytes.len() as u64;
+        let removed_bytes = glb(br#"{"asset":{"version":"2.0","generator":"removed"}}"#);
+        let removed_hex = crate::hash_to_hex(&fe_runtime::blob_store::BlobStore::add_blob(&*placed_store, &removed_bytes).unwrap());
+        use crate::handlers::crud::{place_stored_glb_handler, read_petal_asset_hashes};
+        url_db.query("UPDATE verse SET default_access='viewer' WHERE verse_id='url-v'").await.unwrap().check().unwrap();
+        let place_inventory = "SELECT asset_id FROM asset ORDER BY asset_id; SELECT node_id FROM node ORDER BY node_id";
+        let mut inventory = url_db.query(place_inventory).await.unwrap().check().unwrap();
+        let assets_before: Vec<serde_json::Value> = inventory.take(0).unwrap();
+        let nodes_before: Vec<serde_json::Value> = inventory.take(1).unwrap();
+        let ops_before_place = op_log_count(&url_db).await;
+        let viewer_refusal = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Viewer placement",&model_hex,model_size,[0.0;3],"did:url-viewer").await
+            .expect_err("a Viewer may not place a model");
+        let missing_refusal = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Missing model",&"0a".repeat(32),model_size,[0.0;3],"did:qa").await
+            .expect_err("a blob that is not in the store is refused");
+        assert!(missing_refusal.to_string().contains("not in the blob store"), "got: {missing_refusal}");
+        let size_refusal = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Wrong size",&model_hex,model_size + 1,[0.0;3],"did:qa").await
+            .expect_err("a blob whose size differs from the command is refused");
+        assert!(size_refusal.to_string().contains("expected"), "got: {size_refusal}");
+        let mut inventory = url_db.query(place_inventory).await.unwrap().check().unwrap();
+        assert_eq!(inventory.take::<Vec<serde_json::Value>>(0).unwrap(), assets_before, "refused placements write no asset row ({viewer_refusal})");
+        assert_eq!(inventory.take::<Vec<serde_json::Value>>(1).unwrap(), nodes_before, "refused placements write no node");
+        assert_eq!(op_log_count(&url_db).await, ops_before_place);
+        let (placed_node, placed_asset, placed_path, placed_current) = place_stored_glb_handler(
+            &url_db,&placed_blobs,"url-p","Placed model",&model_hex,model_size,[5.0,0.0,6.0],"did:qa",
+        ).await.unwrap();
+        assert_eq!(placed_path, format!("blob://{model_hex}.glb"));
+        assert_eq!(placed_current.node.node_id, placed_node);
+        assert_eq!(placed_current.history_version, 1);
+        assert_eq!(op_log_count(&url_db).await, ops_before_place + 1, "one atomic creation operation, as for a native import");
+        let mut placed = url_db.query("SELECT petal_id, asset_id FROM node WHERE node_id=$node AND tombstone = NONE; SELECT content_hash, content_type, size_bytes, owner_did, petal_id FROM asset WHERE asset_id=$asset")
+            .bind(("node", placed_node.clone())).bind(("asset", placed_asset.clone())).await.unwrap().check().unwrap();
+        assert_eq!(placed.take::<Vec<serde_json::Value>>(0).unwrap(), vec![serde_json::json!({"petal_id":"url-p","asset_id":placed_asset})]);
+        assert_eq!(
+            placed.take::<Vec<serde_json::Value>>(1).unwrap(),
+            vec![serde_json::json!({"content_hash":model_hex,"content_type":"model/gltf-binary","size_bytes":model_size,"owner_did":"did:qa","petal_id":"url-p"})],
+            "the asset row records the local uploader, as a native import does"
+        );
+        // Credits: a second placement of the same model is one hash; a removed node's model is none.
+        place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Placed again",&model_hex,model_size,[7.0,0.0,6.0],"did:qa").await.unwrap();
+        let (removed_node, ..) = place_stored_glb_handler(&url_db,&placed_blobs,"url-p","Removed model",&removed_hex,removed_bytes.len() as u64,[9.0,0.0,6.0],"did:qa").await.unwrap();
+        url_db.query("UPDATE node SET tombstone=$tombstone WHERE node_id=$node").bind(("tombstone", crate::handlers::crud::tombstone_marker(1, "did:qa"))).bind(("node", removed_node))
+            .await.unwrap().check().unwrap();
+        let credited = read_petal_asset_hashes(&url_db, "url-p", "did:url-viewer").await.unwrap();
+        assert_eq!(credited.iter().filter(|hash| **hash == model_hex).count(), 1, "credits list each placed model once: {credited:?}");
+        assert!(!credited.contains(&removed_hex), "a removed node's model is not credited");
+        url_db.query("UPDATE verse SET default_access='none' WHERE verse_id='url-v'").await.unwrap().check().unwrap();
+        assert!(read_petal_asset_hashes(&url_db, "url-p", "did:url-viewer").await.is_err(), "credits are Viewer-fenced");
         url_db.query("CREATE fractal CONTENT {fractal_id:'import-other-fractal',verse_id:'url-v',owner_did:'did:qa',name:'other',created_at:'2026-11-02'}").await.unwrap().check().unwrap();
         for race in ["role","ancestry","schema","journal"] {
             use crate::handlers::object_creation::{ImportedSceneAsset,ObjectCreation,SceneAsset};

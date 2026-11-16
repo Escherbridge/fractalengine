@@ -980,9 +980,21 @@ pub fn spawn_db_thread_gated(
                             Err(e) => send_result(&tx, handlers::correlated_failure(&correlation_id,format!("Create node failed: {e}"))),
                         }
                     }
-                    Ok(DbCommand::ImportGltf { request, petal_id, name, file_path, position, file_lease }) => {
-                        let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position, &local_did).await;
-                        drop(file_lease);
+                    // Native import and stored-blob placement share one creation path and one reply (handlers/AGENTS.md §place-stored-glb).
+                    Ok(command @ (DbCommand::ImportGltf { .. } | DbCommand::PlaceStoredGlb { .. })) => {
+                        let (request, petal_id, name, position, result, failure) = match command {
+                            DbCommand::ImportGltf { request, petal_id, name, file_path, position, file_lease } => {
+                                let result = handlers::crud::import_gltf_handler(&db, &blob_store, &petal_id, &name, &file_path, position, &local_did).await;
+                                drop(file_lease);
+                                (request, petal_id, name, position, result, "GLTF import failed")
+                            }
+                            DbCommand::PlaceStoredGlb { request, petal_id, name, content_hash, size_bytes, position } => {
+                                let result = handlers::crud::place_stored_glb_handler(&db, &blob_store, &petal_id, &name, &content_hash, size_bytes, position, &local_did).await;
+                                (request, petal_id, name, position, result, "Model placement failed")
+                            }
+                            // The arm pattern admits only the two variants above.
+                            _ => continue,
+                        };
                         match result {
                             Ok((node_id, asset_id, asset_path, materialization)) => {
                                 handlers::scene_publication::publish_after_commit(&db,&blob_store,repl_tx.as_ref(),&local_did,&node_id).await;
@@ -1001,7 +1013,7 @@ pub fn spawn_db_thread_gated(
                                 }
                                 send_result(&tx, DbResult::GltfImported { request, node_id, asset_id, petal_id, name, asset_path, position, materialization: Some(materialization), correlation_id: None });
                             }
-                            Err(e) => send_result(&tx, DbResult::ImportGltfFailed { request, message: format!("GLTF import failed: {e}") }),
+                            Err(e) => send_result(&tx, DbResult::ImportGltfFailed { request, message: format!("{failure}: {e}") }),
                         }
                     }
                     // F13 API asset ingest: metadata only — bytes were stored API-side.
@@ -1948,6 +1960,10 @@ pub fn spawn_db_thread_gated(
                     }
                     Ok(DbCommand::GetPetalTerrain { petal_id, correlation_id }) => {
                         let reply = handlers::petal_terrain::get_petal_terrain_reply(&db, petal_id, correlation_id).await;
+                        send_result(&tx, reply);
+                    }
+                    Ok(DbCommand::ReadPetalAssetHashes { petal_id, correlation_id }) => {
+                        let reply = handlers::crud::read_petal_asset_hashes_reply(&db, petal_id, &local_did, correlation_id).await;
                         send_result(&tx, reply);
                     }
                     Ok(DbCommand::SetPetalRenderDistance { petal_id, render_distance, auth, correlation_id }) => {
