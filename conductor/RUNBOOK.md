@@ -111,6 +111,27 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-16 (early) — MODEL LIBRARY BUILT THROUGH INTEGRATION, SECURITY-REVIEWED, PUSHED (`aecb4856`).**
+  Tasks ML-01..ML-11 of `model_library_20261115` are in `main`: the Models section (right sidebar, beside
+  Maps; `fe-ui/src/model_library/`), the bridge (`fractalengine/src/model_library_bridge.rs`, shared
+  `registry_listing.rs`), placement through `PlaceStoredGlb`, the credits read, `fe-ext model pack`, and the
+  "Credit:" line on map rows and installed maps (the item owed since the terrain set was published). A
+  read-only security review (opus) found no critical or high issue and eight others, all fixed in one pass
+  (`aecb4856`): unpacked size of a model package capped at 256 MiB; model header fetches capped at 2 MiB with
+  a cache of 32 verified headers; the detail view shows the verified signer and manifest name and flags a
+  listing that differs; an install is pinned to the reviewed build's content hash and signer; attribution
+  must contain visible text at pack, publish and install (`fe-format/src/text.rs`, also used by the UI text
+  cleaner, which therefore now strips zero-width joiners); map rows are cleaned like model rows; GLB
+  structure is checked at install and placement; installs publish by hard link. Every test the feature added
+  or extended has run green (registry suite, `glb::`, `thumbnail::`, `model_library::` in fe-hexon and
+  fe-ui, the J8 command-line journey, `op_log::`, `model_library_bridge::`, `registry_listing::`). The
+  registry was redeployed after the push because its publish rule changed. **Not done:** nothing has been
+  exercised in the running app (needs a staged build and a manual pass: browse, detail, install, place,
+  credits, and the credit line under Maps); ML-12 (the end-to-end journey against an in-process registry in
+  `fe-hexon/tests/remote_registry_test.rs`) and ML-13 (publisher and user docs); the Models rail icon reuses
+  the Data glyph; no test covers the Maps credit line; no model content is published yet (first sets must be
+  public domain or CC0, packed with `fe-ext model pack`, each model with a PNG thumbnail of at most 512 x 512
+  and 256 KiB).
 - **2026-11-15 (late night) — REGISTRY HOLDS 30 PACKAGES; MODEL LIBRARY PHASES 1-3 DONE LOCALLY.** *Terrain:*
   26 US landmark tilesets (`tileset-usa-<place>`, version 0.1.0, zoom pairs between 10-11 and 13-14, 12 to 41
   MB each) are published beside the earlier Pacific Northwest one: 27 terrain tilesets, 724 MB in all. User
