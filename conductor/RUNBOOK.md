@@ -111,6 +111,23 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-15 (night) — DIRECTION: A RICH PUBLIC REGISTRY AND AN IN-APP 3D LIBRARY; MARKETPLACE STAYS OUT OF
+  THIS LAUNCH.** User decisions: (a) **build the in-app model library first** (browse, install, thumbnails,
+  place in scene, plus a tool that packs a folder of models into a signed package), then fill the registry;
+  (b) content may be **public domain, CC0 or attribution-licensed**, so the app and the registry listing must
+  show each package's attribution before attribution content is published; (c) terrain: **about 20 to 30 US
+  landmark regions** from the licence-clean pipeline (USGS imagery, public domain, plus open elevation);
+  international regions wait, because the builder's world imagery source may not be redistributed; (d)
+  **outside publishers ask through the contact form on escherbridge.com** (`/?inquiry=registry#contact`,
+  live) and we publish accepted packages on their behalf, signed by their own key, so the package id stays
+  theirs; no approved-publisher list for now. Facts behind (a), from a read-only map of the code: the Hexon
+  Manager browses and installs `terrain_tileset` only (`fractalengine/src/terrain_bridge.rs`
+  `REGISTRY_MAP_TYPE`); a model package installs through REST/MCP into the blob store but nothing lists or
+  places an installed entry; `AssetEntry.preview_image` is never set or drawn; search results carry no
+  licence; no command packs a folder of GLB files (`fe_hexon::publisher::HexonBuilder` is library-only);
+  publish and install are both capped at 64 MiB. The site has a "Public registries" docs page that lists the
+  one public registry and links the request form. The registry itself is redeployed with the drain fix and
+  holds four packages, none with restricted imagery.
 - **2026-11-15 (afternoon) — R1-R11 RUN AND DIAGNOSED; WEBSITE AND DEMO NODE ON RAILWAY; NOTHING OF TODAY
   COMMITTED YET.** *Tests.* The overnight R1-R11 run hung for seven hours on one fe-sync test that blocked on a
   full `bounded(32)` event channel nobody read (`sync_thread::tests::a_held_role_statement_is_reread_...`, now
