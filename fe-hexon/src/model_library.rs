@@ -382,10 +382,10 @@ mod tests {
 
         let good = model_package("chair", HexonType::Model, LicenseType::Attribution, Some("Chair by Ada, CC-BY-4.0"));
         let installed = library.install(&good).expect("install");
-        assert_eq!(installed.uri, "chair@1.0.0");
+        assert_eq!(installed.uri, "chair@0.1.0");
         assert!(matches!(
             library.install(&good),
-            Err(ModelLibraryError::AlreadyInstalled(uri)) if uri == "chair@1.0.0"
+            Err(ModelLibraryError::AlreadyInstalled(uri)) if uri == "chair@0.1.0"
         ));
 
         let listed = library.list();
@@ -394,19 +394,19 @@ mod tests {
             listed[0].license.as_ref().and_then(|license| license.attribution.as_deref()),
             Some("Chair by Ada, CC-BY-4.0")
         );
-        let entry = library.entry("chair@1.0.0", "chair").expect("entry");
-        assert!(library.entry("chair@1.0.0", "table").is_err());
+        let entry = library.entry("chair@0.1.0", "chair").expect("entry");
+        assert!(library.entry("chair@0.1.0", "table").is_err());
         assert!(library.blob_store.has(&entry.asset_hash), "blob landed in the shared store");
 
         let hashes = vec![entry.asset_hash.clone(), "0".repeat(64)];
         let by_hash = library.packages_for_hashes(&hashes);
         assert_eq!(by_hash.len(), 1);
-        assert_eq!(by_hash[&entry.asset_hash][0].uri, "chair@1.0.0");
+        assert_eq!(by_hash[&entry.asset_hash][0].uri, "chair@0.1.0");
 
-        assert!(matches!(library.remove("../chair@1.0.0"), Err(ModelLibraryError::UnsafeName(_))));
-        library.remove("chair@1.0.0").expect("remove");
+        assert!(matches!(library.remove("../chair@0.1.0"), Err(ModelLibraryError::UnsafeName(_))));
+        library.remove("chair@0.1.0").expect("remove");
         assert!(library.list().is_empty());
-        assert!(matches!(library.remove("chair@1.0.0"), Err(ModelLibraryError::NotInstalled(_))));
+        assert!(matches!(library.remove("chair@0.1.0"), Err(ModelLibraryError::NotInstalled(_))));
         let leftovers = std::fs::read_dir(root.path().join("models")).unwrap().count();
         assert_eq!(leftovers, 0, "no temp files remain");
     }
