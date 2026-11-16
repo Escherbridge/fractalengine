@@ -8,6 +8,7 @@ pub mod archive_index;
 pub mod entries;
 #[cfg(feature = "entitlement")]
 pub mod entitlement;
+pub mod glb;
 pub mod integrity;
 pub mod license;
 pub mod limits;

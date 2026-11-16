@@ -420,6 +420,21 @@ below 0.01, and the cap exists only so a hostile or corrupt value cannot overflo
 (SetPetalTerrain, the terrain API) refuse out-of-range values with `is_world_scale_in_range`
 (`scale.rs:21`); read paths sanitize to 1.0.
 
+## §glb (`glb.rs`)
+
+`glb::check(bytes, max_len)` is the pure structural gate for an untrusted GLB before it is packed into a
+model package. It validates the container only (magic, version 2, declared length equal to the real length,
+JSON chunk first and 4-aligned, optional BIN chunk, no overrun, no trailing bytes) and parses the JSON chunk
+as an object; it never decodes meshes, textures or accessors. Allocation beyond the JSON parse is none.
+
+- **Facts** (`GlbFacts`) carry lengths and `meshes`/`materials`/`images`/`nodes` array lengths so later
+  tasks do not re-parse. `external_uri` is true when any image or buffer `uri` is not a `data:` URI: a pack
+  must refuse a GLB that depends on files outside itself.
+- **Strict on purpose.** A third chunk, an unknown second chunk type or any bytes after the last chunk are
+  refused (`TrailingBytes` / `SecondChunkNotBin`); a library file is authored, not arbitrary.
+- **Errors** (`GlbError`) are `Copy`; `Display` text names the rule, never file bytes.
+- No feature gate: builds with `--no-default-features`.
+
 ## §petal-snapshot (`snapshot.rs`)
 
 A petal snapshot is a `PetalSnapshot` hexon. Members: `manifest.json` (`hexon_type = petal_snapshot`),
