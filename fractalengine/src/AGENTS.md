@@ -2392,3 +2392,38 @@ The public store client (`docs/spec/store-client/contract-v1.md`) is read throug
 binary injects `SourceTrust.is_killed` from governance (plugin bridge) or `no_kill_list()` (terrain bridge). Web
 bundles install through `portal_host::install`, which checks the kill list against the claimed and the verified hash
 before storing a byte and never starts or binds anything; binding and consent stay GUI steps.
+
+## §model-library (model_library_20261115, ML-09/ML-10)
+
+`model_library_bridge.rs` runs fe-ui's `PendingModelOps` (`fe-ui/src/model_library/AGENTS.md`) off the Bevy main
+thread and folds `ModelResult`s back into `ModelLibraryState`; `registry_listing.rs` is the one registry row filter
+(`registry_rows(hits, hexon_type)`) shared with the Maps listing in `terrain_bridge.rs`.
+
+- **Wiring.** `main.rs` opens `fe_hexon::model_library::ModelLibrary` after the asset bridge and inserts
+  `ModelLibraryBridge`; `drain_model_results` then `drain_model_ops` run chained in `Update`; `watch_results` wakes the
+  reactive loop (§render-loop). If the library cannot open, a `warn!` is logged and every op answers "The model library
+  is unavailable on this device"; Maps and the rest of the app are unaffected.
+- **Directories.** Installed packages live in a `models` directory beside the map tileset store
+  (`library_dir(registry.store().base_dir())`): `FE_HEXON_DIR`'s parent when set (a QA storage root gives
+  `<root>/models`), else `<data_local>/fractalengine/hexons/models`. Never relative to the working directory. Model
+  blobs go to `fe_sync::FsBlobStore::default_path()` (`FE_BLOB_DIR`, else `data/blobs`), the same root the DB thread's
+  store was opened on, so `PlaceStoredGlb` finds the GLB the install stored.
+- **Trust.** The search row (licence chip, attribution, preview path, size) is the registry's claim and is display only.
+  Detail reads licence and entries only from the header fetched under `RequireSealed`, each member re-checked against
+  the signed coverage. A thumbnail is fetched only when the verified header names it (an entry's `preview_image` or the
+  icon) and commits its digest; bytes come through `fetch_member_capped` (256 KiB), are digest-checked, then decoded by
+  `fe_hexon::thumbnail::decode` on the worker. Install downloads through `remote_source` (seal, id, version and content
+  hash checked, 64 MiB cap; the configured registry is the trust root, unsigned content is never admitted) and
+  `ModelLibrary::install` re-reads `license.json` from the verified archive, so the stored licence is the signed one.
+- **Placement.** Place resolves a placeable entry whose blob is present, then sends `PlaceStoredGlb` through the GUI
+  scene-write door at the camera's orbit focus. The request id carries `model-library-`; fe-ui's `GltfImported` /
+  `ImportGltfFailed` arms route it to the panel (never the import dialog) and select the node through
+  `NodeManager::request_select_after_navigation`, because the entity is spawned by deferred commands after the reply.
+- **Bounds.** At most 6 worker jobs and 4 thumbnail fetches in flight, a 256-op backlog, one op per key at a time
+  (duplicates answer from the running op), install and remove serialised by one lock, credits reads time out after
+  30 s. Each worker owns a current-thread tokio runtime for its one request.
+- **Map credit line.** Registry rows carry `RemoteHexonSummary.attribution`; installed rows read `attribution` from
+  the archive's coverage-checked `license.json` (`installed_attribution` in `terrain_bridge.rs`, one header read per
+  installed map on each list refresh). Both pass through `registry_listing::credit_text` (`display_text`, 512 chars).
+- **Tests.** `model_library_bridge::tests::op_outcomes` (pure outcome mapping) and
+  `registry_listing::tests::registry_rows_table` (type filter, unsafe ids, clipping, row cap, credit sanitising); batch R11.

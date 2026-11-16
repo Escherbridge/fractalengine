@@ -18,6 +18,7 @@ mod extension_host;
 mod api_endpoint;
 mod gpx_bridge;
 mod input_bridge;
+mod model_library_bridge;
 mod native_accessibility;
 mod native_window_witness;
 mod plugin_bridge;
@@ -29,6 +30,7 @@ mod qa_dev_token;
 mod qa_log;
 mod qa_portal_bridge;
 mod qa_invitation_bridge;
+mod registry_listing;
 mod relay_serve_bridge;
 mod render_wake;
 mod screenshot_bridge;
@@ -540,6 +542,7 @@ fn main() {
     let blob_store_for_assets = blob_store.clone();
     let blob_store_for_extensions = blob_store.clone();
     let blob_store_for_portal = blob_store.clone();
+    let blob_store_for_models = blob_store.clone();
 
     // S4 startup-seeding clone: `sync_cmd_tx` moves into `SyncCommandSenderRes`
     // just below, so the startup-publish loop (after `tileset_registry`
@@ -1089,6 +1092,25 @@ fn main() {
     // resolved blobs into the user's downloads folder. See src/AGENTS.md §assets.
     app.insert_resource(asset_bridge::AssetBlobStore(blob_store_for_assets));
     app.add_systems(bevy::prelude::Update, asset_bridge::drain_asset_ops);
+    // Model library bridge: installed packages beside the map tileset store, blobs in the
+    // runtime store the DB thread reads. See src/AGENTS.md §model-library.
+    match tileset_registry.as_ref().map(|registry| model_library_bridge::library_dir(registry.store().base_dir())) {
+        Some(library_dir) => {
+            let library_blobs = fe_hexon::registry::FsBlobStore::new(fe_sync::FsBlobStore::default_path());
+            match fe_hexon::model_library::ModelLibrary::open(&library_dir, library_blobs) {
+                Ok(library) => {
+                    app.insert_resource(model_library_bridge::ModelLibraryBridge::new(library, blob_store_for_models));
+                }
+                Err(error) => tracing::warn!(dir = %library_dir.display(), %error, "Model library unavailable"),
+            }
+        }
+        None => tracing::warn!("Model library unavailable: no local hexon store"),
+    }
+    model_library_bridge::watch_results(app.world(), &render_work);
+    app.add_systems(
+        bevy::prelude::Update,
+        (model_library_bridge::drain_model_results, model_library_bridge::drain_model_ops).chain(),
+    );
     // GPX import bridge: drains fe-ui's queued GPX imports into petal-bound
     // track + waypoint nodes. See src/AGENTS.md §gpx.
     app.init_resource::<gpx_bridge::PendingGpxImports>();

@@ -23,6 +23,8 @@ use fe_ui::plugin::{
 use fe_ui::settings::AppSettings;
 use fe_ui::terrain_map::{DownloadProgress, DownloadStatus, RegistryPackageRow, TilesetDownloads};
 
+use crate::registry_listing::{credit_text, registry_rows, REGISTRY_MAP_TYPE};
+
 pub(crate) fn discard_terminal_state(world: &mut World) {
     world.remove_resource::<InstallMetaVerdicts>();
     world.remove_resource::<StreamedMetaVerdicts>();
@@ -537,6 +539,14 @@ fn installed_access(
     }
 }
 
+/// Credit text from an installed tileset's coverage-checked `license.json`; `None` when absent or unreadable.
+fn installed_attribution(store: &fe_terrain::tiles::HexonStore, hexon_id: &str) -> Option<String> {
+    let path = store.installed_archive_path(hexon_id)?;
+    let index = fe_format::HexonArchiveIndex::open(&path).ok()?;
+    let license = fe_terrain::tiles::entitlement::read_license(&index).ok()??;
+    credit_text(license.attribution.as_deref())
+}
+
 /// Refreshes the Hexon Manager dialog's installed list + storage summary
 /// from the registry's store. Shared by the synchronous ops (Install/Remove/
 /// SetSeeding/RefreshList) and the background assemble-result drain.
@@ -560,6 +570,7 @@ fn refresh_installed_dialog(reg: &TilesetRegistry, ui_mgr: &mut UiManager) {
                 // RP-4b: the sealed publisher "Set petal map" authors as the pin
                 // (a header-only read, on the same dialog-op path as list_installed).
                 publisher_did: store.installed_publisher(&t.hexon_id),
+                attribution: installed_attribution(store, &t.hexon_id),
                 hexon_id: t.hexon_id,
                 region_name: t.region_name,
                 bounds: t.bounds,
@@ -859,34 +870,6 @@ pub fn drain_hexon_ops(
     }
 }
 
-/// The registry index's `hexon_type` spelling for map tilesets (`HexonType::TerrainTileset`, snake_case).
-const REGISTRY_MAP_TYPE: &str = "terrain_tileset";
-
-/// Longest version text kept from the network.
-const MAX_REGISTRY_VERSION_LEN: usize = 64;
-
-/// Bounded Registry-group rows from a search response: maps only, ids and versions installable, text clipped, row count capped.
-fn registry_rows(hits: Vec<fe_hexon::remote::RemoteHexonSummary>) -> Vec<RegistryPackageRow> {
-    use fe_ui::terrain_map::dto::{MAX_REGISTRY_ROWS, MAX_REGISTRY_TEXT_CHARS};
-    let clip = |text: String| -> String { text.chars().take(MAX_REGISTRY_TEXT_CHARS).collect() };
-    hits.into_iter()
-        .filter(|hit| {
-            hit.hexon_type == REGISTRY_MAP_TYPE
-                && fe_hexon::registry_source::valid_package_id(&hit.hexon_id)
-                && hit.version.len() <= MAX_REGISTRY_VERSION_LEN
-                && fe_hexon::registry_source::valid_version(&hit.version)
-        })
-        .take(MAX_REGISTRY_ROWS)
-        .map(|hit| RegistryPackageRow {
-            hexon_id: hit.hexon_id,
-            version: hit.version,
-            name: clip(hit.name),
-            size_bytes: hit.size_bytes,
-            publisher_did: clip(hit.publisher_did),
-        })
-        .collect()
-}
-
 /// Marks the open Hexon Manager's registry group loading and lists the registry on a background thread.
 fn start_registry_listing(
     ui_mgr: &mut UiManager,
@@ -912,7 +895,7 @@ fn start_registry_listing(
     let token = resolve_hexon_registry_token(std::env::var(HEXON_REGISTRY_TOKEN_ENV_VAR).ok().as_deref());
     fe_runtime::maintenance::spawn_job(move || {
         let outcome = match fe_hexon::remote::search_blocking(&registry_url, token, query.as_deref(), Some(REGISTRY_MAP_TYPE)) {
-            Ok(hits) => HexonAssembleOutcome::RegistryListed { rows: registry_rows(hits) },
+            Ok(hits) => HexonAssembleOutcome::RegistryListed { rows: registry_rows(hits, REGISTRY_MAP_TYPE) },
             Err(reason) => HexonAssembleOutcome::RegistryListFailed { reason },
         };
         if tx.send(outcome).is_err() {
