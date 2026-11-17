@@ -250,6 +250,7 @@ fn build(project_dir: &Path, debug: bool) -> Result<()> {
     // An explicit target dir: a CARGO_TARGET_DIR or config `target-dir` would otherwise move the artifact.
     let target_dir = project.dir.join("target");
     let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cargo.current_dir(&project.dir);
     cargo.args(["build", "--target", "wasm32-wasip2", "--manifest-path"]).arg(&manifest_path).arg("--target-dir").arg(&target_dir);
     if !debug {
         cargo.arg("--release");

@@ -146,6 +146,8 @@ pub struct InstanceState {
     pub(crate) created_in_window: u32,
     /// The injected clock, frozen for the duration of one hook call.
     pub(crate) now_ms: Arc<AtomicU64>,
+    /// Monotonic floor across frozen hook entries so `monotonic-clock` never steps backwards.
+    pub(crate) monotonic_ms: Arc<AtomicU64>,
     pub(crate) kv: Option<KvSlot>,
     pub(crate) broker: Arc<dyn ExtensionBroker>,
     pub(crate) routes: RouteCache,
@@ -158,25 +160,34 @@ pub struct InstanceState {
     /// Wall-clock deadline of the hook call in flight: reads past it are refused, so host time counts against it.
     pub(crate) hook_deadline: Option<Instant>,
     wasi: wasmtime_wasi::WasiCtx,
-    table: wasmtime::component::ResourceTable,
+    pub(crate) table: wasmtime::component::ResourceTable,
     pub(crate) limits: wasmtime::StoreLimits,
 }
 
 impl InstanceState {
     pub(crate) fn new(setup: InstanceSetup) -> Self {
-        let now_ms = Arc::new(AtomicU64::new(setup.clock.now_ms()));
+        let initial_ms = setup.clock.now_ms();
+        let now_ms = Arc::new(AtomicU64::new(initial_ms));
+        let monotonic_ms = Arc::new(AtomicU64::new(initial_ms));
         let log = Arc::new(Mutex::new(GuestLog::new(
             &setup.binding.installation_id,
             &setup.binding.package_id,
             now_ms.clone(),
         )));
-        let wasi = build_wasi_ctx(&setup.binding.installation_id, setup.activation, now_ms.clone(), log.clone());
+        let wasi = build_wasi_ctx(
+            &setup.binding.installation_id,
+            setup.activation,
+            now_ms.clone(),
+            monotonic_ms.clone(),
+            log.clone(),
+        );
         Self {
             binding: setup.binding,
             context: setup.context,
             window: setup.window,
             created_in_window: 0,
             now_ms,
+            monotonic_ms,
             kv: setup.kv,
             broker: setup.broker,
             routes: RouteCache::default(),
@@ -194,13 +205,20 @@ impl InstanceState {
     /// The state for a restarted instance: same binding, context, window, kv, broker, readers and log; fresh WASI
     /// (reseeded by `activation`), resource table, route cache and limits. The kv slot moves to the new state.
     pub(crate) fn respawn(&mut self, activation: u64) -> Self {
-        let wasi = build_wasi_ctx(&self.binding.installation_id, activation, self.now_ms.clone(), self.log.clone());
+        let wasi = build_wasi_ctx(
+            &self.binding.installation_id,
+            activation,
+            self.now_ms.clone(),
+            self.monotonic_ms.clone(),
+            self.log.clone(),
+        );
         Self {
             binding: self.binding.clone(),
             context: self.context.clone(),
             window: self.window.clone(),
             created_in_window: 0,
             now_ms: self.now_ms.clone(),
+            monotonic_ms: self.monotonic_ms.clone(),
             kv: self.kv.take(),
             broker: self.broker.clone(),
             routes: RouteCache::default(),
@@ -230,9 +248,15 @@ impl InstanceState {
         self.now_ms.load(Ordering::Acquire)
     }
 
-    /// Freeze the clock for the next hook call.
+    /// Monotonic floor (ms) for WASI `monotonic-clock`.
+    pub(crate) fn monotonic_now_ms(&self) -> u64 {
+        self.monotonic_ms.load(Ordering::Acquire)
+    }
+
+    /// Freeze the clock for the next hook call (holding a monotonic floor).
     pub(crate) fn freeze_clock(&self, now_ms: u64) {
         self.now_ms.store(now_ms, Ordering::Release);
+        self.monotonic_ms.fetch_max(now_ms, Ordering::AcqRel);
     }
 
     /// Count one scene or route read against [`MAX_SCENE_READS_PER_HOOK`]; none starts past the hook's deadline.

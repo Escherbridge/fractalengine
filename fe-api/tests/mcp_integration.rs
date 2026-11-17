@@ -55,7 +55,9 @@ use fractalengine_test_harness::api::ApiHarness;
 /// `ToolSeam::Input`), for 39 total; the extension platform adds 5 host-gated
 /// tools (`list_extensions`, `extension_command`, `list_bindings`,
 /// `set_binding`, `clear_binding`) beyond the original table.
-const EXPECTED_TOOLS: [&str; 55] = [
+/// (`list_roles`, `assign_role`, `revoke_role` are DB-backed; the other five
+/// require peering/diagnostics bridges).
+const EXPECTED_TOOLS: [&str; 63] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -121,6 +123,14 @@ const EXPECTED_TOOLS: [&str; 55] = [
     "set_binding",
     "clear_binding",
     "inject_input",
+    "get_identity",
+    "issue_verse_invite",
+    "join_verse",
+    "list_roles",
+    "assign_role",
+    "revoke_role",
+    "get_sync_state",
+    "get_extensions_trace",
 ];
 
 // ---------------------------------------------------------------------------
@@ -825,6 +835,29 @@ fn db_command(m: &mut Model, cmd: DbCommand, store: Option<&BlobStoreHandle>) ->
                 correlation_id,
             }
         }
+        DbCommand::EntityAccess {
+            target,
+            request_id,
+            ..
+        } => {
+            m.log
+                .push(json!({ "cmd": "EntityAccess", "scope": target.scope }));
+            DbResult::EntityAccessFinished {
+                target,
+                request_id,
+                result: Ok(fe_runtime::entity_access::EntityAccessSnapshot {
+                    local_did: "did:key:z6MkMcpTester".into(),
+                    local_role: "owner".into(),
+                    roles: vec![],
+                    tokens: vec![],
+                    tokens_truncated: false,
+                    notice: None,
+                    invite_link: None,
+                    minted: None,
+                    grants: vec![],
+                }),
+            }
+        }
         other => {
             // Name the variant so a missing emulator arm is visible; never panic (fuzz).
             let debug = format!("{other:?}");
@@ -1219,10 +1252,15 @@ async fn tools_list_inventory() {
                         | "set_binding"
                         | "clear_binding"
                         | "get_network_diagnostics"
+                        | "get_identity"
+                        | "issue_verse_invite"
+                        | "join_verse"
+                        | "get_sync_state"
+                        | "get_extensions_trace"
                 )
         })
         .collect();
-    assert_eq!(names, non_lab, "31 tools off a sim lab host");
+    assert_eq!(names, non_lab, "34 non-host-gated tools off a sim lab host");
     assert!(!names.iter().any(|n| n == "get_network_diagnostics"), "hidden without the bridge");
     // tools/list and the dispatch table are one source of truth.
     let table: Vec<&str> = tool_specs()
@@ -1277,6 +1315,11 @@ async fn tools_list_inventory() {
                         | "set_binding"
                         | "clear_binding"
                         | "get_network_diagnostics"
+                        | "get_identity"
+                        | "issue_verse_invite"
+                        | "join_verse"
+                        | "get_sync_state"
+                        | "get_extensions_trace"
                 )
         })
         .collect();
@@ -1293,9 +1336,33 @@ async fn tools_list_inventory() {
     .await
     .expect("spawn gui harness");
     let gui_token = gui.mint_token("VERSE#v1", "viewer");
-    let mut gui_tools = non_lab.clone();
-    gui_tools.push("screenshot");
-    gui_tools.push("get_camera");
+    let gui_tools: Vec<&str> = EXPECTED_TOOLS
+        .iter()
+        .copied()
+        .filter(|n| {
+            !n.starts_with("sim_")
+                && !matches!(
+                    *n,
+                    "inject_input"
+                        | "ui_tree"
+                        | "dialog_answers"
+                        | "window"
+                        | "ui_state"
+                        | "ui_logs"
+                        | "list_extensions"
+                        | "extension_command"
+                        | "list_bindings"
+                        | "set_binding"
+                        | "clear_binding"
+                        | "get_network_diagnostics"
+                        | "get_identity"
+                        | "issue_verse_invite"
+                        | "join_verse"
+                        | "get_sync_state"
+                        | "get_extensions_trace"
+                )
+        })
+        .collect();
     assert_eq!(listed_tools(&gui, &gui_token).await, gui_tools);
     let full_table: Vec<&str> = tool_specs().iter().map(|t| t.name).collect();
     assert_eq!(full_table, EXPECTED_TOOLS);
@@ -2437,7 +2504,9 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         .field_defs
         .insert(foreign_field_def.clone(), foreign.verse_scope());
     let plugin_host = Arc::new(RecordingPluginHost::default());
-    let hosts = plugin_host.wired();
+    let (peering_tx, _peering_rx) = crossbeam::channel::unbounded();
+    let mut hosts = plugin_host.wired();
+    hosts.peering = Some(peering_tx);
     let mut scoped = 0;
     for spec in tool_specs() {
         if matches!(spec.scope_rule, ScopeRule::None | ScopeRule::Global) {
@@ -2474,8 +2543,9 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         );
     }
     // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools,
-    // + extension_command (PetalArg) + the three BindingTarget binding tools.
-    assert_eq!(scoped, 37, "every non-Global/None row is scope-checked");
+    // + extension_command (PetalArg) + the three BindingTarget binding tools
+    // + the four VerseArg peering/role tools (issue_verse_invite, list_roles, assign_role, revoke_role).
+    assert_eq!(scoped, 41, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"
@@ -3244,6 +3314,9 @@ fn fuzz_baseline_args(home: &Chain, asset_id: &str, field_def_id: &str) -> serde
         // Field schema tools: a registered def id + the smallest descriptor that parses.
         "field_def_id": field_def_id,
         "descriptor": { "version": 1, "schema": { "type": "string" } },
+        // Peering / role management tools.
+        "peer_did": "did:key:z6MkFuzzPeer",
+        "role": "editor",
     })
 }
 

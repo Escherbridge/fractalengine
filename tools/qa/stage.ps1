@@ -47,7 +47,7 @@ try {
     # NativeCommandError records (cosmetic noise — cargo's own "Finished"/
     # "Compiling" lines go to stderr), which is harmless since $LASTEXITCODE
     # (not $?) is what gates success below, but is confusing to read.
-    & cargo build -p fractalengine --bin fractalengine -j $Jobs
+    & cargo build -p fractalengine --bin fractalengine --features plugin-host -j $Jobs
     if ($LASTEXITCODE -ne 0) { throw "GUI build failed: $LASTEXITCODE" }
     & cargo build -p fe-terrain --example install_sample_hexons --example build_qa_terrain -j $Jobs
     $exitCode = $LASTEXITCODE

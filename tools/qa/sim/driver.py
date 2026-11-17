@@ -312,7 +312,8 @@ class Driver:
                 last_gui[event["peer"]] = event
         failed = [peer for peer, event in last_gui.items()
                   if event.get("ok") is False
-                  and str(event.get("verdict") or "").removeprefix("optional_") == "refused_but_expected_ok"]
+                  and not event.get("optional")
+                  and str(event.get("verdict") or "") == "refused_but_expected_ok"]
         for peer in failed:
             base = {"step": sid, "lane": "recovery", "peer": peer, "action_id": "%s.recover.%s" % (sid, peer),
                     "via": "gui", "op": "escape", "expect": "any", "sync": "recovery", "optional": True}
@@ -573,6 +574,8 @@ class Driver:
     def _x_open_panel(self, client, view="Installed extensions"):
         """Open the Extensions panel (the toolbar toggle) and select a view tab; refuses with the failing click's outcome."""
         if not self._x_wait_any(client, ["Installed extensions", "Browse extensions"], 0.6):
+            if not self._x_has(client, "Toggle Extensions panel") and self._x_has(client, "Panels"):
+                self._x_click(client, "Panels", 4.0)
             opened = self._x_click(client, "Toggle Extensions panel", 6.0)
             if not opened.ok:
                 return opened
@@ -599,7 +602,8 @@ class Driver:
         out = client.rest("GET", "/api/v1/extensions")
         data = out.get("data") if out.ok else None
         rows = data.get("extensions") if isinstance(data, dict) else data
-        return [{"installation": r.get("installation") or r.get("id"), "package_id": r.get("package_id"), "state": r.get("state")}
+        return [{"installation": r.get("installation") or r.get("installation_id") or r.get("id"),
+                 "package_id": r.get("package_id"), "state": r.get("state")}
                 for r in rows or [] if isinstance(r, dict)]
 
     def _x_find_installation(self, client, package_id, wait_s):
@@ -636,7 +640,24 @@ class Driver:
         enable, override = "Enable %s" % package_id, "Override kill list for %s" % package_id
         seen = self._x_wait_any(client, [enable, override, "Dismiss extension error"], wait_s)
         if seen == enable:
-            return Outcome(status=200, ok=True, refused=False, data={"package_id": package_id, "state": "needs_consent"})
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline and not self.abort.is_set():
+                if self._x_has(client, enable, enabled=True):
+                    return Outcome(status=200, ok=True, refused=False, data={"package_id": package_id, "state": "needs_consent"})
+                time.sleep(0.25)
+            reason = None
+            try:
+                tree = fe.probe(client.run(), "ui-tree", None)
+                names = [n["name"] for n in fe.tree_nodes(tree) if not n.get("hidden")]
+                reason = next((n for n in names if self.EXT_ERROR_LINE.match(n)), None)
+            except (fe.Refused, fe.NotRunning):
+                pass
+            if not keep_dialog:
+                self._x_click(client, "Cancel extension consent", 3.0)
+            code = (reason or "blocked").split(":", 1)[0].strip()
+            return Outcome(status=200, ok=False, refused=True, code=code,
+                           error="install refused: %s" % (reason or "blocked"),
+                           data={"package_id": package_id, "state": "blocked"})
         if seen == override:
             if not keep_dialog:
                 self._x_click(client, "Cancel extension consent", 3.0)
@@ -720,9 +741,13 @@ class Driver:
         if not opened.ok:
             return opened
         names = self._x_binding_buttons(client, package_id, verb)
+        disable_names = self._x_binding_buttons(client, package_id, "Disable") if verb == "Enable" else []
         if args.get("binding"):
             names = [n for n in names if n == "%s %s for %s" % (verb, args["binding"], package_id)]
+            disable_names = [n for n in disable_names if n == "Disable %s for %s" % (args["binding"], package_id)]
         if not names:
+            if verb == "Enable" and args.get("allow_already_enabled") and disable_names:
+                return Outcome(status=200, ok=True, refused=False, data={"toggled": [], "already_enabled": True})
             return self._refused("no_binding_toggle", "no %s control for %s" % (verb, package_id))
         out = None
         for name in names:
@@ -780,7 +805,7 @@ class Driver:
 
         Binding config (movers, hz, devices) is the manifest's: the panel has no config form, so `config` is recorded, not sent.
         """
-        enabled = self._x_toggle(client, {**args, "channel": "gui"}, "Enable")
+        enabled = self._x_toggle(client, {**args, "channel": "gui", "allow_already_enabled": True}, "Enable")
         if not enabled.ok:
             return enabled
         data = dict(enabled.get("data") or {})

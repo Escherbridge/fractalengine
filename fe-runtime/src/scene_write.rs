@@ -382,7 +382,7 @@ impl SceneWriteTicket {
                 index += 1;
                 continue;
             };
-            pending.checks.remove(index);
+            let _ = pending.checks.remove(index);
             match SceneRefusal::from_verdict(verdict) {
                 Ok(augment) => pending.augments.extend(augment),
                 // The first refusal settles the write; the other calls are abandoned with it.

@@ -1,14 +1,13 @@
 ---
 type: runbook
 title: FractalEngine session runbook
-updated: 2026-11-13
-head: 44ecc1b6
+updated: 2026-11-17
+head: 2f9e5263
 ---
 
 # FractalEngine — Runbook
 
-**Last updated:** 2026-11-13 18:25 MST · **Branch:** `main` · **Last commit:** `44ecc1b6 fix(fe-ui): a full DB channel is
-Busy at the scene write door, not Closed` (+ this runbook commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
+**Last updated:** 2026-11-17 10:10 MST · **Branch:** `main` · **Last commit:** `2f9e5263 feat(qa): permanent peering/diagnostics API surfaces, headless fe-relay plugin host, LayeredBackend, and model library ML-12/13` (+ Round 4 QA hardening commit) · Previous runbooks: `git log -- conductor/RUNBOOK.md`.
 
 Foundation under this file: `conductor/product.md`, `tech-stack.md`, `workflow.md`,
 `tracks.md`, and the work queue `conductor/doneness-ledger.md`.
@@ -111,6 +110,8 @@ trusting "pure efficiency" claims; push control; a board that silently drifts st
 
 ## 2. State
 
+- **2026-11-17 — ROUND 4 QA CAMPAIGN, OBSERVABILITY/PEERING SURFACES, AND `R1..R11` SWEEP COMPLETE (`2f9e5263` + hardening).**
+  Wave 1 (`2f9e5263`) added permanent observability (`GET /api/v1/debug/extensions-trace`, `GET /api/v1/debug/sync-state`, MCP `get_sync_state` and `get_extensions_trace` gated by `FE_API_DIAGNOSTICS_ALLOW`), permanent peering/role lifecycle endpoints (`GET /api/v1/identity`, `POST /verses/{v}/invites`, `POST /verses/join`, `GET/POST/DELETE /verses/{v}/roles*` + MCP equivalents), optional headless `plugin-host` support in `fe-relay`, and `LayeredBackend`. Live desktop UI (`fe.py layout-check` 0 violations across 1280x720, 1366x768, 1920x1080), model library (`cc0.infra-kit@1.0.0`), road/terrain proposal + cross-section charts, external WASM/Rhai/portal SDK extensions, simulator lanes (`ext-install-gui` 10/10, `ext-device` 23/24, `portal-core` 3/17, `fleet-terrain` 25/28, `ext-fleet` 8/8), and public-internet P2P sync/conflict/role-revocation against the hosted remote `fe-relay` peer were exercised and logged in `qa/findings.jsonl` (`QA-0179`..`QA-0190`). Fixes shipped for `wasi:clocks/monotonic-clock@0.2.12` (rustc 1.99.0) with a per-instance monotonic floor, `fe-ext inspect` web-bundle support + `HexonType::Plugin` + bounded `countersignatures.json` read, `stage.ps1`/`launch.ps1` `plugin-host` defaults, extension consent/settings modal sizing, `plugin_bridge.rs` `SourceClassSet::Many`, `ops_drain.rs` non-empty fractal petal fallback, and `mcp_integration` test/error-prefix parity (`31 passed`). Across `R1..R11` (93 chunks, `-j 2`), 92/93 chunks passed initially (`4,294 passed, 3 failed, 17 ignored`), and the lone failing test suite (`fe-api --test mcp_integration`) passed 31/31 after updating its tool inventory and emulator handlers, followed by targeted green passes on `fe-ui consent` (2/2), `fe-plugin wasm::component` (3/3), `fe-plugin bindings::` (10/10), `fe-plugin rhai::` (7/7), `fe-ext --lib` (7/7), and `fractalengine --bin fractalengine --features plugin-host` check. Open low/medium items recorded in `qa/findings.jsonl`: `QA-0185` (GET HTTP 415 on ingress endpoints declaring `content_types`) and `QA-0190` (terrain button wrap / overlay z-fighting / minor scenario timing gaps).
 - **2026-11-16 (early) — MODEL LIBRARY BUILT THROUGH INTEGRATION, SECURITY-REVIEWED, PUSHED (`aecb4856`).**
   Tasks ML-01..ML-11 of `model_library_20261115` are in `main`: the Models section (right sidebar, beside
   Maps; `fe-ui/src/model_library/`), the bridge (`fractalengine/src/model_library_bridge.rs`, shared

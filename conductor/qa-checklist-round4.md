@@ -944,3 +944,13 @@ Not repeated here: import onto a second peer, role rows granting nothing, an imp
 - [ ] RF-D-10 · app · Start the embedded relay, then create a verse -> a member connects through the relay and is served that verse without a restart.
 - [ ] RF-D-11 · app · Select too many objects (over the 4 MiB Undo/Redo group limit) and save -> the message says the selection is too large and to select fewer objects; nothing is saved.
 - [ ] RF-D-12 · app · Inspector: open a node with a large property value (tens of KB) -> the row shows a preview with "Edit full value"; clicking it opens the whole value for editing.
+
+## QA Campaign Summary (2026-11-17)
+
+Executed live GUI, multi-extension SDK (`fe-ext-guest`, `fe-sdk`, `fe.portal.v1` / `fe-portal-bundle/1`, Rhai, `fe-ext` CLI/sandbox/index), simulator lanes, public-internet Iroh relay P2P sync, and chunked `R1..R11` test verification:
+
+- [x] **Batch sweep (`R1..R11`)**: 93 chunks via `tools\qa\test_batches.ps1` (`92/93` initial pass: `4,294 passed, 3 failed, 17 ignored`); fixed `fe-api` `mcp_integration` tool inventory/emulator (`31 passed; 0 failed`) + post-edit `fe-ui consent` (`2 passed`), `fe-plugin wasm::component` (`3 passed`), `fe-plugin bindings::` (`10 passed`), `fe-plugin rhai::` (`7 passed`), `fe-ext --lib` (`7 passed`), and `fractalengine --bin fractalengine --features plugin-host` check.
+- [x] **GUI & Layout Gate**: `fe.py layout-check` passed with `0` violations across `1280x720`, `1366x768`, and `1920x1080`; verified Model Library (`cc0.infra-kit@1.0.0`), road drafting, terrain proposal delta + cross-section profile chart, consent/settings modals, and live WebView2 portal IPC.
+- [x] **Extensions & Simulator**: Built/sandbox-verified external WASM packages (`device-adapter`, `general`, `bi-connector`), Rhai hook script, and signed `fe-portal-bundle/1` archive (`4 package(s), 4 version(s)` indexed); ran `ext-install-gui` (`10/10`), `ext-device` (`23/24`), `portal-core` (`3/17`), `fleet-terrain` (`25/28`), and `ext-fleet` (`8/8`).
+- [x] **Public-Internet P2P**: Verified invite mint/join (`FE_SYNC_RELAY=default`), bidirectional node/property/GLB replication, distributed DataFusion queries (`answered_hosts=2`, `missing_shards=[]`), concurrent per-key convergence, and role revocation enforcement against the hosted remote `fe-relay` node.
+- [x] **Findings & Hardening (`qa/findings.jsonl`)**: Filed `QA-0179`..`QA-0190`; resolved and verified `QA-0179`..`QA-0184` and `QA-0186`..`QA-0189`. Remaining open items: `QA-0185` (GET 415 on ingress endpoints declaring `content_types`) and `QA-0190` (minor UI wrap/overlay & simulator timing items).

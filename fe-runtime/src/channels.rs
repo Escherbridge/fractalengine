@@ -24,7 +24,7 @@ impl DbCommandBytes {
     /// Add `bytes` when they fit under `cap` or nothing is in flight (an oversized row passes alone).
     pub fn try_charge(&self, bytes: u64, cap: u64) -> bool {
         self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current == 0 || current.saturating_add(bytes) <= cap)
                     .then(|| current.saturating_add(bytes))
             })
@@ -38,7 +38,7 @@ impl DbCommandBytes {
         }
         let _ = self
             .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(bytes))
             });
     }

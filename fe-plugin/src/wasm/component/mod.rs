@@ -140,6 +140,7 @@ impl ComponentHost {
         epoch::register(&engine);
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(host_error)?;
+        wasi::shadow_monotonic_clock(&mut linker).map_err(host_error)?;
         bindings::Extension::add_to_linker::<InstanceState, HasSelf<InstanceState>>(&mut linker, |state| state)
             .map_err(host_error)?;
         Ok(Self { engine, linker })

@@ -166,18 +166,17 @@ count, cycled by `wasmtime_wasi::Deterministic` (NOT cryptographic, by design); 
 
 Two deviations from that table (recorded as contract changes for its owner):
 
-- **`wasi:clocks/monotonic-clock` is refused at install.** wasmtime-wasi's `subscribe-duration` /
-  `subscribe-instant` pollables sleep in REAL time (`Deadline::Never` for durations that overflow),
-  whatever the frozen clock returns, and fuel does not run while the host blocks. A guest's
-  `std::thread::sleep(Duration::MAX)` would hang the plugin worker and every instance on it. The
-  frozen monotonic clock stays configured as defense in depth. Re-admitting the interface needs a
-  shadowed, never-blocking implementation of its subscribe functions (`Linker::allow_shadowing`)
-  with a test; guests read time through `context.now-ms` meanwhile.
+- **`wasi:clocks/monotonic-clock` is admitted with shadowed non-blocking subscriptions.**
+  wasm32-wasip2 builds targeting Rust `1.99.0` emit `wasi:clocks/monotonic-clock@0.2.12`. Because
+  wasmtime-wasi's default `subscribe-duration` / `subscribe-instant` sleep in real time (`Deadline::Never`
+  for durations that overflow) without consuming fuel, `wasi::shadow_monotonic_clock` overrides
+  `monotonic_clock::Host` via `Linker::allow_shadowing(true)` so `now()` returns `context.now-ms`
+  in nanoseconds and `subscribe-*` returns an immediately ready pollable (`ReadyPollable`).
 - **The five `wasi:cli/terminal-*` interfaces are admitted**: wasm32-wasip2 std imports them for
   its stdio, and here they only ever report "not a terminal".
 
 Everything else, `wasi:sockets/*` and `wasi:http/*` included, is `forbidden-import`. With
-monotonic-clock out, nothing a guest can import blocks the worker: stdin is closed, guest stdio is
+monotonic-clock subscriptions shadowed to never sleep, nothing a guest can import blocks the worker: stdin is closed, guest stdio is
 always writable, there are no file descriptors, and `wasi:io/poll` has nothing time-based to wait on.
 
 ## §test-guests

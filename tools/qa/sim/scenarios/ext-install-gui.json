@@ -27,7 +27,8 @@
       "id": "1", "title": "Install fleet-sim from its package file; the consent dialog's own button confirms it", "settle_s": 30, "covers": ["R11", "R18"],
       "note": "The file field route (`via: file`) stages the run-packed .hexon; the panel shows `Enable org.example.fleet-sim` (consent needed), which ext_consent clicks.",
       "actions": [
-        {"id": "file_install", "peer": "owner", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "via": "file"}},
+        {"id": "policy", "peer": "owner", "via": "rest", "op": "set_extension_policy", "args": {"verse_id": "$fixture.verse_id", "mode": "allow-list", "allow": [{"package_id": "org.example.fleet-sim", "content_hash": "$run.packages.fleet-sim.content_hash"}, {"package_id": "org.example.device-adapter", "content_hash": "$run.packages.device-adapter.content_hash"}]}},
+        {"id": "file_install", "peer": "owner", "via": "ext", "op": "ext_install", "args": {"package": "fleet-sim", "via": "file"}, "needs": ["policy"]},
         {"id": "fleet", "peer": "owner", "via": "ext", "op": "ext_consent", "args": {"package": "fleet-sim"}, "needs": ["file_install"]}
       ],
       "expect": [

@@ -761,17 +761,19 @@ pub(crate) fn invite_controls(
                 .desired_width(f32::INFINITY),
         )
         .named(ui, "Invitation recipient DID");
-        egui::ComboBox::from_id_salt("entity_invite_role")
-            .selected_text(role.as_str())
-            .show_ui(ui, |ui| {
-                for value in ["viewer", "editor", "manager"] {
-                    ui.selectable_value(role, value.into(), value).observed(ui);
-                }
-            })
-            .response
-            .named(ui, "Scoped invite role");
-        ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
-            .named(ui, "Scoped invite expiry hours");
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("entity_invite_role")
+                .selected_text(role.as_str())
+                .show_ui(ui, |ui| {
+                    for value in ["viewer", "editor", "manager"] {
+                        ui.selectable_value(role, value.into(), value).observed(ui);
+                    }
+                })
+                .response
+                .named(ui, "Scoped invite role");
+            ui.add(egui::DragValue::new(expiry).range(1..=720).suffix(" hours"))
+                .named(ui, "Scoped invite expiry hours");
+        });
     });
     state.invitation.synchronize(target, role, *expiry);
     let local_only = state.verse_local_only;

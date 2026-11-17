@@ -69,7 +69,13 @@ pub fn render_entity_settings_dialog(
         .collapsible(false)
         .resizable(true)
         .default_width(500.0)
+        .default_height(620.0)
         .min_width(crate::ui_shell::layout_policy::dialog_width(ctx,400.0))
+        .min_height(
+            (ctx.viewport_rect().height() - 140.0)
+                .clamp(360.0, 620.0)
+                .min((ctx.viewport_rect().height() - 100.0).max(160.0)),
+        )
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::NONE

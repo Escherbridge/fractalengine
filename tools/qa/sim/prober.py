@@ -375,8 +375,9 @@ class Prober:
         if key == "list":
             rows = data.get("extensions") if isinstance(data, dict) else data
             rows = [r for r in rows or [] if isinstance(r, dict)]
-            items = sorted(({"installation": r.get("installation") or r.get("id"), "package_id": r.get("package_id"),
-                             "state": r.get("state")} for r in rows), key=lambda r: str(r["installation"]))
+            items = sorted(({"installation": r.get("installation") or r.get("installation_id") or r.get("id"),
+                             "package_id": r.get("package_id"), "state": r.get("state")} for r in rows),
+                           key=lambda r: str(r["installation"]))
             return {"count": len(items), "items": items}
         if not isinstance(data, dict):
             return {"absent": True, "status": status}

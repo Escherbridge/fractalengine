@@ -311,6 +311,7 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
     crate::ui_shell::layout_policy::bounded_window(ctx, title(&request))
         // Above the Extensions window: a click there must never bury an open review (R-UI-28).
         .order(egui::Order::Foreground)
+        .vscroll(false)
         .open(&mut still_open)
         .collapsible(false)
         .resizable(false)
@@ -324,7 +325,9 @@ pub fn render(ctx: &egui::Context, state: &mut ConsentState) {
                 .stroke(egui::Stroke::new(1.0_f32, theme::TEXT_DIM)),
         )
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ctx.viewport_rect().height() - 180.0).clamp(120.0, 360.0))
+                .show(ui, |ui| {
                 header(ui, &request);
                 if let Some(reason) = &request.blocked {
                     problem(ui, reason);

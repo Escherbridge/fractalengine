@@ -597,7 +597,8 @@ mod tests {
             ("fractalengine:plugin/txn@2.1.0", false, true),
             ("fractalengine:plugin/lifecycle@2.0.0", false, false),
             ("wasi:sockets/tcp@0.2.0", false, false),
-            ("wasi:clocks/monotonic-clock@0.2.0", false, false),
+            ("wasi:clocks/monotonic-clock@0.2.0", true, false),
+            ("wasi:clocks/monotonic-clock@0.2.12", true, false),
             ("wasi:http/outgoing-handler@0.2.0", false, false),
         ] {
             let verdict = wasi::check_import(name);
@@ -815,5 +816,40 @@ mod tests {
             scene::Host::get_node(judge.store.data_mut(), "r1".into()),
             Err(HostError::BudgetExceeded(_))
         ));
+    }
+
+    #[test]
+    fn shadowed_monotonic_clock_tracks_frozen_clock_and_subscribes_without_blocking() {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Poll, Waker};
+        use wasmtime_wasi::p2::bindings::clocks::monotonic_clock::Host as MonoHost;
+        use wasmtime_wasi::p2::Pollable;
+
+        let host = ComponentHost::new().unwrap();
+        let bytes = test_guest::component(test_guest::STAGE_ONE_TRANSFORM);
+        let component = host.compile(&bytes).unwrap();
+        let mock = Arc::new(Mutex::new(MockHostEnv::new()));
+        let clock = ManualClock::default();
+        clock.set(42_500);
+        let mut instance = host.instantiate(&component, fleet_setup(&mock, &clock)).unwrap();
+        instance.store.data().freeze_clock(42_500);
+
+        let state = instance.store.data_mut();
+        assert_eq!(MonoHost::now(state).unwrap(), 42_500_000_000);
+        assert_eq!(MonoHost::resolution(state).unwrap(), 1_000_000);
+        state.freeze_clock(41_000);
+        assert_eq!(InstanceState::now(state), 41_000);
+        assert_eq!(MonoHost::now(state).unwrap(), 42_500_000_000);
+        state.freeze_clock(43_000);
+        assert_eq!(MonoHost::now(state).unwrap(), 43_000_000_000);
+
+        let dur_pollable = MonoHost::subscribe_duration(state, u64::MAX).unwrap();
+        let inst_pollable = MonoHost::subscribe_instant(state, u64::MAX).unwrap();
+        assert_ne!(dur_pollable.rep(), inst_pollable.rep());
+
+        let mut ready = crate::wasm::component::wasi::ReadyPollable;
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(Pin::new(&mut ready.ready()).poll(&mut cx), Poll::Ready(())));
     }
 }

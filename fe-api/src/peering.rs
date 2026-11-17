@@ -270,7 +270,7 @@ pub(crate) async fn issue_verse_invite_core(
         _ => {
             return Err(PeeringError::new(
                 StatusCode::BAD_GATEWAY,
-                "unexpected invite preparation response",
+                "invite preparation failed: unexpected db reply",
             ))
         }
     };
@@ -343,7 +343,7 @@ pub(crate) async fn issue_verse_invite_core(
         _ => {
             return Err(PeeringError::new(
                 StatusCode::BAD_GATEWAY,
-                "unexpected invite issue response",
+                "invite issue failed: unexpected db reply",
             ))
         }
     };
@@ -439,7 +439,7 @@ pub(crate) async fn join_verse_core(
         _ => {
             return Err(PeeringError::new(
                 StatusCode::BAD_GATEWAY,
-                "unexpected join admission response",
+                "join admission failed: unexpected db reply",
             ))
         }
     };
@@ -568,7 +568,7 @@ pub(crate) async fn join_verse_core(
             _ => {
                 return Err(PeeringError::new(
                     StatusCode::BAD_GATEWAY,
-                    "unexpected join proof finalization response",
+                    "join proof finalization failed: unexpected db reply",
                 ))
             }
         }
@@ -700,7 +700,7 @@ pub(crate) async fn list_roles_core(
         }
         _ => Err(PeeringError::new(
             StatusCode::BAD_GATEWAY,
-            "unexpected role load response",
+            "role load failed: unexpected db reply",
         )),
     }
 }
@@ -763,7 +763,7 @@ pub(crate) async fn assign_role_core(
         }
         _ => Err(PeeringError::new(
             StatusCode::BAD_GATEWAY,
-            "unexpected role assignment response",
+            "role assignment failed: unexpected db reply",
         )),
     }
 }
@@ -819,7 +819,7 @@ pub(crate) async fn revoke_role_core(
         }
         _ => Err(PeeringError::new(
             StatusCode::BAD_GATEWAY,
-            "unexpected role revocation response",
+            "role revocation failed: unexpected db reply",
         )),
     }
 }

@@ -1266,8 +1266,10 @@ impl InstanceStager {
                 Some(petal.fractal_id.as_str()),
                 Some(petal.petal_id.as_str()),
             ),
-            // A manifest offering several classes needs the operator's pick; until the bind dialog records it, refused.
-            source_class: None,
+            source_class: manifest
+                .readings
+                .as_ref()
+                .and_then(|r| r.source_class.classes().first().copied()),
         };
         let token = CapabilityToken::mint_v2(plugin_id, &manifest, &scopes)?;
         let component = components

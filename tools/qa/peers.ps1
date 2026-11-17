@@ -127,7 +127,7 @@ if ($Action -eq 'Start') {
                 transport = 'FE_SYNC_RELAY=disabled (launcher): loopback direct addresses carried by the native join ticket'
                 collaboration = 'Not joined: owner generates addressed invites per peer DID with the role in the Access panel; transfer-invite drives each masked Join' }
             Write-PeersRecord -Path (Join-Path $ownerDir 'peers.json') -Record $peers
-            if ($Count -eq 2) {
+            if ($Count -eq 2 -and $launched[0].name -ceq 'owner' -and $launched[1].name -ceq 'viewer') {
                 # Historical pair-v1 publication so pair.ps1/native-observer restart lineage stay valid.
                 $pair = @{ schema = 'fe-qa-pair-v1'; revision = 1; owner = $launched[0]; viewer = $launched[1];
                     distinct_run_local_identities = $true; created_at = $peers.created_at

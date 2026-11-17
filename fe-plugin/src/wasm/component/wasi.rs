@@ -21,9 +21,9 @@ const CONTRACT_IMPORTS: [&str; 11] = [
 ];
 
 /// WASI 0.2 interfaces a component may import (virtualized); anything else is `forbidden-import`.
-/// `wasi:clocks/monotonic-clock` is NOT here: its `subscribe-*` pollables sleep in real time
-/// (forever for huge durations) whatever the frozen clock says, which would hang the plugin worker.
-const WASI_IMPORTS: [&str; 19] = [
+/// `wasi:clocks/monotonic-clock` is shadowed in `shadow_monotonic_clock` so `subscribe-*` never
+/// sleeps in real time on the plugin worker while preserving frozen deterministic time reads.
+const WASI_IMPORTS: [&str; 20] = [
     "wasi:cli/environment",
     "wasi:cli/exit",
     "wasi:cli/stdin",
@@ -37,6 +37,7 @@ const WASI_IMPORTS: [&str; 19] = [
     "wasi:io/error",
     "wasi:io/streams",
     "wasi:io/poll",
+    "wasi:clocks/monotonic-clock",
     "wasi:clocks/wall-clock",
     "wasi:random/random",
     "wasi:random/insecure",
@@ -84,7 +85,7 @@ impl wasmtime_wasi::HostWallClock for FrozenWallClock {
 }
 
 /// `wasi:clocks/monotonic-clock`, frozen at `context.now-ms` (nanoseconds). Linked for
-/// defense in depth only; `check_import` refuses components that import the interface.
+/// defense in depth alongside [`shadow_monotonic_clock`], which ensures `subscribe-*` never sleeps.
 pub(crate) struct FrozenMonotonicClock(pub(crate) Arc<AtomicU64>);
 
 impl wasmtime_wasi::HostMonotonicClock for FrozenMonotonicClock {
@@ -94,6 +95,55 @@ impl wasmtime_wasi::HostMonotonicClock for FrozenMonotonicClock {
     fn now(&self) -> u64 {
         self.0.load(Ordering::Acquire).saturating_mul(1_000_000)
     }
+}
+
+/// Already-ready pollable returned by shadowed `wasi:clocks/monotonic-clock` `subscribe-*`,
+/// preventing real-time sleeps on the shared plugin worker thread.
+pub(crate) struct ReadyPollable;
+
+#[wasmtime_wasi::async_trait]
+impl wasmtime_wasi::p2::Pollable for ReadyPollable {
+    async fn ready(&mut self) {}
+}
+
+impl wasmtime_wasi::p2::bindings::clocks::monotonic_clock::Host for super::state::InstanceState {
+    fn now(&mut self) -> wasmtime::Result<u64> {
+        Ok(super::state::InstanceState::monotonic_now_ms(self).saturating_mul(1_000_000))
+    }
+
+    fn resolution(&mut self) -> wasmtime::Result<u64> {
+        Ok(1_000_000)
+    }
+
+    fn subscribe_instant(
+        &mut self,
+        _when: u64,
+    ) -> wasmtime::Result<wasmtime::component::Resource<wasmtime_wasi::p2::DynPollable>> {
+        let ready = self.table.push(ReadyPollable)?;
+        wasmtime_wasi::p2::subscribe(&mut self.table, ready)
+    }
+
+    fn subscribe_duration(
+        &mut self,
+        _duration: u64,
+    ) -> wasmtime::Result<wasmtime::component::Resource<wasmtime_wasi::p2::DynPollable>> {
+        let ready = self.table.push(ReadyPollable)?;
+        wasmtime_wasi::p2::subscribe(&mut self.table, ready)
+    }
+}
+
+/// Shadow `wasi:clocks/monotonic-clock` after `wasmtime_wasi::p2::add_to_linker_sync` so
+/// `subscribe-duration` and `subscribe-instant` never park the plugin worker in real time.
+pub(crate) fn shadow_monotonic_clock(
+    linker: &mut wasmtime::component::Linker<super::state::InstanceState>,
+) -> wasmtime::Result<()> {
+    linker.allow_shadowing(true);
+    let result = wasmtime_wasi::p2::bindings::clocks::monotonic_clock::add_to_linker::<
+        super::state::InstanceState,
+        wasmtime::component::HasSelf<super::state::InstanceState>,
+    >(linker, |state| state);
+    linker.allow_shadowing(false);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +172,7 @@ pub(crate) fn build_wasi_ctx(
     installation_id: &str,
     activation: u64,
     now_ms: Arc<AtomicU64>,
+    monotonic_ms: Arc<AtomicU64>,
     log: Arc<Mutex<GuestLog>>,
 ) -> wasmtime_wasi::WasiCtx {
     let seed = random_stream(installation_id, activation, "insecure-seed");
@@ -131,8 +182,8 @@ pub(crate) fn build_wasi_ctx(
     builder
         .stdout(GuestStdio { log: log.clone(), level: LogLevel::Info })
         .stderr(GuestStdio { log, level: LogLevel::Warn })
-        .wall_clock(FrozenWallClock(now_ms.clone()))
-        .monotonic_clock(FrozenMonotonicClock(now_ms))
+        .wall_clock(FrozenWallClock(now_ms))
+        .monotonic_clock(FrozenMonotonicClock(monotonic_ms))
         .secure_random(wasmtime_wasi::Deterministic::new(random_stream(installation_id, activation, "random")))
         .insecure_random(wasmtime_wasi::Deterministic::new(random_stream(installation_id, activation, "insecure")))
         .insecure_random_seed(u128::from_le_bytes(seed_bytes))

@@ -2143,16 +2143,35 @@ impl Plugin for ExtensionOpsPlugin {
 fn current_scope(navigation: Option<&NavigationManager>, verses: Option<&VerseManager>) -> ActiveScope {
     navigation
         .map(|nav| {
-            let petal_id = nav.active_petal_id.clone().unwrap_or_default();
+            let verse_id = nav.active_verse_id.clone().unwrap_or_default();
+            let mut petal_id = nav.active_petal_id.clone().unwrap_or_default();
+            let mut fractal_name = nav.active_fractal_name.clone();
+            if petal_id.is_empty() && !verse_id.is_empty() {
+                if let Some(verse) = verses.and_then(|v| v.verses.iter().find(|verse| verse.id == verse_id)) {
+                    let fractal = nav
+                        .active_fractal_id
+                        .as_deref()
+                        .and_then(|fid| verse.fractals.iter().find(|f| f.id == fid))
+                        .or_else(|| verse.fractals.iter().find(|f| !f.petals.is_empty()));
+                    if let Some(fractal) = fractal {
+                        if fractal_name.is_empty() {
+                            fractal_name = fractal.name.clone();
+                        }
+                        if let Some(petal) = fractal.petals.first() {
+                            petal_id = petal.id.clone();
+                        }
+                    }
+                }
+            }
             let petal_name = verses
                 .and_then(|verses| verses.find_petal(&petal_id))
                 .map(|petal| petal.name.clone())
                 .unwrap_or_default();
             ActiveScope {
-                verse_id: nav.active_verse_id.clone().unwrap_or_default(),
+                verse_id,
                 verse_name: nav.active_verse_name.clone(),
                 petal_id,
-                fractal_name: nav.active_fractal_name.clone(),
+                fractal_name,
                 petal_name,
             }
         })
@@ -2170,7 +2189,8 @@ fn pump_extension_ops(
     mut seeded: Local<bool>,
 ) {
     let ops = panel.take_ops();
-    let moved = navigation.as_ref().is_some_and(|nav| nav.is_changed());
+    let moved = navigation.as_ref().is_some_and(|nav| nav.is_changed())
+        || verses.as_ref().is_some_and(|v| v.is_changed());
     if !ops.is_empty() || moved || !*seeded {
         *seeded = true;
         let scope = current_scope(navigation.as_deref(), verses.as_deref());
