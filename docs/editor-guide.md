@@ -130,3 +130,25 @@ Existing straight paths are untouched: they load, render, and export exactly
 as before, and stay straight until you add handles. Curves are saved with the
 path and survive save and reload. Straight and curved anchors mix freely on
 one path.
+
+---
+
+## Models (3D Model Library)
+
+Open the **Models** section in the right sidebar (beside **Maps**) to browse,
+install, place, and credit 3D model packages:
+
+- **Browse**: Search installed registry feeds by query or tag. Each row shows
+  its preview thumbnail (when present), licence chip (`Free` / SPDX id /
+  `Attribution`), and attribution line. Paid packages and packages exceeding the
+  model-library size cap cannot be installed.
+- **Installed**: Lists packages verified and stored locally on this device
+  (`data/hexons/models` + shared blob store). Installed packages remain
+  available offline and across restarts. Expand a package to click **Place**
+  on any contained model entry (requires `Editor+` role on the active petal;
+  inserts the stored GLB at the camera focus via `PlaceStoredGlb`), or
+  **Remove** the local package archive.
+- **Credits**: Shows every installed model package referenced by live nodes in
+  the active petal, along with its SPDX licence and attribution text. Removing
+  all nodes placed from a package removes that package from the petal's
+  Credits list.

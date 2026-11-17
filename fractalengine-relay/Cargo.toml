@@ -34,6 +34,13 @@ hex         = "0.4"
 fe-sim      = { path = "../fe-sim", optional = true }
 # Plugin host: default OFF; also needs FE_PLUGIN_HOST_ALLOW=1 at runtime (fractalengine/src/AGENTS.md §plugin-host).
 fe-plugin   = { path = "../fe-plugin", optional = true }
+fe-hexon    = { path = "../fe-hexon", optional = true }
+fe-sdk      = { path = "../fe-sdk", optional = true }
+fe-policy   = { path = "../fe-policy", optional = true }
+serde       = { workspace = true, optional = true }
+toml        = { version = "0.8", optional = true }
+blake3      = { workspace = true, optional = true }
+ulid        = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -44,6 +51,15 @@ fe-format = { path = "../fe-format" }
 [features]
 default = []
 sim-control = ["dep:fe-sim"]
-plugin-host = ["dep:fe-plugin"]
+plugin-host = [
+    "dep:fe-plugin",
+    "dep:fe-hexon",
+    "dep:fe-sdk",
+    "dep:fe-policy",
+    "dep:serde",
+    "dep:toml",
+    "dep:blake3",
+    "dep:ulid",
+]
 # Opt-in embedded members-only relay (NET-24): also needs FE_RELAY_SERVE=1 at runtime (src/relay_serve.rs).
 relay-server = ["fe-sync/relay-server"]

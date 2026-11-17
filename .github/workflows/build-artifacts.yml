@@ -368,7 +368,9 @@ jobs:
           shared-key: linux-build
 
       - name: Build release binaries
-        run: cargo build --release --bin fractalengine --bin fe-relay
+        run: |
+          cargo build --release --bin fractalengine
+          cargo build --release --bin fe-relay --features fractalengine-relay/plugin-host,fractalengine-relay/relay-server
 
       # Package straight after the build, BEFORE the tests: `cargo test` can
       # relink target/release/fractalengine with dev-dependency features, and
@@ -485,7 +487,9 @@ jobs:
           shared-key: windows-build
 
       - name: Build release binaries
-        run: cargo build --release --bin fractalengine --bin fe-relay
+        run: |
+          cargo build --release --bin fractalengine
+          cargo build --release --bin fe-relay --features fractalengine-relay/plugin-host,fractalengine-relay/relay-server
 
       # Signing sits between build and packaging so SHA256SUMS cover signed
       # files. To change provider (SignPath, signtool + cloud HSM) replace ONLY

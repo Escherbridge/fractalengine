@@ -2386,6 +2386,7 @@ struct BindingWorker {
     provisions: Vec<PendingProvision>,
     /// `scene.*` calls waiting their turn, served round-robin per (petal, package, caller).
     scene_calls: SceneCallQueue,
+    trace: fe_runtime::extension_trace::ExtensionTraceBuffer,
 }
 
 /// One FIFO of `scene.*` calls per (petal, package, caller DID), served round-robin so one caller's backlog delays
@@ -2997,6 +2998,22 @@ impl BindingWorker {
             Ok(_) => SceneHookReply::Fault("the binding now names another package".into()),
             Err(_) => SceneHookReply::Fault(format!("no instance serves {} here", call.hook.id())),
         };
+        let (outcome, detail) = match &answer {
+            SceneHookReply::Output(_) => ("allow", None),
+            SceneHookReply::Refused(r) => ("refuse", Some(r.clone())),
+            SceneHookReply::Declined(r) => ("decline", Some(r.clone())),
+            SceneHookReply::Fault(r) => ("fault", Some(r.clone())),
+        };
+        self.trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+            kind: "scene_hook".into(),
+            package_id: call.package_id,
+            petal_id: Some(call.petal_id),
+            hook: Some(call.hook.id().to_owned()),
+            key: None,
+            outcome: outcome.into(),
+            detail,
+            duration_ms: None,
+        });
         let _ = reply.send(answer);
     }
 
@@ -3721,6 +3738,7 @@ pub(crate) struct ExtensionHostParts {
     roles: Arc<dyn RoleSource>,
     audit: Arc<dyn AuditSink>,
     signals: Option<BindingSignals>,
+    trace: fe_runtime::extension_trace::ExtensionTraceBuffer,
 }
 
 impl ExtensionHostParts {
@@ -3992,7 +4010,7 @@ impl ExtensionHost for BusExtensionHost {
         command: &str,
         args: &Value,
     ) -> Result<CommandReply, HostRefusal> {
-        let ticket = self
+        let ticket = match self
             .parts
             .bus
             .call_command(
@@ -4001,10 +4019,30 @@ impl ExtensionHost for BusExtensionHost {
                 package_id,
                 command,
                 args,
-            )
-            .map_err(host_refusal)?;
+            ) {
+            Ok(ticket) => ticket,
+            Err(refusal) => {
+                let err = host_refusal(refusal);
+                self.parts.trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+                    kind: "command".into(),
+                    package_id: package_id.to_owned(),
+                    petal_id: Some(petal_id.to_owned()),
+                    hook: None,
+                    key: Some(command.to_owned()),
+                    outcome: "refused".into(),
+                    detail: Some(format!("{err:?}")),
+                    duration_ms: None,
+                });
+                return Err(err);
+            }
+        };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let outcome = ticket.reply;
+        let trace = self.parts.trace.clone();
+        let pkg = package_id.to_owned();
+        let petal = petal_id.to_owned();
+        let cmd = command.to_owned();
+        let started = Instant::now();
         self.parts.spawn(async move {
             let result = match outcome.await {
                 Ok(outcome) => command_failure(outcome),
@@ -4012,6 +4050,20 @@ impl ExtensionHost for BusExtensionHost {
                     "the command reply was dropped".into(),
                 )),
             };
+            let (status, detail) = match &result {
+                Ok(_) => ("ok", None),
+                Err(e) => ("error", Some(format!("{e:?}"))),
+            };
+            trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+                kind: "command".into(),
+                package_id: pkg,
+                petal_id: Some(petal),
+                hook: None,
+                key: Some(cmd),
+                outcome: status.into(),
+                detail,
+                duration_ms: Some(started.elapsed().as_millis() as u64),
+            });
             let _ = tx.send(result);
         });
         Ok(rx)
@@ -4021,15 +4073,30 @@ impl ExtensionHost for BusExtensionHost {
         &self,
         call: IngressCall,
     ) -> Result<tokio::sync::oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal> {
-        self.ingress_gate(
+        if let Err(err) = self.ingress_gate(
             &call.caller_did,
             call.role_ceiling,
             &call.petal_id,
             &call.package_id,
             &call.endpoint,
             false,
-        )?;
-        let receiver = self
+        ) {
+            self.parts.trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+                kind: "ingress".into(),
+                package_id: call.package_id.clone(),
+                petal_id: Some(call.petal_id.clone()),
+                hook: None,
+                key: Some(call.endpoint.clone()),
+                outcome: "refused".into(),
+                detail: Some(format!("{err:?}")),
+                duration_ms: None,
+            });
+            return Err(err);
+        }
+        let pkg = call.package_id.clone();
+        let petal = call.petal_id.clone();
+        let endpoint = call.endpoint.clone();
+        let receiver = match self
             .parts
             .net
             .accept_http(HttpIngressRequest {
@@ -4043,12 +4110,43 @@ impl ExtensionHost for BusExtensionHost {
                 headers: call.headers,
                 content_type: call.content_type,
                 body: call.body,
-            })
-            .map_err(ingress_refusal)?;
+            }) {
+            Ok(rx) => rx,
+            Err(refusal) => {
+                let err = ingress_refusal(refusal);
+                self.parts.trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+                    kind: "ingress".into(),
+                    package_id: pkg,
+                    petal_id: Some(petal),
+                    hook: None,
+                    key: Some(endpoint),
+                    outcome: "refused".into(),
+                    detail: Some(format!("{err:?}")),
+                    duration_ms: None,
+                });
+                return Err(err);
+            }
+        };
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let trace = self.parts.trace.clone();
+        let started = Instant::now();
         self.parts.spawn(async move {
             // A dropped guest answer (instance stopped) drops `tx`: fe-api answers it as unavailable, never 202.
             if let Ok(answer) = receiver.await {
+                let status_label = match &answer {
+                    Some(reply) => format!("http_{}", reply.status),
+                    None => "dropped".into(),
+                };
+                trace.record(fe_runtime::extension_trace::ExtensionTraceInput {
+                    kind: "ingress".into(),
+                    package_id: pkg,
+                    petal_id: Some(petal),
+                    hook: None,
+                    key: Some(endpoint),
+                    outcome: status_label,
+                    detail: None,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                });
                 let _ = tx.send(answer.map(|reply: IngressReply| IngressAnswer {
                     status: reply.status,
                     content_type: reply.content_type,
@@ -4347,6 +4445,15 @@ pub(crate) fn api_extension_host(app: &App) -> Option<Arc<dyn ExtensionHost>> {
 pub(crate) fn api_binding_host(app: &App) -> Option<Arc<dyn BindingHost>> {
     let bindings = app.world().get_resource::<ExtensionBindings>()?;
     Some(Arc::new(bindings.clone()))
+}
+
+/// Extension execution trace ring buffer (`GET /api/v1/debug/extensions-trace`).
+pub(crate) fn extension_trace(
+    app: &App,
+) -> Option<fe_runtime::extension_trace::ExtensionTraceBuffer> {
+    app.world()
+        .get_resource::<fe_runtime::extension_trace::ExtensionTraceBuffer>()
+        .cloned()
 }
 
 /// `asset.import` over the binding worker: the published cache answers `bound`, the worker resolves and converts.
@@ -4852,6 +4959,8 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         petals: petals.clone(),
         signals: signals.clone(),
     };
+    let trace = fe_runtime::extension_trace::ExtensionTraceBuffer::default();
+    app.insert_resource(trace.clone());
     app.insert_resource(ExtensionHostParts {
         local_did: local_did.clone(),
         bus: bus.clone(),
@@ -4865,6 +4974,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         roles: role_source,
         audit,
         signals: manager.as_ref().map(|_| signals.clone()),
+        trace: trace.clone(),
     });
     app.insert_resource(bindings);
     app.add_systems(
@@ -5009,6 +5119,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         registry_offers: registry_offers.clone(),
         provisions: Vec::new(),
         scene_calls: SceneCallQueue::default(),
+        trace,
     };
     let service = OwnedService::spawn("ext-bindings", move |stop| worker.run(signal_rx, stop));
     app.insert_resource(ExtensionBindingService(Mutex::new(Some(service))));

@@ -367,8 +367,14 @@ fn correlation_of_command(cmd: &DbCommand) -> Option<&str> {
         | DbCommand::ExportPetalSnapshot { correlation_id, .. }
         | DbCommand::ImportPetalSnapshot { correlation_id, .. }
         | DbCommand::ReadNodeHistory { correlation_id, .. } => correlation_id.as_deref(),
-        DbCommand::ElevatedQuery { correlation_id, .. }
-        | DbCommand::ScopedQuery { correlation_id, .. } => Some(correlation_id.as_str()),
+        DbCommand::EntityAccess { request_id, .. }
+        | DbCommand::PrepareJoinInvite { request_id, .. }
+        | DbCommand::IssueJoinInvite { request_id, .. }
+        | DbCommand::AdmitJoinInvite { request_id, .. }
+        | DbCommand::CheckJoinReadiness { request_id, .. }
+        | DbCommand::FinalizeJoinProof { request_id, .. }
+        | DbCommand::ElevatedQuery { correlation_id: request_id, .. }
+        | DbCommand::ScopedQuery { correlation_id: request_id, .. } => Some(request_id.as_str()),
         _ => None,
     }
 }
@@ -415,6 +421,12 @@ fn correlation_of_result(result: &DbResult) -> Option<&str> {
         | DbResult::PetalTerrainSetFailed { correlation_id, .. }
         | DbResult::PetalTerrainFetched { correlation_id, .. }
         | DbResult::ElevatedQueryResult { correlation_id, .. }
+        | DbResult::EntityAccessFinished { request_id: correlation_id, .. }
+        | DbResult::JoinInvitePrepared { request_id: correlation_id, .. }
+        | DbResult::JoinInviteIssued { request_id: correlation_id, .. }
+        | DbResult::JoinInviteAdmitted { request_id: correlation_id, .. }
+        | DbResult::JoinReadinessChecked { request_id: correlation_id, .. }
+        | DbResult::JoinProofFinalized { request_id: correlation_id, .. }
         | DbResult::RequestFailed { correlation_id, .. } => Some(correlation_id.as_str()),
         _ => None,
     }
@@ -487,6 +499,18 @@ enum ReplyKind {
     PetalSnapshotExport,
     /// `ImportPetalSnapshot` replies (`PetalSnapshotImported` or `PetalSnapshotImportRefused`).
     PetalSnapshotImport,
+    /// `EntityAccess` replies (`EntityAccessFinished`, strictly correlated by `request_id`).
+    EntityAccess,
+    /// `PrepareJoinInvite` replies (`JoinInvitePrepared`).
+    JoinInvitePrepared,
+    /// `IssueJoinInvite` replies (`JoinInviteIssued`).
+    JoinInviteIssued,
+    /// `AdmitJoinInvite` replies (`JoinInviteAdmitted`).
+    JoinInviteAdmitted,
+    /// `CheckJoinReadiness` replies (`JoinReadinessChecked`).
+    JoinReadinessChecked,
+    /// `FinalizeJoinProof` replies (`JoinProofFinalized`).
+    JoinProofFinalized,
 }
 
 /// The reply family `cmd` produces, or `None` when the command has no reply on
@@ -555,6 +579,12 @@ fn reply_kind_of_command(cmd: &DbCommand) -> Option<ReplyKind> {
         InsertDevicePayloads { .. } | ListDevicePayloads { .. } => ReplyKind::DevicePayload,
         ExportPetalSnapshot { .. } => ReplyKind::PetalSnapshotExport,
         ImportPetalSnapshot { .. } => ReplyKind::PetalSnapshotImport,
+        EntityAccess { .. } => ReplyKind::EntityAccess,
+        PrepareJoinInvite { .. } => ReplyKind::JoinInvitePrepared,
+        IssueJoinInvite { .. } => ReplyKind::JoinInviteIssued,
+        AdmitJoinInvite { .. } => ReplyKind::JoinInviteAdmitted,
+        CheckJoinReadiness { .. } => ReplyKind::JoinReadinessChecked,
+        FinalizeJoinProof { .. } => ReplyKind::JoinProofFinalized,
         _ => return None,
     })
 }
@@ -630,6 +660,12 @@ fn reply_kind_of_result(result: &DbResult) -> Option<ReplyKind> {
         PetalSnapshotImported { .. } | PetalSnapshotImportRefused { .. } => {
             ReplyKind::PetalSnapshotImport
         }
+        EntityAccessFinished { .. } => ReplyKind::EntityAccess,
+        JoinInvitePrepared { .. } => ReplyKind::JoinInvitePrepared,
+        JoinInviteIssued { .. } => ReplyKind::JoinInviteIssued,
+        JoinInviteAdmitted { .. } => ReplyKind::JoinInviteAdmitted,
+        JoinReadinessChecked { .. } => ReplyKind::JoinReadinessChecked,
+        JoinProofFinalized { .. } => ReplyKind::JoinProofFinalized,
         _ => return None,
     })
 }
@@ -2897,5 +2933,60 @@ mod tests {
             None,
             "an unsolicited inbound-apply echo must never satisfy a pending request"
         );
+    }
+
+    #[test]
+    fn peering_and_entity_access_replies_route_only_by_request_id() {
+        let mut pending = PendingApiRequests::default();
+        let target = crate::entity_access::EntityAccessTarget {
+            entity_type: crate::EntityType::Verse,
+            entity_id: "v1".into(),
+            scope: "VERSE#v1".into(),
+        };
+        let prepare_cmd = DbCommand::PrepareJoinInvite {
+            target: target.clone(),
+            recipient_did: "did:key:zPeer".into(),
+            role: "editor".into(),
+            expiry_hours: 24,
+            request_id: "prep-1".into(),
+        };
+        let access_cmd = DbCommand::EntityAccess {
+            target: target.clone(),
+            action: crate::entity_access::EntityAccessAction::Load { peer_dids: vec![] },
+            request_id: "access-1".into(),
+        };
+
+        let (prep_tx, mut prep_rx) = tokio::sync::oneshot::channel();
+        let (acc_tx, mut acc_rx) = tokio::sync::oneshot::channel();
+        pending.enqueue_for(&prepare_cmd, prep_tx);
+        pending.enqueue_for(&access_cmd, acc_tx);
+
+        // Foreign GUI request_id must not satisfy pending API waiters.
+        assert!(!pending.try_deliver(DbResult::JoinInvitePrepared {
+            request_id: "gui-other".into(),
+            result: Err("stale".into()),
+        }));
+        assert!(!pending.try_deliver(DbResult::EntityAccessFinished {
+            target: target.clone(),
+            request_id: "gui-access".into(),
+            result: Err("stale".into()),
+        }));
+        assert!(prep_rx.try_recv().is_err());
+        assert!(acc_rx.try_recv().is_err());
+
+        // Matching IDs route strictly to their own waiter.
+        assert!(pending.try_deliver(DbResult::EntityAccessFinished {
+            target,
+            request_id: "access-1".into(),
+            result: Err("denied".into()),
+        }));
+        assert!(matches!(acc_rx.try_recv(), Ok(DbResult::EntityAccessFinished { .. })));
+        assert!(prep_rx.try_recv().is_err());
+
+        assert!(pending.try_deliver(DbResult::JoinInvitePrepared {
+            request_id: "prep-1".into(),
+            result: Err("ok-err".into()),
+        }));
+        assert!(matches!(prep_rx.try_recv(), Ok(DbResult::JoinInvitePrepared { .. })));
     }
 }

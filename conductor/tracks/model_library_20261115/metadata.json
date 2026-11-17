@@ -4,10 +4,10 @@
   "security_critical": true,
   "title": "Model library: browse, install and place 3D model packages; pack and sign them",
   "description": "In-app Models section listing registry model packages with thumbnail, licence and attribution; library-wide install into the shared blob store; placement into the active petal through the existing creation core (new PlaceStoredGlb command); per-petal credits by local join; and fe-ext model pack, which seals a folder of GLB files plus library.toml into a signed, verified model package. Registry search gains licence and preview fields; publish refuses model packages without a licence or with an empty attribution.",
-  "status": "pending",
+  "status": "completed",
   "priority": "P1",
   "created_at": "2026-11-15T00:00:00Z",
-  "updated_at": "2026-11-15T00:00:00Z",
+  "updated_at": "2026-11-16T20:40:00Z",
   "user_decisions": [
     "UD-1 build the in-app library first; registry content follows",
     "UD-2 public domain, CC0 or attribution licences; app and registry listing show licence and attribution before attribution content is published",
@@ -36,7 +36,7 @@
   "related": ["hexon_entitlements_20261031", "p2p_asset_streaming_20260718", "extension_platform_20261107"],
   "spec": "./spec.md",
   "plan": "./plan.md",
-  "progress": { "done": 0, "open": 13, "plan": "./plan.md" },
+  "progress": { "done": 13, "open": 0, "plan": "./plan.md" },
   "reviews": {},
   "partitions": {
     "computed_at": "2026-11-15T00:00:00Z",

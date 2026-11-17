@@ -505,6 +505,7 @@ pub(super) fn apply_db_results(
         }
         if matches!(result, DbResult::JoinInvitePrepared { .. } | DbResult::JoinInviteIssued { .. }
             | DbResult::JoinInviteAdmitted { .. } | DbResult::JoinReadinessChecked { .. } | DbResult::JoinProofFinalized { .. }) {
+            pending_api.try_deliver(result.clone());
             continue;
         }
         if matches!(result, DbResult::NodeUrlUpdated { .. }) {

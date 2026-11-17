@@ -288,7 +288,15 @@ Canonical serialization: Base32 (52 chars) or hex with `0x` prefix. Tag literals
 | `auto_scale` | bool | Auto-scale to scene units on placement |
 | `center` | [f32; 3] | Bounding box center |
 | `extents` | [f32; 3] | Bounding box half-extents |
-| `preview_image` | string | Path to preview within ZIP |
+| `preview_image` | string | Path to preview within ZIP (for `model` packages, `preview/<name>.png` PNG <= 256 KiB, <= 512x512) |
+
+### Model Package Conventions (`hexon_type = "model"`)
+
+Packages with `hexon_type = "model"` follow the Model Library rules:
+- At least one `entries[]` item with `kind = "model"` (`format = "glb"`, embedded buffers only; external `uri` references rejected).
+- `license.json` is mandatory; `paid` is refused on install, and `license_type = "attribution"` requires a non-empty `attribution` string containing visible text (checked at pack, registry publish, and client install).
+- Model thumbnails referenced by `preview_image` live under `preview/` inside the ZIP, use PNG format, and satisfy `<= 256 KiB` and `<= 512x512` bounds.
+- Packages must be sealed and signed (`manifest.json` integrity + publisher signature); client install unpacks up to a 256 MiB decompression budget.
 | `sub_assets` | map | Named sub-blobs (PBR channels, etc.) |
 | `address` | Address | amp-compatible tag address for this entry |
 | `metadata` | object | Kind-specific freeform metadata |

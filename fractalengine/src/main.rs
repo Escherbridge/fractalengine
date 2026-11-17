@@ -425,7 +425,7 @@ fn main() {
         blob_store.clone(),
         sync_cmd_rx,
         sync_evt_tx,
-        local_did,
+        local_did.clone(),
         // Inbound apply path (A4): replicated rows ride the DB thread's
         // command channel — the DB thread stays the single SurrealDB writer.
         Some(ch.db_cmd_tx.clone()),
@@ -447,6 +447,14 @@ fn main() {
         fe_sync::net_diagnostics::bridge_network_diagnostics(network_diagnostics_rx, sync_cmd_tx.clone())
     {
         tracing::warn!(%error, "network diagnostics bridge did not start; the diagnostics route answers 503");
+    }
+
+    let (peering_tx, peering_rx) =
+        crossbeam::channel::bounded::<fe_runtime::peering::PeeringCall>(32);
+    if let Err(error) =
+        fe_sync::peering::bridge_peering_calls(peering_rx, sync_cmd_tx.clone(), local_did)
+    {
+        tracing::warn!(%error, "peering API bridge did not start; identity/invite/join routes answer 503");
     }
 
     // One-shot: list the local user's verses for the relay consent step, even while the serve toggle is off.
@@ -868,6 +876,8 @@ fn main() {
         network_ops: fe_api::network_ops::NetworkOps {
             advertisement_signer: Some(advertisement_signer),
             network_diagnostics: Some(network_diagnostics_tx),
+            peering: Some(peering_tx),
+            extension_trace: plugin_bridge::extension_trace(&app),
             ..fe_api::network_ops::NetworkOps::from_env()
         },
     }));

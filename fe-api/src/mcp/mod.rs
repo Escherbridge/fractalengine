@@ -146,6 +146,12 @@ pub enum ToolSeam {
     Bindings,
     /// The sync-thread diagnostics bridge (`ApiHosts.network_diagnostics`).
     NetworkDiagnostics,
+    /// The P2P peering bridge (`ApiHosts.peering`).
+    Peering,
+    /// Sync/clock debug diagnostics (`ApiHosts.peering` + `FE_API_DIAGNOSTICS_ALLOW` or `FE_API_INPUT_ALLOW`).
+    SyncDiagnostics,
+    /// Extension trace ring (`ApiHosts.extension_trace` / `extension` + `FE_API_DIAGNOSTICS_ALLOW` or `FE_API_INPUT_ALLOW`).
+    ExtensionsTrace,
 }
 
 /// Whether this host wires the seam `spec` needs. `screenshot` (the plain
@@ -165,6 +171,11 @@ pub fn tool_available(spec: &ToolSpec, state: &ApiState, hosts: &ApiHosts) -> bo
         Some(ToolSeam::Extensions) => hosts.extension.is_some(),
         Some(ToolSeam::Bindings) => hosts.binding.is_some(),
         Some(ToolSeam::NetworkDiagnostics) => hosts.network_diagnostics.is_some(),
+        Some(ToolSeam::Peering) => hosts.peering.is_some(),
+        Some(ToolSeam::SyncDiagnostics) => hosts.peering.is_some(),
+        Some(ToolSeam::ExtensionsTrace) => {
+            hosts.extension_trace.is_some() || hosts.extension.is_some()
+        }
     }
 }
 
@@ -186,6 +197,11 @@ fn operator_opt_in_refusal(spec: &ToolSpec, state: &ApiState) -> Option<&'static
         }
         Some(ToolSeam::Input) if !state.input.allowed => {
             Some(crate::input::INPUT_GATE.disabled_message)
+        }
+        Some(ToolSeam::SyncDiagnostics | ToolSeam::ExtensionsTrace)
+            if !crate::diagnostics_debug::diagnostics_allowed(state) =>
+        {
+            Some(crate::diagnostics_debug::DIAGNOSTICS_GATE.disabled_message)
         }
         _ => None,
     }
@@ -353,6 +369,31 @@ static TOOLS: &[ToolSpec] = &[
         "Clear a binding by writing mode inherit at the scope: {verse_id, fractal_id?, petal_id?, hook, key}, like REST DELETE /api/v1/bindings. Requires manager role + scope."),
     tool!(inject_input, Owner, Global, requires Input,
         "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. Control/Super+C/V/X clipboard chords are refused, and text/image clipboard writes from UI controls are suppressed throughout injection and settling, including its final frame; idle user copies remain enabled. Synthetic input never reads or writes the host OS clipboard. 5 requests/sec. Requires owner role."),
+    // --- P2P identity, invitations, roles, and operator debug telemetry ---
+    ToolSpec {
+        name: "get_identity",
+        description: "Read this node's P2P identity (DID, endpoint_id, and relay state; direct addresses only for owner when detail is enabled). Requires viewer role.",
+        input_schema: no_arguments_schema,
+        min_role: RoleLevel::Viewer,
+        scope_rule: Global,
+        requires: Some(ToolSeam::Peering),
+        content_reply: false,
+        handler: tools::get_identity,
+    },
+    tool!(issue_verse_invite, Manager, VerseArg("verse_id"), requires Peering,
+        "Issue an addressed P2P invitation for a recipient DID at a verse or sub-scope: {verse_id, recipient_did, role?, expiry_hours?, scope?}. Requires manager role."),
+    tool!(join_verse, Owner, Global, requires Peering,
+        "Join a remote verse from an addressed P2P invitation string: {invite, wait?, timeout_secs?}. Requires owner role."),
+    tool!(list_roles, Viewer, VerseArg("verse_id"),
+        "List materialized roles, role_grant statements, and members for a verse or sub-scope: {verse_id, scope?}. Requires viewer role."),
+    tool!(assign_role, Manager, VerseArg("verse_id"),
+        "Assign a role (viewer, editor, manager, or owner-only none) to a peer DID at a verse or sub-scope: {verse_id, peer_did, role, scope?}. Requires manager role."),
+    tool!(revoke_role, Manager, VerseArg("verse_id"),
+        "Revoke this node's own role grant for a peer DID at a verse or sub-scope: {verse_id, peer_did, scope?}. Requires manager role."),
+    tool!(get_sync_state, Owner, Global, requires SyncDiagnostics,
+        "Read sync-thread replica state, quarantine/byte-gate counters, and optional verse/node DB clock/log tails: {verse_id?, node_id?, limit?}. Requires owner role."),
+    tool!(get_extensions_trace, Owner, Global, requires ExtensionsTrace,
+        "Read bounded extension hook/command/ingress/egress trace events and active installations: {package_id?, petal_id?, limit?}. Requires owner role."),
 ];
 
 // ---------------------------------------------------------------------------
@@ -814,13 +855,10 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            55,
-            "DEC-C14: 27 non-sim + 5 sim (p2p_asset_streaming S6 added set_petal_render_distance); \
-             CDL-SPEC10 A5 added 4 R5 device tools (register/list_device_formats, \
-             ingest/list_device_payloads); §screenshot added `screenshot`; \
-             agent_vision_20261031 added `get_camera`; agent_input_surface_20261031 added \
-             `inject_input`; the extension platform added 5 host-gated tools; \
-             `get_network_diagnostics` (ToolSeam::NetworkDiagnostics) is hidden without the bridge"
+            63,
+            "DEC-C14: 27 non-sim + 5 sim + S6 set_petal_render_distance + 4 R5 device tools + \
+             screenshot + get_camera + inject_input + 5 host-gated extension tools + \
+             get_network_diagnostics + 6 peering/role tools + get_sync_state + get_extensions_trace"
         );
         // Binding tools address their scope by ids the dispatcher resolves, never in the handler.
         for name in ["list_bindings", "set_binding", "clear_binding"] {

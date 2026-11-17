@@ -17,6 +17,7 @@ pub mod messages;
 pub mod net_diagnostics;
 pub mod offline;
 pub mod p2p_store_migration;
+pub mod peering;
 pub mod placement;
 pub mod reachability;
 pub mod reconciliation;

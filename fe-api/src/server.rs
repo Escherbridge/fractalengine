@@ -94,6 +94,10 @@ pub struct ApiHosts {
     pub binding: Option<Arc<dyn crate::bindings::BindingHost>>,
     /// Sync-thread diagnostics seam for the MCP `get_network_diagnostics` tool; `None` answers unavailable.
     pub network_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnosticsCallSender>,
+    /// Sync-thread peering & runtime snapshot seam (`identity`, `invites`, `join`, `sync-state`).
+    pub peering: Option<fe_runtime::peering::PeeringCallSender>,
+    /// Extension execution trace ring (`GET /api/v1/debug/extensions-trace`, MCP `get_extensions_trace`).
+    pub extension_trace: Option<fe_runtime::extension_trace::ExtensionTraceBuffer>,
 }
 
 /// Build the complete axum [`Router`] with no extension or binding host (route inventory: fe-api/AGENTS.md §routes).
@@ -532,6 +536,21 @@ pub fn build_router_with_hosts(state: Arc<ApiState>, hosts: ApiHosts) -> Router 
         .route("/api/v1/verses/{verse_id}/relays/{relay_id}", delete(crate::relay_advertise::delete_relay))
         // Peer-network diagnostics (Viewer+, peers confined to the token's verses; addresses redacted by default)
         .route("/api/v1/network/diagnostics", get(crate::network::get_network_diagnostics))
+        // P2P identity, addressed verse invites, replica join, and role management
+        .route("/api/v1/identity", get(crate::peering::get_identity))
+        .route("/api/v1/verses/{verse_id}/invites", post(crate::peering::issue_verse_invite))
+        .route("/api/v1/verses/join", post(crate::peering::join_verse))
+        .route(
+            "/api/v1/verses/{verse_id}/roles",
+            get(crate::peering::list_roles).post(crate::peering::assign_role),
+        )
+        .route(
+            "/api/v1/verses/{verse_id}/roles/{peer_did}",
+            delete(crate::peering::revoke_role),
+        )
+        // Operator-gated sync/clock & extension trace debug endpoints
+        .route("/api/v1/debug/sync-state", get(crate::diagnostics_debug::get_sync_state))
+        .route("/api/v1/debug/extensions-trace", get(crate::diagnostics_debug::get_extensions_trace))
         // MCP: 16 MiB body cap for every method + bounded concurrency
         // (DEC-C21; large GLBs use REST multipart — §asset-ingest).
         .route(

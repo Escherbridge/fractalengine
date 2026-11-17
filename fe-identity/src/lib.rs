@@ -24,7 +24,9 @@ pub use rotation_provisioning::{
 };
 #[cfg(feature = "keyring")]
 pub use secret_store::OsKeystoreBackend;
-pub use secret_store::{EnvBackend, InMemoryBackend, SecretStore, SecretStoreError};
+pub use secret_store::{
+    EnvBackend, InMemoryBackend, LayeredBackend, RunLocalBackend, SecretStore, SecretStoreError,
+};
 pub use x25519::{
     delete_device_keypair, did_key_from_x25519_public_key, load_device_keypair,
     load_or_generate_device_keypair, store_device_keypair, x25519_public_key_from_did_key,

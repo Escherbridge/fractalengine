@@ -128,6 +128,11 @@ pub trait VerseReplicator: Send + Sync {
     /// Current authenticated native synchronization peers for this exact open replica.
     fn scene_provider_roster(&self) -> Option<SceneProviderRoster> { None }
 
+    /// Verse namespace identifier when known to this replicator.
+    fn namespace_id(&self) -> Option<&str> {
+        None
+    }
+
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
         let _ = (namespace_id, issuer_did);
         false
@@ -936,6 +941,10 @@ impl VerseReplicator for IrohDocsReplicator {
     fn scene_provider_roster(&self) -> Option<SceneProviderRoster> {
         if self.open_error().is_some() || !self.is_doc_backed() { return None; }
         Some(SceneProviderRoster(self.join_readiness.read().unwrap_or_else(|error| error.into_inner()).clone()))
+    }
+
+    fn namespace_id(&self) -> Option<&str> {
+        Some(&self.namespace_id)
     }
 
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {

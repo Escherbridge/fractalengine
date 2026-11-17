@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+mod layered;
 mod run_local;
+pub use layered::LayeredBackend;
 pub use run_local::RunLocalBackend;
 
 /// Errors that can occur during secret store operations.

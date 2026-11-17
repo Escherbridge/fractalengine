@@ -434,6 +434,13 @@ impl VerseReplicator for AnyReplicator {
         match self { Self::Iroh(replica) => replica.scene_provider_roster(), Self::Virtual(_) => None }
     }
 
+    fn namespace_id(&self) -> Option<&str> {
+        match self {
+            Self::Iroh(replica) => replica.namespace_id(),
+            Self::Virtual(_) => None,
+        }
+    }
+
     fn joined_peer_ready(&self, namespace_id: &str, issuer_did: &str) -> bool {
         match self {
             Self::Iroh(replica) => replica.joined_peer_ready(namespace_id, issuer_did),
@@ -689,6 +696,7 @@ pub fn spawn_sync_thread_with_sources(
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         // Every DB send of this thread's current-thread runtime runs here, so the gate is thread-scoped.
+        let peering_db_cmd_bytes = db_command_bytes.clone();
         let _db_command_bytes = crate::byte_bounds::scope_db_command_bytes(db_command_bytes);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1398,6 +1406,40 @@ pub fn spawn_sync_thread_with_sources(
                                 if last_diagnostics.as_ref() != Some(&redacted) {
                                     last_diagnostics = Some(redacted.clone());
                                     send_sync_event(&evt_tx, SyncEvent::NetworkDiagnostics(redacted));
+                                }
+                            }
+                            Some(SyncCommand::GetPeeringIdentity { detail, reply }) => {
+                                let identity = peering_identity_snapshot(
+                                    &local_did,
+                                    detail,
+                                    &relay_config,
+                                    relay_health,
+                                    &relay_adoption,
+                                    endpoint.as_ref(),
+                                );
+                                if reply.try_send(identity).is_err() {
+                                    tracing::debug!("Peering identity caller is no longer waiting");
+                                }
+                            }
+                            Some(SyncCommand::GetSyncState { verse_id, reply }) => {
+                                #[cfg(feature = "relay-server")]
+                                let is_served = |v: &str| served_replicas.keeps_open(v);
+                                #[cfg(not(feature = "relay-server"))]
+                                let is_served = |_v: &str| false;
+                                let snapshot = sync_runtime_snapshot(
+                                    &local_did,
+                                    verse_id.as_deref(),
+                                    &relay_config,
+                                    relay_health,
+                                    &relay_adoption,
+                                    endpoint.as_ref(),
+                                    &replicas,
+                                    &fabrics,
+                                    peering_db_cmd_bytes.as_ref().map(|b| b.used()).unwrap_or(0),
+                                    is_served,
+                                );
+                                if reply.try_send(snapshot).is_err() {
+                                    tracing::debug!("Sync state caller is no longer waiting");
                                 }
                             }
                             Some(SyncCommand::InspectJoinedReplica { request, reply }) => {
@@ -2459,6 +2501,97 @@ async fn network_diagnostics_snapshot(
         unadvertised_home_verses: &adoption.unadvertised_home_verses,
         peers,
     })
+}
+
+fn peering_identity_snapshot(
+    local_did: &str,
+    detail: bool,
+    relay_config: &RelayConfig,
+    relay_health: RelayHealth,
+    adoption: &RelayAdoption,
+    endpoint: Option<&SyncEndpoint>,
+) -> fe_runtime::peering::NodePeeringIdentity {
+    let mut endpoint_id = None;
+    let mut direct_addrs = Vec::new();
+    if let Some(ep) = endpoint {
+        let addr = ep.inner().addr();
+        endpoint_id = Some(addr.id.to_string());
+        for transport in &addr.addrs {
+            if let iroh::TransportAddr::Ip(socket) = transport {
+                let rendered = if detail {
+                    socket.to_string()
+                } else {
+                    fe_runtime::net_diagnostics::redact(socket)
+                };
+                direct_addrs.push(rendered);
+            }
+        }
+    }
+    direct_addrs.sort();
+    direct_addrs.dedup();
+    fe_runtime::peering::NodePeeringIdentity {
+        did: local_did.to_owned(),
+        endpoint_id,
+        direct_addrs,
+        home_relay: adoption
+            .home_connected()
+            .map(|url| fe_runtime::net_diagnostics::redact_relay_url(&url, detail)),
+        relay_mode: crate::net_diagnostics::relay_mode_label(relay_config).to_owned(),
+        relay_health: crate::net_diagnostics::relay_health_label(relay_health).to_owned(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_runtime_snapshot(
+    local_did: &str,
+    verse_filter: Option<&str>,
+    relay_config: &RelayConfig,
+    relay_health: RelayHealth,
+    adoption: &RelayAdoption,
+    endpoint: Option<&SyncEndpoint>,
+    replicas: &HashMap<String, Box<dyn VerseReplicator>>,
+    fabrics: &HashMap<String, VerseFabric>,
+    db_cmd_bytes_in_flight: u64,
+    is_served: impl Fn(&str) -> bool,
+) -> fe_runtime::peering::SyncRuntimeSnapshot {
+    let mut open_replicas: Vec<fe_runtime::peering::OpenReplicaInfo> = replicas
+        .iter()
+        .filter(|(verse_id, _)| verse_filter.is_none_or(|f| f == verse_id.as_str()))
+        .map(|(verse_id, replica)| {
+            let peer_ids: Vec<String> = replica
+                .scene_provider_roster()
+                .and_then(|roster| roster.peers().ok())
+                .map(|ids| ids.iter().map(crate::replicator::peer_did_key).collect())
+                .unwrap_or_default();
+            let (quarantine_len, quarantine_evicted) = fabrics
+                .get(verse_id)
+                .map_or((0, 0), |fabric| (fabric.quarantine_len(), fabric.quarantine_evicted()));
+            let byte_gate_in_flight = replica
+                .live_byte_gate()
+                .map_or(0, |gate| gate.used());
+            fe_runtime::peering::OpenReplicaInfo {
+                verse_id: verse_id.clone(),
+                namespace_id: replica.namespace_id().unwrap_or_default().to_owned(),
+                peer_count: peer_ids.len(),
+                peer_ids,
+                quarantine_len,
+                quarantine_evicted,
+                byte_gate_in_flight,
+                served_by_relay: is_served(verse_id),
+            }
+        })
+        .collect();
+    open_replicas.sort_by(|a, b| a.verse_id.cmp(&b.verse_id));
+    fe_runtime::peering::SyncRuntimeSnapshot {
+        local_did: local_did.to_owned(),
+        endpoint_id: endpoint.map(|ep| ep.node_id().to_string()),
+        relay_mode: crate::net_diagnostics::relay_mode_label(relay_config).to_owned(),
+        relay_health: crate::net_diagnostics::relay_health_label(relay_health).to_owned(),
+        home_relay: adoption.home_connected(),
+        open_replicas,
+        deferred_admission_drops: fe_database::handlers::inbound_admissions::deferred_admission_drop_count(),
+        db_cmd_bytes_in_flight,
+    }
 }
 
 /// Relay reconciliation (S7, NET-22): re-plan the three relay tiers when adverts, open verses, home status or health changed, then apply.

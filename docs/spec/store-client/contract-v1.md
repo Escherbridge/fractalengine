@@ -132,12 +132,17 @@ The signature covers every member except `signature`, `signer_key_id` included. 
   "latest_content_hash": "<64 lowercase hex>",
   "detail_hash": "<64 lowercase hex: BLAKE3 of packages/{package_id}.json exactly as served>",
   "access": "free",
+  "license_type": "attribution",
+  "spdx_id": "CC-BY-4.0",
+  "attribution": "...",
   "categories": [],
   "tags": [],
   "icon_url": null,
   "updated_at": "2026-11-07T00:00:00Z"
 }
 ```
+
+Additive licence fields (`license_type`, `spdx_id`, `attribution`, and for `/api/v1/hexons/search` model hits `preview` and `preview_bytes`) MAY be present when the package declares `license.json`; older clients ignore them per rule 1.9.
 
 `latest_version` and `latest_content_hash` name the newest non-yanked version. An entry whose `latest_content_hash` or `detail_hash` is not 64 lowercase hex is a refusal line.
 
@@ -152,6 +157,9 @@ The signature covers every member except `signature`, `signer_key_id` included. 
   "description": "...",
   "publisher": { "did": "did:key:...", "name": "...", "verified": true },
   "access": "licensed",
+  "license_type": "free",
+  "spdx_id": "CC0-1.0",
+  "attribution": null,
   "acquire_url": "<https URL, or null>",
   "categories": [],
   "tags": [],

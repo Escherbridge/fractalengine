@@ -43,6 +43,11 @@ impl DbCommandBytes {
             });
     }
 
+    /// Row bytes currently in flight on the channel.
+    pub fn used(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+
     /// Bytes in flight now.
     pub fn current(&self) -> u64 {
         self.0.load(Ordering::Acquire)

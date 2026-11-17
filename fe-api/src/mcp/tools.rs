@@ -1901,6 +1901,90 @@ pub(super) mod schema {
             "required": ["x", "y"]
         })
     }
+
+    pub fn issue_verse_invite() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "recipient_did": { "type": "string", "description": "Target peer's did:key" },
+                "role": { "type": "string", "enum": ["viewer", "editor", "manager"], "description": "Default: editor" },
+                "expiry_hours": { "type": "integer", "description": "1..=720 (default 24)" },
+                "scope": { "type": "string", "description": "Optional sub-scope within the verse" }
+            },
+            "required": ["verse_id", "recipient_did"]
+        })
+    }
+
+    pub fn join_verse() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "invite": { "type": "string", "description": "Addressed fe-join-v2:... credential" },
+                "wait": { "type": "boolean", "description": "Wait for P2P readiness convergence (default true)" },
+                "timeout_secs": { "type": "integer", "description": "1..=60 when wait=true (default 20)" }
+            },
+            "required": ["invite"]
+        })
+    }
+
+    pub fn list_roles() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "scope": { "type": "string" }
+            },
+            "required": ["verse_id"]
+        })
+    }
+
+    pub fn assign_role() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "peer_did": { "type": "string" },
+                "role": { "type": "string", "enum": ["viewer", "editor", "manager", "none"] },
+                "scope": { "type": "string" }
+            },
+            "required": ["verse_id", "peer_did", "role"]
+        })
+    }
+
+    pub fn revoke_role() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "peer_did": { "type": "string" },
+                "scope": { "type": "string" }
+            },
+            "required": ["verse_id", "peer_did"]
+        })
+    }
+
+    pub fn get_sync_state() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "verse_id": { "type": "string" },
+                "node_id": { "type": "string" },
+                "limit": { "type": "integer", "description": "1..=200 (default 50)" }
+            }
+        })
+    }
+
+    pub fn get_extensions_trace() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "package_id": { "type": "string" },
+                "petal_id": { "type": "string" },
+                "limit": { "type": "integer", "description": "1..=512 (default 100)" }
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1925,5 +2009,141 @@ pub(super) fn get_network_diagnostics(call: ToolCall<'_>) -> ToolFuture<'_> {
         .await
         .map_err(|error| error.message().to_string())?;
         serde_json::to_value(snapshot).map_err(|_| "network diagnostics unavailable".to_string())
+    })
+}
+
+pub(super) fn get_identity(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let identity = crate::peering::get_identity_core(
+            call.state,
+            call.claims,
+            call.hosts.peering.as_ref(),
+        )
+        .await
+        .map_err(|e| e.message)?;
+        serde_json::to_value(identity).map_err(|_| "identity serialization failed".to_string())
+    })
+}
+
+pub(super) fn issue_verse_invite(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = str_arg(call.args, "verse_id");
+        let req = crate::peering::IssueInviteRequest {
+            recipient_did: str_arg(call.args, "recipient_did").to_owned(),
+            role: call.args.get("role").and_then(Value::as_str).map(str::to_owned),
+            expiry_hours: call
+                .args
+                .get("expiry_hours")
+                .and_then(Value::as_u64)
+                .map(|v| v as u32),
+            scope: call.args.get("scope").and_then(Value::as_str).map(str::to_owned),
+        };
+        crate::peering::issue_verse_invite_core(
+            call.state,
+            call.claims,
+            call.hosts.peering.as_ref(),
+            verse_id,
+            req,
+        )
+        .await
+        .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn join_verse(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let req = crate::peering::JoinVerseRequest {
+            invite: str_arg(call.args, "invite").to_owned(),
+            wait: call.args.get("wait").and_then(Value::as_bool),
+            timeout_secs: call.args.get("timeout_secs").and_then(Value::as_u64),
+        };
+        crate::peering::join_verse_core(
+            call.state,
+            call.claims,
+            call.hosts.peering.as_ref(),
+            req,
+        )
+        .await
+        .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn list_roles(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = str_arg(call.args, "verse_id");
+        let scope = call.args.get("scope").and_then(Value::as_str);
+        crate::peering::list_roles_core(call.state, call.claims, verse_id, scope)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn assign_role(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = str_arg(call.args, "verse_id");
+        let req = crate::peering::AssignRoleRequest {
+            peer_did: str_arg(call.args, "peer_did").to_owned(),
+            role: str_arg(call.args, "role").to_owned(),
+            scope: call.args.get("scope").and_then(Value::as_str).map(str::to_owned),
+        };
+        crate::peering::assign_role_core(call.state, call.claims, verse_id, req)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn revoke_role(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let verse_id = str_arg(call.args, "verse_id");
+        let peer_did = str_arg(call.args, "peer_did");
+        let scope = call.args.get("scope").and_then(Value::as_str);
+        crate::peering::revoke_role_core(call.state, call.claims, verse_id, peer_did, scope)
+            .await
+            .map_err(|e| e.message)
+    })
+}
+
+pub(super) fn get_sync_state(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let q = crate::diagnostics_debug::SyncStateQuery {
+            verse_id: call.args.get("verse_id").and_then(Value::as_str).map(str::to_owned),
+            node_id: call.args.get("node_id").and_then(Value::as_str).map(str::to_owned),
+            limit: call
+                .args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+        };
+        crate::diagnostics_debug::get_sync_state_core(
+            call.state,
+            call.claims,
+            call.hosts.peering.as_ref(),
+            q,
+        )
+        .await
+        .map_err(|(_, msg)| msg)
+    })
+}
+
+pub(super) fn get_extensions_trace(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let q = crate::diagnostics_debug::ExtensionTraceQuery {
+            package_id: call.args.get("package_id").and_then(Value::as_str).map(str::to_owned),
+            petal_id: call.args.get("petal_id").and_then(Value::as_str).map(str::to_owned),
+            limit: call
+                .args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize),
+        };
+        crate::diagnostics_debug::get_extensions_trace_core(
+            call.state,
+            call.claims,
+            Some(call.hosts),
+            None,
+            q,
+        )
+        .await
+        .map_err(|(_, msg)| msg)
     })
 }

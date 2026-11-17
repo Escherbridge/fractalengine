@@ -12,6 +12,8 @@ use fe_runtime::channels::ChannelHandles;
 use fe_runtime::messages::DbCommand;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(feature = "plugin-host")]
+mod plugin_host;
 mod relay_serve;
 mod replicas;
 
@@ -87,8 +89,38 @@ fn main() -> anyhow::Result<()> {
     let blob_store: fe_database::BlobStoreHandle =
         Arc::new(fe_sync::FsBlobStore::open_default().expect("open blob store"));
 
-    // Relay uses EnvBackend — secrets come from environment variables
-    let secret_store: Arc<dyn fe_identity::SecretStore> = Arc::new(fe_identity::EnvBackend::new());
+    let db_path = std::env::var("FE_DB_PATH").unwrap_or_else(|_| "data/fractalengine.db".into());
+    let secret_dir = std::env::var("FE_SECRET_STORE_DIR")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            Path::new(&db_path)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.join("secrets"))
+        });
+    let using_layered = secret_dir
+        .as_ref()
+        .and_then(|dir| match fe_identity::LayeredBackend::new(dir.clone()) {
+            Ok(layered) => {
+                tracing::info!(dir = %dir.display(), "Using LayeredBackend secret store");
+                Some(Arc::new(layered) as Arc<dyn fe_identity::SecretStore>)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "LayeredBackend unavailable; falling back to EnvBackend"
+                );
+                None
+            }
+        });
+    let secret_store: Arc<dyn fe_identity::SecretStore> = match using_layered {
+        Some(store) => store,
+        None => Arc::new(fe_identity::EnvBackend::new()),
+    };
 
     let node_kp = match fe_identity::load_or_generate_keypair(&secret_store, "node_keypair") {
         Ok(kp) => kp,
@@ -134,8 +166,6 @@ fn main() -> anyhow::Result<()> {
     // Clone for the API thread's emit seam (A11: the API ingestion path writes
     // directly on `db_reader` and needs its own replication sender).
     let repl_tx_for_api = repl_tx.clone();
-
-    let db_path = std::env::var("FE_DB_PATH").unwrap_or_else(|_| "data/fractalengine.db".into());
 
     // Cloned for the seed-gate replay below — the original moves into the DB thread.
     let db_res_tx_replay = ch.db_res_tx.clone();
@@ -286,7 +316,7 @@ fn main() -> anyhow::Result<()> {
         blob_store.clone(),
         sync_cmd_rx,
         sync_evt_tx,
-        local_did,
+        local_did.clone(),
         // Inbound apply path (A4/A7): replicated rows ride the DB thread's
         // command channel — the DB thread stays the single SurrealDB writer, so
         // the relay is a fully applying replica (not drop-and-count only).
@@ -298,6 +328,17 @@ fn main() -> anyhow::Result<()> {
         fe_runtime::bevy_blob_reader::BlobFallbackSlot::default(),
         Some(ch.db_cmd_bytes.clone()),
     );
+
+    // P2P peering lifecycle bridge: API `/api/v1/identity` and `/api/v1/debug/sync-state` reach the sync thread here.
+    let (peering_tx, peering_rx) =
+        crossbeam::channel::bounded::<fe_runtime::peering::PeeringCall>(16);
+    if let Err(error) = fe_sync::peering::bridge_peering_calls(
+        peering_rx,
+        sync_cmd_tx.clone(),
+        local_did.clone(),
+    ) {
+        tracing::warn!(%error, "peering bridge did not start; identity and sync-state routes answer 503");
+    }
 
     // M2/F7 (A17): API→sync distributed-query bridge — the relay answers
     // compute requests for shards it hosts (a seeder serves its shards), and
@@ -330,6 +371,8 @@ fn main() -> anyhow::Result<()> {
 
     // Clone db_cmd_tx before it moves into BevyHandles — needed for graceful shutdown.
     let db_cmd_tx_for_shutdown = ch.db_cmd_tx.clone();
+    #[cfg(feature = "plugin-host")]
+    let db_cmd_tx_for_plugins = ch.db_cmd_tx.clone();
     let sync_cmd_tx_for_shutdown = sync_cmd_tx.clone();
 
     // Build headless Bevy app
@@ -439,6 +482,10 @@ fn main() -> anyhow::Result<()> {
     // scene changes either way.
     let mut entity_store_for_api: Option<Arc<fe_entity_store::EntityStore>> =
         Some(Arc::clone(&entity_store));
+    #[cfg(feature = "plugin-host")]
+    let db_for_plugins = shared_db.clone();
+    #[cfg(feature = "plugin-host")]
+    let blob_store_for_plugins = blob_store.clone();
     let api_db_reader: Option<Arc<fe_api::db_reader::ReadDb>> = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -501,6 +548,30 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "sim-control"))]
     let sim_control_tx: Option<fe_runtime::sim_control::SimControlCallSender> = None;
 
+    #[cfg(feature = "plugin-host")]
+    let plugin_parts = plugin_host::setup(
+        local_did.clone(),
+        db_for_plugins,
+        blob_store_for_plugins,
+        db_cmd_tx_for_plugins,
+    );
+    #[cfg(not(feature = "plugin-host"))]
+    let plugin_parts = (
+        None::<Arc<dyn fe_api::extensions::ExtensionHost>>,
+        None::<Arc<dyn fe_api::bindings::BindingHost>>,
+        None::<Arc<dyn fe_api::import_hooks::ImportHooks>>,
+        Some(fe_runtime::extension_trace::ExtensionTraceBuffer::default()),
+    );
+    #[cfg(feature = "plugin-host")]
+    let (ext_host, bnd_host, imp_hooks, ext_trace) = (
+        plugin_parts.extension_host,
+        plugin_parts.binding_host,
+        plugin_parts.import_hooks,
+        plugin_parts.extension_trace,
+    );
+    #[cfg(not(feature = "plugin-host"))]
+    let (ext_host, bnd_host, imp_hooks, ext_trace) = plugin_parts;
+
     let _api_thread = fe_api::spawn_api_thread(fe_api::ApiConfig {
         bind_addr,
         api_cmd_tx: api_cmd_tx.clone(),
@@ -541,13 +612,15 @@ fn main() -> anyhow::Result<()> {
         input: fe_api::input::InputSurface::disabled(),
         // Dev-token emission is GUI-only (fe-api/AGENTS.md §qa-dev-token).
         listening_tx: None,
-        extension_host: None,
-        binding_host: None,
-        import_hooks: None,
+        extension_host: ext_host,
+        binding_host: bnd_host,
+        import_hooks: imp_hooks.map(fe_api::import_hooks::ImportHooksHandle),
         // Usage log and metrics bind from env; relay adverts signed as the sync author (fe-api/AGENTS.md §usage-metering).
         network_ops: fe_api::network_ops::NetworkOps {
             advertisement_signer: Some(advertisement_signer),
             network_diagnostics: Some(network_diagnostics_tx),
+            peering: Some(peering_tx),
+            extension_trace: ext_trace,
             ..fe_api::network_ops::NetworkOps::from_env()
         },
     });

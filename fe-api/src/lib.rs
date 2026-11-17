@@ -16,6 +16,7 @@ pub mod crs;
 pub mod db_reader;
 pub mod dev_token;
 pub mod device;
+pub mod diagnostics_debug;
 pub mod endpoint;
 pub mod entity_store_bridge;
 pub mod export;
@@ -35,6 +36,7 @@ pub mod network_ops;
 pub mod node_history;
 pub mod operator_gate;
 pub mod imported_history;
+pub mod peering;
 pub mod petal_snapshot;
 pub mod portal_bundles;
 pub mod property_schema;
@@ -268,6 +270,8 @@ async fn run_server(config: ApiConfig, stop: fe_runtime::service_lifecycle::Stop
             extension: config.extension_host,
             binding: config.binding_host,
             network_diagnostics: config.network_ops.network_diagnostics.clone(),
+            peering: config.network_ops.peering.clone(),
+            extension_trace: config.network_ops.extension_trace.clone(),
         },
     );
     let router = match config.import_hooks {

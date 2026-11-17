@@ -983,7 +983,7 @@ to another waiter. GUI request IDs are consumed only by their owning form.
 the latest statement per (scope, peer, grantor), not an op log. The load runs only after `prepare_parent_mutation`
 admits the caller (`entity_access.rs:42`), so a refused caller gets no grants.
 
-EntityAccess is a local desktop command with an explicit EntityType/id/full scope and fresh request ID. Its actor is always the DB thread identity. It is not a serialized HTTP/MCP request and adds no API pending-reply family. EntityAccessFinished is consumed only by its exact open-dialog request. Snapshots contain bounded metadata and effective roles; custom Debug output redacts generated invite/token credentials. Secret mint receipts are accepted only while the matching target's API tab remains active.
+EntityAccess carries a fresh request_id and uses `correlation_of_command` / `correlation_of_result` (`ReplyKind::EntityAccess`) so API role/access requests and desktop GUI dialogs never collide. Its actor is always the DB thread identity. Snapshots contain bounded metadata and effective roles; custom Debug output redacts generated invite/token credentials. Secret mint receipts are accepted only while the matching target's API tab remains active.
 
 ## Stamp override batch
 

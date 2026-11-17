@@ -32,6 +32,16 @@ pub enum SyncCommand {
         detail: bool,
         reply: crossbeam::channel::Sender<fe_runtime::net_diagnostics::NetworkDiagnostics>,
     },
+    /// Local P2P identity & endpoint addresses for `/api/v1/identity`.
+    GetPeeringIdentity {
+        detail: bool,
+        reply: crossbeam::channel::Sender<fe_runtime::peering::NodePeeringIdentity>,
+    },
+    /// Runtime replica & backpressure snapshot for `/api/v1/debug/sync-state`.
+    GetSyncState {
+        verse_id: Option<String>,
+        reply: crossbeam::channel::Sender<fe_runtime::peering::SyncRuntimeSnapshot>,
+    },
     /// Request a blob from the network for a given verse.
     ///
     /// The sync thread will first check the local blob store; if present it

@@ -19,6 +19,10 @@ pub struct NetworkOps {
     pub advertisement_signer: Option<Arc<fe_identity::NodeKeypair>>,
     /// Call seam to the sync thread's diagnostics bridge; `None` answers 503 (see `network.rs`).
     pub network_diagnostics: Option<fe_runtime::net_diagnostics::NetworkDiagnosticsCallSender>,
+    /// Call seam to the sync thread's peering bridge (`GET /identity`, `POST /invites`, `POST /join`, `GET /debug/sync-state`).
+    pub peering: Option<fe_runtime::peering::PeeringCallSender>,
+    /// Bounded extension execution trace ring (`GET /api/v1/debug/extensions-trace`).
+    pub extension_trace: Option<fe_runtime::extension_trace::ExtensionTraceBuffer>,
 }
 
 impl Default for NetworkOps {
@@ -29,6 +33,8 @@ impl Default for NetworkOps {
             metrics: None,
             advertisement_signer: None,
             network_diagnostics: None,
+            peering: None,
+            extension_trace: None,
         }
     }
 }

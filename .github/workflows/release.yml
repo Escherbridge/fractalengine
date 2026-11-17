@@ -53,7 +53,9 @@ jobs:
           shared-key: release-linux-x86_64
 
       - name: Build release binaries
-        run: cargo build --release --bin fractalengine --bin fe-relay
+        run: |
+          cargo build --release --bin fractalengine
+          cargo build --release --bin fe-relay --features fractalengine-relay/plugin-host,fractalengine-relay/relay-server
 
       - name: Package artifacts
         shell: bash
@@ -91,7 +93,9 @@ jobs:
           shared-key: release-windows-x86_64
 
       - name: Build release binaries
-        run: cargo build --release --bin fractalengine --bin fe-relay
+        run: |
+          cargo build --release --bin fractalengine
+          cargo build --release --bin fe-relay --features fractalengine-relay/plugin-host,fractalengine-relay/relay-server
 
       # Between build and packaging so SHA256SUMS cover signed files. To change
       # provider (SignPath, signtool + cloud HSM) replace ONLY the "Sign" step.
