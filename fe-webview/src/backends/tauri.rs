@@ -234,8 +234,7 @@ impl WebViewBackend for TauriBackend {
             // Create visible popup BEFORE building webview — WebView2 needs
             // a visible parent HWND to initialize its rendering pipeline.
             let popup_hwnd = win32::create_popup(parent_hwnd, &geometry)?;
-            if fe_runtime::qa_web::captured()
-                && !win32::set_qa_cookie(popup_hwnd, fixture_surface.cookie())
+            if !win32::set_qa_cookie(popup_hwnd, fixture_surface.cookie())
             {
                 win32::destroy(popup_hwnd);
                 anyhow::bail!("could not bind QA Portal popup lifetime");

@@ -174,6 +174,8 @@ class Driver:
         self.loopback = loopback  # loopback.Loopback (MQTT broker, signed revocation list) when run.py started one
         self.installs = {}  # installation id -> package id, from ext_consent results
         self.device_nodes = {}  # (petal id, device id) -> node id, for ingress_post / ingest_readings by device
+        self.bundle_assets_by_pkg = {}  # package id -> bundle asset id, from upload_bundle results
+        self.repo_nodes_by_asset = {}  # bundle asset id -> repository node name, from create_repository_node
         self.scenario = scenario
         self.clients = clients
         self.ctx = ctx
@@ -599,7 +601,7 @@ class Driver:
 
     def _x_installations(self, client):
         """GET /api/v1/extensions (a read): [{installation, package_id, state}]; empty when the list is not readable."""
-        out = client.rest("GET", "/api/v1/extensions")
+        out = client.send("GET", "/api/v1/extensions", None, client.debug_token(), 8.0)
         data = out.get("data") if out.ok else None
         rows = data.get("extensions") if isinstance(data, dict) else data
         return [{"installation": r.get("installation") or r.get("installation_id") or r.get("id"),
@@ -713,18 +715,20 @@ class Driver:
                        data={"installation": found["installation"], "package_id": package_id, "state": found["state"]})
 
     def _x_accept(self, client, args):
-        """ext_accept: the Bindings view's one offer ("Allow in this verse"); its consent dialog is answered when it opens."""
+        """ext_accept: the Bindings view's one offer ("Allow in this verse"); falls back to Installed extensions enable."""
         hook, key = args.get("hook", "petal.map"), args.get("key", "")
         opened = self._x_open_panel(client, "Extension bindings")
         if not opened.ok:
             return opened
         point = "binding:%s:%s:action" % (hook, key) if key else "binding:%s:action" % hook
-        clicked = self._x_click(client, point, float(args.get("wait_s", 10)))
-        if not clicked.ok:
-            return clicked
-        package_id = self._x_package(args)[1] or self.installs.get(args.get("installation", ""), "")
-        if package_id and self._x_wait_any(client, ["Enable %s" % package_id], 4.0):
-            clicked = self._x_click(client, "Enable %s" % package_id, 6.0)
+        clicked = self._x_click(client, point, float(args.get("wait_s", 2.0)))
+        if clicked.ok:
+            package_id = self._x_package(args)[1] or self.installs.get(args.get("installation", ""), "")
+            if package_id and self._x_wait_any(client, ["Enable %s" % package_id], 4.0):
+                clicked = self._x_click(client, "Enable %s" % package_id, 6.0)
+        elif clicked.get("code") == "locator_not_found":
+            clicked = self._x_toggle(client, {**args, "channel": "gui", "allow_already_enabled": True}, "Enable")
+        client.gui("click", {"name": "Close window", "role": "button", "exact": True, "wait_s": 1.0})
         return clicked
 
     def _x_binding_buttons(self, client, package_id, verb):
@@ -1024,6 +1028,22 @@ class Driver:
         raise ValueError("unknown host op " + op)
 
     # -- portal ops (tools/qa/portal/AGENTS.md section sim-contract) --------------------------------
+    PORTAL_RETRY_CODES = frozenset((
+        "not_found_or_denied",
+        "portal_fixture_unavailable",
+        "portal_fixture_stale",
+        "portal_bundle_not_mounted",
+        "portal_fixture_document_pending",
+    ))
+
+    def _portal_call_with_retry(self, client, method, route, body, wait_s):
+        deadline = time.monotonic() + float(wait_s)
+        while True:
+            out = client.send(method, portal_probe.DEBUG_BASE + route, body, client.debug_token(), 8.0)
+            if out.ok or out.get("code") not in self.PORTAL_RETRY_CODES or time.monotonic() >= deadline:
+                return out
+            time.sleep(0.25)
+
     def portal_op(self, client, op, args, verse):
         """Portal ops; admission and re-grant drive the GUI, the kill switch is a fixed debug route, IPC row posts refuse by
         name (no seam yet)."""
@@ -1033,6 +1053,7 @@ class Driver:
             if out.ok and isinstance(data, dict):
                 data.setdefault("id", data.get("asset_id"))  # scenarios bind data.id like upload_asset
                 if data.get("package_id") and data.get("asset_id"):
+                    self.bundle_assets_by_pkg[data["package_id"]] = data["asset_id"]
                     assets = getattr(self.ctx, "portal_assets", None)
                     if assets is None:
                         assets = self.ctx.portal_assets = {}
@@ -1049,6 +1070,7 @@ class Driver:
                 written = client.rest("PATCH", "/api/v1/nodes/%s/properties" % node_id, {"key": key, "value": value})
                 if not written.ok:
                     return written
+            self.repo_nodes_by_asset[args["bundle_asset"]] = args["name"]
             return created
         if op == "portal_update_bundle":
             return client.rest("PATCH", "/api/v1/nodes/%s/properties" % args["repository_node_id"],
@@ -1057,8 +1079,9 @@ class Driver:
             route = "observe" if op == "portal_observe" else "ipc-stats"
             return client.send("GET", portal_probe.DEBUG_BASE + route, None, client.debug_token(), 8.0)
         if op == "portal_slot":
-            return client.send("POST", portal_probe.DEBUG_BASE + "action", {"slot": int(args["slot"])},
-                               client.debug_token(), 8.0)
+            return self._portal_call_with_retry(
+                client, "POST", "action", {"slot": int(args["slot"])}, float(args.get("wait_s", 5.0))
+            )
         if op == "portal_killswitch":
             # Fixed body {engage} only, behind the portal-fixture Owner+input gate (steer 2026-11-09 02:15).
             return client.send("POST", portal_probe.DEBUG_BASE + "killswitch", {"engage": bool(args.get("engage", True))},
@@ -1069,7 +1092,9 @@ class Driver:
             for key in ("package_id", "content_hash"):
                 if args.get(key):
                     body[key] = str(args[key])
-            return client.send("POST", portal_probe.DEBUG_BASE + "ipc-post", body, client.debug_token(), 8.0)
+            return self._portal_call_with_retry(
+                client, "POST", "ipc-post", body, float(args.get("wait_s", 5.0))
+            )
         if op == "portal_admit":
             return self._portal_admit(client, args)
         if op == "regrant_role":
@@ -1078,8 +1103,27 @@ class Driver:
                        error="%s has no API route or GUI affordance in this build" % op)
 
     def _portal_admit(self, client, args):
-        """`portal_admit`: the repository view's "Admit bundle" button (ux.md section 5), then the consent dialog's "Enable <package_id>"."""
+        """`portal_admit`: select the target repository node, press "Admit bundle" (ux.md section 5), then confirm "Enable <package_id>"."""
+        repo_name = args.get("node_name") or self.repo_nodes_by_asset.get(
+            self.bundle_assets_by_pkg.get(args.get("package_id"))
+        )
+        if not args.get("reconsent"):
+            client.gui("click", {"name": "Close portal", "exact": True, "wait_s": 0.5})
+        if repo_name:
+            sel = client.gui(
+                "click",
+                {"name": "Select node " + repo_name, "exact": True, "wait_s": float(args.get("select_wait_s", 5))},
+            )
+            if not sel.ok:
+                return sel
         out = client.gui("click", {"name": "Admit bundle", "exact": True, "wait_s": float(args.get("wait_s", 5))})
+        if not out.ok and out.get("code") == "locator_not_found":
+            already = client.gui("wait_for", {"name": "Revoke bundle on this peer", "timeout_s": 1.0})
+            if already.ok:
+                open_out = client.gui("click", {"name": "Open bundle", "exact": True, "wait_s": 2.0})
+                if open_out.ok:
+                    return open_out
+                return Outcome(status=200, ok=True, refused=False, data={"already_admitted": True})
         if out.ok and args.get("package_id"):  # the admit consent dialog confirms with "Enable <package_id>" (governance consent)
             out = client.gui("click", {"name": "Enable %s" % args["package_id"], "exact": True, "wait_s": float(args.get("confirm_wait_s", 8))})
         return out

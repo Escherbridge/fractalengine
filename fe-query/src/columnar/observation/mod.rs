@@ -68,7 +68,7 @@ pub struct PayloadRefRow {
 #[derive(Debug)]
 pub enum ObservationHexonError {
     /// A row's `node_id` could not be mapped to a legacy identifier (SPEC-10 §4.5).
-    LegacyIdentifier(fe_sdk::LegacyIdentifierError),
+    LegacyIdentifier(fe_sdk::legacy_identifier::LegacyIdentifierError),
     /// The writer was given zero readings and zero payload refs (§4.3 rule 3:
     /// "A batch with nothing in it is not sealed" — the writer refuses to
     /// produce one rather than let an empty batch reach the sealer).
@@ -111,8 +111,8 @@ impl std::fmt::Display for ObservationHexonError {
 
 impl std::error::Error for ObservationHexonError {}
 
-impl From<fe_sdk::LegacyIdentifierError> for ObservationHexonError {
-    fn from(e: fe_sdk::LegacyIdentifierError) -> Self {
+impl From<fe_sdk::legacy_identifier::LegacyIdentifierError> for ObservationHexonError {
+    fn from(e: fe_sdk::legacy_identifier::LegacyIdentifierError) -> Self {
         Self::LegacyIdentifier(e)
     }
 }
@@ -430,7 +430,11 @@ mod tests {
         use std::sync::Arc;
         let schema = Arc::new(profile::readings_arrow_schema());
         let text = |v: &str| Arc::new(StringArray::from(vec![v])) as arrow::array::ArrayRef;
-        let anchor = fe_sdk::legacy_identifier(fe_sdk::LegacyTable::Node, "n1").expect("anchor");
+        let anchor = fe_sdk::legacy_identifier::legacy_identifier(
+            fe_sdk::legacy_identifier::LegacyTable::Node,
+            "n1",
+        )
+        .expect("anchor");
         let batch = arrow::array::RecordBatch::try_new(
             schema.clone(),
             vec![

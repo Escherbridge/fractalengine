@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "id": "org.example.city-map",
+  "version": "1.2.0",
+  "name": "City map",
+  "description": "Provides the petal.map hook without scene writes for scoped binding tests.",
+  "kind": "general",
+  "contract": "fractalengine:plugin@2.0.0",
+  "binding": "petal",
+  "provides": [
+    {
+      "hook": "petal.map",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "district": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

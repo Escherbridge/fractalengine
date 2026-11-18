@@ -26,7 +26,10 @@ use fe_database::repo::Db;
 use fe_database::BlobStoreHandle;
 use fe_hexon::package::{PluginPackage, PluginPackageStore, PluginTrust};
 use fe_plugin::bindings::decode::DecodeStamp;
-use fe_plugin::capability::{CapabilityToken, V2Binding};
+use fe_plugin::capability::CapabilityToken;
+use fe_plugin::host_bridge::{
+    record_scene_hook_trace, scene_hook_reply_from_output, v2_binding_for_petal,
+};
 use fe_plugin::lifecycle::binding_instance_id;
 use fe_plugin::tick::WallClock;
 use fe_plugin::trust_roots::TrustRoots;
@@ -134,6 +137,8 @@ struct RelayPluginState {
     bindings: Arc<RwLock<HashMap<String, BindingRecord>>>,
     petals: RwLock<HashMap<String, PetalMeta>>,
     instances: Mutex<HashMap<(String, String), LiveRelayInstance>>,
+    instantiation_lock: Mutex<()>,
+    self_ref: std::sync::OnceLock<std::sync::Weak<RelayPluginState>>,
     dummy_cmd_tx: Sender<PluginCommand>,
     _dummy_cmd_rx: crossbeam::channel::Receiver<PluginCommand>,
 }
@@ -201,9 +206,12 @@ pub fn setup(
         bindings: Arc::new(RwLock::new(HashMap::new())),
         petals: RwLock::new(HashMap::new()),
         instances: Mutex::new(HashMap::new()),
+        instantiation_lock: Mutex::new(()),
+        self_ref: std::sync::OnceLock::new(),
         dummy_cmd_tx,
         _dummy_cmd_rx: dummy_cmd_rx,
     });
+    let _ = state.self_ref.set(Arc::downgrade(&state));
 
     state.load_headless_installs();
     state.refresh_from_db();
@@ -532,6 +540,20 @@ impl RelayPluginState {
             }
         }
 
+        // Serialize cold instantiation per relay host so concurrent callers do not double-activate and drop an instance.
+        let _build_guard = self.instantiation_lock.lock().unwrap();
+        {
+            let guard = self.instances.lock().unwrap();
+            if let Some(live) = guard.get(&key) {
+                return Ok((
+                    live.handle.clone(),
+                    live.context.clone(),
+                    live.content_hash.clone(),
+                    live.source_class,
+                ));
+            }
+        }
+
         let pkg = self
             .loaded_by_package(package_id)
             .ok_or_else(|| format!("package {package_id} is not installed on fe-relay"))?;
@@ -550,11 +572,12 @@ impl RelayPluginState {
         }
 
         let plugin_id = binding_instance_id(&pkg.installation_id, petal_id);
-        let v2_binding = V2Binding {
-            verse_scope: build_scope(&meta.verse_id, None, None),
-            petal_scope: meta.scope.clone(),
-            source_class: pkg.source_class,
-        };
+        let v2_binding = v2_binding_for_petal(
+            &meta.verse_id,
+            Some(&meta.fractal_id),
+            Some(petal_id),
+            pkg.source_class,
+        );
         let token = CapabilityToken::mint_v2(&plugin_id, &pkg.manifest, &v2_binding)?;
         let context = PluginContext::new(
             plugin_id,
@@ -933,90 +956,36 @@ impl SceneHookBackend for RelayPluginState {
             body: Vec::new(),
         };
         let started = std::time::Instant::now();
-        // Run synchronously on a worker thread so callers (including DB thread / tokio) never block here.
+        // Instantiation and hook execution both run inside spawn_blocking so caller threads never block.
         let trace = self.trace.clone();
-        let answer_handle = self.ensure_instance(&petal_id, &state_pkg_id);
         let rt_handle = self.rt.handle().clone();
-        let db_tx = self.db_cmd_tx.clone();
-        let packages = self.packages.read().unwrap().get(
-            &self
-                .packages_by_id
-                .read()
-                .unwrap()
-                .get(&state_pkg_id)
-                .cloned()
-                .unwrap_or_default(),
-        ).cloned();
-        let petals = self.petals.read().unwrap().get(&petal_id).cloned();
+        let self_ref = self.self_ref.get().and_then(std::sync::Weak::upgrade);
 
         rt_handle.spawn_blocking(move || {
+            let answer_handle = self_ref
+                .ok_or_else(|| "fe-relay plugin host state unavailable".to_string())
+                .and_then(|state| state.ensure_instance(&petal_id, &state_pkg_id));
             let result = match answer_handle {
                 Ok((handle, _, _, _)) => handle.call_hook(&req, None),
                 Err(e) => Err(HookCallError::Guest(HookRefusal::Failed(e))),
             };
             let duration_ms = started.elapsed().as_millis() as u64;
             let mapped = match result {
-                Ok(hook_reply) => {
-                    match serde_json::from_str::<Value>(&hook_reply.output) {
-                        Ok(val) => {
-                            let decision = val
-                                .get("verdict")
-                                .or_else(|| val.get("decision"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("allow");
-                            if decision == "refuse" {
-                                let reason = val
-                                    .get("reason")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("refused by extension")
-                                    .to_string();
-                                trace.record(ExtensionTraceInput {
-                                    kind: "scene_hook".into(),
-                                    package_id: state_pkg_id,
-                                    petal_id: Some(petal_id),
-                                    hook: Some(hook_str),
-                                    key: None,
-                                    outcome: "refused".into(),
-                                    detail: Some(reason.clone()),
-                                    duration_ms: Some(duration_ms),
-                                });
-                                SceneHookReply::Refused(reason)
-                            } else {
-                                trace.record(ExtensionTraceInput {
-                                    kind: "scene_hook".into(),
-                                    package_id: state_pkg_id,
-                                    petal_id: Some(petal_id),
-                                    hook: Some(hook_str),
-                                    key: None,
-                                    outcome: "allow".into(),
-                                    detail: None,
-                                    duration_ms: Some(duration_ms),
-                                });
-                                let _ = (db_tx, packages, petals);
-                                SceneHookReply::Output(val)
-                            }
-                        }
-                        Err(e) => SceneHookReply::Fault(format!("bad hook JSON: {e}")),
-                    }
-                }
+                Ok(hook_reply) => scene_hook_reply_from_output(&hook_reply.output),
                 Err(HookCallError::Guest(HookRefusal::Refused(r))) => SceneHookReply::Refused(r),
                 Err(HookCallError::Guest(HookRefusal::InvalidInput(r) | HookRefusal::Failed(r))) => {
                     SceneHookReply::Declined(r)
                 }
-                Err(other) => {
-                    trace.record(ExtensionTraceInput {
-                        kind: "scene_hook".into(),
-                        package_id: state_pkg_id,
-                        petal_id: Some(petal_id),
-                        hook: Some(hook_str),
-                        key: None,
-                        outcome: "fault".into(),
-                        detail: Some(other.to_string()),
-                        duration_ms: Some(duration_ms),
-                    });
-                    SceneHookReply::Fault(other.to_string())
-                }
+                Err(other) => SceneHookReply::Fault(other.to_string()),
             };
+            record_scene_hook_trace(
+                &trace,
+                &state_pkg_id,
+                &petal_id,
+                &hook_str,
+                &mapped,
+                Some(duration_ms),
+            );
             let _ = reply.send(mapped);
         });
     }
@@ -1038,11 +1007,12 @@ impl SceneHookBackend for RelayPluginState {
         let token = CapabilityToken::mint_v2(
             &plugin_id,
             &pkg.manifest,
-            &V2Binding {
-                verse_scope: build_scope(&meta.verse_id, None, None),
-                petal_scope: meta.scope.clone(),
-                source_class: pkg.source_class,
-            },
+            &v2_binding_for_petal(
+                &meta.verse_id,
+                Some(&meta.fractal_id),
+                Some(petal_id),
+                pkg.source_class,
+            ),
         )?;
         let admission = build_admission(
             &pkg,
@@ -1336,9 +1306,6 @@ impl ExtensionHost for RelayPluginState {
             return Err(HostRefusal::NotFound);
         }
         let started = std::time::Instant::now();
-        let (handle, _, _, _) = self
-            .ensure_instance(petal_id, package_id)
-            .map_err(HostRefusal::NotAvailable)?;
         let wit_caller = WitCaller {
             did: caller.did.clone(),
             kind: match caller.kind {
@@ -1354,13 +1321,19 @@ impl ExtensionHost for RelayPluginState {
         let pkg_id_s = package_id.to_string();
         let petal_s = petal_id.to_string();
         let trace = self.trace.clone();
+        let self_ref = self.self_ref.get().and_then(std::sync::Weak::upgrade);
         self.rt.spawn_blocking(move || {
-            let out = handle
-                .lock()
-                .map_err(|e| HookCallError::Guest(HookRefusal::Failed(e)).to_string())
-                .and_then(|mut inst| {
-                    inst.on_command(&command_s, &args_s, &wit_caller)
-                        .map_err(|fault| fault.to_string())
+            let out = self_ref
+                .ok_or_else(|| "fe-relay plugin host state unavailable".to_string())
+                .and_then(|state| state.ensure_instance(&petal_s, &pkg_id_s))
+                .and_then(|(handle, _, _, _)| {
+                    handle
+                        .lock()
+                        .map_err(|e| HookCallError::Guest(HookRefusal::Failed(e)).to_string())
+                        .and_then(|mut inst| {
+                            inst.on_command(&command_s, &args_s, &wit_caller)
+                                .map_err(|fault| fault.to_string())
+                        })
                 });
             let duration_ms = started.elapsed().as_millis() as u64;
             match out {
@@ -1392,6 +1365,16 @@ impl ExtensionHost for RelayPluginState {
                     let _ = tx.send(Err(CommandFailure::Refused(msg)));
                 }
                 Err(fault) => {
+                    trace.record(ExtensionTraceInput {
+                        kind: "bus_call".into(),
+                        package_id: pkg_id_s,
+                        petal_id: Some(petal_s),
+                        hook: None,
+                        key: Some(command_s),
+                        outcome: "fault".into(),
+                        detail: Some(fault.clone()),
+                        duration_ms: Some(duration_ms),
+                    });
                     let _ = tx.send(Err(CommandFailure::Failed(fault)));
                 }
             }

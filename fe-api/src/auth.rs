@@ -49,6 +49,11 @@ pub async fn authenticate(
 ) -> Result<ApiClaims, StatusCode> {
     let claims =
         verify_api_token(token, &state.verifying_key).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if claims.scope == fe_runtime::qa_debug::QA_OPERATOR_SCOPE
+        && !fe_runtime::qa_debug::qa_operator_enabled()
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     require_current_credential(state, &claims).await?;
     Ok(claims)
 }

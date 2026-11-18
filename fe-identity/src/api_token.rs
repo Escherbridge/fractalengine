@@ -152,6 +152,61 @@ pub fn mint_api_token_at(
     mint_with_client(keypair, scope, max_role, iat, exp, jti, None)
 }
 
+/// Local QA-only operator scope (`fe_runtime::qa_debug::QA_OPERATOR_SCOPE`).
+const QA_OPERATOR_SCOPE: &str = "QA-OPERATOR";
+
+fn valid_scope_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Check that `scope` is either a hierarchical `VERSE#<v>[-FRACTAL#<f>[-PETAL#<p>]]`
+/// scope or the loopback QA operator scope. Enforced at both mint and verify so
+/// global / wildcard scopes cannot exist in API tokens.
+pub fn validate_token_scope(scope: &str) -> anyhow::Result<()> {
+    if scope.is_empty() {
+        anyhow::bail!("API token scope must not be empty");
+    }
+    if scope == QA_OPERATOR_SCOPE {
+        return Ok(());
+    }
+    let Some(rest) = scope.strip_prefix("VERSE#") else {
+        anyhow::bail!("API token scope must start with 'VERSE#'");
+    };
+    let (verse_part, after_verse) = match rest.find("-FRACTAL#") {
+        Some(idx) => (&rest[..idx], Some(&rest[idx + "-FRACTAL#".len()..])),
+        None => {
+            if rest.contains("-PETAL#") {
+                anyhow::bail!("API token scope PETAL# requires a preceding FRACTAL# segment");
+            }
+            (rest, None)
+        }
+    };
+    if !valid_scope_segment(verse_part) {
+        anyhow::bail!("API token scope verse_id is invalid");
+    }
+    if let Some(fractal_and_rest) = after_verse {
+        let (fractal_part, petal_part) = match fractal_and_rest.find("-PETAL#") {
+            Some(idx) => (
+                &fractal_and_rest[..idx],
+                Some(&fractal_and_rest[idx + "-PETAL#".len()..]),
+            ),
+            None => (fractal_and_rest, None),
+        };
+        if !valid_scope_segment(fractal_part) {
+            anyhow::bail!("API token scope fractal_id is invalid");
+        }
+        if let Some(petal) = petal_part {
+            if !valid_scope_segment(petal) {
+                anyhow::bail!("API token scope petal_id is invalid");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Shared signer for the legacy and client mints.
 fn mint_with_client(
     keypair: &NodeKeypair,
@@ -163,9 +218,7 @@ fn mint_with_client(
     client: Option<String>,
 ) -> anyhow::Result<String> {
     ensure_crypto_provider();
-    if scope.is_empty() {
-        anyhow::bail!("API token scope must not be empty");
-    }
+    validate_token_scope(scope)?;
     let Some(span) = exp.checked_sub(iat) else {
         anyhow::bail!("API token exp must not precede iat");
     };
@@ -202,6 +255,7 @@ pub fn verify_api_token(token: &str, issuer_pub_key: &VerifyingKey) -> anyhow::R
     if data.claims.token_type != "api" {
         anyhow::bail!("token_type is not 'api'");
     }
+    validate_token_scope(&data.claims.scope)?;
     if let Some(client) = data.claims.client.as_deref() {
         validate_client_did(client)?;
     }
@@ -364,5 +418,66 @@ mod tests {
         let last = token.pop().unwrap();
         token.push(if last == 'a' { 'b' } else { 'a' });
         assert!(verify_api_token(&token, &kp.verifying_key()).is_err());
+    }
+
+    #[test]
+    fn non_verse_and_malformed_scopes_rejected_at_mint_and_verify() {
+        let kp = NodeKeypair::generate();
+        for bad in [
+            "global",
+            "*",
+            "VERSE#",
+            "VERSE#*",
+            "VERSE#v1#extra",
+            "VERSE#v1-NODE#n1",
+            "VERSE#v1-FRACTAL#f1-FRACTAL#f2",
+            "VERSE#v1-PETAL#p1",
+            "VERSE#v1-FRACTAL#",
+            "VERSE#v1-FRACTAL#f1-PETAL#",
+            "VERSE#v1 with space",
+        ] {
+            assert!(validate_token_scope(bad).is_err(), "{bad} must fail");
+            assert!(
+                mint_api_token(&kp, bad, "viewer", 3600, "j-bad").is_err(),
+                "{bad} must fail at mint"
+            );
+            // Forge a validly signed JWT bypassing mint_with_client to prove verify_api_token rejects it too.
+            ensure_crypto_provider();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let claims = ApiClaims {
+                sub: kp.to_did_key(),
+                token_type: "api".to_string(),
+                scope: bad.to_string(),
+                max_role: "viewer".to_string(),
+                iat: now,
+                exp: now + 3600,
+                jti: "j-smuggle".to_string(),
+                client: None,
+            };
+            let forged = encode(
+                &Header::new(Algorithm::EdDSA),
+                &claims,
+                &EncodingKey::from_ed_der(&kp.pkcs8_der()),
+            )
+            .unwrap();
+            assert!(
+                verify_api_token(&forged, &kp.verifying_key()).is_err(),
+                "{bad} must fail at verify"
+            );
+        }
+        for good in [
+            "VERSE#v1",
+            "VERSE#v1-FRACTAL#f1",
+            "VERSE#v1-FRACTAL#f1-PETAL#p1",
+            "QA-OPERATOR",
+        ] {
+            assert!(validate_token_scope(good).is_ok(), "{good} must pass");
+            let token = mint_api_token(&kp, good, "viewer", 3600, "j-good").unwrap();
+            let claims = verify_api_token(&token, &kp.verifying_key()).unwrap();
+            assert_eq!(claims.scope, good);
+        }
     }
 }

@@ -499,7 +499,7 @@ fn render_toast(ctx: &egui::Context, ui_mgr: &mut UiManager) {
     let mut dismissed = false;
     let area = egui::Area::new(egui::Id::new("toast_overlay"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -40.0))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -76.0))
         .interactable(true)
         .show(ctx, |ui| {
             ui.set_max_width((ctx.viewport_rect().width() - 32.0).clamp(80.0, 560.0));

@@ -119,10 +119,14 @@ pub async fn guard_and_prepare_query_with_mode(
     mode: GuardMode,
 ) -> Result<GuardedQuery, String> {
     check_rate_limit(state, rate_key, rate_max_per_sec, rate_label).await?;
-    let static_pass = prepare_scoped_sql(sql, &[], mode)?;
+    let verse_id = fe_database::parse_scope(scope)
+        .ok()
+        .map(|p| p.verse_id)
+        .unwrap_or_default();
+    let static_pass = prepare_scoped_sql_for_verse(sql, &[], Some(&verse_id), mode)?;
     let scoped = if static_pass.reads_petal_scoped_table() {
         let petals = resolve_scope_petals(state, scope).await?;
-        prepare_scoped_sql(sql, &petals, mode)?.sql
+        prepare_scoped_sql_for_verse(sql, &petals, Some(&verse_id), mode)?.sql
     } else {
         static_pass.sql
     };

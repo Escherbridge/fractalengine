@@ -14,7 +14,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use fe_format::manifest::{HexonManifest, HexonType};
 use fe_format::HexonArchive;
-use fe_sdk::{legacy_identifier, LegacyTable};
+use fe_sdk::legacy_identifier::{legacy_identifier, LegacyTable};
 use parquet::arrow::ArrowWriter;
 
 use super::profile;

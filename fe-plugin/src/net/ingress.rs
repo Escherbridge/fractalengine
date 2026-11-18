@@ -140,10 +140,15 @@ impl Net {
             return Err((IngressRefusal::PayloadTooLarge, None));
         }
         if let Some(accepted) = &endpoint.content_types {
-            let media = media_type(request.content_type.as_deref());
-            if !accepted.iter().any(|kind| kind.eq_ignore_ascii_case(&media)) {
-                instance.counters.ingress_refused += 1;
-                return Err((IngressRefusal::UnsupportedMediaType, None));
+            let empty_bodyless = request.body.is_empty()
+                && request.content_type.is_none()
+                && request.method.eq_ignore_ascii_case("GET");
+            if !empty_bodyless {
+                let media = media_type(request.content_type.as_deref());
+                if !accepted.iter().any(|kind| kind.eq_ignore_ascii_case(&media)) {
+                    instance.counters.ingress_refused += 1;
+                    return Err((IngressRefusal::UnsupportedMediaType, None));
+                }
             }
         }
         let frame = IngressFrame {

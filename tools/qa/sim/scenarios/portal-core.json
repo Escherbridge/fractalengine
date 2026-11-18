@@ -237,11 +237,24 @@
           "via": "gui",
           "op": "click",
           "args": {
+            "name": "Select node Dashboard repo"
+          },
+          "id": "sel_dash",
+          "needs": [
+            "adm_dash",
+            "adm_docs"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
             "name": "Open bundle"
           },
           "id": "open_dash",
           "needs": [
-            "adm_dash"
+            "sel_dash"
           ],
           "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
         },
@@ -575,9 +588,30 @@
           "via": "gui",
           "op": "click",
           "args": {
+            "name": "Close portal"
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Select node Dashboard repo"
+          },
+          "id": "sel_reopen_dash"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
             "name": "Open bundle"
           },
           "id": "reopen_dash",
+          "needs": [
+            "sel_reopen_dash"
+          ],
           "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name"
         },
         {
@@ -587,7 +621,10 @@
           "args": {
             "slot": 1
           },
-          "id": "focus"
+          "id": "focus",
+          "needs": [
+            "reopen_dash"
+          ]
         },
         {
           "peer": "owner",
@@ -604,13 +641,28 @@
           "via": "gui",
           "op": "click",
           "args": {
+            "name": "Close portal"
+          },
+          "id": "close_killed",
+          "sync": "+19",
+          "optional": true,
+          "needs": [
+            "kill"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
             "name": "Open bundle"
           },
           "id": "reopen_dead",
           "sync": "+20",
           "expect": "any",
           "needs": [
-            "kill"
+            "kill",
+            "close_killed"
           ]
         },
         {
@@ -632,13 +684,13 @@
           "op": "portal_admit",
           "args": {
             "package_id": "qa.portal.dashboard",
-            "content_hash": "$dash.content_hash",
-            "sync": "+45",
-            "needs": [
-              "unkill"
-            ]
+            "content_hash": "$dash.content_hash"
           },
-          "id": "readmit"
+          "id": "readmit",
+          "sync": "+45",
+          "needs": [
+            "unkill"
+          ]
         }
       ],
       "expect": [
@@ -748,13 +800,38 @@
           "via": "gui",
           "op": "click",
           "args": {
+            "name": "Select node Dashboard repo"
+          },
+          "id": "ed_sel_local",
+          "needs": [
+            "provider_down"
+          ]
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
             "name": "Open bundle"
           },
           "id": "ed_open_local",
           "needs": [
-            "provider_down"
+            "ed_sel_local"
           ],
           "note": "repository node of the already-local bundle selected first"
+        },
+        {
+          "peer": "editor",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Select node Docs repo"
+          },
+          "id": "ed_sel_docs",
+          "sync": "+19",
+          "needs": [
+            "ed_open_local"
+          ]
         },
         {
           "peer": "editor",
@@ -766,7 +843,7 @@
           "id": "ed_open_missing",
           "sync": "+20",
           "needs": [
-            "provider_down"
+            "ed_sel_docs"
           ],
           "note": "repository node of the not-local bundle selected first"
         },
@@ -832,6 +909,64 @@
       "actions": [
         {
           "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button"
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic"
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open fractal Portal Fractal"
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open petal Portal Petal"
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Select node Actions repo"
+          },
+          "id": "step5_sel_act"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "step5_open_act",
+          "needs": [
+            "step5_sel_act"
+          ]
+        },
+        {
+          "peer": "owner",
           "via": "rest",
           "op": "upload_bundle",
           "args": {
@@ -870,7 +1005,8 @@
           },
           "id": "to_v2",
           "needs": [
-            "act2"
+            "act2",
+            "step5_open_act"
           ]
         },
         {
@@ -921,13 +1057,13 @@
           "args": {
             "package_id": "qa.portal.actions",
             "content_hash": "$act3.content_hash",
-            "reconsent": true,
-            "sync": "+45",
-            "needs": [
-              "to_v3"
-            ]
+            "reconsent": true
           },
-          "id": "reconsent"
+          "id": "reconsent",
+          "sync": "+45",
+          "needs": [
+            "to_v3"
+          ]
         }
       ],
       "expect": [

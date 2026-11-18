@@ -571,3 +571,115 @@ fn net_journey_ingress_table_credentials_and_egress_refusals() {
     assert_eq!(refusal(post(EDITOR, "telemetry", JSON, b"{}")), IngressRefusal::NotFound);
     assert_eq!(audit.denials(), before);
 }
+
+#[test]
+fn empty_body_get_skips_content_type_enforcement() {
+    let clock = ManualClock::default();
+    clock.set(2_000);
+    let roles = Arc::new(Roles::default());
+    roles.set(LOCAL, RoleLevel::Owner);
+    roles.set(EDITOR, RoleLevel::Editor);
+    let audit = Arc::new(Audit::default());
+    let shared = crate::bindings::activation::SharedEgressBuckets::default();
+    let sources = NetSources {
+        roles,
+        audit,
+        credentials: Arc::new(NoCredentials),
+        runtime: None,
+        shared_egress: shared,
+    };
+    let net = Net::new(Arc::new(clock), sources);
+
+    let manifest: ExtensionManifest = serde_json::from_value(json!({
+        "manifest_version": 2,
+        "id": PACKAGE,
+        "version": "0.1.0",
+        "name": "HTTP reader",
+        "kind": "device-adapter",
+        "contract": "fractalengine:plugin@2.0.0",
+        "binding": "petal",
+        "ingress": [
+            {
+                "id": "status",
+                "transport": "http-server",
+                "methods": ["GET", "POST"],
+                "content_types": [JSON],
+                "max_body_bytes": 1024,
+                "rate_hz": 10,
+                "role_floor": "editor"
+            }
+        ]
+    }))
+    .expect("manifest");
+    let spec = InstanceSpec {
+        installation_id: "inst-get".into(),
+        content_hash: "ab".repeat(32),
+        verse_id: "01JVERSE".into(),
+        petal_id: PETAL.into(),
+        identity_did: LOCAL.into(),
+        manifest: Arc::new(manifest),
+    };
+    let key = spec.key();
+    net.register_instance(&spec).unwrap();
+
+    let get_empty = HttpIngressRequest {
+        petal_id: PETAL.into(),
+        package_id: PACKAGE.into(),
+        endpoint: "status".into(),
+        caller_did: EDITOR.into(),
+        method: "GET".into(),
+        sub_path: String::new(),
+        query: Vec::new(),
+        headers: Vec::new(),
+        content_type: None,
+        body: Vec::new(),
+    };
+    assert!(net.accept_http(get_empty).is_ok(), "GET with empty body should pass without Content-Type");
+
+    // POST without Content-Type must still be rejected with 415 UnsupportedMediaType.
+    let post_no_ct = HttpIngressRequest {
+        petal_id: PETAL.into(),
+        package_id: PACKAGE.into(),
+        endpoint: "status".into(),
+        caller_did: EDITOR.into(),
+        method: "POST".into(),
+        sub_path: String::new(),
+        query: Vec::new(),
+        headers: Vec::new(),
+        content_type: None,
+        body: b"{}".to_vec(),
+    };
+    assert_eq!(net.accept_http(post_no_ct).map(|_| ()).unwrap_err(), IngressRefusal::UnsupportedMediaType);
+
+    // Empty GET with explicit disallowed Content-Type must still be rejected with 415 UnsupportedMediaType.
+    let get_bad_ct = HttpIngressRequest {
+        petal_id: PETAL.into(),
+        package_id: PACKAGE.into(),
+        endpoint: "status".into(),
+        caller_did: EDITOR.into(),
+        method: "GET".into(),
+        sub_path: String::new(),
+        query: Vec::new(),
+        headers: Vec::new(),
+        content_type: Some("text/plain".into()),
+        body: Vec::new(),
+    };
+    assert_eq!(net.accept_http(get_bad_ct).map(|_| ()).unwrap_err(), IngressRefusal::UnsupportedMediaType);
+
+    // Non-empty GET with missing Content-Type is also still checked against content_types.
+    let get_with_body = HttpIngressRequest {
+        petal_id: PETAL.into(),
+        package_id: PACKAGE.into(),
+        endpoint: "status".into(),
+        caller_did: EDITOR.into(),
+        method: "GET".into(),
+        sub_path: String::new(),
+        query: Vec::new(),
+        headers: Vec::new(),
+        content_type: None,
+        body: b"{}".to_vec(),
+    };
+    assert_eq!(net.accept_http(get_with_body).map(|_| ()).unwrap_err(), IngressRefusal::UnsupportedMediaType);
+
+    net.unregister_instance(&key);
+}

@@ -69,6 +69,7 @@ pub fn ghost_material(rgba: [f32; 4]) -> StandardMaterial {
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         cull_mode: None,
+        depth_bias: 16.0,
         ..default()
     }
 }
@@ -239,6 +240,7 @@ pub fn heatmap_material() -> StandardMaterial {
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         cull_mode: None,
+        depth_bias: 16.0,
         ..default()
     }
 }
@@ -434,6 +436,7 @@ mod tests {
         assert!(mat.unlit);
         assert!(mat.cull_mode.is_none());
         assert!(mat.base_color.alpha() < 1.0);
+        assert!(mat.depth_bias > 0.0);
     }
 
     #[test]
@@ -628,5 +631,6 @@ mod tests {
             Color::WHITE,
             "heatmap starts white; vertex colors will tint per-vertex"
         );
+        assert!(mat.depth_bias > 0.0);
     }
 }

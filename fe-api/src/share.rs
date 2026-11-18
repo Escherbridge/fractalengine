@@ -136,12 +136,21 @@ pub async fn issue_share_url(
     }
     // Same dialect the redemption will run under, so a broken link fails at
     // mint (M4 fix B1: no comments / nested SELECT; exports one table).
+    let scope_parts = match fe_database::parse_scope(&claims.scope) {
+        Ok(parts) => parts,
+        Err(_) => return err(StatusCode::FORBIDDEN, "share links require a verse-scoped token"),
+    };
     let mode = if req.format == "json" {
         GuardMode::Egress
     } else {
         GuardMode::Export
     };
-    let prepared = match query_guard::prepare_scoped_sql(&req.sql, &[], mode) {
+    let prepared = match query_guard::prepare_scoped_sql_for_verse(
+        &req.sql,
+        &[],
+        Some(&scope_parts.verse_id),
+        mode,
+    ) {
         Ok(p) => p,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
     };

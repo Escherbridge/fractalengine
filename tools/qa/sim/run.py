@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 from ctypes import wintypes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -562,7 +563,8 @@ def namespaces(host, run_dir, packages=None):
 LOOPBACK_OPS = {"mqtt_publish", "publish_revocation"}
 # Example crates the extension scenarios install; staged by name (`package` args and `$run.packages.<name>` refs).
 EXAMPLE_PROJECTS = {"fleet-sim": "extensions/fleet-sim", "device-adapter": "extensions/device-adapter",
-                    "bi-push": "extensions/bi-push"}
+                    "bi-push": "extensions/bi-push", "city-map": "extensions/city-map",
+                    "city-map-legacy": "extensions/city-map"}
 PACKAGE_REFS = re.compile(r'"package"\s*:\s*"([A-Za-z0-9_.-]+)"|\$\{?run\.packages\.([A-Za-z0-9_-]+)')
 
 
@@ -611,14 +613,43 @@ def stage_extension_packages(run_dir, loopback, scenario, stage_dir):
     site_dir = os.path.join(run_dir, "loopback", "site")
     os.makedirs(packages_dir, exist_ok=True)
     staged = {}
+    built_projects = set()
+    projects_dir = os.path.join(run_dir, "loopback", "projects")
     for name in names:
         project = EXAMPLE_PROJECTS.get(name)
         project_dir = os.path.join(REPO_ROOT, project) if project else None
         if not project_dir or not os.path.isdir(project_dir):
             raise RuntimeError("no example project for package %r (known: %s)" % (name, ", ".join(sorted(EXAMPLE_PROJECTS))))
-        run_fe_ext([exe, "build", "--project", project_dir], 3600, "build " + name)
+        if project_dir not in built_projects:
+            run_fe_ext([exe, "build", "--project", project_dir], 3600, "build " + name)
+            built_projects.add(project_dir)
+        staged_dir = os.path.join(projects_dir, name)
+        os.makedirs(staged_dir, exist_ok=True)
+        with open(os.path.join(project_dir, "extension.json"), "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        if name == "device-adapter":
+            for ep in manifest.get("ingress") or []:
+                if ep.get("transport") == "mqtt":
+                    ep["broker"] = loopback.mqtt_url
+                    ep.pop("auth", None)
+            for ep in manifest.get("egress") or []:
+                if ep.get("transport") == "mqtt":
+                    ep["broker"] = loopback.mqtt_url
+                    ep.pop("auth", None)
+        elif name == "bi-push":
+            for ep in manifest.get("egress") or []:
+                if ep.get("transport") == "http":
+                    ep["url"] = loopback.sink_url
+                    ep.pop("auth", None)
+        elif name == "city-map-legacy":
+            manifest["id"] = "org.example.city-map-legacy"
+            manifest["version"] = "0.1.0"
+            manifest["name"] = "City map (legacy)"
+        with open(os.path.join(staged_dir, "extension.json"), "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(manifest, handle, indent=2)
+        component_path = os.path.join(project_dir, "dist", "component.wasm")
         path = os.path.join(packages_dir, name + ".hexon")
-        run_fe_ext([exe, "pack", "--project", project_dir, "--key", keys["publisher"], "--out", path], 600, "pack " + name)
+        run_fe_ext([exe, "pack", "--project", staged_dir, "--component", component_path, "--key", keys["publisher"], "--out", path], 600, "pack " + name)
         facts = json.loads(run_fe_ext([exe, "inspect", path, "--json"], 120, "inspect " + name))
         staged[name] = {"package_id": facts["package_id"], "version": facts["version"], "content_hash": facts["content_hash"],
                         "capability_digest": facts.get("capability_digest"), "path": path}
@@ -630,19 +661,96 @@ def stage_extension_packages(run_dir, loopback, scenario, stage_dir):
     return staged
 
 
-def stage_extension_config(run_dir, loopback):
+def _did_key_to_public_hex(did):
+    """Decode an Ed25519 `did:key:z6Mk...` into its 64-char hex raw public key."""
+    if not isinstance(did, str) or not did.startswith("did:key:z"):
+        return None
+    from loopback import BASE58
+    encoded = did[len("did:key:z"):]
+    value = 0
+    for ch in encoded:
+        idx = BASE58.find(ch)
+        if idx < 0:
+            return None
+        value = value * 58 + idx
+    leading = len(encoded) - len(encoded.lstrip(BASE58[0]))
+    body = value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b""
+    raw = (b"\x00" * leading) + body
+    if len(raw) != 34 or raw[:2] != b"\xed\x01":
+        return None
+    return raw[2:].hex()
+
+
+def portal_publisher_public_keys(scenario):
+    """Unique Ed25519 hex public keys of sealed `.qa/assets/portal/*.hexon` bundles referenced by `scenario`."""
+    blob = json.dumps({k: v for k, v in scenario.items() if not k.startswith("_")})
+    if "$assets.portal." not in blob:
+        return []
+    manifest_path = ASSET_MANIFESTS.get("portal")
+    if not manifest_path or not os.path.isfile(manifest_path):
+        return []
+    with open(manifest_path, encoding="utf-8") as handle:
+        entries = json.load(handle).get("assets") or []
+    keys = []
+    for entry in entries:
+        if not entry.get("sealed"):
+            continue
+        hexon_path = entry.get("path")
+        if not hexon_path or not os.path.isfile(hexon_path):
+            continue
+        try:
+            with zipfile.ZipFile(hexon_path, "r") as archive:
+                meta = json.loads(archive.read("manifest.json").decode("utf-8"))
+        except (OSError, KeyError, ValueError):
+            continue
+        pub_hex = _did_key_to_public_hex(meta.get("publisher_did"))
+        if pub_hex and pub_hex not in keys:
+            keys.append(pub_hex)
+    return keys
+
+
+def append_portal_publishers(config_dir, public_keys):
+    """Ensure `trusted_publishers.toml` inside `config_dir` trusts every portal fixture publisher key."""
+    if not public_keys:
+        return
+    toml_path = os.path.join(config_dir, "trusted_publishers.toml")
+    existing = ""
+    if os.path.isfile(toml_path):
+        with open(toml_path, "r", encoding="utf-8") as handle:
+            existing = handle.read()
+    blocks = []
+    for idx, pub_hex in enumerate(public_keys):
+        if pub_hex in existing:
+            continue
+        key_id = "fe-qa-portal-publisher" if idx == 0 else "fe-qa-portal-publisher-%d" % (idx + 1)
+        blocks.append('[[publisher]]\nkey_id = "%s"\npublic_key = "%s"\nrole = "release"\n' % (key_id, pub_hex))
+    if not blocks:
+        return
+    os.makedirs(config_dir, exist_ok=True)
+    sep = "\n" if existing and not existing.endswith("\n") else ""
+    with open(toml_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(existing + sep + ("\n" if existing else "") + "\n".join(blocks))
+
+
+def stage_extension_config(run_dir, loopback, portal_keys=()):
     """One run-scoped extension config dir every peer inherits (FE_EXT_CONFIG_DIR through peers.ps1 and launch.ps1).
 
     It holds the loopback's revocation root and pinned index source; the pull interval drops to the 10 s floor so a
     published revocation lands inside one run (the 15 min default never would).
     """
-    config_dir = loopback.write_extension_config(os.path.join(run_dir, "extensions"))
+    config_dir = os.path.join(run_dir, "extensions")
+    if loopback is not None:
+        config_dir = loopback.write_extension_config(config_dir)
+    append_portal_publishers(config_dir, portal_keys)
     os.environ["FE_EXT_CONFIG_DIR"] = config_dir
-    os.environ.setdefault("FE_EXT_REVOCATION_PULL_SECS", "10")
-    return {"config_dir": config_dir, "revocation_pull_secs": os.environ["FE_EXT_REVOCATION_PULL_SECS"]}
+    if loopback is not None:
+        os.environ.setdefault("FE_EXT_REVOCATION_PULL_SECS", "10")
+    return {"config_dir": config_dir,
+            "portal_publishers": list(portal_keys),
+            "revocation_pull_secs": os.environ.get("FE_EXT_REVOCATION_PULL_SECS")}
 
 
-def register_peer_extension_policies(host, scenario, run_dir, loopback):
+def register_peer_extension_policies(host, scenario, run_dir, loopback, portal_keys=()):
     """Give each peer declaring extension_policy its own config dir (shared files plus extensions.toml) for its restarts.
 
     Governance reads extensions.toml at startup only and peers.ps1 Start has no per-member environment, so the policy
@@ -657,6 +765,7 @@ def register_peer_extension_policies(host, scenario, run_dir, loopback):
         if loopback is None:
             raise RuntimeError("peer %s declares extension_policy but the scenario stages no extension config" % peer["name"])
         peer_dir = loopback.write_extension_config(os.path.join(run_dir, "extensions-%s" % peer["name"]))
+        append_portal_publishers(peer_dir, portal_keys)
         with open(os.path.join(peer_dir, "extensions.toml"), "w", encoding="utf-8", newline="\n") as handle:
             handle.write("deny = %s\n" % json.dumps(policy["deny"]))  # package ids: JSON strings are TOML basic strings
         host.peer_env[peer["name"]] = {**os.environ, "FE_EXT_CONFIG_DIR": peer_dir}
@@ -695,6 +804,8 @@ def run(args):
     prober = sampler = loopback = None
     started = False
     failure = None
+    prev_ext_config_dir = os.environ.get("FE_EXT_CONFIG_DIR")
+    portal_keys = portal_publisher_public_keys(scenario)
     try:
         if uses_loopback(scenario):  # bound before the peers start: fixture builds and the trust file name its ports and key
             loopback = Loopback(run_dir, "%s:%s" % (scenario["name"], scenario["seed"]))
@@ -703,11 +814,14 @@ def run(args):
             if args.attach:
                 log("WARNING: --attach: the peers were started elsewhere, so they do not trust this run's loopback keys")
             else:
-                meta["extension_config"] = stage_extension_config(run_dir, loopback)
+                meta["extension_config"] = stage_extension_config(run_dir, loopback, portal_keys)
                 staged = stage_extension_packages(run_dir, loopback, scenario, launch["stage_dir"] if launch else None)
                 meta["extension_packages"] = {n: {k: v for k, v in e.items() if k != "path"} for n, e in staged.items()}
                 if staged:
                     log("extension index staged: %s" % ", ".join("%s %s" % (e["package_id"], e["version"]) for e in staged.values()))
+        elif portal_keys and not args.attach:
+            meta["extension_config"] = stage_extension_config(run_dir, None, portal_keys)
+            log("portal fixture publisher trust staged: %d key(s)" % len(portal_keys))
         if args.attach:
             host.attach()
             attached_exe = host.record["members"][0]["process_identity"].get("exe_path")
@@ -722,7 +836,7 @@ def run(args):
             host.tile()
             if not args.skip_join:
                 host.join(run_dir)
-            meta["extension_policies"] = register_peer_extension_policies(host, scenario, run_dir, loopback)
+            meta["extension_policies"] = register_peer_extension_policies(host, scenario, run_dir, loopback, portal_keys)
         present = [m["name"] for m in host.record["members"]]
         meta["peers"] = [{"name": m["name"], "role": m.get("role"), "run_dir": m["run_dir"], "api_base": m.get("api_base"),
                           "pid": m["process_identity"]["pid"], "exe": m["process_identity"].get("exe_path")} for m in host.record["members"]]
@@ -776,6 +890,10 @@ def run(args):
             except Exception as error:  # noqa: BLE001
                 log("cleanup error: %s" % error)
                 failure = failure or error
+        if prev_ext_config_dir is None:
+            os.environ.pop("FE_EXT_CONFIG_DIR", None)
+        else:
+            os.environ["FE_EXT_CONFIG_DIR"] = prev_ext_config_dir
     # Record the outcome so the analyzer reports an aborted run as a harness anomaly, never as a clean 0.
     meta["failure"] = "%s: %s" % (type(failure).__name__, failure) if failure else None
     with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as handle:

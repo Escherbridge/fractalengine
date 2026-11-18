@@ -1,0 +1,17 @@
+[package]
+name = "city-map"
+version = "1.2.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "Example extension: provides petal.map without scene writes"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fe-ext-guest = { path = "../../tools/fe-ext/guest", features = ["hooks"] }
+serde_json = "1"
+
+# Standalone: built for wasm32-wasip2 by `fe-ext build`, never part of the host workspace.
+[workspace]

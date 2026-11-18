@@ -2,6 +2,11 @@
 //!
 //! The public API surface extension authors program against: serde-light deps,
 //! decoupled from engine internals (module map: src/AGENTS.md §modules).
+//!
+//! Boundary: guest/manifest modules (`manifest_v2`, `node`, `property`, `scene`,
+//! `transaction`, `query`, `storage`, `ui`, `units`) live separately from
+//! host-wiring modules (`plugin_host`, `legacy_identifier`), whose internals are
+//! not re-exported at the crate root.
 
 #![warn(missing_docs)]
 
@@ -9,11 +14,13 @@ pub mod api;
 pub mod context;
 pub mod device_format;
 pub mod events;
+/// Host-only canonical identifier mapping for legacy database records; use via `fe_sdk::legacy_identifier::*`.
 pub mod legacy_identifier;
 pub mod manifest_v2;
 pub mod node;
 pub mod path_asset;
 pub mod path_geometry;
+/// Host-only runtime traits (`NodeReader`, `TransactionSink`, `PluginLease`); use via `fe_sdk::plugin_host::*`.
 pub mod plugin_host;
 pub mod primitive;
 pub mod property;
@@ -27,12 +34,11 @@ pub mod transaction;
 pub mod ui;
 pub mod units;
 
-// Re-exports for convenience
+// Guest-facing convenience re-exports (host-internal `plugin_host` and `legacy_identifier` excluded).
 pub use api::{ApiExtensionHandle, ExtensionRoute, HttpMethod};
 pub use context::PluginContext;
 pub use device_format::DeviceFormatDescriptor;
 pub use events::{EventSubscription, PluginEvent};
-pub use legacy_identifier::{legacy_identifier, LegacyIdentifierError, LegacyTable};
 pub use node::NodeSnapshot;
 pub use path_asset::{PathAssetDescriptor, SpacingMode, PATH_ASSET_PROPERTY_KEY};
 pub use primitive::{PrimitiveDescriptor, PrimitiveKind, PRIMITIVE_PROPERTY_KEY};

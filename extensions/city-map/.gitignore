@@ -1,0 +1,4 @@
+# Standalone workspace root: it tracks its own Cargo.lock (leaf crate), created by the first
+# `cargo build --manifest-path extensions/city-map/Cargo.toml` and never hand-written.
+target/
+dist/

@@ -62,6 +62,9 @@ const PETAL_SCOPED_TABLES: &[&str] = &[
 
 /// The table whose rows carry the iroh-docs replica read capability (`namespace_id`).
 const VERSE_TABLE: &str = "VERSE";
+const FRACTAL_TABLE: &str = "FRACTAL";
+const FIELD_DEF_TABLE: &str = "FIELD_DEF";
+const VERSE_SCOPED_TABLES: &[&str] = &[VERSE_TABLE, FRACTAL_TABLE, FIELD_DEF_TABLE];
 
 /// What every `VERSE` FROM target becomes: the capability column and the record id (whose
 /// `id.*` would re-fetch it) are never visible — AGENTS.md §query-guard.
@@ -765,17 +768,20 @@ fn reject_foreign_record_literals(sql_upper: &str, readable: &[&str]) -> Result<
     Ok(())
 }
 
+fn is_safe_scope_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// The server-built row predicate for a petal allow-list (`false` = deny all).
 /// Ids outside `[A-Za-z0-9_-]` are dropped, never escaped.
 fn petal_filter_clause(petals: &[String]) -> String {
     let safe: Vec<&str> = petals
         .iter()
         .map(String::as_str)
-        .filter(|p| {
-            !p.is_empty()
-                && p.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        })
+        .filter(|p| is_safe_scope_id(p))
         .collect();
     match safe.as_slice() {
         [] => "false".to_string(),
@@ -787,6 +793,27 @@ fn petal_filter_clause(petals: &[String]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+    }
+}
+
+fn verse_scoped_source(table: &str, original: &str, verse_id: &str) -> String {
+    let safe = is_safe_scope_id(verse_id).then_some(verse_id);
+    match table {
+        VERSE_TABLE => match safe {
+            Some(vid) => format!("(SELECT * OMIT id, namespace_id FROM verse WHERE verse_id = '{vid}')"),
+            None => "(SELECT * OMIT id, namespace_id FROM verse WHERE false)".to_string(),
+        },
+        FRACTAL_TABLE => match safe {
+            Some(vid) => format!("(SELECT * FROM {original} WHERE verse_id = '{vid}')"),
+            None => format!("(SELECT * FROM {original} WHERE false)"),
+        },
+        FIELD_DEF_TABLE => match safe {
+            Some(vid) => format!(
+                "(SELECT * FROM {original} WHERE scope = 'VERSE#{vid}' OR string::starts_with(scope, 'VERSE#{vid}-FRACTAL#'))"
+            ),
+            None => format!("(SELECT * FROM {original} WHERE false)"),
+        },
+        _ => original.to_string(),
     }
 }
 
@@ -828,6 +855,17 @@ pub fn prepare_scoped_sql(
     petals: &[String],
     mode: GuardMode,
 ) -> Result<PreparedSql, String> {
+    prepare_scoped_sql_for_verse(sql, petals, None, mode)
+}
+
+/// Like [`prepare_scoped_sql`], additionally confining `VERSE`, `FRACTAL`, and
+/// `FIELD_DEF` FROM targets to `verse_id` when `Some`.
+pub fn prepare_scoped_sql_for_verse(
+    sql: &str,
+    petals: &[String],
+    verse_id: Option<&str>,
+    mode: GuardMode,
+) -> Result<PreparedSql, String> {
     let trimmed = sql.trim();
     // R5 (2026-10-09): unconditional in every mode — `Query` used to skip
     // this, which let a comment token survive into `reject_record_
@@ -853,12 +891,22 @@ pub fn prepare_scoped_sql(
         }
     }
 
-    // Every mention of a petal-scoped table (or `verse`, e.g. a `verse:<id>` record literal)
-    // must be a FROM target we rewrite.
-    for table in PETAL_SCOPED_TABLES
-        .iter()
-        .chain(std::iter::once(&VERSE_TABLE))
-    {
+    // Every mention of a petal-scoped table (or `verse`, and `fractal`/`field_def`
+    // when verse scoping is active) must be a FROM target we rewrite.
+    let must_be_from_only: Vec<&str> = if verse_id.is_some() {
+        PETAL_SCOPED_TABLES
+            .iter()
+            .chain(VERSE_SCOPED_TABLES.iter())
+            .copied()
+            .collect()
+    } else {
+        PETAL_SCOPED_TABLES
+            .iter()
+            .chain(std::iter::once(&VERSE_TABLE))
+            .copied()
+            .collect()
+    };
+    for table in must_be_from_only {
         for pos in word_positions(&upper, table) {
             if !targets.iter().any(|t| t.start == pos) {
                 return Err(format!(
@@ -878,6 +926,9 @@ pub fn prepare_scoped_sql(
                 t.start..t.end,
                 &format!("(SELECT * FROM {original} WHERE {filter})"),
             );
+        } else if let Some(vid) = verse_id.filter(|_| VERSE_SCOPED_TABLES.contains(&t.table.as_str())) {
+            let original = canonical[t.start..t.end].to_string();
+            out.replace_range(t.start..t.end, &verse_scoped_source(&t.table, &original, vid));
         } else if t.table == VERSE_TABLE {
             out.replace_range(t.start..t.end, VERSE_SAFE_SOURCE);
         }
@@ -1548,5 +1599,74 @@ mod tests {
         assert_eq!(strip_comments("A//x\nB"), "AB");
         // Comment-like bytes inside a string literal are preserved verbatim.
         assert_eq!(strip_comments("SELECT 'a/*b*/c'"), "SELECT 'a/*b*/c'");
+    }
+
+    #[test]
+    fn verse_scoped_sql_confines_verse_fractal_and_field_def() {
+        let verse_q = prepare_scoped_sql_for_verse(
+            "SELECT * FROM verse",
+            &p(&["P1"]),
+            Some("v1"),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(
+            verse_q.sql,
+            "SELECT * FROM (SELECT * OMIT id, namespace_id FROM verse WHERE verse_id = 'v1')"
+        );
+
+        let fractal_q = prepare_scoped_sql_for_verse(
+            "SELECT * FROM fractal",
+            &p(&["P1"]),
+            Some("v1"),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(
+            fractal_q.sql,
+            "SELECT * FROM (SELECT * FROM fractal WHERE verse_id = 'v1')"
+        );
+
+        let field_def_q = prepare_scoped_sql_for_verse(
+            "SELECT * FROM field_def",
+            &p(&["P1"]),
+            Some("v1"),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(
+            field_def_q.sql,
+            "SELECT * FROM (SELECT * FROM field_def WHERE scope = 'VERSE#v1' OR string::starts_with(scope, 'VERSE#v1-FRACTAL#'))"
+        );
+
+        // Unsafe / empty verse id fails closed to `WHERE false`.
+        let denied = prepare_scoped_sql_for_verse(
+            "SELECT * FROM fractal",
+            &p(&[]),
+            Some(""),
+            GuardMode::Query,
+        )
+        .unwrap();
+        assert_eq!(denied.sql, "SELECT * FROM (SELECT * FROM fractal WHERE false)");
+
+        // Record-id literals for fractal/field_def are rejected when verse scoping is active.
+        assert!(
+            prepare_scoped_sql_for_verse(
+                "SELECT fractal:abc.name FROM verse",
+                &p(&[]),
+                Some("v1"),
+                GuardMode::Query,
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_scoped_sql_for_verse(
+                "SELECT field_def:abc.* FROM verse",
+                &p(&[]),
+                Some("v1"),
+                GuardMode::Query,
+            )
+            .is_err()
+        );
     }
 }

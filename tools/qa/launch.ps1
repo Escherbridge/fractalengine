@@ -173,6 +173,21 @@ if ($resume) {
     $stderrPath = Join-Path $attemptDir 'stderr.log'
 }
 
+$peerExtDir = Join-Path $run 'extensions'
+New-Item -ItemType Directory -Force -Path $peerExtDir | Out-Null
+if ($env:FE_EXT_CONFIG_DIR -and (Test-Path -LiteralPath $env:FE_EXT_CONFIG_DIR)) {
+    $srcExtDir = [IO.Path]::GetFullPath($env:FE_EXT_CONFIG_DIR).TrimEnd('\', '/')
+    $dstExtDir = [IO.Path]::GetFullPath($peerExtDir).TrimEnd('\', '/')
+    if ($srcExtDir -ine $dstExtDir) {
+        foreach ($cfgFile in @('trusted_publishers.toml', 'extension_sources.json', 'extensions.toml', 'entitlement_issuers.toml')) {
+            $srcFile = Join-Path $srcExtDir $cfgFile
+            if (Test-Path -LiteralPath $srcFile) {
+                Copy-Item -LiteralPath $srcFile -Destination (Join-Path $peerExtDir $cfgFile) -Force
+            }
+        }
+    }
+}
+
 $appEnvironment = @{
     FE_API_DEV_TOKEN_OUT = $tokensPath
     FE_QA_STORAGE_ROOT = $run
@@ -182,6 +197,7 @@ $appEnvironment = @{
     FE_QA_A11Y_CONTINUOUS = $(if ($A11yContinuous) { '1' } else { '0' })
     FE_SYNC_RELAY = 'disabled'
     FE_HEXON_DIR = $hexonDir
+    FE_EXT_CONFIG_DIR = $peerExtDir
     FE_PLUGIN_HOST_ALLOW = $(if ($env:FE_PLUGIN_HOST_ALLOW) { $env:FE_PLUGIN_HOST_ALLOW } else { '1' })
     RUST_LOG = $(if ($env:FE_QA_RUST_LOG) { $env:FE_QA_RUST_LOG } else { 'info' })
 }

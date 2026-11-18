@@ -41,6 +41,7 @@ exclude = [
     "extensions/fleet-sim",
     "extensions/device-adapter",
     "extensions/bi-push",
+    "extensions/city-map",
 ]
 resolver = "2"
 

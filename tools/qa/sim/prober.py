@@ -261,7 +261,9 @@ class Prober:
             jobs.append(("terrain", key, submit(get, "terrain", "/api/v1/petals/%s/terrain" % target)))
         for target, key in targets.get("extension", []):
             path = "/api/v1/extensions" if target == "list" else "/api/v1/extensions/%s" % target
-            jobs.append(("extension", key, submit(get, "extension", path)))
+            ext_token = client.debug_token() or token
+            counts["extension"] = counts.get("extension", 0) + 1
+            jobs.append(("extension", key, submit(client.send, "GET", path, None, ext_token, 8.0)))
         if targets.get("hierarchy") and self._is_due(due, "hierarchy", "hierarchy_ms", now):
             jobs.append(("hierarchy", None, submit(get, "hierarchy", "/api/v1/hierarchy")))
         if (targets.get("nav") or targets.get("ui")) and self._is_due(due, "ui", "ui_ms", now):

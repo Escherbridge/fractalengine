@@ -6,6 +6,7 @@ pub mod bindings;
 pub mod bus;
 pub mod capability;
 pub mod context;
+pub mod host_bridge;
 pub mod host_env;
 pub mod lifecycle;
 pub mod net;

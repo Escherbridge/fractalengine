@@ -2,6 +2,10 @@
 //! Design notes: tools/fe-ext/AGENTS.md §guest-sdk. Contract: docs/extensions/authoring-guide.md.
 
 /// The generated bindings, straight from `fe-plugin/wit/fractal-plugin-2.wit`.
+///
+/// Hidden from generated guest docs so authors program against the typed
+/// capability-scoped modules above rather than raw WIT paths.
+#[doc(hidden)]
 pub mod bindings {
     #[cfg(not(feature = "hooks"))]
     wit_bindgen::generate!({
