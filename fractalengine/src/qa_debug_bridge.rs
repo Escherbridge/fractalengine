@@ -548,9 +548,14 @@ fn bundle_portal_block(portal: &fe_ui::portal::PortalState) -> Value {
         BundleState::Closed => "closed",
     };
     let chrome = fe_ui::portal::chrome::chrome_model(state);
-    json!({"node_id":node_id,"state":code,
+    let protocol_status = matches!(state, BundleState::Revoked(_)).then_some(410);
+    let mut out = json!({"node_id":node_id,"state":code,
         "badge_text":chrome.as_ref().map(|chrome| chrome.badge_text.as_str()),
-        "badge_name":chrome.as_ref().map(|chrome| chrome.badge_name.as_str())})
+        "badge_name":chrome.as_ref().map(|chrome| chrome.badge_name.as_str())});
+    if let (Some(status), Some(map)) = (protocol_status, out.as_object_mut()) {
+        map.insert("protocol_status".into(), Value::from(status));
+    }
+    out
 }
 
 impl UiState<'_, '_> {

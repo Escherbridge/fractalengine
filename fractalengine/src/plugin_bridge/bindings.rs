@@ -34,6 +34,7 @@ pub(super) fn tick_totals(ticks: &TickHost, instances: &[RunningInstance]) -> Ti
 #[derive(Resource, Clone)]
 pub(crate) struct ExtensionHostParts {
     pub(super) local_did: String,
+    pub(super) local_client_did: Option<String>,
     pub(super) bus: Bus,
     pub(super) net: Net,
     pub(super) runtime: Option<tokio::runtime::Handle>,
@@ -87,6 +88,12 @@ pub(crate) struct BusExtensionHost {
 }
 
 impl BusExtensionHost {
+    fn is_local_client(&self, caller: &ApiCaller) -> bool {
+        self.parts.local_client_did.as_deref().is_some_and(|cid| {
+            !cid.is_empty() && caller.client.as_deref() == Some(cid)
+        })
+    }
+
     pub(super) fn bus_caller(&self, caller: &ApiCaller) -> Caller {
         let kind = match caller.kind {
             ApiCallerKind::Rest => CallerKind::Rest,
@@ -98,7 +105,7 @@ impl BusExtensionHost {
             kind,
             package_id: None,
             local: caller.did == self.parts.bus.local_did()
-                && caller.role_ceiling.is_at_least(RoleLevel::Owner),
+                && (caller.role_ceiling.is_at_least(RoleLevel::Owner) || self.is_local_client(caller)),
             role_ceiling: Some(caller.role_ceiling),
         }
     }
@@ -317,16 +324,25 @@ impl ExtensionHost for BusExtensionHost {
         command: &str,
         args: &Value,
     ) -> Result<CommandReply, HostRefusal> {
-        let ticket = match self
-            .parts
-            .bus
-            .call_command(
-                &self.bus_caller(caller),
+        let bus_caller = self.bus_caller(caller);
+        let outcome = if self.is_local_client(caller) {
+            self.parts.bus.call_command_local_client(
+                &bus_caller,
                 petal_id,
                 package_id,
                 command,
                 args,
-            ) {
+            )
+        } else {
+            self.parts.bus.call_command(
+                &bus_caller,
+                petal_id,
+                package_id,
+                command,
+                args,
+            )
+        };
+        let ticket = match outcome {
             Ok(ticket) => ticket,
             Err(refusal) => {
                 let err = host_refusal(refusal);
@@ -574,6 +590,7 @@ impl ExtensionHost for BusExtensionHost {
 #[derive(Resource, Clone)]
 pub(crate) struct ExtensionBindings {
     pub(super) local_did: String,
+    pub(super) local_client_did: Option<String>,
     pub(super) db: Sender<DbCommand>,
     pub(super) bus: Bus,
     pub(super) roles: Arc<dyn RoleSource>,
@@ -673,6 +690,10 @@ pub(super) fn refused_now<T>(message: &str) -> tokio::sync::oneshot::Receiver<Re
 impl BindingHost for ExtensionBindings {
     fn local_did(&self) -> String {
         self.local_did.clone()
+    }
+
+    fn local_client_did(&self) -> Option<String> {
+        self.local_client_did.clone()
     }
 
     fn admit_remote(&self, did: &str) -> bool {

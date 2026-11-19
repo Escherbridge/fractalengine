@@ -22,7 +22,7 @@ VIAS = {
              "portal_ipc_stats", "portal_admit", "portal_killswitch", "portal_ipc_post", "regrant_role"},
     "mcp": None,  # any MCP tool name; args are the tool arguments
     "gui": {"click", "click_until", "type", "key", "scroll", "scroll_until", "wait_for", "click_at"},
-    "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint"},
+    "host": {"restart", "stop_peer", "sleep", "wait_role", "fingerprint", "evict_blob"},
     # Extension administration through the app's own surfaces (user decision 2026-11-09): the Extensions panel by
     # accessible name, or `fe-ext admin` on the local channel; consent is always a GUI click. driver.py EXT_OPS.
     "ext": {"ext_install", "ext_consent", "ext_accept", "ext_bind", "ext_enable", "ext_disable", "ext_update",

@@ -63,6 +63,9 @@ pub(crate) async fn mint_api_token_handler(
     }
     // Validate (or generate) the client before any read or write.
     let client = fe_identity::resolve_client_did(client_did)?;
+    if fe_identity::is_reserved_local_client_did(&client) {
+        anyhow::bail!("client DID is reserved for host dev tokens");
+    }
 
     // --- Authorization: caller must have Manager+ role at the requested scope ---
     let authority = super::entity::prepare_scope_permission(

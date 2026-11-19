@@ -480,6 +480,7 @@ impl WebViewBackend for TauriBackend {
     ) -> Result<(), fe_runtime::qa_debug::QaFailure> {
         #[cfg(target_os = "windows")]
         {
+            let is_portal = self.fixture_surface.is_portal_command(command);
             let visible = self.fixture_visible();
             let result = self.fixture_surface.start(
                 &self.webview,
@@ -487,7 +488,7 @@ impl WebViewBackend for TauriBackend {
                 self.guard_unusable.get(),
                 command,
             );
-            if matches!(&result, Err(error) if error.code == "portal_script_unavailable") {
+            if !is_portal && matches!(&result, Err(error) if error.code == "portal_script_unavailable") {
                 super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
             }
             result
@@ -502,6 +503,7 @@ impl WebViewBackend for TauriBackend {
     fn fixture_poll(&mut self) -> Option<fe_runtime::qa_portal::FixtureOutcome> {
         #[cfg(target_os = "windows")]
         {
+            let was_portal = self.fixture_surface.is_portal_pending();
             let visible = self.fixture_visible();
             let mut result =
                 self.fixture_surface
@@ -516,7 +518,8 @@ impl WebViewBackend for TauriBackend {
                     result = Some(Err(fe_runtime::qa_portal::stale()));
                 }
             }
-            if matches!(&result, Some(Err(error)) if matches!(error.code, "portal_fixture_changed" | "portal_capture_unavailable" | "portal_script_unavailable"))
+            if !was_portal
+                && matches!(&result, Some(Err(error)) if matches!(error.code, "portal_fixture_changed" | "portal_capture_unavailable" | "portal_script_unavailable"))
             {
                 super::qa_navigation::abort(&self.webview, &self.guard_unusable, &self.events);
             }

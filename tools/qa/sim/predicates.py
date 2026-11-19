@@ -62,19 +62,33 @@ def split_path(path):
     return parts
 
 
+def _walk_path(current, segments):
+    if not segments:
+        return (current is not None), current
+    seg = segments[0]
+    if isinstance(current, dict) and seg in current:
+        found, inner = _walk_path(current[seg], segments[1:])
+        if found:
+            return True, inner
+    elif isinstance(current, list) and seg.lstrip("-").isdigit() and -len(current) <= int(seg) < len(current):
+        found, inner = _walk_path(current[int(seg)], segments[1:])
+        if found:
+            return True, inner
+    if isinstance(current, dict) and len(segments) > 1:
+        for end in range(len(segments), 1, -1):
+            joined = ".".join(segments[:end])
+            if joined in current:
+                found, inner = _walk_path(current[joined], segments[end:])
+                if found:
+                    return True, inner
+    return False, None
+
+
 def at_path(value, path):
-    """(found, inner) for a dotted path; numeric segments index lists."""
+    """(found, inner) for a dotted path; numeric segments index lists; dotted literal keys fall back to prefix joins."""
     if not path:
         return (not is_absent_marker(value)), value
-    current = value
-    for segment in split_path(path):
-        if isinstance(current, dict) and segment in current:
-            current = current[segment]
-        elif isinstance(current, list) and segment.lstrip("-").isdigit() and -len(current) <= int(segment) < len(current):
-            current = current[int(segment)]
-        else:
-            return False, None
-    return current is not None, current
+    return _walk_path(value, split_path(path))
 
 
 def approx_equal(left, right):

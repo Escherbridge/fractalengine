@@ -216,6 +216,8 @@ impl SceneBackendFactory for DbSceneFactory {
 pub(crate) struct ExtensionBridgeConfig {
     /// The host's local DID (the identity every extension instance writes as).
     pub local_did: String,
+    /// Client DID of loopback API tokens minted by this host process (`None` disables local-client recognition).
+    pub local_client_did: Option<String>,
     /// The API command channel the bus query and scene sources use.
     pub api_cmd_tx: Option<Sender<fe_runtime::messages::ApiCommand>>,
     /// The committed-scene change broadcast (`entity_change_tx`) feeding `host/node-changes`.
@@ -593,14 +595,16 @@ impl SceneSnapshotSource for DbSceneSnapshots {
         vars.insert("pid".to_string(), json!(petal_id));
         // Capped at read time to REST's row cap, so a huge petal is never loaded whole (F-BUS note).
         let sql = fe_api::query_guard::with_statement_timeout(&format!(
-            "SELECT * FROM node WHERE petal_id = $pid LIMIT {}",
+            "SELECT * FROM node WHERE petal_id = $pid AND tombstone = NONE ORDER BY created_at ASC LIMIT {}",
             fe_api::limits::QUERY_ROW_CAP
         ));
         let spawned = std::thread::Builder::new()
             .name("fe-bus-snapshot".into())
             .spawn(move || {
                 let _slot = slot;
-                let _ = reply.send(db_rows(&api, sql, vars));
+                let transformed = db_rows(&api, sql, vars)
+                    .map(|rows| rows.into_iter().map(|row| raw_node_row_to_snapshot(&row)).collect());
+                let _ = reply.send(transformed);
             });
         if let Err(error) = spawned {
             tracing::warn!(%error, "bus snapshot thread did not start");
@@ -787,6 +791,135 @@ impl PetalDirectory {
         );
         *current = next;
         changed
+    }
+}
+
+/// Normalizes a raw SurrealDB `node` row into the `NodeDto + "properties"` shape expected
+/// by `host/node-changes` snapshots (`bus.md §2.1`).
+pub(super) fn raw_node_row_to_snapshot(row: &Value) -> Value {
+    let id = row
+        .get("node_id")
+        .or_else(|| row.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let petal_id = row
+        .get("petal_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let name = row
+        .get("display_name")
+        .or_else(|| row.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let y_elev = row.get("elevation").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let position: [f32; 3] = match row.get("position") {
+        Some(Value::Object(obj)) => {
+            let coords = obj.get("coordinates").and_then(Value::as_array);
+            match coords {
+                Some(arr) if arr.len() >= 3 => [
+                    arr[0].as_f64().unwrap_or(0.0) as f32,
+                    arr[1].as_f64().unwrap_or(0.0) as f32,
+                    arr[2].as_f64().unwrap_or(0.0) as f32,
+                ],
+                Some(arr) if arr.len() >= 2 => [
+                    arr[0].as_f64().unwrap_or(0.0) as f32,
+                    y_elev,
+                    arr[1].as_f64().unwrap_or(0.0) as f32,
+                ],
+                _ => [0.0, y_elev, 0.0],
+            }
+        }
+        Some(Value::Array(arr)) if arr.len() >= 3 => [
+            arr[0].as_f64().unwrap_or(0.0) as f32,
+            arr[1].as_f64().unwrap_or(0.0) as f32,
+            arr[2].as_f64().unwrap_or(0.0) as f32,
+        ],
+        Some(Value::Array(arr)) if arr.len() >= 2 => [
+            arr[0].as_f64().unwrap_or(0.0) as f32,
+            y_elev,
+            arr[1].as_f64().unwrap_or(0.0) as f32,
+        ],
+        _ => [0.0, y_elev, 0.0],
+    };
+
+    let rotation: [f32; 4] = match row.get("rotation").and_then(Value::as_array) {
+        Some(arr) if arr.len() == 4 => [
+            arr[0].as_f64().unwrap_or(0.0) as f32,
+            arr[1].as_f64().unwrap_or(0.0) as f32,
+            arr[2].as_f64().unwrap_or(0.0) as f32,
+            arr[3].as_f64().unwrap_or(1.0) as f32,
+        ],
+        Some(arr) => {
+            let euler: Vec<f64> = arr.iter().filter_map(Value::as_f64).collect();
+            fe_runtime::node_history::stored_rotation_quaternion(&euler)
+                .unwrap_or([0.0, 0.0, 0.0, 1.0])
+        }
+        None => [0.0, 0.0, 0.0, 1.0],
+    };
+
+    let scale: [f32; 3] = std::array::from_fn(|axis| {
+        row.get("scale")
+            .and_then(|s| s.get(axis))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && (*v as f32).is_finite())
+            .unwrap_or(1.0) as f32
+    });
+
+    let has_asset = row
+        .get("has_asset")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| row.get("asset_id").is_some_and(|v| !v.is_null()));
+    let asset_path = row.get("asset_path").cloned().unwrap_or(Value::Null);
+    let properties = row
+        .get("properties")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    json!({
+        "id": id,
+        "name": name,
+        "petal_id": petal_id,
+        "position": position,
+        "rotation": rotation,
+        "scale": scale,
+        "has_asset": has_asset,
+        "asset_path": asset_path,
+        "properties": properties,
+    })
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::raw_node_row_to_snapshot;
+    use serde_json::json;
+
+    #[test]
+    fn transforms_raw_surreal_node_row_to_node_dto_with_properties() {
+        let raw = json!({
+            "node_id": "node-1",
+            "petal_id": "petal-1",
+            "display_name": "Rover Alpha",
+            "position": { "type": "Point", "coordinates": [12.5, -4.25] },
+            "elevation": 3.5,
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 2.0, 1.0],
+            "asset_id": "asset-99",
+            "properties": { "fleet.speed": 4.2, "secret": "drop" }
+        });
+        let dto = raw_node_row_to_snapshot(&raw);
+        assert_eq!(dto["id"], "node-1");
+        assert_eq!(dto["name"], "Rover Alpha");
+        assert_eq!(dto["petal_id"], "petal-1");
+        assert_eq!(dto["position"], json!([12.5, 3.5, -4.25]));
+        assert_eq!(dto["rotation"], json!([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(dto["scale"], json!([1.0, 2.0, 1.0]));
+        assert_eq!(dto["has_asset"], true);
+        assert_eq!(dto["properties"]["fleet.speed"], 4.2);
     }
 }
 

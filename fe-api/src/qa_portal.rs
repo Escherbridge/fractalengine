@@ -118,10 +118,9 @@ async fn admitted(
     } else {
         fe_runtime::qa_web::allows(&result.receipt.url)
     };
-    if crate::auth::require_scope(claims, &result.receipt.scope).is_err()
-        || !url_ok
-        || !command.is_current()
-    {
+    let scope_ok = fe_runtime::qa_debug::qa_operator_covers(&claims.scope)
+        || crate::auth::require_scope(claims, &result.receipt.scope).is_ok();
+    if !scope_ok || !url_ok || !command.is_current() {
         return Err(refusal(
             StatusCode::CONFLICT,
             "portal_fixture_changed",

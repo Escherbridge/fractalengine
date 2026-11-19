@@ -20,6 +20,8 @@ pub(crate) use path_asset_reconcile::stamp_editor_defaults;
 mod petal_respawn;
 mod primitive_materialize;
 mod primitive_reconcile;
+mod render_overrides;
+pub use render_overrides::RenderOverrideCache;
 mod residency_ledger;
 mod replica_projection;
 mod replica_reads;
@@ -219,6 +221,7 @@ impl Plugin for VerseManagerPlugin {
         app.init_resource::<PathAssetCache>();
         app.init_resource::<StampRenderIndex>();
         app.init_resource::<PrimitiveDescriptorCache>();
+        app.init_resource::<RenderOverrideCache>();
         app.init_resource::<ResidencyLedger>();
         // Idempotent with fe-runtime `setup_core_systems` (same add-twice-is-ok
         // idiom as BrowserCommand) — keeps fe-ui-only test apps runnable.
@@ -252,6 +255,46 @@ impl Plugin for VerseManagerPlugin {
                 .chain()
                 .before(UiSet::ProcessActions),
         );
+        app.add_systems(
+            Update,
+            (
+                advance_non_dragged_smooth_transforms,
+                render_overrides::reconcile_render_styles,
+                render_overrides::pulse_render_styles_system,
+                render_overrides::reconcile_render_environment,
+            )
+                .chain()
+                .after(path_asset_materialize::materialize_path_assets)
+                .before(UiSet::ProcessActions),
+        );
+    }
+}
+
+fn advance_non_dragged_smooth_transforms(
+    mut commands: Commands,
+    time: Res<Time>,
+    node_mgr: Option<Res<crate::node_manager::NodeManager>>,
+    mut query: Query<(
+        Entity,
+        &mut Transform,
+        &mut fe_renderer::dead_reckoning::SmoothTransformTarget,
+    )>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut target) in query.iter_mut() {
+        if node_mgr
+            .as_ref()
+            .is_some_and(|nm| nm.is_entity_dragging(entity))
+        {
+            continue;
+        }
+        let (next, done) = target.advance(dt);
+        *transform = next;
+        if done {
+            commands
+                .entity(entity)
+                .remove::<fe_renderer::dead_reckoning::SmoothTransformTarget>();
+        }
     }
 }
 

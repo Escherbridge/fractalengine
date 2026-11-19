@@ -42,13 +42,27 @@ pub fn install(app: &mut App, enabled: bool, rx: FixtureReceiver) {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn context(
     nav: &NavigationManager,
     nodes: &NodeManager,
     ui: &UiManager,
     role: &LocalUserRole,
 ) -> Option<Context> {
-    if role.role != Some(fe_database::RoleLevel::Owner) || !nav.has_valid_ancestry() {
+    context_for(nav, nodes, ui, role, false)
+}
+
+/// Active selected-entity portal context; QA operator tokens may inspect mounted portals on non-Owner peers.
+pub(crate) fn context_for(
+    nav: &NavigationManager,
+    nodes: &NodeManager,
+    ui: &UiManager,
+    role: &LocalUserRole,
+    allow_non_owner: bool,
+) -> Option<Context> {
+    if (!allow_non_owner && role.role != Some(fe_database::RoleLevel::Owner))
+        || !nav.has_valid_ancestry()
+    {
         return None;
     }
     let selected = nodes.primary()?;
@@ -60,6 +74,23 @@ pub(crate) fn context(
         scope: nav.active_scope()?,
         entity: selected.entity,
         node_id: selected.node_id.clone(),
+    })
+}
+
+fn checked_context(
+    nav: &NavigationManager,
+    nodes: &NodeManager,
+    ui: &UiManager,
+    role: &LocalUserRole,
+    markers: &Query<&fe_ui::plugin::SpawnedNodeMarker>,
+    caller_scope: &str,
+) -> Option<Context> {
+    let allow_non_owner = fe_runtime::qa_debug::qa_operator_covers(caller_scope);
+    context_for(nav, nodes, ui, role, allow_non_owner).filter(|context| {
+        markers.get(context.entity).is_ok_and(|marker| {
+            marker.node_id == context.node_id
+                && Some(marker.petal_id.as_str()) == nav.active_petal_id.as_deref()
+        })
     })
 }
 
@@ -191,14 +222,16 @@ fn serve(
     if host.active.is_none() && host.rx.is_empty() {
         return;
     }
-    let current = context(&nav, &nodes, &ui, &role).filter(|context| {
-        markers.get(context.entity).is_ok_and(|marker| {
-            marker.node_id == context.node_id
-                && Some(marker.petal_id.as_str()) == nav.active_petal_id.as_deref()
-        })
-    });
     if let Some(job) = host.active.take() {
-        let valid = current.as_ref() == Some(&job.context)
+        let active_current = checked_context(
+            &nav,
+            &nodes,
+            &ui,
+            &role,
+            &markers,
+            &job.request.caller_scope,
+        );
+        let valid = active_current.as_ref() == Some(&job.context)
             && view.covers(&job.request.caller_scope, Some(&nav))
             && job.request.op.is_current()
             && !job.request.reply_tx.is_closed();
@@ -247,9 +280,17 @@ fn serve(
             request.reply(reply);
             continue;
         }
+        let req_current = checked_context(
+            &nav,
+            &nodes,
+            &ui,
+            &role,
+            &markers,
+            &request.caller_scope,
+        );
         // A fixed IPC row is the bridge's own ingress, not a page job: it runs now on the open bundle.
         if let FixtureOp::PortalIpcPost { row, expect } = request.op.operation {
-            let reply = if !view.covers(&request.caller_scope, Some(&nav)) || current.is_none() {
+            let reply = if !view.covers(&request.caller_scope, Some(&nav)) || req_current.is_none() {
                 Err(fe_runtime::qa_debug::QaFailure::denied())
             } else if !request.op.is_current() || request.reply_tx.is_closed() {
                 Err(fixture::stale())
@@ -269,10 +310,10 @@ fn serve(
             )));
             continue;
         }
-        if !view.covers(&request.caller_scope, Some(&nav)) || current.is_none() {
+        let Some(req_context) = req_current.filter(|_| view.covers(&request.caller_scope, Some(&nav))) else {
             request.reply(Err(fe_runtime::qa_debug::QaFailure::denied()));
             continue;
-        }
+        };
         if !request.op.is_current() || request.reply_tx.is_closed() {
             request.reply(Err(fixture::stale()));
             continue;
@@ -288,8 +329,7 @@ fn serve(
             Ok(()) => {
                 host.active = Some(Job {
                     request,
-                    context: context(&nav, &nodes, &ui, &role)
-                        .expect("current context was checked"),
+                    context: req_context,
                 })
             }
             Err(error) => request.reply(Err(error)),

@@ -38,6 +38,10 @@ impl GroupDrag {
             .iter()
             .any(|member| member.node_id == node_id)
     }
+
+    pub(super) fn contains_entity(&self, entity: Entity) -> bool {
+        self.originals.iter().any(|(member_entity, _)| *member_entity == entity)
+    }
 }
 
 impl NodeManager {

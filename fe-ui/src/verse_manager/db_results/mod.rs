@@ -37,6 +37,7 @@ pub(super) struct DescriptorCaches<'w, 's> {
     undo: Option<ResMut<'w, crate::undo::UndoState>>,
     selection_sources: crate::editor_batch::RenderedSources<'w, 's>,
     primitive: ResMut<'w, super::PrimitiveDescriptorCache>,
+    render_overrides: ResMut<'w, super::RenderOverrideCache>,
     path_asset: ResMut<'w, super::PathAssetCache>,
     applied: ResMut<'w, super::PathAssetApplied>,
     /// T2 stamp bookkeeping: `NodePromoted` marks + flushes buffered overrides;
@@ -318,6 +319,11 @@ pub(super) fn apply_db_results(
                             &current.properties,
                             current.asset_id.as_deref(),
                         );
+                        caches.render_overrides.note_properties(
+                            &current.node.node_id,
+                            Some(&projection.petal_id),
+                            &current.properties,
+                        );
                         properties::handle_node_properties_loaded(
                             &current.node.node_id,
                             Some(&projection.petal_id),
@@ -432,6 +438,11 @@ pub(super) fn apply_db_results(
                                 &caches.current_nodes,
                             );
                             node_mgr.accept_committed_transform(&current.node.node_id);
+                            caches.render_overrides.note_properties(
+                                &current.node.node_id,
+                                Some(&projection.petal_id),
+                                &current.properties,
+                            );
                             properties::handle_node_properties_loaded(
                                 &current.node.node_id,
                                 Some(&projection.petal_id),
@@ -583,6 +594,11 @@ pub(super) fn apply_db_results(
                         caches.time.elapsed_secs_f64(),
                     );
                 }
+                caches.render_overrides.note_properties(
+                    &current.node.node_id,
+                    Some(&current.node.petal_id),
+                    &current.properties,
+                );
                 properties::handle_node_properties_loaded(
                     &current.node.node_id,
                     Some(&current.node.petal_id),
@@ -661,6 +677,7 @@ pub(super) fn apply_db_results(
             }
             DbResult::DatabaseReset { .. } => {
                 caches.primitive.clear();
+                caches.render_overrides.clear();
                 caches.path_asset.clear();
                 hierarchy::handle_database_reset(&mut verse_mgr, &db_sender);
             }
@@ -765,17 +782,20 @@ pub(super) fn apply_db_results(
                 &mut caches.callout_map,
             ),
             DbResult::NodeDeleted { node_id, petal_id }
-            | DbResult::PluginNodeRemoved { node_id, petal_id } => nodes::handle_node_deleted(
-                node_id,
-                petal_id,
-                &mut verse_mgr,
-                &nav,
-                &mut path_state,
-                &db_sender,
-                &mut caches.path_asset,
-                &mut caches.applied,
-                &mut caches.callout_map,
-            ),
+            | DbResult::PluginNodeRemoved { node_id, petal_id } => {
+                caches.render_overrides.remove_node(node_id);
+                nodes::handle_node_deleted(
+                    node_id,
+                    petal_id,
+                    &mut verse_mgr,
+                    &nav,
+                    &mut path_state,
+                    &db_sender,
+                    &mut caches.path_asset,
+                    &mut caches.applied,
+                    &mut caches.callout_map,
+                )
+            }
             // T4: node display-name update (mirrors EntityRenamed for the tree).
             DbResult::NodeRenamed { node_id, new_name } => {
                 nodes::handle_node_renamed(node_id, new_name, &mut verse_mgr)
@@ -964,6 +984,11 @@ pub(super) fn apply_db_results(
                         continue;
                     }
                 }
+                caches.render_overrides.note_properties(
+                    node_id,
+                    petal_id.as_deref(),
+                    properties,
+                );
                 if !properties::handle_node_properties_loaded(
                     node_id,
                     petal_id.as_deref(),
@@ -1055,6 +1080,15 @@ pub(super) fn apply_db_results(
             }
             DbResult::NodePropertyDeleted { node_id, key, .. } => {
                 verse_mgr.queue_replica_read(node_id, &nav, caches.time.elapsed_secs_f64());
+                match key.as_str() {
+                    fe_sdk::render_style::RENDER_STYLE_PROPERTY_KEY => {
+                        caches.render_overrides.invalidate_style(node_id);
+                    }
+                    fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY => {
+                        caches.render_overrides.invalidate_environment(node_id);
+                    }
+                    _ => {}
+                }
                 if !properties::handle_node_property_deleted(
                     node_id,
                     key,
@@ -1291,6 +1325,7 @@ fn apply_replica_current(
             nodes.accept_committed_transform(&state.node_id);
             nodes.retain_members(|selection| selection.node_id != state.node_id);
             caches.primitive.invalidate(&state.node_id);
+            caches.render_overrides.remove_node(&state.node_id);
             caches.path_asset.invalidate(&state.node_id);
             caches.applied.invalidate(&state.node_id);
             caches.stamp_state.forget_node(&state.node_id);
@@ -1315,6 +1350,11 @@ fn apply_replica_current(
             if super::replica_projection::refresh_editor(&state.node_id, Some(&properties), editor_before.as_ref(), path) {
                 ui.show_advisory("Shared path changed; your local unsaved draft was retained", caches.time.elapsed_secs_f64());
             }
+            caches.render_overrides.note_properties(
+                &state.node_id,
+                Some(&state.petal_id),
+                &properties,
+            );
             properties::handle_node_properties_loaded(
                 &state.node_id,
                 Some(&state.petal_id),
@@ -2653,6 +2693,7 @@ mod tests {
             .init_resource::<crate::gis::GisPanelState>()
             .init_resource::<fe_runtime::app::PendingApiRequests>()
             .init_resource::<super::super::PrimitiveDescriptorCache>()
+            .init_resource::<super::super::RenderOverrideCache>()
             .init_resource::<super::super::PathAssetCache>()
             .init_resource::<super::super::PathAssetApplied>()
             .init_resource::<crate::actions::asset::StampInteractionState>()
@@ -2717,6 +2758,7 @@ mod tests {
             .init_resource::<crate::gis::GisPanelState>()
             .init_resource::<fe_runtime::app::PendingApiRequests>()
             .init_resource::<super::super::PrimitiveDescriptorCache>()
+            .init_resource::<super::super::RenderOverrideCache>()
             .init_resource::<super::super::PathAssetCache>()
             .init_resource::<super::super::PathAssetApplied>()
             .init_resource::<crate::actions::asset::StampInteractionState>()

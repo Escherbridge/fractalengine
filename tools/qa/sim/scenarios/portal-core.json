@@ -432,6 +432,27 @@
         },
         {
           "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Select node Dashboard unsigned repo"
+          },
+          "id": "sel_unsigned"
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open bundle"
+          },
+          "id": "open_unsigned",
+          "needs": [
+            "sel_unsigned"
+          ]
+        },
+        {
+          "peer": "owner",
           "via": "rest",
           "op": "portal_ipc_post",
           "args": {
@@ -440,6 +461,9 @@
             "content_hash": "$dash_unsigned.content_hash"
           },
           "id": "r_unsigned",
+          "needs": [
+            "open_unsigned"
+          ],
           "note": "fixed ipc rows: unsigned, unadmitted, external, foreign_frame, hidden, stale, control"
         },
         {
@@ -449,7 +473,25 @@
           "args": {
             "row": "external"
           },
-          "id": "r_external"
+          "id": "r_external",
+          "needs": [
+            "open_unsigned"
+          ]
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Select node Actions repo"
+          },
+          "id": "sel_act",
+          "sync": "+8",
+          "needs": [
+            "r_unsigned",
+            "r_external",
+            "adm_act"
+          ]
         },
         {
           "peer": "owner",
@@ -460,7 +502,7 @@
           },
           "id": "open_act",
           "needs": [
-            "adm_act"
+            "sel_act"
           ],
           "note": "accessible name placeholder: T3.1 ux.md fixes the exact Open name; opens the Actions repo node ract, the last-created repository node in this step"
         },
@@ -570,7 +612,7 @@
           ],
           "within_s": 15,
           "after": "r_control",
-          "value": 1
+          "value": 2
         }
       ]
     },
@@ -797,6 +839,18 @@
         },
         {
           "peer": "editor",
+          "via": "host",
+          "op": "evict_blob",
+          "args": {
+            "content_hash": "$docs.content_hash"
+          },
+          "id": "evict_docs",
+          "needs": [
+            "provider_down"
+          ]
+        },
+        {
+          "peer": "editor",
           "via": "gui",
           "op": "click",
           "args": {
@@ -804,7 +858,8 @@
           },
           "id": "ed_sel_local",
           "needs": [
-            "provider_down"
+            "provider_down",
+            "evict_docs"
           ]
         },
         {
@@ -1004,6 +1059,7 @@
             "bundle_asset": "$act2.asset_id"
           },
           "id": "to_v2",
+          "sync": "+6",
           "needs": [
             "act2",
             "step5_open_act"
@@ -1039,9 +1095,11 @@
         {
           "peer": "owner",
           "via": "rest",
-          "op": "portal_slot",
+          "op": "portal_ipc_post",
           "args": {
-            "slot": 2
+            "row": "unadmitted",
+            "package_id": "qa.portal.actions",
+            "content_hash": "$act3.content_hash"
           },
           "id": "v3_write_static",
           "sync": "+35",

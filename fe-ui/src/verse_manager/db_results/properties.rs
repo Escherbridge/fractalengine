@@ -134,7 +134,12 @@ pub(super) fn handle_node_property_set(
     let primitive_write = key == PRIMITIVE_PROPERTY_KEY;
     let presentation_write = matches!(
         key,
-        "node_kind" | "path_id" | "owning_path_id" | "instance_index"
+        "node_kind"
+            | "path_id"
+            | "owning_path_id"
+            | "instance_index"
+            | fe_sdk::render_style::RENDER_STYLE_PROPERTY_KEY
+            | fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY
     );
     if primitive_write || presentation_write {
         primitive_cache.invalidate(node_id);
@@ -197,7 +202,12 @@ pub(super) fn handle_node_property_deleted(
     if key == PRIMITIVE_PROPERTY_KEY
         || matches!(
             key,
-            "node_kind" | "path_id" | "owning_path_id" | "instance_index"
+            "node_kind"
+                | "path_id"
+                | "owning_path_id"
+                | "instance_index"
+                | fe_sdk::render_style::RENDER_STYLE_PROPERTY_KEY
+                | fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY
         )
     {
         primitive_cache.invalidate(node_id);

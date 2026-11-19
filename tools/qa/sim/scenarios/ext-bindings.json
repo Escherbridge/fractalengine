@@ -38,6 +38,16 @@
       "settle_s": 15,
       "actions": [
         {
+          "id": "clear_petal_b_terrain",
+          "peer": "owner",
+          "via": "rest",
+          "op": "request",
+          "args": {
+            "method": "DELETE",
+            "path": "/api/v1/petals/${fixture.petal_b_id}/terrain"
+          }
+        },
+        {
           "peer": "editor",
           "via": "gui",
           "op": "click",
@@ -261,6 +271,26 @@
             "wait_s": 3
           },
           "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button",
+            "wait_s": 1
+          },
+          "optional": true
+        },
+        {
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic",
+            "exact": true
+          }
         }
       ],
       "expect": [
@@ -632,12 +662,17 @@
           }
         },
         {
+          "id": "to_browser",
           "peer": "owner",
           "via": "gui",
-          "op": "click",
+          "op": "click_until",
           "args": {
-            "name": "Browse all verses",
-            "exact": true
+            "click": {
+              "name": "Browse all verses",
+              "exact": true
+            },
+            "until": "Join a verse from browser",
+            "max": 3
           },
           "needs": [
             "editor_mask"
@@ -645,31 +680,43 @@
           "sync": "+15"
         },
         {
+          "id": "opt_verse",
           "peer": "owner",
           "via": "gui",
           "op": "click",
           "args": {
             "name": "Options for verse QA Basic",
             "exact": true
-          }
+          },
+          "needs": [
+            "to_browser"
+          ]
         },
         {
+          "id": "access_tab",
           "peer": "owner",
           "via": "gui",
           "op": "click",
           "args": {
             "name": "Access",
             "exact": true
-          }
+          },
+          "needs": [
+            "opt_verse"
+          ]
         },
         {
+          "id": "revoke_btn",
           "peer": "owner",
           "via": "gui",
           "op": "click",
           "args": {
             "name": "Revoke role grant for ${peers.editor.did}",
             "exact": true
-          }
+          },
+          "needs": [
+            "access_tab"
+          ]
         },
         {
           "id": "demote",
@@ -680,7 +727,10 @@
             "name": "Confirm Revoke role grant for ${peers.editor.did}",
             "exact": true,
             "wait_s": 3
-          }
+          },
+          "needs": [
+            "revoke_btn"
+          ]
         },
         {
           "id": "hold",
@@ -712,6 +762,7 @@
           ]
         },
         {
+          "id": "role_select",
           "peer": "owner",
           "via": "gui",
           "op": "click",
@@ -724,13 +775,17 @@
           ]
         },
         {
+          "id": "role_pick",
           "peer": "owner",
           "via": "gui",
           "op": "click",
           "args": {
             "name": "editor",
             "exact": true
-          }
+          },
+          "needs": [
+            "role_select"
+          ]
         },
         {
           "peer": "owner",
@@ -740,9 +795,13 @@
             "name": "Assign role editor to ${peers.editor.did}",
             "exact": true
           },
-          "id": "regrant"
+          "id": "regrant",
+          "needs": [
+            "role_pick"
+          ]
         },
         {
+          "id": "confirm_regrant",
           "peer": "owner",
           "via": "gui",
           "op": "click",
@@ -751,7 +810,38 @@
             "exact": true,
             "wait_s": 3
           },
-          "optional": true
+          "optional": true,
+          "needs": [
+            "regrant"
+          ]
+        },
+        {
+          "id": "close_win",
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Close window",
+            "role": "button",
+            "wait_s": 1
+          },
+          "optional": true,
+          "needs": [
+            "regrant"
+          ]
+        },
+        {
+          "id": "reopen_verse",
+          "peer": "owner",
+          "via": "gui",
+          "op": "click",
+          "args": {
+            "name": "Open verse QA Basic",
+            "exact": true
+          },
+          "needs": [
+            "regrant"
+          ]
         }
       ],
       "expect": [
@@ -943,6 +1033,18 @@
           "sync": "+20"
         },
         {
+          "id": "kill_settled",
+          "peer": "owner",
+          "via": "host",
+          "op": "sleep",
+          "args": {
+            "seconds": 25
+          },
+          "needs": [
+            "kill"
+          ]
+        },
+        {
           "id": "refused_owner",
           "peer": "owner",
           "via": "ext",
@@ -953,9 +1055,8 @@
           },
           "expect": "refused",
           "needs": [
-            "kill"
-          ],
-          "sync": "+20"
+            "kill_settled"
+          ]
         },
         {
           "id": "refused_viewer",
@@ -968,7 +1069,7 @@
           },
           "expect": "refused",
           "needs": [
-            "kill"
+            "kill_settled"
           ]
         },
         {

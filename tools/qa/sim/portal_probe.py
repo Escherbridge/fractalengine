@@ -6,6 +6,7 @@ cadence `portal_ms`; the driver's portal ops call `upload_bundle`.
 """
 import json
 import os
+import time
 import uuid
 
 import predicates
@@ -28,6 +29,22 @@ REFUSED = "refused"
 UI_STATE = "/api/v1/debug/ui-state"
 # Debug refusals that say a bundle is not mounted: the observation records `mounted: false` and REFUSED reads.
 NOT_MOUNTED_CODES = {"portal_bundle_not_mounted", "portal_fixture_unavailable", "portal_fixture_changed"}
+
+_DROPPED_ORIGIN_ACCUM = {}  # (base_url, peer_name) -> (offset, last_raw)
+
+
+def _accumulate_dropped_origin(client, stats):
+    if not isinstance(stats, dict):
+        return
+    raw = stats.get("dropped_origin")
+    if not isinstance(raw, int):
+        return
+    key = (getattr(client, "base_url", ""), getattr(client, "name", "") or str(id(client)))
+    offset, last_raw = _DROPPED_ORIGIN_ACCUM.get(key, (0, 0))
+    if raw < last_raw:
+        offset += last_raw
+    _DROPPED_ORIGIN_ACCUM[key] = (offset, raw)
+    stats["dropped_origin_total"] = offset + raw
 
 
 def upload_bundle(client, args, timeout=300.0):
@@ -74,14 +91,20 @@ def observe_value(outcome):
     return None
 
 
-def ipc_value(outcome):
-    """`ipc-stats` counters as {counter: int} (flat values are process totals, ipc-v1 section 7.3), REFUSED unmounted."""
+def ipc_value(outcome, per_mount=False):
+    """`ipc-stats` counters as {counter: int}; `per_mount=True` reads `stats.mount`, else process totals, REFUSED unmounted."""
     if outcome.ok and isinstance(outcome.get("data"), dict):
         stats = (outcome["data"].get("portal") or {}).get("stats") or {}
-        value = {name: stats.get(name) for name in IPC_COUNTERS}
+        mount = stats.get("mount")
+        primary = mount if per_mount and isinstance(mount, dict) else stats
+        value = {name: primary.get(name) for name in IPC_COUNTERS}
+        for name in IPC_COUNTERS:
+            if value.get(name) is None and name.endswith("_total"):
+                value[name] = stats.get(name)
         for name, fallback in TOTAL_FALLBACKS.items():
             if value.get(name) is None:
-                value[name] = stats.get(fallback)
+                src = stats if name.endswith("_total") else primary
+                value[name] = src.get(fallback)
         return value
     if outcome.get("code") in NOT_MOUNTED_CODES:
         return REFUSED
@@ -126,13 +149,36 @@ def collect(client, targets, asset_for_package=None):
     `asset_for_package(package_id)` is the driver's package-to-uploaded-asset binding (needed only for `admission`).
     """
     token = client.debug_token()
-    observed = observe_value(_debug(client, token, "GET", "observe")) if token else None
-    stats = ipc_value(_debug(client, token, "GET", "ipc-stats")) if token else None
-    badge, badge_name = badge_value(client.send("GET", UI_STATE, None, token, 8.0)) if token else (None, None)
+    if token:
+        obs_out = _debug(client, token, "GET", "observe")
+        for _retry in range(2):
+            if obs_out.get("code") != "portal_fixture_busy":
+                break
+            time.sleep(0.15)
+            obs_out = _debug(client, token, "GET", "observe")
+        observed = observe_value(obs_out)
+    else:
+        observed = None
+    ipc_out = _debug(client, token, "GET", "ipc-stats") if token else None
+    mount_stats = ipc_value(ipc_out, per_mount=True) if ipc_out else None
+    total_stats = ipc_value(ipc_out, per_mount=False) if ipc_out else None
+    _accumulate_dropped_origin(client, total_stats)
+    if isinstance(mount_stats, dict) and isinstance(total_stats, dict):
+        mount_stats["dropped_origin_total"] = total_stats.get("dropped_origin_total")
+    ui_out = client.send("GET", UI_STATE, None, token, 8.0) if token else None
+    badge, badge_name = badge_value(ui_out) if ui_out else (None, None)
+    ipc_portal = ((ipc_out.get("data") or {}).get("portal") or {}) if ipc_out and ipc_out.ok and isinstance(ipc_out.get("data"), dict) else {}
+    ui_portal = ((ui_out.get("data") or {}).get("portal") or {}) if ui_out and ui_out.ok and isinstance(ui_out.get("data"), dict) else {}
+    explicit_status = ipc_portal.get("protocol_status")
+    if explicit_status is None:
+        explicit_status = ui_portal.get("protocol_status")
     rows = []
     for target in targets:
+        stats = total_stats if target == ALL_TARGET else mount_stats
         value = {"mounted": isinstance(observed, dict), "observe": observed, "ipc": stats, "badge": badge,
                  "badge_name": badge_name, "writes_accepted": writes_accepted(observed, stats)}
+        if explicit_status is not None:
+            value["protocol_status"] = explicit_status
         if target != ALL_TARGET and asset_for_package:
             asset_id = asset_for_package(target)
             if asset_id:

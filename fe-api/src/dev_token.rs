@@ -169,6 +169,7 @@ pub fn spawn_dev_token_service_as(
     writer: DevTokenWriter,
     client_did: String,
 ) -> std::io::Result<fe_runtime::service_lifecycle::OwnedService> {
+    fe_identity::reserve_local_client_did(&client_did);
     use fe_runtime::service_lifecycle::{OwnedService, StopSignal};
     let stop = StopSignal::default();
     let worker_stop = stop.clone();

@@ -319,6 +319,17 @@ impl NodeManager {
         self.group_drag.is_some() || self.selected.as_ref().is_some_and(|s| s.drag.is_some())
     }
 
+    /// Returns `true` when `entity` is actively being dragged via single-node or group gimbal.
+    pub fn is_entity_dragging(&self, entity: Entity) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|s| s.drag.is_some() && s.entity == entity)
+            || self
+                .group_drag
+                .as_ref()
+                .is_some_and(|drag| drag.contains_entity(entity))
+    }
+
     /// Select a node. If the same entity is already selected the drag state
     /// is preserved; selecting a different entity resets drag state.
     pub fn select(&mut self, entity: Entity, node_id: impl Into<String>) {

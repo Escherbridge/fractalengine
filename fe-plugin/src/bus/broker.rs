@@ -773,6 +773,17 @@ impl Bus {
     /// Call `<package_id>/<command>` at `petal_id` (bus.md §4 checks 1-8); remote callers see only the uniform not-found.
     pub fn call_command(&self, caller: &Caller, petal_id: &str, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
         let caller = self.normalized(caller);
+        self.call_command_admitted(&caller, petal_id, package_id, command_id, args)
+    }
+
+    /// Call `<package_id>/<command>` from a verified loopback client holding the local DID, preserving `local`
+    /// even when the token's `role_ceiling` caps authority below Owner.
+    pub fn call_command_local_client(&self, caller: &Caller, petal_id: &str, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
+        let caller = Caller { local: caller.did == &*self.local_did, ..caller.clone() };
+        self.call_command_admitted(&caller, petal_id, package_id, command_id, args)
+    }
+
+    fn call_command_admitted(&self, caller: &Caller, petal_id: &str, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
         match caller.kind {
             CallerKind::Extension => return Err(BusRefusal::InvalidInput("extension callers use the bus.call import".into())),
             // A portal's identity and ceiling come from its host-minted binding, never from a Caller literal.
@@ -783,7 +794,7 @@ impl Bus {
         let mut effects = Effects::default();
         let result = {
             let mut state = self.lock();
-            match self.admit_call(&mut state, &caller, petal_id, package_id, command_id, args, now) {
+            match self.admit_call(&mut state, caller, petal_id, package_id, command_id, args, now) {
                 Ok((target, installation_id)) => {
                     let (reply, receiver) = oneshot::channel();
                     let id = state.next_id();
@@ -792,7 +803,7 @@ impl Bus {
                     Ok(CommandTicket { call: id, reply: receiver })
                 }
                 Err(refusal) => {
-                    note_refusal(&mut state, &caller, petal_id, package_id, command_id, &refusal, now, &mut effects);
+                    note_refusal(&mut state, caller, petal_id, package_id, command_id, &refusal, now, &mut effects);
                     Err(refusal)
                 }
             }

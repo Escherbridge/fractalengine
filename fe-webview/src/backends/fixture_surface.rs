@@ -119,9 +119,7 @@ impl Surface {
         unusable: bool,
         receipt: &FixtureReceipt,
     ) -> bool {
-        if receipt.popup_session != self.session
-            || receipt.page_generation != self.clock.generation.get()
-        {
+        if receipt.popup_session != self.session {
             return false;
         }
         if receipt
@@ -133,6 +131,9 @@ impl Surface {
             return matches!(receipt.operation, FixtureOp::PortalIpcStats)
                 && receipt.url.is_empty()
                 && self.ipc_stats.is_some();
+        }
+        if receipt.page_generation != self.clock.generation.get() {
+            return false;
         }
         if receipt.portal.is_some() {
             let Some(mounts) = &self.mounts else {
@@ -151,6 +152,12 @@ impl Surface {
     }
     pub(super) fn cookie(&self) -> isize {
         self.session as isize
+    }
+    pub(super) fn is_portal_pending(&self) -> bool {
+        self.portal.is_some()
+    }
+    pub(super) fn is_portal_command(&self, command: &FixtureCommand) -> bool {
+        PortalKind::of(command.operation).is_some()
     }
     pub(super) fn start(
         &mut self,
@@ -197,8 +204,8 @@ impl Surface {
 
     pub(super) fn cancel(&mut self) -> bool {
         self.clock.bump();
-        let portal = self.portal.take().is_some();
-        self.pending.take().is_some() || portal
+        self.portal = None;
+        self.pending.take().is_some()
     }
 
     /// Wire the live mount table and the IPC counter source the bundle operations read.
@@ -266,7 +273,9 @@ impl Surface {
         unusable: bool,
     ) -> Option<FixtureOutcome> {
         let job = self.portal.take()?;
-        if !job.command.is_current() || self.clock.generation.get() != job.generation {
+        if !job.command.is_current()
+            || (!matches!(job.kind, PortalKind::IpcStats) && self.clock.generation.get() != job.generation)
+        {
             return Some(Err(fixture::stale()));
         }
         if matches!(job.kind, PortalKind::IpcStats) {
@@ -312,12 +321,7 @@ impl Surface {
         };
         let label = mount.label.as_str().to_owned();
         let evidence = match job.kind {
-            PortalKind::IpcStats => {
-                let Some(source) = &self.ipc_stats else {
-                    return Some(Err(portal_not_mounted()));
-                };
-                serde_json::json!({"label": label, "mode": mode, "stats": source()})
-            }
+            PortalKind::IpcStats => unreachable!("PortalKind::IpcStats returns before mount lookup"),
             PortalKind::Observe | PortalKind::Slot(_) => {
                 let completion = job.completion.borrow_mut().take();
                 let Some(Completion::Portal(done)) = completion else {

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::hash::Hash;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
@@ -211,6 +211,8 @@ pub(crate) struct PortalGovernance {
     disabled_all: Arc<AtomicBool>,
     /// The QA lane's native kill switch: read through the same host-disabled check, cleared only by its own disengage.
     kill_switch: AtomicBool,
+    /// Bumped whenever `kill_switch` toggles so `changed_since` observes kill-switch changes immediately.
+    kill_switch_gen: AtomicU64,
     records: RwLock<Bounded<(String, String), RecordEntry>>,
     nodes: RwLock<Bounded<String, NodeScope>>,
     /// petal id -> verse id.
@@ -227,6 +229,7 @@ impl PortalGovernance {
             admission_enabled: config.admission_enabled,
             disabled_all: Arc::new(AtomicBool::new(config.disable_all)),
             kill_switch: AtomicBool::new(false),
+            kill_switch_gen: AtomicU64::new(0),
             records: RwLock::new(Bounded::new(RECORD_ENTRIES)),
             nodes: RwLock::new(Bounded::new(CACHE_ENTRIES)),
             petals: RwLock::new(Bounded::new(CACHE_ENTRIES)),
@@ -274,7 +277,9 @@ impl PortalGovernance {
 
     /// Governance's change generation, when the source exposes one; a change means re-judge open portals now.
     pub(crate) fn generation(&self) -> Option<u64> {
-        self.source.generation()
+        self.source
+            .generation()
+            .map(|g| g.wrapping_add(self.kill_switch_gen.load(Ordering::Acquire)))
     }
 
     /// `true` once when the generation moved past `seen` (which is then updated); always `false` without a generation.
@@ -319,7 +324,9 @@ impl PortalGovernance {
     /// The native kill switch (QA lane): engaged, the view is host-disabled exactly as under Disable all; disengaging
     /// never clears an operator's Disable all.
     pub(crate) fn set_kill_switch(&self, engaged: bool) {
-        self.kill_switch.store(engaged, Ordering::Release);
+        if self.kill_switch.swap(engaged, Ordering::AcqRel) != engaged {
+            self.kill_switch_gen.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     fn remember_node(&self, node_id: &str, scope: NodeScope) {
@@ -430,15 +437,35 @@ impl GovernanceView for PortalGovernance {
             return None;
         }
         let key = record_key(package_id, content_hash);
-        let entry = read_lock(&self.records).get(&key).cloned()?;
+        let build = read_lock(&self.builds).get(key.1.as_str()).cloned();
+        let publisher_did = build
+            .as_ref()
+            .map(|b| b.publisher_did.clone())
+            .unwrap_or_default();
+        let records = read_lock(&self.records);
+        let entry = records.get(&key).cloned().or_else(|| {
+            // admission.md §6 (PJ9): carry active consent over to a resolved build of the same
+            // package sealed by the same publisher; decide() rule 11 checks capability_digest equality.
+            let b = build.as_ref().filter(|b| !b.version.is_empty() && !b.publisher_did.is_empty())?;
+            let builds = read_lock(&self.builds);
+            let ((_, prev_hash), (_, latest)) = records
+                .entries
+                .iter()
+                .filter(|((pkg, _), _)| pkg == package_id)
+                .max_by_key(|(_, (seq, _))| *seq)?;
+            if latest.state != RecordState::Admitted || latest.capability_digest.is_empty() {
+                return None;
+            }
+            let same_publisher = builds
+                .get(prev_hash.as_str())
+                .is_some_and(|prev| !prev.publisher_did.is_empty() && prev.publisher_did == b.publisher_did);
+            same_publisher.then(|| latest.clone())
+        })?;
+        drop(records);
         // With the host switch off nothing is admitted; refusals still apply.
         if entry.state == RecordState::Admitted && !self.admission_enabled {
             return None;
         }
-        let publisher_did = read_lock(&self.builds)
-            .get(key.1.as_str())
-            .map(|build| build.publisher_did.clone())
-            .unwrap_or_default();
         Some(AdmissionRecord {
             state: entry.state,
             reason: entry.reason,
@@ -531,6 +558,25 @@ impl PortalResolver {
 
     fn set_api_origin(&self, origin: Option<String>) {
         *write_lock(&self.api_origin) = origin;
+    }
+
+    /// Populate `builds` from a locally verified portal-bundle archive blob.
+    pub(crate) fn remember_sealed_blob(&self, blob_hex: &str) {
+        let Ok(hash) = hash_from_hex(blob_hex) else {
+            return;
+        };
+        let Some(path) = self.blobs.get_blob_path(&hash) else {
+            return;
+        };
+        let Ok(size) = std::fs::metadata(&path).map(|metadata| metadata.len()) else {
+            return;
+        };
+        if size > bundle_max_bytes() || !matches!(verify_blob_file(&path, &hash, size), Ok(true)) {
+            return;
+        }
+        if let Some((content_hash, facts)) = sealed_build_facts(&path) {
+            self.governance.remember_build(&content_hash, facts);
+        }
     }
 }
 

@@ -55,6 +55,8 @@ pub struct ApiCaller {
     pub kind: ApiCallerKind,
     /// Every node-minted token carries the node DID, so the host caps the DID's role by this (AGENTS.md §extensions).
     pub role_ceiling: fe_policy::RoleLevel,
+    /// Loopback client DID claim from the bearer token, if any (`fe_identity::ApiClaims::client`).
+    pub client: Option<String>,
 }
 
 /// Why the broker refused an external call (mirrors `fe_plugin::bus::BusRefusal`).
@@ -404,7 +406,12 @@ impl From<IngressRefusal> for ExtError {
 
 /// The caller as the host sees it.
 pub fn caller_of(claims: &ApiClaims, kind: ApiCallerKind) -> ApiCaller {
-    ApiCaller { did: claims.sub.clone(), kind, role_ceiling: fe_policy::RoleLevel::from(claims.max_role.as_str()) }
+    ApiCaller {
+        did: claims.sub.clone(),
+        kind,
+        role_ceiling: fe_policy::RoleLevel::from(claims.max_role.as_str()),
+        client: claims.client.clone(),
+    }
 }
 
 /// The local identity (R12): the host's DID under an Owner token. fe-identity mints EVERY token with the

@@ -609,6 +609,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     let petals = PetalDirectory::default();
     let bindings = ExtensionBindings {
         local_did: local_did.clone(),
+        local_client_did: config.local_client_did.clone(),
         db: db.clone(),
         bus: bus.clone(),
         roles: role_source.clone(),
@@ -621,6 +622,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
     app.insert_resource(trace.clone());
     app.insert_resource(ExtensionHostParts {
         local_did: local_did.clone(),
+        local_client_did: config.local_client_did,
         bus: bus.clone(),
         net: net.clone(),
         runtime: runtime_handle,

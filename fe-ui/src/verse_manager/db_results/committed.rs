@@ -272,6 +272,7 @@ pub(super) fn apply(
         .committed_versions
         .insert(node.node_id.clone(), current.history_version);
     manager.admit_local_scene(&node.node_id, current.history_version, &current.properties, current.asset_id.as_deref());
+    let (smoothing_ms, velocity_hint) = kinematics_from_properties(&current.properties);
     let mut changed = false;
     for (entity, marker, existing_transform) in entities.iter() {
         if marker.node_id != node.node_id || marker.petal_id != node.petal_id {
@@ -286,11 +287,54 @@ pub(super) fn apply(
             },
         ));
         if previous != Some(transform) || *existing_transform != transform {
-            commands.entity(entity).insert(transform);
+            if previous.is_some() {
+                if let Some(smooth) =
+                    fe_renderer::dead_reckoning::SmoothTransformTarget::from_transition(
+                        existing_transform,
+                        &transform,
+                        velocity_hint,
+                        smoothing_ms,
+                    )
+                {
+                    commands.entity(entity).insert(smooth);
+                    changed = true;
+                    continue;
+                }
+            }
+            commands
+                .entity(entity)
+                .insert(transform)
+                .remove::<fe_renderer::dead_reckoning::SmoothTransformTarget>();
             changed = true;
         }
     }
     MaterializationOutcome::Applied {
         transform_changed: changed,
     }
+}
+
+fn kinematics_from_properties(properties: &serde_json::Value) -> (Option<f32>, Vec3) {
+    let nested = properties.get("kinematics").and_then(|v| v.as_object());
+    let smoothing_ms = properties
+        .get("kinematics.smoothing_ms")
+        .or_else(|| nested.and_then(|obj| obj.get("smoothing_ms")))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let velocity = properties
+        .get("kinematics.velocity_mps")
+        .or_else(|| nested.and_then(|obj| obj.get("velocity_mps")))
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            if arr.len() >= 3 {
+                Some(Vec3::new(
+                    arr[0].as_f64()? as f32,
+                    arr[1].as_f64()? as f32,
+                    arr[2].as_f64()? as f32,
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Vec3::ZERO);
+    (smoothing_ms, velocity)
 }

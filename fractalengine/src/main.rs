@@ -591,10 +591,17 @@ fn main() {
         cfg!(feature = "plugin-host") && fe_plugin::plugin_host_allowed_from_env(),
     ));
     // The bus judges callers against the node DID and feeds `host/node-changes`; the API channel is bound below.
+    // One client DID for this host's own dev tokens, shared with plugin_bridge and portal_host.
+    let local_client_did = dev_token_out.as_ref().map(|_| {
+        let did = fe_identity::new_client_did();
+        fe_identity::reserve_local_client_did(&did);
+        did
+    });
     plugin_bridge::install_with(
         &mut app,
         plugin_bridge::ExtensionBridgeConfig {
             local_did: node_kp.to_did_key(),
+            local_client_did: local_client_did.clone(),
             api_cmd_tx: None,
             scene_changes: Some(entity_change_tx.subscribe()),
             blob_fallback: Some(blob_fallback),
@@ -884,8 +891,6 @@ fn main() {
 
     // Agent QA: write loopback-only API tokens for every local verse once the
     // API is listening, and rewrite on verse-set changes (src/AGENTS.md §qa-dev-token).
-    // One client DID for this host's own tokens, shared with the portal host (R-API: one upload bucket, one `client`).
-    let local_client_did = dev_token_out.as_ref().map(|_| fe_identity::new_client_did());
     if let (Some(path), Some(db), Some(keypair), Some(client_did)) =
         (dev_token_out, dev_token_db, dev_token_keypair, local_client_did.clone())
     {

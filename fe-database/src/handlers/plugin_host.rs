@@ -117,11 +117,17 @@ pub(crate) async fn read(
     local_did: &str,
 ) -> anyhow::Result<PluginReply> {
     let handshake = matches!(request, PluginRead::PetalScope);
-    // A writer without scene reads (a readings-only adapter included) still pins its ancestry.
+    // A writer without scene reads (a readings-only adapter included) still pins its ancestry at Editor;
+    // extensions without scene/readings caps still need the initial scope handshake to bind.
+    let writes = admission.allows(fe_sdk::CAP_STORAGE_WRITE) || admission.readings().is_some();
     let (floor, granted) = if handshake && !admission.allows(fe_sdk::CAP_STORAGE_READ) {
         (
-            fe_policy::RoleLevel::Editor,
-            admission.allows(fe_sdk::CAP_STORAGE_WRITE) || admission.readings().is_some(),
+            if writes {
+                fe_policy::RoleLevel::Editor
+            } else {
+                fe_policy::RoleLevel::Viewer
+            },
+            true,
         )
     } else {
         (

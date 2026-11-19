@@ -1,9 +1,34 @@
 //! API token minting and verification for the Realtime API Gateway
 //! (design: fe-identity/src/AGENTS.md §api-token).
 
+use std::collections::HashSet;
+use std::sync::{OnceLock, RwLock};
+
 use crate::keypair::NodeKeypair;
 use ed25519_dalek::VerifyingKey;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+
+static RESERVED_LOCAL_CLIENTS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+/// Mark `did` as reserved for this process's loopback dev tokens so external
+/// `mint_api_token` requests cannot mint a delegated token claiming it.
+pub fn reserve_local_client_did(did: &str) {
+    if did.is_empty() {
+        return;
+    }
+    let set = RESERVED_LOCAL_CLIENTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(mut guard) = set.write() {
+        guard.insert(did.to_owned());
+    }
+}
+
+/// Returns `true` when `did` was reserved by this process for loopback dev tokens.
+pub fn is_reserved_local_client_did(did: &str) -> bool {
+    RESERVED_LOCAL_CLIENTS
+        .get()
+        .and_then(|set| set.read().ok())
+        .is_some_and(|guard| guard.contains(did))
+}
 
 fn ensure_crypto_provider() {
     let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();

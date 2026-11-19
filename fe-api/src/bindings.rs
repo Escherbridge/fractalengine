@@ -61,6 +61,10 @@ pub struct EffectivePoint {
 pub trait BindingHost: Send + Sync {
     /// The host's local DID (the identity binding rows are authored as).
     fn local_did(&self) -> String;
+    /// Client DID of loopback dev tokens minted by this host process (`None` disables local-client recognition).
+    fn local_client_did(&self) -> Option<String> {
+        None
+    }
     /// A remote DID's request rate on binding routes (checked before any lookup).
     fn admit_remote(&self, _did: &str) -> bool {
         true
@@ -147,7 +151,11 @@ fn refusal_error(refusal: BindingRefusal) -> ExtError {
 /// True for the host's own DID under an Owner token; every node-minted token carries the node DID as `sub`,
 /// so the role ceiling is what separates the operator from a delegated token (fe-api/AGENTS.md §extensions).
 fn is_local(host: &dyn BindingHost, claims: &ApiClaims) -> bool {
-    claims.sub == host.local_did() && crate::auth::require_role_level(claims, fe_policy::RoleLevel::Owner).is_ok()
+    claims.sub == host.local_did()
+        && (crate::auth::require_role_level(claims, fe_policy::RoleLevel::Owner).is_ok()
+            || host.local_client_did().is_some_and(|cid| {
+                !cid.is_empty() && claims.client.as_deref() == Some(cid.as_str())
+            }))
 }
 
 /// Every binding route runs this FIRST: a remote DID's request rate, before any lookup.
@@ -481,4 +489,60 @@ async fn delete_binding(
     };
     let scope = authorized_target_scope(&state, &claims, &request.target).await;
     respond(write_after_gate(host.0.as_ref(), &claims, scope, template).await)
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    struct FakeBindingHost {
+        local_did: String,
+        client_did: Option<String>,
+    }
+
+    impl BindingHost for FakeBindingHost {
+        fn local_did(&self) -> String {
+            self.local_did.clone()
+        }
+        fn local_client_did(&self) -> Option<String> {
+            self.client_did.clone()
+        }
+        fn put_binding(&self, _: &str, _: BindingRecord) -> BindingWriteReply {
+            unreachable!()
+        }
+        fn list_bindings(&self, _: &str, _: &str) -> BindingListReply {
+            unreachable!()
+        }
+        fn effective(&self, _: &str, _: &str) -> Option<Vec<EffectivePoint>> {
+            None
+        }
+        fn admit_remote(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    fn claims(sub: &str, max_role: &str, client: Option<&str>) -> ApiClaims {
+        ApiClaims {
+            sub: sub.to_string(),
+            token_type: "api".to_string(),
+            scope: "verse:v1".to_string(),
+            max_role: max_role.to_string(),
+            iat: 1,
+            exp: 9_999_999_999,
+            jti: "j1".to_string(),
+            client: client.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn loopback_client_claim_marks_viewer_token_local_for_binding_reads() {
+        let host = FakeBindingHost {
+            local_did: "did:key:zLocal".to_string(),
+            client_did: Some("did:key:zClient".to_string()),
+        };
+        assert!(is_local(&host, &claims("did:key:zLocal", "owner", None)));
+        assert!(is_local(&host, &claims("did:key:zLocal", "viewer", Some("did:key:zClient"))));
+        assert!(!is_local(&host, &claims("did:key:zLocal", "viewer", Some("did:key:zOther"))));
+        assert!(!is_local(&host, &claims("did:key:zRemote", "viewer", Some("did:key:zClient"))));
+    }
 }

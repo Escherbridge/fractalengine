@@ -283,7 +283,7 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => return,
             };
             let outcome = match job {
-                Job::Hydrate => self.hydrate(stop),
+                Job::Hydrate => self.hydrate(&runtime, stop),
                 Job::Summary { node_id } => Some(self.summary(&runtime, node_id)),
                 Job::Admit { node_id, verse } => Some(self.admit(&runtime, node_id, verse)),
                 Job::Consent { node_id, package_id, content_hash, capability_digest } => {
@@ -299,8 +299,9 @@ impl Worker {
     }
 
     /// The portal view learns this host's consents (governance hands them only to the plugin manager).
-    fn hydrate(&self, stop: &StopSignal) -> Option<Outcome> {
+    fn hydrate(&self, runtime: &Runtime, stop: &StopSignal) -> Option<Outcome> {
         let governance = self.governance.as_ref()?;
+        self.hydrate_sealed_builds(runtime);
         for attempt in 1..=HYDRATE_ATTEMPTS {
             let (reply, answer) = crossbeam::channel::bounded(1);
             if self.db_tx.send_timeout(DbCommand::LoadExtensionGovernance { reply }, DB_REPLY).is_ok() {
@@ -317,6 +318,26 @@ impl Worker {
         }
         tracing::error!("portal consents were not hydrated; admitted bundles open in the static sandbox until re-admitted");
         None
+    }
+
+    fn hydrate_sealed_builds(&self, runtime: &Runtime) {
+        let query = self
+            .db
+            .query("SELECT content_hash FROM asset WHERE content_type = $ct")
+            .bind(("ct", fe_format::portal_bundle::PORTAL_BUNDLE_MIME.to_owned()));
+        let rows = runtime.block_on(async move {
+            let response = tokio::time::timeout(DB_REPLY, async move { query.await })
+                .await
+                .ok()?
+                .ok()?;
+            let mut checked = response.check().ok()?;
+            checked.take::<Vec<Value>>(0).ok()
+        });
+        for row in rows.into_iter().flatten() {
+            if let Some(blob_hex) = row.get("content_hash").and_then(Value::as_str) {
+                self.resolver.remember_sealed_blob(blob_hex);
+            }
+        }
     }
 
     /// One text column of the first row of a parameterised SELECT; `None` on a DB error, timeout or no row.
@@ -744,8 +765,10 @@ impl PortalHost {
         &mut self,
         dialog: &mut ConsentState,
         ui: &mut UiManager,
+        tree: &VerseManager,
         signals: &mut MessageWriter<AdmissionSignal>,
         changes: &mut MessageWriter<PortalBundleChanged>,
+        sync_sender: Option<&crossbeam::channel::Sender<fe_sync::SyncCommand>>,
         now_secs: f64,
     ) {
         while let Ok(outcome) = self.outcomes.try_recv() {
@@ -775,6 +798,28 @@ impl PortalHost {
                     if self.awaiting.len() < MAX_TRACKED_NODES || self.awaiting.contains_key(&node_id) {
                         self.awaiting.insert(node_id.clone(), blob);
                     }
+                    if let Some(sender) = sync_sender {
+                        let verse_id = verse_of(tree, &node_id).map(|(v, _)| v).unwrap_or_default();
+                        let _ = sender.try_send(fe_sync::SyncCommand::FetchSceneAsset {
+                            hash: blob,
+                            verse_id,
+                            request_id: format!("portal:{node_id}"),
+                        });
+                    }
+                    ui.repository_view.ingest(
+                        &node_id,
+                        fe_ui::portal::repository_view::BundleSummary {
+                            asset_id: asset_id.clone(),
+                            title: String::new(),
+                            package_id: String::new(),
+                            version: String::new(),
+                            content_hash: fe_runtime::blob_store::hash_to_hex(&blob),
+                            sealed_by: None,
+                            trust_root_name: None,
+                            capabilities: Vec::new(),
+                            admission: Some(("waiting_for_bytes".into(), None)),
+                        },
+                    );
                     self.read_done(&node_id);
                 }
                 Outcome::Unreadable { node_id } => self.read_done(&node_id),
@@ -874,17 +919,26 @@ impl PortalHost {
         signals: &mut MessageWriter<AdmissionSignal>,
         changes: &mut MessageWriter<PortalBundleChanged>,
     ) {
+        let governance_moved = self.resolver.view().changed_since(&mut self.governance_seen);
         let bundle_open = ui.portal.is_bundle();
-        if !bundle_open && self.awaiting.is_empty() {
+        if !bundle_open && self.awaiting.is_empty() && !governance_moved {
             return;
         }
         let now = Instant::now();
         // A governance change (kill list, policy row, acceptance) re-judges now; the timer stays the fallback.
-        let governance_moved = self.resolver.view().changed_since(&mut self.governance_seen);
         if !governance_moved && self.next_tick.is_some_and(|at| now < at) {
             return;
         }
         self.next_tick = Some(now + REJUDGE_EVERY);
+        if governance_moved {
+            let tracked: Vec<String> = self.assets.keys().cloned().collect();
+            for node_id in tracked {
+                changes.write(PortalBundleChanged {
+                    node_id: node_id.clone(),
+                });
+                self.queue_summary(node_id);
+            }
+        }
         if bundle_open {
             signals.write(AdmissionSignal::ListAccepted);
         }
@@ -910,12 +964,14 @@ impl PortalHost {
 
 /// Update, in `AdmissionWriters` (before the revoke listener): requests out, the dialog's answer, outcomes and
 /// signals in. Idle frames do one channel poll each and allocate nothing.
+#[allow(clippy::too_many_arguments)]
 fn drive_portal_host(
     mut host: ResMut<PortalHost>,
     mut dialog: ResMut<PortalConsent>,
     mut ui: ResMut<UiManager>,
     tree: Res<VerseManager>,
     clock: Res<NoticeClock>,
+    sync: Option<Res<fe_sync::SyncCommandSenderRes>>,
     mut signals: MessageWriter<AdmissionSignal>,
     mut changes: MessageWriter<PortalBundleChanged>,
 ) {
@@ -925,7 +981,15 @@ fn drive_portal_host(
     let ui = ui.bypass_change_detection();
     host.queue_requests(ui, &tree);
     host.route_decision(&mut dialog.0, ui, now_secs);
-    host.apply_outcomes(&mut dialog.0, ui, &mut signals, &mut changes, now_secs);
+    host.apply_outcomes(
+        &mut dialog.0,
+        ui,
+        &tree,
+        &mut signals,
+        &mut changes,
+        sync.as_ref().map(|s| &s.0),
+        now_secs,
+    );
     host.follow_scene_changes(ui, &mut changes);
     host.tick(ui, &mut signals, &mut changes);
 }

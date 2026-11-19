@@ -15,7 +15,7 @@ sys.path.insert(0, HERE)
 import predicates  # noqa: E402
 import timeline_svg  # noqa: E402
 
-PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "portal", "_tick", "_error"}
+PEER_LOCAL_PROBES = {"role", "nav", "ui", "alive", "portal", "extension", "_tick", "_error"}
 DIVERGENCE_S = 15.0
 MOVING_MIN_VALUES = 8  # a target that took at least this many values, one per DIVERGENCE_S or faster, is moving
 FLIGHT_TAIL_S = 15.0  # replicas keep changing this long after a flight's last write
@@ -239,6 +239,19 @@ class Series:
         return (None, None, False) if i < 0 else (self.values[i], self.digests[i], self.known[i])
 
 
+def _bindings_effective_digest(value, digest):
+    """Strip peer-local `resolution` from `/bindings/effective` points so shared binding fields still check divergence."""
+    if isinstance(value, dict) and isinstance(value.get("points"), list):
+        shared_points = [
+            {k: v for k, v in pt.items() if k != "resolution"} if isinstance(pt, dict) else pt
+            for pt in value["points"]
+        ]
+        shared = dict(value)
+        shared["points"] = shared_points
+        return predicates.digest(shared)
+    return digest
+
+
 class Analysis:
     def __init__(self, run_dir, divergence_s=DIVERGENCE_S):
         self.run_dir = run_dir
@@ -346,7 +359,9 @@ class Analysis:
             # The window closes with the expectation's own step (QA-0159 d): a later step may legitimately write the
             # same row, so a match after the close is "not met in window", never a late "held". Regression/always
             # checks run to the step's end (+hold_s).
-            horizon = step_end + record["hold_s"]
+            horizon = min([step_end + record["hold_s"]] + [
+                s["t"] for s in self.steps if s.get("event") == "start" and s["t"] > record["t0"] + 0.5
+            ])
             if record["predicate"] == "agree":
                 rows.extend(self._agree_rows(record, horizon, step_end))
             elif record["mode"] == "always":
@@ -437,8 +452,18 @@ class Analysis:
             row["regressed_rel"] = None
             row["partial_states"] = 0
             if matched:
+                phase_end = min([horizon] + [
+                    other["t0"] for other in self.expectations
+                    if other.get("step") == record.get("step")
+                    and other.get("probe") == record.get("probe")
+                    and (
+                        other.get("target_key") == record.get("target_key")
+                        or (record.get("probe") == "portal" and other.get("target_key") != "*")
+                    )
+                    and other.get("t0", 0) > record.get("t0", 0) + 0.5
+                ])
                 for index, t in enumerate(series.times):
-                    if matched[0] < t <= horizon:
+                    if matched[0] < t <= phase_end:
                         value, _d = self._value(record, series, t)
                         if value is not predicates.MISSING and not self._holds(record, value):
                             row["regressed_rel"] = self.rel(t)
@@ -679,9 +704,17 @@ class Analysis:
                 episodes.extend(self._moving_target(probe, target, by_peer, peers_alive))
                 continue
             times = sorted({t for s in by_peer.values() for t in s.times})
+            is_effective_bindings = probe == "get" and str(target).endswith("/bindings/effective")
             open_since = {}
             for t in times + [self.end]:
-                digests = {p: s.at(t)[1] for p, s in by_peer.items() if s.at(t)[1] is not None and peers_alive(p, t)}
+                digests = {}
+                for p, s in by_peer.items():
+                    if not peers_alive(p, t):
+                        continue
+                    val, dig, _known = s.at(t)
+                    if dig is None:
+                        continue
+                    digests[p] = _bindings_effective_digest(val, dig) if is_effective_bindings else dig
                 if len(digests) < 2:
                     continue
                 counts = collections.Counter(digests.values())

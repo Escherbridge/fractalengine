@@ -175,7 +175,10 @@ class Driver:
         self.installs = {}  # installation id -> package id, from ext_consent results
         self.device_nodes = {}  # (petal id, device id) -> node id, for ingress_post / ingest_readings by device
         self.bundle_assets_by_pkg = {}  # package id -> bundle asset id, from upload_bundle results
+        self.bundle_assets_by_hash = {}  # (package id, content_hash) -> bundle asset id, from upload_bundle results
+        self.blob_hashes_by_content = {}  # inner content_hash -> outer blob_hash, from upload_bundle results
         self.repo_nodes_by_asset = {}  # bundle asset id -> repository node name, from create_repository_node
+        self.repo_names_by_id = {}  # repository node id -> node name, from create_repository_node
         self.scenario = scenario
         self.clients = clients
         self.ctx = ctx
@@ -635,7 +638,10 @@ class Driver:
         if not opened.ok:
             return None, opened
         self._x_click(client, "Refresh extension list", 3.0)
-        return package_id, self._x_click(client, "Install %s %s" % (package_id, version), float(args.get("wait_s", 20)))
+        clicked = self._x_click(client, "Install %s %s" % (package_id, version), float(args.get("wait_s", 20)))
+        if not clicked.ok and clicked.get("code") == "locator_not_found" and path:
+            return self._x_stage_install(client, {**args, "via": "file"})
+        return package_id, clicked
 
     def _x_install_outcome(self, client, package_id, wait_s, keep_dialog=False):
         """Classify what the panel shows after an install press: consent needed (ok), kill-listed or refused (refused)."""
@@ -1014,6 +1020,17 @@ class Driver:
             data = self.host.restart(client.name, bool(args.get("no_bootstrap")))
             client.run(force=True)
             return Outcome(status=200, ok=True, refused=False, data=data)
+        if op == "evict_blob":
+            content_hash = args["content_hash"]
+            for blob in (content_hash, self.blob_hashes_by_content.get(content_hash)):
+                if not blob:
+                    continue
+                path = client.blob_path(blob)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return Outcome(status=200, ok=True, refused=False, data={"evicted": content_hash})
         if op == "wait_role":
             verse = args.get("verse_id") or client.verse_id
             deadline = time.monotonic() + float(args.get("timeout_s", 30))
@@ -1031,6 +1048,7 @@ class Driver:
     PORTAL_RETRY_CODES = frozenset((
         "not_found_or_denied",
         "portal_fixture_unavailable",
+        "portal_fixture_changed",
         "portal_fixture_stale",
         "portal_bundle_not_mounted",
         "portal_fixture_document_pending",
@@ -1054,6 +1072,10 @@ class Driver:
                 data.setdefault("id", data.get("asset_id"))  # scenarios bind data.id like upload_asset
                 if data.get("package_id") and data.get("asset_id"):
                     self.bundle_assets_by_pkg[data["package_id"]] = data["asset_id"]
+                    if data.get("content_hash"):
+                        self.bundle_assets_by_hash[(data["package_id"], data["content_hash"])] = data["asset_id"]
+                        if data.get("blob_hash"):
+                            self.blob_hashes_by_content[data["content_hash"]] = data["blob_hash"]
                     assets = getattr(self.ctx, "portal_assets", None)
                     if assets is None:
                         assets = self.ctx.portal_assets = {}
@@ -1071,10 +1093,14 @@ class Driver:
                 if not written.ok:
                     return written
             self.repo_nodes_by_asset[args["bundle_asset"]] = args["name"]
+            self.repo_names_by_id[node_id] = args["name"]
             return created
         if op == "portal_update_bundle":
-            return client.rest("PATCH", "/api/v1/nodes/%s/properties" % args["repository_node_id"],
-                               {"key": "portal.bundle_asset", "value": args["bundle_asset"]})
+            out = client.rest("PATCH", "/api/v1/nodes/%s/properties" % args["repository_node_id"],
+                              {"key": "portal.bundle_asset", "value": args["bundle_asset"]})
+            if out.ok and args.get("repository_node_id") in self.repo_names_by_id:
+                self.repo_nodes_by_asset[args["bundle_asset"]] = self.repo_names_by_id[args["repository_node_id"]]
+            return out
         if op in ("portal_observe", "portal_ipc_stats"):
             route = "observe" if op == "portal_observe" else "ipc-stats"
             return client.send("GET", portal_probe.DEBUG_BASE + route, None, client.debug_token(), 8.0)
@@ -1104,9 +1130,11 @@ class Driver:
 
     def _portal_admit(self, client, args):
         """`portal_admit`: select the target repository node, press "Admit bundle" (ux.md section 5), then confirm "Enable <package_id>"."""
-        repo_name = args.get("node_name") or self.repo_nodes_by_asset.get(
-            self.bundle_assets_by_pkg.get(args.get("package_id"))
+        asset_id = (
+            self.bundle_assets_by_hash.get((args.get("package_id"), args.get("content_hash")))
+            or self.bundle_assets_by_pkg.get(args.get("package_id"))
         )
+        repo_name = args.get("node_name") or self.repo_nodes_by_asset.get(asset_id)
         if not args.get("reconsent"):
             client.gui("click", {"name": "Close portal", "exact": True, "wait_s": 0.5})
         if repo_name:
@@ -1375,9 +1403,11 @@ class Driver:
         after its anchor, so a window is never cut shorter than the scenario declared it (QA-0163 c: 13a's `reenter`
         fires at +90 s, past settle_s, and its 30 s windows were judged 0.4 s later).
         """
-        watch = [r for r in instances if r.get("status") == "registered" and r["mode"] == "eventually"]
-        deadline = max([t_done + float(step["settle_s"])] + [r["t0"] + r["within_s"] for r in watch])
-        hold = max([r["hold_s"] for r in watch] + [0.0])
+        registered = [r for r in instances if r.get("status") == "registered"]
+        watch = [r for r in registered if r["mode"] == "eventually"]
+        always_until = max([r["t0"] + r.get("hold_s", 0.0) for r in registered if r["mode"] != "eventually"] + [0.0])
+        hold = max([r.get("hold_s", 0.0) for r in watch] + [0.0])
+        deadline = max([t_done + float(step["settle_s"]), always_until + 5.0] + [r["t0"] + r["within_s"] for r in watch])
         all_met_at = None
         while not self.abort.is_set():
             now = self.clock.now()
@@ -1386,7 +1416,7 @@ class Driver:
                 all_met_at = now
             if unmet:
                 all_met_at = None
-            if all_met_at is not None and now - all_met_at >= hold:
+            if all_met_at is not None and now - all_met_at >= hold and now >= always_until:
                 return all_met_at, []
             if now >= deadline:
                 return None, unmet
@@ -1448,8 +1478,12 @@ class Driver:
                         for node in nodes[:FINGERPRINT_NODE_CAP]:
                             detail = client.rest("GET", "/api/v1/nodes/%s" % node["id"])
                             data = detail.get("data") if detail.ok else None
-                            fields = {k: data.get(k) for k in ("display_name", "position", "rotation", "scale",
-                                                               "properties", "asset_id", "petal_id")} if isinstance(data, dict) else {"unreadable": detail.get("code")}
+                            if isinstance(data, dict):
+                                fields = {k: data.get(k) for k in ("display_name", "position", "rotation", "scale",
+                                                                   "properties", "asset_id", "petal_id")}
+                                fields["properties"] = fields.get("properties") or {}
+                            else:
+                                fields = {"unreadable": detail.get("code")}
                             rows["N " + node["id"]] = predicates.normalize({**fields, "asset_path": node.get("asset_path")})
             out[name] = {"hierarchy_ok": hierarchy.ok, "sha256": predicates.digest(rows),
                          "counts": {k: sum(key.startswith(k + " ") for key in rows) for k in "FPN"}, "rows": rows}

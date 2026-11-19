@@ -621,7 +621,10 @@ impl OpsWorker {
     /// Serve panel ops and admin jobs, in arrival order, until every sender is gone; idle, refresh registry offers.
     pub fn run(mut self, jobs: Receiver<WorkerInput>, events: Sender<ExtensionEvent>) {
         loop {
-            let wait = self.offers_next_refresh.saturating_duration_since(Instant::now());
+            let wait = self
+                .offers_next_refresh
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(2));
             let input = match jobs.recv_timeout(wait) {
                 Ok(input) => input,
                 Err(RecvTimeoutError::Timeout) => {
@@ -1201,7 +1204,14 @@ impl OpsWorker {
             }
         } else if may_start {
             match self.run_build(&package, &info.facts, !activated, scope, RunMode::Start) {
-                Ok(()) => activated = true,
+                Ok(()) => {
+                    activated = true;
+                    if !scope.verse_id.is_empty() {
+                        if let Err(error) = self.accept_in_verse(&installation_id, &scope.verse_id, &info.facts.package_id) {
+                            tracing::warn!(%installation_id, verse_id = %scope.verse_id, %error, "accept_in_verse failed after promote start");
+                        }
+                    }
+                }
                 Err(RunError::RolledBack(message) | RunError::Failed(message)) => start_failure = Some(message),
             }
         }
@@ -1340,6 +1350,11 @@ impl OpsWorker {
             .map_err(|error| match error {
                 RunError::RolledBack(message) | RunError::Failed(message) => message,
             })?;
+        if !scope.verse_id.is_empty() {
+            if let Err(error) = self.accept_in_verse(installation_id, &scope.verse_id, &info.facts.package_id) {
+                tracing::warn!(%installation_id, verse_id = %scope.verse_id, %error, "accept_in_verse failed after enable");
+            }
+        }
         if let Some(installed) = self.installed.get_mut(installation_id) {
             installed.activated_once = true;
         }
@@ -1499,7 +1514,7 @@ impl OpsWorker {
         }
     }
 
-    /// The idle refresh: re-read the open petal's bindings (when one is open), then the sources.
+    /// The idle refresh: re-read the open petal's bindings (when one is open), then the sources if needed.
     fn periodic_offer_refresh(&mut self) {
         let scope = self.gui_scope.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         if !scope.petal_id.is_empty() {
@@ -1508,7 +1523,9 @@ impl OpsWorker {
                 Err(reason) => tracing::debug!(%reason, "bindings unreadable; registry offers keep the last packages"),
             }
         }
-        self.refresh_registry_offers(&scope.verse_id);
+        if !self.offer_packages.is_subset(&self.offers_covered) || Instant::now() >= self.offers_next_refresh {
+            self.refresh_registry_offers(&scope.verse_id);
+        }
     }
 
     /// The highest listed build of `package_id` fitting `version_req` (and newer than the installed one for an update).

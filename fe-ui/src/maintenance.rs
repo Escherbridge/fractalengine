@@ -48,6 +48,7 @@ pub fn clear_read_models(world: &mut World) {
     reset::<crate::node_manager::StampSelectionCatalog>(world);
     reset::<crate::node_manager::StampSelectionRequests>(world);
     reset::<crate::verse_manager::PrimitiveDescriptorCache>(world);
+    reset::<crate::verse_manager::RenderOverrideCache>(world);
     reset::<crate::verse_manager::PathAssetCache>(world);
     reset::<crate::verse_manager::StampRenderIndex>(world);
     reset::<crate::verse_manager::ResidencyLedger>(world);

@@ -10,8 +10,9 @@ pub mod secret_store;
 pub mod x25519;
 
 pub use api_token::{
-    mint_api_token, mint_client_api_token, new_client_did, resolve_client_did, validate_client_did,
-    validate_token_scope, verify_api_token, ApiClaims,
+    is_reserved_local_client_did, mint_api_token, mint_client_api_token, new_client_did,
+    reserve_local_client_did, resolve_client_did, validate_client_did, validate_token_scope,
+    verify_api_token, ApiClaims,
 };
 pub use did_key::{did_key_from_public_key, pub_key_to_did_key, public_key_from_did_key};
 pub use jwt::FractalClaims;
