@@ -252,6 +252,14 @@ def _bindings_effective_digest(value, digest):
     return digest
 
 
+def _bindings_effective_series(series):
+    """Return a Series copy with peer-local `resolution` stripped from `/bindings/effective` digests."""
+    out = Series()
+    for t, val, dig, known in zip(series.times, series.values, series.digests, series.known):
+        out.add(t, val, _bindings_effective_digest(val, dig), known)
+    return out
+
+
 class Analysis:
     def __init__(self, run_dir, divergence_s=DIVERGENCE_S):
         self.run_dir = run_dir
@@ -696,7 +704,8 @@ class Analysis:
         keys = collections.defaultdict(dict)
         for (peer, probe, target), series in self.series.items():
             if probe not in PEER_LOCAL_PROBES:
-                keys[(probe, target)][peer] = series
+                is_effective = probe == "get" and str(target).endswith("/bindings/effective")
+                keys[(probe, target)][peer] = _bindings_effective_series(series) if is_effective else series
         for (probe, target), by_peer in keys.items():
             if len(by_peer) < 2:
                 continue
@@ -704,17 +713,9 @@ class Analysis:
                 episodes.extend(self._moving_target(probe, target, by_peer, peers_alive))
                 continue
             times = sorted({t for s in by_peer.values() for t in s.times})
-            is_effective_bindings = probe == "get" and str(target).endswith("/bindings/effective")
             open_since = {}
             for t in times + [self.end]:
-                digests = {}
-                for p, s in by_peer.items():
-                    if not peers_alive(p, t):
-                        continue
-                    val, dig, _known = s.at(t)
-                    if dig is None:
-                        continue
-                    digests[p] = _bindings_effective_digest(val, dig) if is_effective_bindings else dig
+                digests = {p: s.at(t)[1] for p, s in by_peer.items() if s.at(t)[1] is not None and peers_alive(p, t)}
                 if len(digests) < 2:
                     continue
                 counts = collections.Counter(digests.values())
