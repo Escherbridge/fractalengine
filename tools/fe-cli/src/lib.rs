@@ -45,6 +45,16 @@ pub fn run(inv: Invocation) -> i32 {
     runtime.block_on(spine::execute(argv, env, &mut *stdout, &mut *stderr))
 }
 
+/// Boxed entry for `fe replay`, which runs each journal line as a child invocation (a boxed future breaks the async recursion).
+pub(crate) fn execute_boxed<'a>(
+    argv: Vec<String>,
+    env: Env,
+    stdout: &'a mut dyn Write,
+    stderr: &'a mut dyn Write,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = i32> + 'a>> {
+    Box::pin(spine::execute(argv, env, stdout, stderr))
+}
+
 /// The CLI spine: global flags, routing, instance + context resolution, dispatch, envelope, journal, exit code.
 mod spine {
     use std::collections::BTreeMap;
@@ -254,17 +264,29 @@ mod spine {
             let text: String = positionals.join(" ").chars().take(2000).collect();
             report.note = Some(text);
         }
-        let request = CommandRequest { noun: noun.clone(), verb, args, positionals, global };
         let cwd = non_empty(&env, "FE_CWD")
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
+        let request = CommandRequest {
+            noun: noun.clone(),
+            verb,
+            args,
+            positionals,
+            global,
+            env: env.clone(),
+            cwd: cwd.clone(),
+            instance_flag: parsed.instance.clone(),
+        };
 
         let mut result: CommandResult;
         let mut loaded = Context { v: 1, ..Context::default() };
         let mut context_file: Option<PathBuf> = None;
         if noun == "instance" || noun == "note" {
             result = run_local(&noun, &request, &env, &cwd);
+        } else if noun == "replay" {
+            // Replay resolves an instance per journal line (child invocations), never for itself.
+            result = commands::replay::run(&request).await;
         } else {
             let selector = match instance_selector(&request, parsed.instance.as_deref(), &env) {
                 Ok(selector) => selector,
@@ -308,6 +330,9 @@ mod spine {
             }
         }
 
+        if let Some(resolved_args) = &result.resolved_args {
+            report.resolved.args = Some(resolved_args.clone());
+        }
         report.ctx_before = serde_json::to_value(&loaded).unwrap_or(Value::Null);
         let mut context_after = loaded.clone();
         let mut outcome = result.outcome.clone();
@@ -334,7 +359,7 @@ mod spine {
         report.help = true;
         let is_x = path.first().map(String::as_str) == Some("x");
         let rows: Vec<&'static Verb> = if path.is_empty() {
-            catalog::verb_table().iter().filter(|row| row.phase == 1).collect()
+            catalog::verb_table().iter().filter(|row| row.phase <= catalog::SHIPPED_PHASE).collect()
         } else if is_x {
             Vec::new()
         } else {
@@ -389,6 +414,10 @@ mod spine {
         match default {
             "none" | "off" => {}
             "local" => global.wait = Some("local".to_string()),
+            other if commands::parse_wait(other).is_some() => {
+                global.wait = Some(other.to_string());
+                global.wait_default = true;
+            }
             other => {
                 global.wait = Some("local".to_string());
                 global.wait_fallback = Some(other.to_string());
@@ -406,7 +435,7 @@ mod spine {
         wait.insert("requested".to_string(), json!(requested));
         wait.insert(
             "note".to_string(),
-            json!(format!("FE_WAIT_DEFAULT={requested} is not supported yet; waited with local (pass --wait explicitly to refuse instead)")),
+            json!(format!("FE_WAIT_DEFAULT={requested} is not a wait mode (local, peers, peers=<name>,<name>); waited with local")),
         );
         Some(Value::Object(wait))
     }

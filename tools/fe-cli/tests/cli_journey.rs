@@ -432,14 +432,15 @@ fn cli_operator_journey() {
     let set = expect(&owner, &["node", "set", &tower, "color", "red", "--wait", "local", "--json"], 0);
     assert_eq!(set["wait"]["settled"], json!(true), "get_properties shows the value: {set}");
 
-    // 4. FE_WAIT_DEFAULT=peers (a harness default) downgrades writes to local and says so; reads ignore it;
-    //    an explicit --wait peers is still refused (exit 6).
+    // 4. FE_WAIT_DEFAULT=peers (a harness default) with no peer instance discoverable degrades writes to local and
+    //    says so; reads ignore it; an explicit --wait peers with no peer is refused before the write (exit 6).
     let mut peers_default = owner.clone();
     peers_default.insert("FE_WAIT_DEFAULT".into(), "peers".into());
     let defaulted = expect(&peers_default, &["node", "unset", &tower, "color", "--json"], 0);
     assert_eq!((defaulted["wait"]["requested"].clone(), defaulted["wait"]["settled"].clone()), (json!("peers"), json!(true)));
     assert_eq!(expect(&peers_default, &["node", "get", &tower, "--json"], 0)["wait"], Value::Null);
-    expect(&peers_default, &["node", "set", &tower, "k", "v", "--wait", "peers", "--json"], 6);
+    let no_peers = expect(&peers_default, &["node", "set", &tower, "k", "v", "--wait", "peers", "--json"], 6);
+    assert_eq!(no_peers["code"], "no-peers");
 
     let deleted = expect(&owner, &["node", "delete", &tower, "--wait", "local", "--json"], 0);
     assert_eq!(deleted["wait"]["settled"], json!(true));
@@ -460,6 +461,90 @@ fn cli_operator_journey() {
     assert_eq!(denied["message"], "insufficient permissions");
     let hidden = expect(&viewer, &["node", "get", &crate_node, "--verse", &campus, "--json"], 5);
     assert_eq!(hidden["message"], "not found or not permitted");
+
+    // 6b. `--wait peers`: the same read-back runs on every other member of .qa/peers-current with that member's own
+    //     token. `viewer` sees the write (converged, 0); `ghost` holds no token for the verse and never does, so the
+    //     budget expires (9) while the write itself has landed; a peer name nobody has is refused before sending (6).
+    let lab = root.path().join("lab");
+    let peerset = root.path().join("peerset");
+    let ghost_tokens = root.path().join("ghost").join("tokens.json");
+    write_file(&ghost_tokens, &json!({"api_base": format!("http://{}", engine.bound), "tokens": {}, "roles": {}}).to_string());
+    let member = |name: &str, tokens: &Path| json!({"name": name, "api_base": format!("http://{}", engine.bound), "tokens_path": tokens.to_string_lossy()});
+    let members = json!({"members": [member("owner", &owner_tokens), member("viewer", &viewer_tokens), member("ghost", &ghost_tokens)]});
+    write_file(&peerset.join("peers.json"), &members.to_string());
+    write_file(&lab.join(".qa").join("peers-current"), &peerset.to_string_lossy());
+    let mut peered = owner.clone();
+    peered.insert("FE_CWD".into(), lab.to_string_lossy().into_owned());
+    let converged = expect(&peered, &["node", "create", "Beacon", "--wait", "peers=viewer", "--json"], 0);
+    assert_eq!((converged["wait"]["mode"].clone(), converged["wait"]["settled"].clone()), (json!("peers"), json!(true)), "{converged}");
+    assert_eq!(converged["wait"]["peers"][0], json!({"name": "viewer", "settled": true, "ms": converged["wait"]["peers"][0]["ms"].clone()}));
+    let beacon = id_of(&converged);
+    let late = expect(&peered, &["node", "set", &beacon, "mood", "calm", "--wait", "peers=ghost", "--wait-budget", "1s", "--json"], 9);
+    assert_eq!((late["code"].clone(), late["wait"]["settled"].clone(), late["wait"]["peers"][0]["settled"].clone()), (json!("wait-expired"), json!(false), json!(false)), "{late}");
+    let landed = expect(&owner, &["node", "props", &beacon, "--json"], 0);
+    assert!(landed["data"].to_string().contains("calm"), "the write landed although the wait expired: {landed}");
+    assert_eq!(expect(&peered, &["node", "create", "Nobody", "--wait", "peers=nobody", "--json"], 6)["code"], "unknown-peer");
+    // Phase-2 rows are table-driven: a dry run shows the planned MCP call (file bytes elided, no token printed).
+    let glb = root.path().join("tiny.glb");
+    std::fs::write(&glb, b"glTF").unwrap();
+    let planned = expect(&owner, &["asset", "upload", "--file", &glb.to_string_lossy(), "--dry-run", "--json"], 0);
+    assert_eq!(planned["data"]["planned"]["tool"], "upload_asset");
+    assert!(planned["data"]["planned"]["args"]["data_base64"].as_str().unwrap().starts_with('<'), "{planned}");
+    let group_plan = expect(&owner, &["group", "delete", "g1", "--dry-run", "--json"], 0);
+    assert_eq!((group_plan["data"]["planned"]["args"]["delete"].clone(), group_plan["data"]["planned"]["args"]["group_id"].clone()), (json!(true), json!("g1")));
+
+    // An invite is a credential: a dry run prints it nowhere, in either flag spelling or inside --args-json.
+    let secret_invite = "fe-join-v2:CANARY-INVITE-0123456789";
+    let join_plan = expect(&owner, &["join", "--invite", secret_invite, "--dry-run", "--json"], 0);
+    assert!(!join_plan.to_string().contains("CANARY-INVITE"), "invite printed by a dry run: {join_plan}");
+    expect(&owner, &["join", &format!("--invite={secret_invite}"), "--dry-run", "--json"], 0);
+    let args_json = format!("{{\"invite\":\"{secret_invite}\"}}");
+    expect(&owner, &["join", "--args-json", &args_json, "--dry-run", "--json"], 0);
+
+    // 6c. Replay: record a short script under a seeded context, then re-run it with no LLM. Created ids are re-bound
+    //     (the replayed node is a new node); a tampered recorded exit stops the replay at that step (12).
+    let recorded = root.path().join("recorded.jsonl");
+    write_file(
+        &root.path().join("recorder-ctx.json"),
+        &json!({"v": 1, "verse": {"id": campus, "name": "Campus"}, "fractal": {"id": north, "name": "North"}, "petal": {"id": plaza, "name": "Plaza"}}).to_string(),
+    );
+    let mut recorder = env(&owner_tokens, "recorder");
+    recorder.insert("FE_JOURNAL".into(), recorded.to_string_lossy().into_owned());
+    let pylon = id_of(&expect(&recorder, &["node", "create", "Pylon", "--position", "4,5,6", "--json"], 0));
+    expect(&recorder, &["node", "move", &pylon, "--x", "9", "--json"], 0);
+    expect(&recorder, &["node", "get", &pylon, "--json"], 0);
+    expect(&recorder, &["node", "delete", &pylon, "--json"], 0);
+    expect(&recorder, &["node", "get", &pylon, "--json"], 5);
+    let replayer = env(&owner_tokens, "replayer");
+    let recorded_text = std::fs::read_to_string(&recorded).unwrap();
+    let replayed = expect(&replayer, &["replay", &recorded.to_string_lossy(), "--json"], 0);
+    assert_eq!(replayed["data"]["replayed"], json!(5), "{replayed}");
+    let id_map = replayed["data"]["id_map"].as_object().expect("id map");
+    assert!(id_map.get(&pylon).and_then(Value::as_str).is_some_and(|fresh| fresh != pylon), "the replayed create got a new id: {replayed}");
+    let mut tampered: Vec<Value> = recorded_text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let last = tampered.len() - 1;
+    tampered[last]["exit"] = json!(0);
+    let tampered_path = root.path().join("tampered.jsonl");
+    std::fs::write(&tampered_path, tampered.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+    let diverged = expect(&replayer, &["replay", &tampered_path.to_string_lossy(), "--json"], 12);
+    assert_eq!(diverged["code"], "replay-diverged");
+    let at = &diverged["data"]["diverged_at"];
+    assert_eq!((at["seq"].clone(), at["recorded_exit"].clone(), at["replayed_exit"].clone()), (tampered[last]["seq"].clone(), json!(0), json!(5)), "{diverged}");
+    // The same journal converts to a sim scenario: created ids become action references, the fixture petal is named.
+    let scenario_path = root.path().join("scenario.json");
+    let emitted = expect(&replayer, &["replay", &recorded.to_string_lossy(), "--emit-scenario", &scenario_path.to_string_lossy(), "--scenario-name", "cli-journey", "--json"], 0);
+    assert_eq!((emitted["data"]["steps"].clone(), emitted["data"]["actions"].clone()), (json!(4), json!(5)), "{emitted}");
+    let scenario: Value = serde_json::from_str(&std::fs::read_to_string(&scenario_path).unwrap()).unwrap();
+    assert_eq!(scenario["name"], "cli-journey");
+    assert_eq!(scenario["peers"][0], json!({"name": "owner", "role": "owner"}));
+    let first_action = &scenario["steps"][0]["actions"][0];
+    assert_eq!((first_action["op"].clone(), first_action["args"]["petal_id"].clone()), (json!("create_node"), json!("$fixture.petal_a_id")), "{scenario}");
+    assert_eq!(scenario["steps"][0]["expect"][0]["predicate"], "agree");
+    assert_eq!(scenario["steps"][1]["actions"][0]["args"]["node_id"], "$c1.id", "later actions name the created node by reference");
+    assert_eq!(scenario["steps"][3]["actions"][0]["expect"], "refused", "the recorded not-found read stays a refusal");
+    if let Some(keep) = std::env::var_os("FE_CLI_KEEP_SCENARIO") {
+        std::fs::copy(&scenario_path, keep).expect("keep emitted scenario");
+    }
 
     // 7. No petal in a fresh context: refused locally with the way to set one (6), nothing sent.
     let mut fresh = owner.clone();
@@ -541,6 +626,15 @@ fn cli_operator_journey() {
         assert!(!text.contains(token.as_str().unwrap()), "a bearer token reached the journal");
     }
     assert!(!text.contains("secret-remote-token"));
+    assert!(!text.contains("CANARY-INVITE"), "an invite reached the journal");
+    // The whole journal converts to a scenario (or is refused) without the invite surviving either way.
+    let whole_scenario = root.path().join("whole-scenario.json");
+    let whole_argv = ["replay", &journal.to_string_lossy().into_owned(), "--emit-scenario", &whole_scenario.to_string_lossy().into_owned(), "--json"].map(String::from);
+    let (_, whole_envelope, _) = fe(&replayer, &whole_argv.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(!whole_envelope.to_string().contains("CANARY-INVITE"));
+    if let Ok(emitted) = std::fs::read_to_string(&whole_scenario) {
+        assert!(!emitted.contains("CANARY-INVITE") && !emitted.contains("fe-join-v2"), "an invite reached an emitted scenario");
+    }
 
     // 11. Drift: the embedded MCP snapshot equals the live tool table (blessed at the top when FE_CLI_BLESS=1).
     let snapshot: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&snapshot_path).unwrap()).unwrap();

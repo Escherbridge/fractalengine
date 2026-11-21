@@ -24,5 +24,5 @@ pub fn run(request: &CommandRequest) -> CommandResult {
         outcome.message = "noted".to_string();
         outcome
     };
-    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: EnvelopeContext::default(), wait: None }
+    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: EnvelopeContext::default(), wait: None, resolved_args: None }
 }

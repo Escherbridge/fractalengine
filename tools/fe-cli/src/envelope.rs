@@ -19,6 +19,8 @@ pub enum ExitCode {
     WaitExpired = 9,
     ServerFault = 10,
     BudgetExhausted = 11,
+    /// `fe replay`: a replayed step answered with a different exit code than the journal recorded.
+    ReplayDiverged = 12,
 }
 
 impl ExitCode {

@@ -76,7 +76,30 @@ static VERBS: &[Verb] = &[
     Verb { noun: "node", verb: "delete", door: Door::Mcp("delete_node"), summary: "Tombstone a node (--cascade for its subtree)", phase: 1 },
     Verb { noun: "help", verb: "", door: Door::Local, summary: "Show help (--json for the machine catalog)", phase: 1 },
     Verb { noun: "note", verb: "", door: Door::Local, summary: "Record a friction note in the journal", phase: 1 },
+    // Phase 2: one row per MCP tool or REST route; `commands::generic` runs every one of them.
+    Verb { noun: "node", verb: "props", door: Door::Mcp("get_properties"), summary: "List a node's custom properties", phase: 2 },
+    Verb { noun: "node", verb: "history", door: Door::Mcp("get_node_history"), summary: "Page a node's commit history", phase: 2 },
+    Verb { noun: "asset", verb: "upload", door: Door::Mcp("upload_asset"), summary: "Upload a GLB file (max 11 MiB) and print its asset id", phase: 2 },
+    Verb { noun: "terrain", verb: "get", door: Door::Rest("GET", "/petals/{petal_id}/terrain"), summary: "Show the current petal's terrain config", phase: 2 },
+    Verb { noun: "terrain", verb: "set", door: Door::Mcp("set_petal_terrain"), summary: "Set the petal's terrain config (--terrain-json or --args @file)", phase: 2 },
+    Verb { noun: "terrain", verb: "clear", door: Door::Mcp("set_petal_terrain"), summary: "Clear the petal's terrain config", phase: 2 },
+    Verb { noun: "group", verb: "list", door: Door::Mcp("list_visibility_groups"), summary: "List the petal's visibility groups", phase: 2 },
+    Verb { noun: "group", verb: "set", door: Door::Mcp("set_visibility_group"), summary: "Create or update a visibility group", phase: 2 },
+    Verb { noun: "group", verb: "delete", door: Door::Mcp("set_visibility_group"), summary: "Delete a visibility group", phase: 2 },
+    Verb { noun: "invite", verb: "create", door: Door::Mcp("issue_verse_invite"), summary: "Invite a peer to the current verse (--to-instance <name> or --recipient-did)", phase: 2 },
+    Verb { noun: "join", verb: "", door: Door::Mcp("join_verse"), summary: "Join a verse from an invite (--invite - reads stdin)", phase: 2 },
+    Verb { noun: "role", verb: "list", door: Door::Mcp("list_roles"), summary: "List roles and members of the current verse", phase: 2 },
+    Verb { noun: "role", verb: "assign", door: Door::Mcp("assign_role"), summary: "Assign a role to a peer DID", phase: 2 },
+    Verb { noun: "role", verb: "revoke", door: Door::Mcp("revoke_role"), summary: "Revoke a peer DID's role", phase: 2 },
+    Verb { noun: "net", verb: "diag", door: Door::Mcp("get_network_diagnostics"), summary: "Show peer connectivity (addresses redacted)", phase: 2 },
+    Verb { noun: "identity", verb: "", door: Door::Mcp("get_identity"), summary: "Show this node's DID and relay state", phase: 2 },
+    Verb { noun: "sync", verb: "state", door: Door::Mcp("get_sync_state"), summary: "Show replica state of the current verse (owner, diagnostics gate)", phase: 2 },
+    Verb { noun: "query", verb: "", door: Door::Mcp("query"), summary: "Run one read-only SurrealQL SELECT", phase: 2 },
+    Verb { noun: "replay", verb: "", door: Door::Local, summary: "Re-run a journal with no LLM; --emit-scenario writes a sim scenario instead", phase: 2 },
 ];
+
+/// Highest phase whose rows are listed and routed.
+pub const SHIPPED_PHASE: u8 = 2;
 
 /// Global flag spellings the spine consumes anywhere before the noun's tail; no schema property may claim them.
 pub const GLOBAL_FLAGS: &[&str] =
@@ -102,7 +125,8 @@ pub fn path_of(verb: &Verb) -> Vec<&'static str> {
 
 /// Whether the verb changes state (accepts `--wait`).
 pub fn is_write(verb: &Verb) -> bool {
-    verb.door != Door::Local && matches!(verb.verb, "create" | "move" | "set" | "unset" | "delete")
+    verb.door != Door::Local
+        && (matches!(verb.verb, "create" | "move" | "set" | "unset" | "delete" | "clear" | "assign" | "revoke" | "upload") || verb.noun == "join")
 }
 
 /// Resolves the command words (not `x`) to one table row and the number of words it consumed; anything else exits 6
@@ -194,7 +218,12 @@ pub fn detail(verb: &Verb) -> VerbDetail {
         ("petal", "create") => VerbDetail { positionals: &["name"], from_context: &[("fractal_id", "fractal")] },
         ("node", "create") => VerbDetail { positionals: &["name"], from_context: &[("petal_id", "petal")] },
         ("node", "list") => VerbDetail { positionals: &[], from_context: &[("petal_id", "petal")] },
-        ("node", "get") | ("node", "move") | ("node", "delete") => plain(&["node_id"]),
+        ("node", "get") | ("node", "move") | ("node", "delete") | ("node", "props") | ("node", "history") => plain(&["node_id"]),
+        ("asset", "upload") | ("terrain", _) | ("group", "list") => VerbDetail { positionals: &[], from_context: &[("petal_id", "petal")] },
+        ("group", _) => VerbDetail { positionals: &["group_id"], from_context: &[("petal_id", "petal")] },
+        ("invite", _) | ("role", _) | ("sync", _) => VerbDetail { positionals: &[], from_context: &[("verse_id", "verse")] },
+        ("query", _) => plain(&["sql"]),
+        ("replay", _) => plain(&["journal"]),
         ("node", "set") => plain(&["node_id", "key", "value"]),
         ("node", "unset") => plain(&["node_id", "key"]),
         ("note", _) => plain(&["text"]),
@@ -260,6 +289,26 @@ fn rest_specs(verb: &Verb) -> Vec<FlagSpec> {
                 plain_spec("limit", FlagKind::Integer, "Most rows on this page"),
             ]
         }
+        ("terrain", "get") => vec![plain_spec("petal_id", FlagKind::String, "Petal to read")],
+        _ => Vec::new(),
+    }
+}
+
+/// Flags of the local verbs that take any (`replay`).
+fn local_specs(verb: &Verb) -> Vec<FlagSpec> {
+    let repeatable = |name: &str, description: &str| {
+        let mut spec = plain_spec(name, FlagKind::String, description);
+        spec.repeatable = true;
+        spec
+    };
+    match (verb.noun, verb.verb) {
+        ("replay", "") => vec![
+            repeatable("map", "agent=instance: run that agent's steps on that instance (default: the current instance)"),
+            repeatable("bind", "old=new: seed the id map, e.g. a fixture verse of the instance being replayed against"),
+            plain_spec("strict", FlagKind::Boolean, "Also compare each step's data (ids normalised) with the journal"),
+            plain_spec("emit_scenario", FlagKind::String, "Write a tools/qa/sim scenario to this path instead of replaying"),
+            plain_spec("scenario_name", FlagKind::String, "Scenario name for --emit-scenario (lowercase kebab-case)"),
+        ],
         _ => Vec::new(),
     }
 }
@@ -271,8 +320,25 @@ pub fn flag_specs(verb: &Verb) -> Vec<FlagSpec> {
         Door::Mcp("get_hierarchy") => Vec::new(),
         Door::Mcp(tool) => tool_row(tool).map(|row| args_from_schema(&row.input_schema)).unwrap_or_default(),
         Door::Rest(..) => rest_specs(verb),
-        Door::Local => Vec::new(),
+        Door::Local => local_specs(verb),
     };
+    match (verb.noun, verb.verb) {
+        ("asset", "upload") => {
+            specs.retain(|spec| spec.name != "data_base64");
+            for spec in specs.iter_mut().filter(|spec| spec.name == "name") {
+                spec.required = false;
+                spec.description = "Display name (default: the file name)".to_string();
+            }
+            specs.push(plain_spec("file", FlagKind::String, "GLB file to upload (max 11 MiB)"));
+        }
+        ("invite", "create") => {
+            for spec in specs.iter_mut().filter(|spec| spec.name == "recipient_did") {
+                spec.required = false;
+            }
+            specs.push(plain_spec("to_instance", FlagKind::String, "Local instance whose DID is the recipient (read with get_identity)"));
+        }
+        _ => {}
+    }
     if (verb.noun, verb.verb) == ("node", "create") {
         if let Some(place) = tool_row("place_asset") {
             for mut extra in args_from_schema(&place.input_schema) {

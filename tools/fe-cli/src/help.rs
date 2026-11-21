@@ -7,7 +7,7 @@ use crate::envelope::ExitCode;
 use crate::schema_flags::{FlagKind, FlagSpec};
 
 /// How global flags combine with command words (one rule, shown in both help forms).
-pub const GLOBAL_FLAG_RULE: &str = "Global flags (--json --dry-run --wait local --wait-budget <dur> --retry <n> --instance <name|dir|tokens.json> --verse|--fractal|--petal <id>) may come before or after the command words. After `fe x` every token belongs to the extension command (only --json, --help/-h and --list are read there), so put other global flags before `x`.";
+pub const GLOBAL_FLAG_RULE: &str = "Global flags (--json --dry-run --wait local|peers[=name,name] --wait-budget <dur> --retry <n> --instance <name|dir|tokens.json> --verse|--fractal|--petal <id>) may come before or after the command words. After `fe x` every token belongs to the extension command (only --json, --help/-h and --list are read there), so put other global flags before `x`.";
 
 fn kind_name(kind: FlagKind) -> &'static str {
     match kind {
@@ -43,6 +43,9 @@ fn verb_args(verb: &Verb) -> Vec<Value> {
     if verb.noun == "use" {
         args.push(json!({"name": "target", "flag": null, "type": "string", "required": true, "enum": [], "description": "Instance name, or an id or name at that level", "from_context": null, "repeatable": false, "positional": 0}));
     }
+    if verb.noun == "replay" {
+        args.push(json!({"name": "journal", "flag": null, "type": "string", "required": true, "enum": [], "description": "JSONL journal written with FE_JOURNAL", "from_context": null, "repeatable": false, "positional": 0}));
+    }
     if verb.noun == "note" {
         args.push(json!({"name": "text", "flag": null, "type": "string", "required": true, "enum": [], "description": "What was confusing or missing", "from_context": null, "repeatable": false, "positional": 0}));
     }
@@ -57,7 +60,7 @@ fn command_json(verb: &Verb) -> Value {
         Door::Local => ("local", None, None, None),
     };
     let networked = verb.door != Door::Local;
-    let wait: Vec<&str> = if catalog::is_write(verb) { vec!["local"] } else { Vec::new() };
+    let wait: Vec<&str> = if catalog::is_write(verb) { vec!["local", "peers"] } else { Vec::new() };
     json!({
         "path": path,
         "summary": verb.summary,
@@ -91,13 +94,14 @@ fn exit_codes() -> Value {
         (ExitCode::WaitExpired, "wait-expired", "write accepted but --wait budget expired"),
         (ExitCode::ServerFault, "server-fault", "server fault or unexpected reply"),
         (ExitCode::BudgetExhausted, "budget-exhausted", "command budget exhausted"),
+        (ExitCode::ReplayDiverged, "replay-diverged", "a replayed step's exit code differs from the journal"),
     ];
     Value::Array(table.iter().map(|(code, name, meaning)| json!({"code": code.number(), "name": name, "meaning": meaning})).collect())
 }
 
 /// Machine-readable help document (plan §1 "`fe help --json`").
 pub fn help_json() -> Value {
-    help_json_for(&catalog::verb_table().iter().filter(|verb| verb.phase == 1).collect::<Vec<_>>())
+    help_json_for(&catalog::verb_table().iter().filter(|verb| verb.phase <= catalog::SHIPPED_PHASE).collect::<Vec<_>>())
 }
 
 /// The help document restricted to `rows`.
@@ -136,7 +140,7 @@ pub fn help_text(path: &[String]) -> String {
     let verb_name = path.get(1).map(String::as_str);
     let matching: Vec<&Verb> = catalog::verb_table()
         .iter()
-        .filter(|verb| verb.phase == 1)
+        .filter(|verb| verb.phase <= catalog::SHIPPED_PHASE)
         .filter(|verb| noun.is_none_or(|wanted| verb.noun == wanted))
         .filter(|verb| verb_name.is_none_or(|wanted| verb.verb == wanted))
         .collect();

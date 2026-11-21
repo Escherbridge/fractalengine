@@ -29,7 +29,7 @@ pub async fn run(request: &CommandRequest, client: &Client, context: &Context, s
         Ok(outcome) => outcome,
         Err(error) => failure(error),
     };
-    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context, wait: None }
+    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context, wait: None, resolved_args: None }
 }
 
 /// Words and switches of one `fe x` invocation.

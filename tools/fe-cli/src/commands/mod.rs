@@ -1,6 +1,7 @@
 //! Core verb dispatch and the helpers every noun module shares (S3).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
@@ -10,13 +11,17 @@ use crate::context::Context;
 use crate::envelope::{CliError, EnvelopeContext, ExitCode, Refusal};
 use crate::instance::read_tokens;
 use crate::transport::{Client, Outcome};
+use crate::Env;
 
 pub mod fractal;
+pub mod generic;
 pub mod hierarchy;
 pub mod instance;
 pub mod node;
 pub mod note;
 pub mod petal;
+pub mod replay;
+pub mod scenario;
 pub mod use_ctx;
 pub mod verse;
 
@@ -27,6 +32,8 @@ pub struct GlobalFlags {
     pub dry_run: bool,
     /// `local` or `peers[=a,b]`.
     pub wait: Option<String>,
+    /// `wait` came from `FE_WAIT_DEFAULT`: a harness default degrades to local when no peer is discoverable.
+    pub wait_default: bool,
     pub wait_budget_ms: u64,
     pub retry: u32,
     pub verse: Option<String>,
@@ -48,11 +55,19 @@ pub struct CommandRequest {
     /// Remaining positional words.
     pub positionals: Vec<String>,
     pub global: GlobalFlags,
+    /// Injected environment (peer discovery, `fe replay` child runs).
+    pub env: Env,
+    /// Working directory for `.qa/` discovery and relative selectors.
+    pub cwd: PathBuf,
+    /// `--instance` as typed (replay's default instance for unmapped agents).
+    pub instance_flag: Option<String>,
 }
 
 /// What a verb hands back to the spine.
 #[derive(Debug, Clone)]
 pub struct CommandResult {
+    /// Final tool arguments (positionals and context merged); the journal records them for replay and scenario emission.
+    pub resolved_args: Option<Value>,
     pub outcome: Outcome,
     /// Context after the verb (written back when changed).
     pub context_after: Option<Context>,
@@ -72,9 +87,15 @@ pub async fn dispatch(request: &CommandRequest, client: &Client, context: &Conte
         return result(request, context, usage_outcome("unknown-command", format!("unknown command `{}`; run `fe help`", request.noun)));
     }
     if let Some(wait) = request.global.wait.as_deref() {
-        if wait != "local" {
-            return result(request, context, usage_outcome("wait-unsupported", format!("--wait {wait} is not available yet; use --wait local")));
+        if parse_wait(wait).is_none() {
+            return result(request, context, usage_outcome("wait-unsupported", format!("--wait {wait} is not a wait mode; use local, peers or peers=<name>,<name>")));
         }
+    }
+    if let Err(outcome) = check_peers(request, client) {
+        return result(request, context, outcome);
+    }
+    if request.verb.is_some_and(|row| row.phase == 2) {
+        return generic::run(request, client, context).await;
     }
     match request.noun.as_str() {
         "use" | "ctx" => use_ctx::run(request, client, context).await,
@@ -152,7 +173,7 @@ pub(crate) fn envelope_context(request: &CommandRequest, context: &Context) -> E
 
 /// Wraps an outcome with the resolved context; callers fill the optional fields.
 pub(crate) fn result(request: &CommandRequest, context: &Context, outcome: Outcome) -> CommandResult {
-    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: envelope_context(request, context), wait: None }
+    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: envelope_context(request, context), wait: None, resolved_args: None }
 }
 
 /// The `noun verb` label of a request.
@@ -164,10 +185,14 @@ pub(crate) fn verb_label(request: &CommandRequest) -> String {
     }
 }
 
-/// The id of a created entity from a create reply (`{id}` or REST `{data:{id}}`).
+/// The id of a created entity from a create reply (`{id}`, REST `{data:{id}}`, or an upload's `{asset_id}`).
 pub(crate) fn created_id(data: Option<&Value>) -> Option<String> {
     let data = data?;
-    data.get("id").or_else(|| data.get("data").and_then(|inner| inner.get("id"))).and_then(Value::as_str).map(str::to_string)
+    data.get("id")
+        .or_else(|| data.get("data").and_then(|inner| inner.get("id")))
+        .or_else(|| data.get("asset_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +326,7 @@ pub(crate) fn merge_args(request: &CommandRequest, context: &Context, verb: &Ver
             continue;
         }
         let Some(word) = request.positionals.get(index) else { continue };
-        let text = if *name == "value" { request.positionals[index..].join(" ") } else { word.clone() };
+        let text = if matches!(*name, "value" | "sql") { request.positionals[index..].join(" ") } else { word.clone() };
         map.insert((*name).to_string(), Value::String(text));
     }
     for (argument, field) in detail.from_context {
@@ -367,7 +392,7 @@ impl Plan {
             "tool": self.tool,
             "method": self.method,
             "path": self.path,
-            "args": self.args,
+            "args": crate::journal::redact(&self.args),
             "verse_id": self.verse_id,
         })
     }
@@ -452,7 +477,15 @@ async fn probe_settled(client: &Client, verse_id: Option<&str>, probe: &Probe) -
     match probe {
         Probe::VerseToken(id) => read_tokens(&client.instance).map(|tokens| tokens.tokens.contains_key(id)).unwrap_or(false),
         Probe::NodeExists(id) => client.call_tool("read_node", json!({"node_id": id}), verse_id).await.exit == ExitCode::Ok,
-        Probe::NodeGone(id) => client.call_tool("read_node", json!({"node_id": id}), verse_id).await.exit == ExitCode::NotFound,
+        Probe::NodeGone(id) => {
+            // Without a token for the verse the uniform not-found is "cannot see", not "gone".
+            if let Some(verse) = verse_id {
+                if !read_tokens(&client.instance).map(|tokens| tokens.tokens.contains_key(verse)).unwrap_or(false) {
+                    return false;
+                }
+            }
+            client.call_tool("read_node", json!({"node_id": id}), verse_id).await.exit == ExitCode::NotFound
+        }
         Probe::Transform { node_id, position, rotation, scale } => {
             let reply = client.call_tool("read_node", json!({"node_id": node_id}), verse_id).await;
             match reply.data.as_ref().filter(|_| reply.exit == ExitCode::Ok).and_then(node_transform) {
@@ -478,25 +511,131 @@ async fn probe_settled(client: &Client, verse_id: Option<&str>, probe: &Probe) -
     }
 }
 
-/// Polls the probe until it holds or `--wait-budget` expires (exit 9, the write still landed).
+/// A parsed `--wait` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WaitMode {
+    Local,
+    /// Peers named by `peers=a,b`; empty means every other instance in `.qa/peers-current`.
+    Peers(Vec<String>),
+}
+
+/// `local`, `peers` or `peers=<name>,<name>`; anything else is `None`.
+pub(crate) fn parse_wait(text: &str) -> Option<WaitMode> {
+    match text.trim() {
+        "local" => Some(WaitMode::Local),
+        "peers" => Some(WaitMode::Peers(Vec::new())),
+        other => {
+            let names: Vec<String> = other.strip_prefix("peers=")?.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect();
+            (!names.is_empty()).then_some(WaitMode::Peers(names))
+        }
+    }
+}
+
+/// The request's wait mode when the verb is a write that will wait (reads and dry runs never wait).
+fn active_wait(request: &CommandRequest) -> Option<WaitMode> {
+    if request.global.dry_run || !request.verb.is_some_and(catalog::is_write) {
+        return None;
+    }
+    request.global.wait.as_deref().and_then(parse_wait)
+}
+
+/// Clients for the other instances of `.qa/peers-current` (own instance excluded; `names` filters when non-empty).
+fn peer_clients(request: &CommandRequest, client: &Client, names: &[String]) -> Result<Vec<(String, Client)>, Outcome> {
+    let found = crate::instance::list(&request.env, &request.cwd).map_err(from_cli_error)?;
+    let own = &client.instance;
+    let mut peers = Vec::new();
+    for instance in found {
+        // Peers on one machine have distinct token files (and ports); the token file is the identity.
+        let is_own = instance.tokens_path == own.tokens_path
+            || matches!((std::fs::canonicalize(&instance.tokens_path), std::fs::canonicalize(&own.tokens_path)), (Ok(left), Ok(right)) if left == right);
+        if is_own || (!names.is_empty() && !names.contains(&instance.name)) {
+            continue;
+        }
+        let name = instance.name.clone();
+        peers.push((name, Client::new(instance).map_err(from_cli_error)?));
+    }
+    Ok(peers)
+}
+
+/// Refuses an explicit `--wait peers` that has no peer to wait for, before the write is sent (exit 6).
+fn check_peers(request: &CommandRequest, client: &Client) -> Result<(), Outcome> {
+    let Some(WaitMode::Peers(names)) = active_wait(request) else { return Ok(()) };
+    let peers = peer_clients(request, client, &names)?;
+    let missing: Vec<&String> = names.iter().filter(|name| **name != client.instance.name && !peers.iter().any(|(peer, _)| peer == *name)).collect();
+    if !missing.is_empty() {
+        let listed: Vec<&str> = missing.iter().map(|name| name.as_str()).collect();
+        return Err(usage_outcome("unknown-peer", format!("no peer instance named {} in .qa/peers-current; try `fe instance list`", listed.join(", "))));
+    }
+    if peers.is_empty() && !request.global.wait_default {
+        return Err(usage_outcome("no-peers", "--wait peers found no other instance in .qa/peers-current; try `fe instance list`"));
+    }
+    Ok(())
+}
+
+/// Polls the probe on this instance (`--wait local`) and on every peer (`--wait peers`) until it holds everywhere or
+/// `--wait-budget` expires (exit 9, the write still landed); see AGENTS.md §wait-peers.
 pub(crate) async fn settle(mut outcome: Outcome, request: &CommandRequest, client: &Client, verse_id: Option<&str>, probe: Probe) -> (Outcome, Option<Value>) {
-    if outcome.exit != ExitCode::Ok || request.global.dry_run || request.global.wait.as_deref() != Some("local") {
+    let Some(mode) = active_wait(request) else { return (outcome, None) };
+    if outcome.exit != ExitCode::Ok {
         return (outcome, None);
     }
+    let mut note: Option<String> = None;
+    let mut peers: Vec<(String, Client)> = Vec::new();
+    if let WaitMode::Peers(names) = &mode {
+        if matches!(probe, Probe::VerseToken(_)) {
+            note = Some("a created verse reaches a peer only through an invite; waited with local".to_string());
+        } else {
+            match peer_clients(request, client, names) {
+                Ok(found) => peers = found,
+                Err(failure) => return (failure, None),
+            }
+            if peers.is_empty() {
+                note = Some("FE_WAIT_DEFAULT=peers found no other instance in .qa/peers-current; waited with local".to_string());
+            }
+        }
+    }
+    let label = if peers.is_empty() { "local" } else { "peers" };
     let budget_ms = if request.global.wait_budget_ms == 0 { DEFAULT_WAIT_BUDGET_MS } else { request.global.wait_budget_ms };
     let started = Instant::now();
     let mut polls = 0u32;
+    let mut local_ms: Option<u64> = None;
+    let mut peer_ms: Vec<Option<u64>> = vec![None; peers.len()];
+    let report = |settled: bool, polls: u32, local_ms: Option<u64>, peer_ms: &[Option<u64>], peers: &[(String, Client)], elapsed_ms: u64| {
+        let mut wait = json!({"mode": label, "settled": settled, "ms": elapsed_ms, "polls": polls});
+        if !peers.is_empty() {
+            wait["local_ms"] = json!(local_ms);
+            wait["peers"] = Value::Array(peers.iter().zip(peer_ms).map(|((name, _), ms)| json!({"name": name, "settled": ms.is_some(), "ms": ms})).collect());
+        }
+        if let Some(text) = &note {
+            wait["requested"] = json!("peers");
+            wait["note"] = json!(text);
+        }
+        wait
+    };
     loop {
         polls += 1;
+        if local_ms.is_none() && probe_settled(client, verse_id, &probe).await {
+            local_ms = Some(started.elapsed().as_millis() as u64);
+        }
+        for (index, (_, peer)) in peers.iter().enumerate() {
+            if peer_ms[index].is_none() && probe_settled(peer, verse_id, &probe).await {
+                peer_ms[index] = Some(started.elapsed().as_millis() as u64);
+            }
+        }
         let elapsed_ms = started.elapsed().as_millis() as u64;
-        if probe_settled(client, verse_id, &probe).await {
-            return (outcome, Some(json!({"mode": "local", "settled": true, "ms": started.elapsed().as_millis() as u64, "polls": polls})));
+        if local_ms.is_some() && peer_ms.iter().all(Option::is_some) {
+            return (outcome, Some(report(true, polls, local_ms, &peer_ms, &peers, elapsed_ms)));
         }
         if elapsed_ms >= budget_ms {
+            let unseen: Vec<&str> = peers.iter().zip(&peer_ms).filter(|(_, ms)| ms.is_none()).map(|((name, _), _)| name.as_str()).collect();
             outcome.exit = ExitCode::WaitExpired;
             outcome.code = "wait-expired".to_string();
-            outcome.message = format!("write accepted but not observable within {budget_ms} ms; reconcile by reading");
-            return (outcome, Some(json!({"mode": "local", "settled": false, "ms": elapsed_ms, "polls": polls})));
+            outcome.message = if local_ms.is_none() {
+                format!("write accepted but not observable within {budget_ms} ms; reconcile by reading")
+            } else {
+                format!("write accepted but not seen on peer {} within {budget_ms} ms; reconcile by reading", unseen.join(", "))
+            };
+            return (outcome, Some(report(false, polls, local_ms, &peer_ms, &peers, elapsed_ms)));
         }
         tokio::time::sleep(Duration::from_millis(WAIT_POLL_MS)).await;
     }
@@ -517,23 +656,23 @@ pub(crate) async fn run_tool_verb(
         Ok(plan) => plan,
         Err(outcome) => return result(request, context, outcome),
     };
+    let resolved_args = plan.args.clone();
     let mut outcome = execute(&plan, client, request).await;
     let mut wait = None;
     if let Some(probe) = probe(&outcome) {
         (outcome, wait) = settle(outcome, request, client, verse_id.as_deref(), probe).await;
     }
-    let is_write = matches!(request.verb.map(|verb| verb.verb), Some("create" | "move" | "set" | "unset" | "delete"));
-    let write_confirmed_by_reply = is_write
-        && wait.is_none()
-        && outcome.exit == ExitCode::Ok
-        && !request.global.dry_run
-        && request.global.wait.as_deref() == Some("local");
-    if write_confirmed_by_reply {
-        wait = Some(json!({"mode": "local", "settled": true, "ms": 0, "polls": 0, "basis": "write reply"}));
+    if wait.is_none() && outcome.exit == ExitCode::Ok {
+        // A write with no read-back probe is confirmed by its own reply; peers cannot be polled for it.
+        wait = active_wait(request).map(|mode| match mode {
+            WaitMode::Local => json!({"mode": "local", "settled": true, "ms": 0, "polls": 0, "basis": "write reply"}),
+            WaitMode::Peers(_) => json!({"mode": "local", "settled": true, "ms": 0, "polls": 0, "basis": "write reply", "requested": "peers", "note": "no peer read-back exists for this verb; peers were not checked"}),
+        });
     }
     let created_ids: Vec<String> = if created && !request.global.dry_run { created_id(outcome.data.as_ref()).into_iter().collect() } else { Vec::new() };
     let mut finished = result(request, context, outcome);
     finished.created_ids = created_ids;
     finished.wait = wait;
+    finished.resolved_args = Some(resolved_args);
     finished
 }

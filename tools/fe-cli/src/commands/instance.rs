@@ -28,5 +28,5 @@ pub fn run(request: &CommandRequest, env: &Env, working_dir: &std::path::Path) -
         },
         _ => usage_outcome("unknown-verb", "usage: fe instance list"),
     };
-    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: EnvelopeContext::default(), wait: None }
+    CommandResult { outcome, context_after: None, created_ids: Vec::new(), resolved_context: EnvelopeContext::default(), wait: None, resolved_args: None }
 }

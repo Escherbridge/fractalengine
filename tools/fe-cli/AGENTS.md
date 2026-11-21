@@ -45,7 +45,9 @@ globally (the only exception is `std::env::current_dir` when `FE_CWD` is absent)
 |---|---|
 | `src/lib.rs` | `Invocation`, `run`, the spine: global flags, routing, instance + context resolution, dispatch, envelope, journal |
 | `src/catalog.rs` | verb table, `route` (total routing + nearest-command refusals), `GLOBAL_FLAGS`, `flag_specs`, `args_json_only`, `wants_operator_token`, embedded `catalog/mcp-tools.json` |
-| `src/commands/*.rs` | core verbs (`use`/`ctx`, `verse`, `fractal`, `petal`, `node`, `instance list`, `note`), arg merge, dry-run plan, `--wait local` probes |
+| `src/commands/*.rs` | core verbs (`use`/`ctx`, `verse`, `fractal`, `petal`, `node`, `instance list`, `note`), arg merge, dry-run plan, `--wait local` / `--wait peers` probes |
+| `src/commands/generic.rs` | every `phase == 2` catalog row (one table row = one MCP tool or REST route) plus the per-verb `prepare` hooks |
+| `src/commands/replay.rs`, `src/commands/scenario.rs` | `fe replay`: child-invocation replay with id re-binding; journal -> sim scenario |
 | `src/schema_flags.rs` | JSON-schema -> flags and parsing, shared by core verbs and `fe x` |
 | `src/x.rs` | `fe x` list / help over the discovery route (stale cache keyed by caller), calls over the REST command route |
 | `src/transport.rs` | loopback client, token pick, reply classification to exit codes, `retry_allowed` |
@@ -79,9 +81,11 @@ generation and listed by help as `args_json_only`; it stays reachable through `-
   `catalog::validate_args` treats an empty string as missing, so no request leaves with an empty id. `fe x` refuses a
   missing petal the same way.
 - `--wait local` reads back on the same instance (`read_node` / `get_properties` / token file), never the hierarchy.
-  `FE_WAIT_DEFAULT` applies to writes only: `local` waits, `none`/`off` does not, and any other value (e.g. `peers`,
-  phase 2) is downgraded to `local` with `wait.requested` + `wait.note` in the envelope, so a harness default never
-  makes writes fail. An explicit `--wait peers` still exits 6 `wait-unsupported`.
+  `--wait peers[=a,b]` runs the same read-back on the other instances too (§wait-peers).
+  `FE_WAIT_DEFAULT` applies to writes only: `local` / `peers` / `peers=a,b` wait, `none`/`off` does not, and any other
+  value is downgraded to `local` with `wait.requested` + `wait.note` in the envelope, so a harness default never
+  makes writes fail. `peers` from the default with no other instance discoverable degrades the same way; an explicit
+  `--wait peers` with none exits 6 `no-peers` before anything is sent.
 - Hierarchy reads are spaced at least 2 s apart per context (`hierarchy_read_at`, QA-0125: each read rebuilds the GUI
   tree).
 
@@ -105,6 +109,7 @@ body's `data` member. Extension and role-floor refusals from `fe x` carry the ho
 | 9 | `--wait` budget expired (the write landed) |
 | 10 | server fault / unexpected reply |
 | 11 | command budget exhausted (`FE_BUDGET_MAX_COMMANDS`) |
+| 12 | `fe replay`: a replayed step's exit code (or, under `--strict`, its data) differs from the journal |
 
 Core verbs classify on stable server texts (`transport::classify`), because REST answers `200 {ok:false}` and MCP
 errors are text only; a reworded server message can move an exit code, which the journey pins.
@@ -155,6 +160,66 @@ the journal is never scanned. With a budget set, any read/parse/lock/write failu
 | `FE_CWD` | working directory for `.qa/` discovery and relative selectors |
 | `FE_STATE_DIR` | CLI state root (context default, `fe x` cache keyed by api_base + petal + verse + caller role; served stale only when the instance is unreachable, never after a 401 or token expiry) |
 
+## §wait-peers
+
+`--wait peers[=a,b]` (and `FE_WAIT_DEFAULT=peers`) is the plan's "same read against every peer instance", not a server
+digest: after a write the CLI polls the verb's read-back probe (`read_node` for create/move/delete, `get_properties`
+for set/unset; `commands::settle`) on this instance and on every other member of `.qa/peers-current` (`peers.json`,
+via `instance::list`), each with that member's own token file and the writer's verse id. No fe-api route reports a
+cross-peer fingerprint (the fingerprint lives in the simulator driver), `GET /api/v1/debug/sync-state` is an
+Owner-only operator gate that is off by default, and `GET /api/v1/network/diagnostics` reports connectivity, not
+content; none of them answers "does this peer hold my write". `--wait-budget` (default 30 s) bounds the poll; expiry
+exits 9 `wait-expired` (the write landed), naming the unseen peers, and `wait.peers[]` carries `{name, settled, ms}`.
+
+- A peer is "another member": own instance excluded by token-file identity (peers on one machine have distinct token
+  files). `peers=a,b` filters by name; a name nobody has exits 6 `unknown-peer` before the write.
+- `NodeGone` only counts as converged when the peer holds a token for the verse (the uniform not-found would otherwise
+  read as "deleted").
+- A create-verse write waits locally (a verse reaches a peer only through an invite); a write with no read-back probe
+  (fractal/petal create, phase-2 writes) is confirmed by its own reply and says `peers were not checked`.
+
+## §phase-2 verbs
+
+Rows with `phase == 2` in `catalog::VERBS` all run through `commands::generic::run`: `merge_args` (positionals,
+context ids, vector normalisation), `tool_plan` (schema validation), `run_tool_verb`. Verbs: `node props|history`,
+`asset upload --file`, `terrain get|set|clear`, `group list|set|delete`, `invite create`, `join`, `role
+list|assign|revoke`, `net diag`, `identity`, `sync state`, `query`, `replay`. Per-verb shaping lives in
+`generic::prepare` only:
+
+- `asset upload`: `--file` is read, size-checked (11 MiB MCP cap) and base64-encoded in-crate; the instance's own token
+  file is refused; a dry run elides the bytes.
+- `terrain clear` = `set_petal_terrain` with `terrain: null`; `terrain set` refuses a missing config (it would clear).
+- `invite create --to-instance X` reads X's DID with `get_identity` on X (loopback client, no token printed).
+- `join --invite -|@file|<text>`: the capability never needs to sit in a process listing; journal argv blanks it.
+- Global-scope and token-scope tools pick their own bearer (`join` uses the operator token); `sync state` needs a verse.
+- `--dry-run` redacts secret-named keys of the planned args (`journal::redact`).
+- `resolved.args` in the journal is now the final tool arguments (positionals and context merged), which is what
+  `fe replay --emit-scenario` converts; phase-1 journals hold flag-only args and emit weaker scenarios.
+
+## §replay
+
+`fe replay <journal.jsonl> [--map agent=instance] [--bind old=new] [--strict] [--emit-scenario out.json
+[--scenario-name n]]`. No LLM: every journal line is re-run as a child `fe` invocation (`execute_boxed`, in-process,
+output captured) from its recorded `argv`, in recorded order, with `--verse/--fractal/--petal` from `ctx_before` so the
+step needs no context file (a per-agent temp context file only holds the 2 s hierarchy spacing).
+
+- Skipped (change no instance state): `help`, `use *`, local verbs (`ctx`, `instance`, `note`, `replay`), and lines
+  refused before dispatch. A line whose argv carries `<redacted …>` exits 6 `replay-unbindable`.
+- Id re-binding: `created_ids[0]` of a recorded create is paired with the id the replayed create returns; every later
+  argv word and context id containing the recorded id (8+ chars) is rewritten. `--bind old=new` seeds the map (e.g. a
+  fixture verse of the instance replayed against).
+- Instances: `--map agent=instance` runs that agent's steps on that instance (`FE_INSTANCE`); unmapped agents use the
+  invoking instance (`--instance`/`FE_INSTANCE`). Journals of replay steps go to `FE_JOURNAL` like any run.
+- First exit-code mismatch stops the run with exit 12 `replay-diverged`; `data.diverged_at` names the step.
+  `--strict` also compares `data_small` after normalising each id pair to the same token (use on deterministic reads).
+- `--emit-scenario` (`commands::scenario::emit`) writes the `tools/qa/sim` DSL (scenario.py `SCHEMA`): peers from the
+  journal agents (first owner is `owner`, others editor/viewer, an `observer` viewer is added when only one agent
+  exists), one action per mutating or reading line (`via: mcp`, `op` = tool, `c<n>` ids, `expect` ok/refused/any from the
+  recorded exit; hierarchy reads and `fe x` lines are skipped), created ids as `$c<n>.id`, the first verse and first two
+  petals as `$fixture.verse_id|petal_a_id|petal_b_id`, a step per write with an `agree` expectation (node, transform,
+  properties, groups or hierarchy probe). Other ids stay verbatim and are listed in `data.unbound_ids`. Validate with
+  `python tools/qa/sim/scenario.py validate <path>`.
+
 ## Deliberately absent
 
 - No remote mode: no TLS, no hostnames, no override flag.
@@ -177,6 +242,9 @@ the journal is never scanned. With a budget set, any read/parse/lock/write failu
 mirroring the bus's role-floor text). Legs: non-loopback refusal, hierarchy + node lifecycle with read-back, wait
 default downgrade, viewer role refusal, out-of-scope not-found, missing petal context, `fe x` list/help/call/role
 floor plus guest refusal (2), pre-admission rate refusal (7, resent by `--retry`), unknown outcome (8, never
-resent), a forged help line and a bad petal id, the `token-in-args` refusals, help routing for every listed path, journal parse + no token text, and the snapshot drift leg (the embedded
+resent), a forged help line and a bad petal id, the `token-in-args` refusals, `--wait peers` (6b: a viewer peer
+converges, a peer with no verse token expires with 9 while the write landed, an unknown peer is refused, phase-2 dry
+runs), replay (6c: record, replay with id re-binding, a tampered exit stops at 12, `--emit-scenario`), help routing for
+every listed path, journal parse + no token text, and the snapshot drift leg (the embedded
 `catalog/mcp-tools.json` must equal `fe_api::mcp::tool_specs()`; run once with `FE_CLI_BLESS=1` to re-bless, then
 rebuild so the compiled-in copy matches). Batch commands: `conductor/test-batches.md` §R9-CLI.
