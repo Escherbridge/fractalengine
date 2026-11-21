@@ -66,6 +66,7 @@ fn stamp_key(manifest: &Value, fallback_prefix: &str) -> String {
 /// The starter fixture; a manifest that declares a source-class SET needs the bind-time pick, or the sandbox refuses the binding.
 fn fixture_for(manifest: &Value) -> Result<String> {
     let mut fixture = json!({
+        "fixture_version": crate::sandbox::FIXTURE_VERSION,
         "petal_id": "p1",
         "start_ms": 1_000_000,
         "ticks": 5,

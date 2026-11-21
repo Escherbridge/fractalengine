@@ -151,6 +151,52 @@ A fixture is a JSON script of ticks, recorded ingress frames and the starting sc
 writes `fixtures/basic.json` for your kind; extend that file rather than adding new ones, and keep
 one fixture per behaviour you want to pin by fingerprint.
 
+From `fixture_version` 2 a fixture can also call your commands and hooks, so you never need a special
+driver build:
+
+```json
+{
+  "fixture_version": 2,
+  "ticks": 3,
+  "nodes": [{ "id": "n1" }],
+  "commands": [
+    { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor" },
+    { "after_tick": 2, "command": "ping", "args": { "n": "one" } }
+  ],
+  "hooks": [
+    { "at_tick": 2, "hook": "scene.transform",
+      "input": { "node": "n1", "proposed": { "position": [1, 2, 3], "rotation": [0, 0.1, 0], "scale": [1, 1, 1] } } }
+  ]
+}
+```
+
+- **When.** `at_tick: n` runs before tick n's `on-tick` (its staged writes flush with tick n); `after_tick: n` runs
+  after tick n's flush (they flush with the next tick, or the final flush after the last one). Commands run before
+  hooks, each list in order.
+- **`commands[]`** go through the host's own bus admission (`Bus::call_command_local_client`): the command must be
+  under `bus.expose.commands`, `args` must match its `args_schema`, the caller's `role` (`owner` by default;
+  `manager`, `editor`, `viewer`, `none`) must meet its `role_floor`, and the rate limits apply. The trace records
+  `reply.ok` (your JSON), `reply.guest_refused` (your `command-error` with its code, REST status and reason) or
+  `host_refused` (the bus's code and REST status, e.g. `invalid-input` 400, `capability-denied` 403). `caller` may
+  be `ui` (default), `rest` or `mcp`.
+- **`hooks[]`** go through the host's scene hook gate. `input` is the hook input without `caller` (see
+  [bindings.md](bindings.md) §6 for `scene.transform`; `scene.property` takes `{node, key, value}`). The sandbox
+  builds exactly what the gate sends, including the `f32` round trip of live edits, and runs your `on-hook` with
+  the host's deadline and fuel. The trace records the input your guest saw and the verdict: `allow` (with any
+  `augment` and whether it staged), or `refused` with its reason (`refused`, `hook-failed`, `input-too-large`).
+  `config` (checked against the provided hook's `config_schema`), `caller` (`ui`, `rest`, `mcp`, `ws`) and
+  `caller_did` are optional. A hook your manifest does not `provides` is a fixture error. `scene.transform` and
+  `scene.property` are driven today.
+- **`streams`** (trace only): every `bus.publish` your guest makes, with tick, the guest call it came from, the
+  stream and the payload, plus `published: true` or the host's refusal (`rate-limited` over `max_rate_hz`,
+  `invalid-input` over `max_event_bytes`, `capability-denied` for an undeclared stream).
+- **`fuel`** (trace only): `tick_limit` is your manifest's `tick.fuel` (clamped to the host ceiling), and `calls`
+  lists every guest entry (`on-tick`, `on-command <id>`, `hook <id>`, `on-ingress <endpoint>`, lifecycle hooks) with
+  its `limit` and `consumed`.
+- **Versions.** A fixture without `fixture_version` is version 1 and still runs unchanged. An fe-ext that meets a
+  newer `fixture_version` or a top-level key it does not know says the fixture needs a newer fe-ext instead of
+  printing a parse error.
+
 ### Parity with the REST door
 
 A device adapter must produce the same reading rows as `POST /api/v1/.../iot/readings` for the same
@@ -196,8 +242,9 @@ lists stable across versions.
   scope and operator consent, checked again at every call.
 - **Architecture:** the guest is a pure function of `(binding, tick-info, staged inputs)`. That is what makes
   the sandbox fingerprint deterministic, and why `now-ms` is injected rather than read.
-- **Deferred:** `--lab` covers the fleet-sim package only (R30), and feeding bus commands and egress results into the sandbox
-  (today it answers them `not-available`).
+- **Deferred:** `--lab` covers the fleet-sim package only (R30). The sandbox now drives bus commands, `scene.*`
+  hooks and stream capture; egress results, bus subscriptions to host sources and the other hook families are not
+  fed yet (they answer `not-available`).
 - **Efficiency:** batch readings in one `stage` call per tick. The per-flush cap is 1000 readings and 64 ops,
   so one large batch costs one commit instead of many.
 

@@ -427,6 +427,19 @@ No hook call ever runs on the DB thread or the render loop.
   - **Imports present transforms.** A petal snapshot import calls `scene.transform` once per imported node
     whose rotation or scale is not the default, with the same input a live transform update sends; positions
     in every `scene.*` input are the values the database stores.
+  - **`scene.transform` input, exactly** (built by `SceneHookInput::Transform` in
+    `fe-runtime/src/scene_hook_gate.rs`, filled by `fe-runtime/src/scene_write.rs`):
+    `{"node": "<node id>", "proposed": {"position": [x, y, z], "rotation": [rx, ry, rz], "scale": [sx, sy, sz]}, "caller": {"did", "kind", "local"}}`.
+    - `position`: the node's translation in world units, Y up (not metres; terrain `world_scale` is world units per
+      metre). It is the whole new position, never a delta.
+    - `rotation`: Euler angles in RADIANS, XYZ order (`DbCommand::UpdateNodeTransform`); an editor batch converts its
+      quaternion with `to_euler(EulerRot::XYZ)` first. Never a quaternion.
+    - `scale`: per-axis multipliers, `[1, 1, 1]` = unscaled.
+    - All three are always present. Live edits carry `f32` values widened to `f64`, so `0.1` arrives as
+      `0.10000000149011612`; compare with a tolerance. Imported rows carry the stored `f64` values (a stored quaternion
+      is converted with the same `f32` math).
+    - `caller.kind` is `ui`, `rest`, `mcp` or `ws`; `caller.local` is true when `did` is this host's identity.
+    - `fe-ext run --sandbox` builds the same input through the same gate (authoring-guide.md §5, fixture `hooks[]`).
   - **A refusal** answers REST 409 `refused` with the guest's reason. The GUI rolls back the
     optimistic transform the way `transform_failed` does.
   - **Augment ops** are staged in the instance's window and flush with its next tick as one

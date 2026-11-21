@@ -56,6 +56,23 @@ pub fn scene_hook_reply_from_output(output: &str) -> SceneHookReply {
     }
 }
 
+/// A `scene.*` call's outcome as the gate's reply: the binary's `HookFailure` mapping (`plugin_bridge/catalog.rs`
+/// `LiveInstances::call` plus `worker.rs` `scene_call`) in one function, so fe-ext's sandbox answers as the host does.
+pub fn scene_hook_reply(
+    outcome: Result<crate::wasm::component::HookReply, crate::wasm::component::HookCallError>,
+) -> SceneHookReply {
+    use crate::wasm::component::hooks::HookRefusal;
+    use crate::wasm::component::HookCallError;
+    match outcome {
+        Ok(reply) => scene_hook_reply_from_output(&reply.output),
+        Err(HookCallError::Guest(HookRefusal::Refused(reason))) => SceneHookReply::Refused(reason),
+        Err(HookCallError::Guest(HookRefusal::InvalidInput(reason) | HookRefusal::Failed(reason))) => {
+            SceneHookReply::Declined(reason)
+        }
+        Err(other) => SceneHookReply::Fault(other.to_string()),
+    }
+}
+
 /// Record a standardized `scene_hook` trace entry into [`ExtensionTraceBuffer`].
 pub fn record_scene_hook_trace(
     trace: &ExtensionTraceBuffer,

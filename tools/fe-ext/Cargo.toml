@@ -21,6 +21,9 @@ fe-format = { path = "../../fe-format" }
 fe-hexon = { path = "../../fe-hexon" }
 fe-plugin = { path = "../../fe-plugin" }
 fe-plugin-test = { path = "../../fe-plugin-test" }
+# Sandbox hook judgments go through the real scene hook gate; the bus roles are fe-policy levels (both already in fe-plugin's graph).
+fe-runtime = { path = "../../fe-runtime" }
+fe-policy = { path = "../../fe-policy" }
 fe-sim-model = { path = "../../fe-sim/model" }
 fe-sim = { path = "../../fe-sim" }
 anyhow = { workspace = true }
@@ -42,3 +45,7 @@ clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
+# The J8 sandbox-calls guest: a hand-written core module encoded against the 2.0 WIT (same versions as fe-plugin's test guests).
+wat = "1"
+wit-component = "0.244"
+wit-parser = "0.244"

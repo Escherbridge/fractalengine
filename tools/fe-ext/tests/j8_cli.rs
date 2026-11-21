@@ -1,5 +1,6 @@
 //! J8: one authoring journey through the real `fe-ext` binary, from `new` to a counter-signed package,
-//! plus the three shipped examples (R27) through `run --sandbox`, `validate`, `pack`, `sign`, `inspect` and `index build|verify`.
+//! plus the three shipped examples (R27) through `run --sandbox`, `validate`, `pack`, `sign`, `inspect` and `index build|verify`,
+//! and a WAT guest driven through fixture `commands[]`, `hooks[]` and stream capture (`sandbox_calls_leg`).
 //! Registered as the fe-ext batch in conductor/test-batches.md (`cargo test -p fe-ext -- j8`).
 
 use std::path::Path;
@@ -34,6 +35,8 @@ fn fleet_sim_outcomes(trace: &Value) {
     let readings = trace["readings"].as_array().expect("readings");
     let count = |metric: &str| readings.iter().filter(|reading| reading["metric"] == metric).count();
     assert_eq!((count("temperature_c"), count("altitude_m")), (11, 5));
+    let positions = trace["streams"].as_array().expect("streams");
+    assert!(positions.iter().any(|event| event["stream"] == "positions" && event["published"] == true), "positions reach the bus");
     let truck_x = node(trace, "truck-1")["position"][0].as_f64().expect("x");
     assert!((50.0..60.0).contains(&truck_x), "truck x = {truck_x}");
     let fleet = &node(trace, "fleet-1")["properties"];
@@ -267,6 +270,202 @@ fn model_leg(root: &Path, key: &Path) {
     assert!(refused_reasons.len() >= 7, "each refusal carries its own reason: {refused_reasons:?}");
 }
 
+/// Every byte as a WAT `\hh` escape, so data segments need no quoting rules.
+fn wat_bytes(text: &str) -> String {
+    text.bytes().map(|byte| format!("\\{byte:02x}")).collect()
+}
+
+const PONG: &str = r#"{"pong":true}"#;
+const ALLOW: &str = r#"{"verdict":"allow","augment":[{"key":"sbx.judged","value":true}]}"#;
+const REFUSE: &str = r#"{"verdict":"refuse","reason":"node is locked"}"#;
+const STREAM: &str = "beats";
+const BEAT: &str = r#"{"beat":1}"#;
+
+/// The sandbox-calls guest (world `extension-with-hooks`, hand-written WAT as fe-plugin's test guests): `on-tick`
+/// publishes `{"beat":1}` on `beats`, `on-command` answers `{"pong":true}`, and `on-hook` refuses ("node is locked")
+/// when the input contains `~`, else allows with the augment `sbx.judged = true`.
+fn sandbox_calls_component() -> Vec<u8> {
+    let wat = format!(
+        r#"(module
+  (import "fractalengine:plugin/bus@2.0.0" "publish" (func $publish (param i32 i32 i32 i32 i32)))
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 4096))
+  (data (i32.const 64) "{pong}")
+  (data (i32.const 128) "{allow}")
+  (data (i32.const 256) "{refuse}")
+  (data (i32.const 352) "{stream}")
+  (data (i32.const 368) "{beat}")
+  (func (export "cabi_realloc") (param $old i32) (param $old_size i32) (param $align i32) (param $size i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr
+      (i32.and
+        (i32.add (global.get $heap) (i32.sub (local.get $align) (i32.const 1)))
+        (i32.sub (i32.const 0) (local.get $align))))
+    (global.set $heap (i32.add (local.get $ptr) (local.get $size)))
+    (local.get $ptr))
+  (func (export "fractalengine:plugin/lifecycle@2.0.0#on-install") (param i32) (result i32) (i32.const 1024))
+  (func (export "fractalengine:plugin/lifecycle@2.0.0#on-activate") (param i32) (result i32) (i32.const 1024))
+  (func (export "fractalengine:plugin/lifecycle@2.0.0#on-deactivate") (param i32))
+  (func (export "fractalengine:plugin/lifecycle@2.0.0#on-uninstall") (param i32))
+  (func (export "fractalengine:plugin/lifecycle@2.0.0#on-tick")
+    (param i64 i64 i64 i32 i32 i32 i64 i32 i32 i32 i32)
+    (call $publish (i32.const 352) (i32.const {stream_len}) (i32.const 368) (i32.const {beat_len}) (i32.const 1664)))
+  (func (export "fractalengine:plugin/ingress-hooks@2.0.0#on-ingress") (param i32) (result i32) (i32.const 1024))
+  (func (export "fractalengine:plugin/ingress-hooks@2.0.0#on-connection") (param i32 i32 i64 i32))
+  (func (export "fractalengine:plugin/egress-hooks@2.0.0#on-egress-result") (param i64 i32 i32 i32 i32 i32 i32 i32 i32 i32))
+  (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-events") (param i32 i32))
+  (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-command") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
+    (i32.store8 (i32.const 1600) (i32.const 0))
+    (i32.store (i32.const 1604) (i32.const 64))
+    (i32.store (i32.const 1608) (i32.const {pong_len}))
+    (i32.const 1600))
+  (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-call-result") (param i64 i32 i32 i32 i32))
+  (func (export "fractalengine:plugin/hooks@2.0.0#on-hook")
+    (param i32 i32 i32 i32 i32 i32 i32 i32) (param $input i32) (param $input_len i32) (param i32 i32) (result i32)
+    (local $at i32) (local $locked i32)
+    (block $done
+      (loop $scan
+        (br_if $done (i32.ge_u (local.get $at) (local.get $input_len)))
+        (if (i32.eq (i32.load8_u (i32.add (local.get $input) (local.get $at))) (i32.const 126))
+          (then (local.set $locked (i32.const 1)) (br $done)))
+        (local.set $at (i32.add (local.get $at) (i32.const 1)))
+        (br $scan)))
+    (i32.store8 (i32.const 1536) (i32.const 0))
+    (if (local.get $locked)
+      (then
+        (i32.store (i32.const 1540) (i32.const 256))
+        (i32.store (i32.const 1544) (i32.const {refuse_len})))
+      (else
+        (i32.store (i32.const 1540) (i32.const 128))
+        (i32.store (i32.const 1544) (i32.const {allow_len}))))
+    (i32.store (i32.const 1548) (i32.const 0))
+    (i32.store (i32.const 1552) (i32.const 0))
+    (i32.const 1536))
+)"#,
+        pong = wat_bytes(PONG),
+        allow = wat_bytes(ALLOW),
+        refuse = wat_bytes(REFUSE),
+        stream = wat_bytes(STREAM),
+        beat = wat_bytes(BEAT),
+        pong_len = PONG.len(),
+        allow_len = ALLOW.len(),
+        refuse_len = REFUSE.len(),
+        stream_len = STREAM.len(),
+        beat_len = BEAT.len(),
+    );
+    let mut module = wat::parse_str(&wat).expect("sandbox-calls WAT parses");
+    let mut resolve = wit_parser::Resolve::default();
+    let package = resolve
+        .push_file(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fe-plugin/wit/fractal-plugin-2.wit"))
+        .expect("the 2.0 WIT parses");
+    let world = resolve.select_world(&[package], Some("extension-with-hooks")).expect("the hooks world exists");
+    wit_component::embed_component_metadata(&mut module, &resolve, world, wit_component::StringEncoding::UTF8).expect("metadata embeds");
+    wit_component::ComponentEncoder::default().module(&module).expect("module matches the world").validate(true).encode().expect("component encodes")
+}
+
+/// Sandbox calls leg of J8: bus commands, a scene.transform hook and stream capture through the real bus and gate,
+/// fuel per guest call, two byte-identical traces; then the fixture refusals an author meets.
+fn sandbox_calls_leg(root: &Path) {
+    let project = root.join("sandbox-calls");
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+    let manifest = serde_json::json!({
+        "manifest_version": 2,
+        "id": "local.sandbox-calls",
+        "version": "0.1.0",
+        "name": "Sandbox calls",
+        "kind": "general",
+        "contract": "fractalengine:plugin@2.0.0",
+        "binding": "petal",
+        "scene": { "read": true, "write": ["set_property"], "property_scope": ["sbx.*"] },
+        "tick": { "cadence_ms": 1000, "max_ops": 16, "max_readings": 16, "fuel": 200000 },
+        "bus": { "expose": {
+            "commands": [{ "id": "ping", "role_floor": "editor", "rate_hz": 5, "args_schema": {
+                "type": "object", "properties": { "n": { "type": "integer" } }, "required": ["n"], "additionalProperties": false } }],
+            "streams": [{ "id": "beats", "max_rate_hz": 1, "max_event_bytes": 64 }]
+        } },
+        "provides": [{ "hook": "scene.transform" }]
+    });
+    std::fs::write(project.join("extension.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(project.join("dist/component.wasm"), sandbox_calls_component()).unwrap();
+    let pose = serde_json::json!({ "position": [1.0, 2.0, 3.0], "rotation": [0.0, 0.1, 0.0], "scale": [1.0, 1.0, 1.0] });
+    let fixture = serde_json::json!({
+        "fixture_version": 2,
+        "petal_id": "p1",
+        "start_ms": 1_000_000,
+        "ticks": 3,
+        "cadence_ms": 500,
+        "nodes": [{ "id": "n1" }, { "id": "locked~1" }],
+        "commands": [
+            { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor" },
+            { "at_tick": 1, "command": "ping", "args": { "n": "one" } },
+            { "at_tick": 2, "command": "ping", "args": { "n": 2 }, "role": "viewer" }
+        ],
+        "hooks": [
+            { "at_tick": 2, "hook": "scene.transform", "input": { "node": "n1", "proposed": pose.clone() } },
+            { "after_tick": 2, "hook": "scene.transform", "input": { "node": "locked~1", "proposed": pose } }
+        ]
+    });
+    let fixture_path = project.join("fixture.json");
+    std::fs::write(&fixture_path, serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
+    let (project_arg, fixture_arg) = (project.to_str().unwrap(), fixture_path.to_str().unwrap());
+    let traces = [root.join("sandbox-calls-1.json"), root.join("sandbox-calls-2.json")];
+    let runs: Vec<Output> = traces
+        .iter()
+        .map(|trace| fe_ext(&["run", "--sandbox", "--project", project_arg, "--fixture", fixture_arg, "--out", trace.to_str().unwrap()], root))
+        .collect();
+    assert!(runs[0].status.success(), "sandbox-calls run: {}", stderr(&runs[0]));
+    assert_eq!(fingerprint(&runs[0]), fingerprint(&runs[1]), "commands, hooks and streams keep a run deterministic");
+    assert_eq!(std::fs::read(&traces[0]).unwrap(), std::fs::read(&traces[1]).unwrap());
+    let trace: Value = serde_json::from_slice(&std::fs::read(&traces[0]).unwrap()).unwrap();
+
+    // Commands: the guest's answer, then the bus's own refusals (schema = invalid-input 400, role floor = 403).
+    let commands = trace["commands"].as_array().expect("commands");
+    assert_eq!(commands[0]["reply"]["ok"], serde_json::json!({ "pong": true }), "{}", commands[0]);
+    assert_eq!((commands[1]["host_refused"]["code"].as_str(), commands[1]["host_refused"]["status"].as_u64()), (Some("invalid-input"), Some(400)));
+    assert_eq!((commands[2]["host_refused"]["code"].as_str(), commands[2]["host_refused"]["status"].as_u64()), (Some("capability-denied"), Some(403)));
+
+    // Hooks: the gate's input shape (Euler radians through f32, caller), an allow whose augment staged, a refusal's reason.
+    let hooks = trace["hooks"].as_array().expect("hooks");
+    assert_eq!(hooks[0]["input"]["proposed"]["rotation"][1].as_f64(), Some(f64::from(0.1f32)), "rotation travels as the f32 the DB stores");
+    assert_eq!(hooks[0]["input"]["caller"], serde_json::json!({ "did": "did:key:sandbox", "kind": "ui", "local": true }));
+    assert_eq!((hooks[0]["verdict"]["allow"].as_bool(), hooks[0]["verdict"]["staged"].as_bool()), (Some(true), Some(true)), "{}", hooks[0]);
+    assert_eq!((hooks[1]["verdict"]["refused"].as_str(), hooks[1]["verdict"]["reason"].as_str()), (Some("refused"), Some("node is locked")));
+    assert_eq!(node(&trace, "n1")["properties"]["sbx.judged"], serde_json::json!(true), "the augment flushed with tick 2");
+
+    // Streams: 1 Hz on a 500 ms cadence publishes, is rate-limited by the bus, then publishes again.
+    let streams: Vec<(Option<&str>, bool)> = trace["streams"]
+        .as_array()
+        .expect("streams")
+        .iter()
+        .map(|event| (event["refused"]["code"].as_str(), event["published"].as_bool() == Some(true)))
+        .collect();
+    assert_eq!(streams, vec![(None, true), (Some("rate-limited"), false), (None, true)]);
+    assert_eq!(trace["streams"][0]["payload"], serde_json::json!({ "beat": 1 }));
+
+    // Fuel: every guest call records its limit and what it burned.
+    let fuel = trace["fuel"]["calls"].as_array().expect("fuel calls");
+    assert_eq!(trace["fuel"]["tick_limit"].as_u64(), Some(200_000));
+    for call in ["on-tick", "on-command ping", "hook scene.transform"] {
+        let entry = fuel.iter().find(|entry| entry["call"] == call).unwrap_or_else(|| panic!("fuel for {call}: {}", trace["fuel"]));
+        assert!(entry["consumed"].as_u64().is_some_and(|burned| burned > 0 && burned <= entry["limit"].as_u64().unwrap()), "{entry}");
+    }
+
+    // Fixture refusals: a hook the manifest does not provide, and what an older fe-ext says about a newer fixture.
+    type Edit = fn(&mut Value);
+    let refusals: [(&str, Edit); 3] = [
+        ("does not provide scene.property", |f| f["hooks"][0]["hook"] = serde_json::json!("scene.property")),
+        ("needs fe-ext >= fixture_version 99", |f| f["fixture_version"] = serde_json::json!(99)),
+        ("needs a newer fe-ext", |f| f["replay_from"] = serde_json::json!("trace.json")),
+    ];
+    for (expected, edit) in refusals {
+        let mut edited = fixture.clone();
+        edit(&mut edited);
+        std::fs::write(&fixture_path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        let refused = fe_ext(&["run", "--sandbox", "--project", project_arg, "--fixture", fixture_arg], root);
+        assert!(!refused.status.success() && stderr(&refused).contains(expected), "{expected}: {}", stderr(&refused));
+    }
+}
+
 #[test]
 fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -279,6 +478,8 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
         let validated = fe_ext(&["validate", "--project", name], root);
         assert!(validated.status.success(), "validate {kind}: {}", stderr(&validated));
         assert!(stdout(&validated).starts_with("ok local."), "{}", stdout(&validated));
+        let scaffold: Value = serde_json::from_slice(&std::fs::read(root.join(name).join("fixtures/basic.json")).unwrap()).unwrap();
+        assert_eq!(scaffold["fixture_version"].as_u64(), Some(u64::from(fe_ext::sandbox::FIXTURE_VERSION)), "new stamps the fixture format");
     }
 
     // validate: distinct reasons from the table, non-zero exit.
@@ -407,6 +608,7 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     }
 
     model_leg(root, &key);
+    sandbox_calls_leg(root);
 
     // The scaffold's packaging half needs a built component: FE_EXT_TEST_COMPONENT points at the compiled
     // generated project (`fe-ext build` output). Without it the journey ends here.

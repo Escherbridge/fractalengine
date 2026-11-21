@@ -57,6 +57,13 @@ pub struct InstanceStats {
     pub log_dropped: u64,
 }
 
+/// Fuel of the most recent guest entry: what it started with and what it burned (fe-ext's sandbox trace).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FuelUse {
+    pub limit: u64,
+    pub consumed: u64,
+}
+
 /// The write window a token's tick budget allows (empty limits without a `tick` block).
 pub fn window_for_token(token: &CapabilityToken) -> SharedWindow {
     let (ops, readings) = token
@@ -100,6 +107,8 @@ pub struct ExtensionInstance {
     recovering: Option<Recovering>,
     /// Restart instants (clock ms) inside the current window.
     restarts: VecDeque<u64>,
+    /// Fuel of the last entry that reached guest code (`None` when the last call ran nothing).
+    last_fuel: Option<FuelUse>,
 }
 
 impl ExtensionInstance {
@@ -115,7 +124,19 @@ impl ExtensionInstance {
             respawn: None,
             recovering: None,
             restarts: VecDeque::new(),
+            last_fuel: None,
         }
+    }
+
+    /// Fuel of the last guest entry (lifecycle, bus, ingress or hook call); `None` if it ran no guest code.
+    pub fn last_fuel(&self) -> Option<FuelUse> {
+        self.last_fuel
+    }
+
+    /// The fuel still in the store, against `limit` it started with.
+    fn fuel_since(&self, limit: u64) -> FuelUse {
+        let remaining = self.store.get_fuel().unwrap_or(0);
+        FuelUse { limit, consumed: limit.saturating_sub(remaining) }
     }
 
     /// Keep the bound `hooks` export (`None` for a plain 2.0 component).
@@ -139,6 +160,7 @@ impl ExtensionInstance {
     /// cached component and refuses hooks for a backoff (degrades when it cannot restart). Readings staged during
     /// the call see `stamp` through `InstanceState::decode_stamp`.
     pub fn call_hook(&mut self, request: &HookRequest, stamp: Option<&DecodeStamp>) -> Result<HookReply, HookCallError> {
+        self.last_fuel = None;
         if let Some(reason) = &self.degraded {
             return Err(HookCallError::Fault(HookFault::Degraded(reason.clone())));
         }
@@ -156,10 +178,14 @@ impl ExtensionInstance {
         let Some(guest) = self.hooks.as_mut() else {
             return Err(HookCallError::NotServed(request.hook.clone()));
         };
+        let limit = guest.call_fuel(request.input.len());
         self.stats.hook_calls += 1;
         self.store.data_mut().decode_stamp = stamp.cloned();
         let outcome = guest.call(&mut self.store, request, now);
         self.store.data_mut().decode_stamp = None;
+        // Read before `recover`: a restart runs `on-activate`, which records its own fuel.
+        let entered = !matches!(outcome, Err(HookCallError::NotServed(_) | HookCallError::TooLarge(_)));
+        let fuel = entered.then(|| self.fuel_since(limit));
         if let Err(HookCallError::Fault(fault)) = &outcome {
             match fault {
                 HookFault::FuelExhausted => self.stats.fuel_exhaustions += 1,
@@ -168,6 +194,7 @@ impl ExtensionInstance {
             // `HooksGuest::call` already discarded the window; a trapped instance is not entered again.
             self.recover(fault.to_string(), now);
         }
+        self.last_fuel = fuel;
         outcome
     }
 
@@ -283,6 +310,7 @@ impl ExtensionInstance {
         R: Send,
         F: FnOnce(&Extension, &mut Store<InstanceState>) -> wasmtime::Result<R> + Send,
     {
+        self.last_fuel = None;
         if let Some(reason) = &self.degraded {
             return Err(HookFault::Degraded(reason.clone()));
         }
@@ -298,12 +326,12 @@ impl ExtensionInstance {
         self.store.data_mut().hook_deadline = None;
         self.store.set_epoch_deadline(NO_EPOCH_DEADLINE);
         self.stats.hook_calls += 1;
+        let limit = self.store.get_fuel().unwrap_or(0);
         let bindings = &self.bindings;
         let store = &mut self.store;
-        match outside_async(move || invoke(bindings, store)) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(self.fault(error)),
-        }
+        let outcome = outside_async(move || invoke(bindings, store));
+        self.last_fuel = Some(self.fuel_since(limit));
+        outcome.map_err(|error| self.fault(error))
     }
 
     /// Degrade on any fault: count it, discard the window unflushed, refuse further hooks.

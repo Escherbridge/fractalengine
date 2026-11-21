@@ -5439,6 +5439,8 @@ dependencies = [
  "fe-hexon",
  "fe-plugin",
  "fe-plugin-test",
+ "fe-policy",
+ "fe-runtime",
  "fe-sdk",
  "fe-sim",
  "fe-sim-model",
@@ -5449,6 +5451,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 0.8.23",
+ "wat",
+ "wit-component 0.244.0",
+ "wit-parser 0.244.0",
  "zip 0.6.6",
 ]
 

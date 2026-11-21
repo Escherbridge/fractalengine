@@ -1,11 +1,14 @@
 //! `run --sandbox`: the real component host over an in-memory scene, a manual clock and fixtures.
 //! Rationale and the fingerprint contract: tools/fe-ext/AGENTS.md §sandbox.
 
+mod calls;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use fe_plugin::bus::{EndReason, InstanceSpec};
 use fe_plugin::capability::{CapabilityToken, V2Binding};
 use fe_plugin::context::PluginContext;
 use fe_plugin::tick::{self, Clock, ManualClock};
@@ -13,7 +16,28 @@ use fe_plugin::transaction::{StagedCommitSink, StagedFlush};
 use fe_plugin::wasm::component::bindings::exports::fractalengine::plugin::ingress_hooks::{IngressFrame, Transport};
 use fe_plugin::wasm::component::{window_for_token, Binding, ComponentHost, GridTerrain, InstanceSetup, KvSlot, MemoryKv};
 use fe_plugin_test::mock_host::MockHostEnv;
-use fe_sdk::manifest_v2::{is_credential_header, ExtensionManifest, ExtensionSourceClass, Ingress, Method};
+use fe_sdk::manifest_v2::{is_credential_header, ExtensionManifest, ExtensionSourceClass, Ingress, Method, HOST_FUEL_CEILING};
+
+pub use calls::{FixtureCommand, FixtureHook};
+use calls::{Calls, When};
+
+/// The newest fixture format this build reads; bump it with every new top-level key (AGENTS.md §sandbox, fixture versions).
+pub const FIXTURE_VERSION: u32 = 2;
+/// Every top-level key `Fixture` reads; a key outside it means the fixture was written for a newer fe-ext.
+const FIXTURE_KEYS: [&str; 12] = [
+    "fixture_version",
+    "petal_id",
+    "start_ms",
+    "ticks",
+    "cadence_ms",
+    "source_class",
+    "nodes",
+    "fleet",
+    "ingress",
+    "terrain",
+    "commands",
+    "hooks",
+];
 use fe_sdk::node::NodeSnapshot;
 use fe_sdk::plugin_host::{json_property, property_json, PendingOp, StagedTimestamp, TransactionReceipt};
 use serde::Deserialize;
@@ -76,6 +100,9 @@ pub struct FixtureIngress {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
+    /// The format the fixture was written for (absent = 1); see [`FIXTURE_VERSION`].
+    #[serde(default = "default_fixture_version")]
+    pub fixture_version: u32,
     #[serde(default = "default_petal")]
     pub petal_id: String,
     #[serde(default)]
@@ -98,6 +125,40 @@ pub struct Fixture {
     /// A deterministic height grid served to `terrain: true` manifests (else `terrain` answers `not-available`).
     #[serde(default)]
     pub terrain: Option<FixtureTerrain>,
+    /// Bus command calls, each admitted by the real broker before the guest sees it (fixture_version 2).
+    #[serde(default)]
+    pub commands: Vec<FixtureCommand>,
+    /// Hook judgments run through the real scene hook gate (fixture_version 2).
+    #[serde(default)]
+    pub hooks: Vec<FixtureHook>,
+}
+
+/// Parse fixture text; an unknown top-level key or a newer `fixture_version` names the fe-ext it needs.
+pub fn parse_fixture(text: &str) -> Result<Fixture> {
+    let raw: Value = serde_json::from_str(text).context("the fixture is not JSON")?;
+    let Value::Object(members) = &raw else { bail!("a fixture is a JSON object") };
+    let this = env!("CARGO_PKG_VERSION");
+    if let Some(declared) = members.get("fixture_version") {
+        let version = declared.as_u64().filter(|version| *version >= 1).ok_or_else(|| anyhow!("fixture_version must be a whole number >= 1"))?;
+        if version > u64::from(FIXTURE_VERSION) {
+            bail!("this fixture needs fe-ext >= fixture_version {version}: fe-ext {this} reads fixture_version {FIXTURE_VERSION} and older; update fe-ext");
+        }
+    }
+    if let Some(unknown) = members.keys().find(|key| !FIXTURE_KEYS.contains(&key.as_str())) {
+        bail!("this fixture needs a newer fe-ext: `{unknown}` is not a fixture key fe-ext {this} reads (fixture_version {FIXTURE_VERSION} and older); update fe-ext");
+    }
+    serde_json::from_value(raw).map_err(|error| {
+        // An unknown key inside an entry is the same story one level down.
+        if error.to_string().contains("unknown field") {
+            anyhow!("{error}; this fixture may need a newer fe-ext than {this} (fixture_version {FIXTURE_VERSION})")
+        } else {
+            anyhow!("{error}")
+        }
+    })
+}
+
+fn default_fixture_version() -> u32 {
+    1
 }
 
 /// Fixture terrain: a row-major height grid sampled bilinearly (fe-plugin `GridTerrain`).
@@ -283,7 +344,7 @@ pub fn run_project(project_dir: &Path, fixture_path: &Path, component_override: 
     let manifest = project.read_manifest()?;
     let component = project.read_component(component_override)?;
     let fixture_text = std::fs::read_to_string(fixture_path).with_context(|| format!("reading fixture {}", fixture_path.display()))?;
-    let fixture: Fixture = serde_json::from_str(&fixture_text).with_context(|| format!("parsing fixture {}", fixture_path.display()))?;
+    let fixture = parse_fixture(&fixture_text).with_context(|| format!("parsing fixture {}", fixture_path.display()))?;
     run(&manifest, &component, &fixture)
 }
 
@@ -508,6 +569,9 @@ struct Recorder {
 pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result<RunReport> {
     let validated = validate::validate_manifest(extension_json)?;
     let manifest = &validated.manifest;
+    if fixture.fixture_version > FIXTURE_VERSION {
+        bail!("this fixture needs fe-ext >= fixture_version {}: this fe-ext reads fixture_version {FIXTURE_VERSION} and older", fixture.fixture_version);
+    }
     if fixture.ticks == 0 {
         bail!("fixture ticks must be at least 1");
     }
@@ -543,9 +607,10 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
         ),
         None => None,
     };
+    let petal_scope = format!("VERSE#mock-FRACTAL#mock-PETAL#{}", fixture.petal_id);
     let scopes = V2Binding {
         verse_scope: "VERSE#mock".into(),
-        petal_scope: format!("VERSE#mock-FRACTAL#mock-PETAL#{}", fixture.petal_id),
+        petal_scope: petal_scope.clone(),
         source_class,
     };
     let token = CapabilityToken::mint_v2(&manifest.id, manifest, &scopes).map_err(|error| anyhow!("binding refused: {error}"))?;
@@ -572,10 +637,36 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
     let context = PluginContext::new(manifest.id.clone(), fixture.petal_id.clone(), token, commands)
         .with_node_reader(host.clone())
         .with_staged_sink(sink);
+    let content_hash = blake3::hash(extension_json).to_hex().to_string();
+    // The real broker: the instance joins it before `on-install`, as `TickHost::launch` seats it.
+    let bus = calls::sandbox_bus(Arc::new(clock.clone()), SANDBOX_DID);
+    let bus_key = bus
+        .register_instance(InstanceSpec {
+            installation_id: "sandbox-1".into(),
+            content_hash: content_hash.clone(),
+            capability_digest: validated.capability_digest.clone(),
+            verse_id: "mock".into(),
+            petal_id: fixture.petal_id.clone(),
+            identity_did: SANDBOX_DID.into(),
+            manifest: Arc::new(manifest.clone()),
+        })
+        .map_err(|error| anyhow!("bus registration refused: {error}"))?;
+    let mut calls = Calls::plan(
+        manifest,
+        &fixture.commands,
+        &fixture.hooks,
+        fixture.ticks,
+        &fixture.petal_id,
+        &petal_scope,
+        bus.clone(),
+        bus_key.clone(),
+        window.clone(),
+        SANDBOX_DID,
+    )?;
     let binding = Binding {
         installation_id: "sandbox-1".into(),
         package_id: manifest.id.clone(),
-        content_hash: blake3::hash(extension_json).to_hex().to_string(),
+        content_hash,
         verse_id: "mock".into(),
         fractal_id: "mock".into(),
         petal_id: fixture.petal_id.clone(),
@@ -585,7 +676,8 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
             .and_then(|value| value.as_str().map(str::to_string)),
     };
     let mut setup = InstanceSetup::new(binding, context.clone(), window.clone(), Arc::new(clock.clone()) as Arc<dyn Clock>)
-        .with_geometry_reader(host.clone());
+        .with_geometry_reader(host.clone())
+        .with_broker(calls.broker());
     if let Some(kv) = &manifest.kv {
         setup = setup.with_kv(KvSlot::new(Box::new(MemoryKv::new()), kv.max_bytes));
     }
@@ -606,7 +698,10 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
 
     // Lifecycle: install, activate, ticks, deactivate. A refusal or fault ends the run, recorded.
     'run: {
-        match instance.on_install() {
+        calls.enter(0, "on-install");
+        let installed = instance.on_install();
+        calls.note_fuel(&instance);
+        match installed {
             Ok(Ok(())) => recorder.events.push(json!({ "hook": "on-install", "ok": true })),
             Ok(Err(message)) => {
                 recorder.events.push(json!({ "hook": "on-install", "refused": message }));
@@ -617,7 +712,10 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
                 break 'run;
             }
         }
-        match instance.on_activate() {
+        calls.enter(0, "on-activate");
+        let activated = instance.on_activate();
+        calls.note_fuel(&instance);
+        match activated {
             Ok(Ok(())) => recorder.events.push(json!({ "hook": "on-activate", "ok": true })),
             Ok(Err(message)) => {
                 recorder.events.push(json!({ "hook": "on-activate", "refused": message }));
@@ -632,6 +730,7 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
         for tick_number in 1..=u64::from(fixture.ticks) {
             let now = fixture.start_ms + (tick_number - 1) * cadence_ms;
             clock.set(now);
+            bus.poll();
             for item in fixture.ingress.iter().filter(|item| u64::from(item.at_tick) == tick_number) {
                 let frame = match admit_ingress(manifest, item, now)? {
                     Admission::Deliver(frame) => frame,
@@ -645,7 +744,10 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
                         continue;
                     }
                 };
-                match instance.on_ingress(&frame) {
+                calls.enter(tick_number, &format!("on-ingress {}", item.endpoint));
+                let replied = instance.on_ingress(&frame);
+                calls.note_fuel(&instance);
+                match replied {
                     Ok(reply) => recorder.replies.push(json!({
                         "tick": tick_number,
                         "endpoint": item.endpoint,
@@ -669,20 +771,32 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
                 skipped: 0,
                 last_commit: last_commit.clone(),
             };
+            calls.run_due(When::Before(tick_number as u32), tick_number, &mut instance);
             instance.refuel(hook_fuel).map_err(|error| anyhow!("refuel: {error}"))?;
-            if let Err(fault) = instance.on_tick(&info) {
+            calls.enter(tick_number, "on-tick");
+            let ticked = instance.on_tick(&info);
+            calls.note_fuel(&instance);
+            if let Err(fault) = ticked {
                 recorder.faults.push(format!("on-tick {tick_number}: {fault}"));
                 break 'run;
             }
             last_commit = flush_window(&window, &context, tick_number, &mut recorder.commits);
+            calls.run_due(When::After(tick_number as u32), tick_number, &mut instance);
         }
-        match instance.on_deactivate(tick::DeactivateReason::HostStopping) {
+        let final_tick = u64::from(fixture.ticks) + 1;
+        calls.enter(final_tick, "on-deactivate");
+        let deactivated = instance.on_deactivate(tick::DeactivateReason::HostStopping);
+        calls.note_fuel(&instance);
+        match deactivated {
             Ok(()) => {
-                flush_window(&window, &context, u64::from(fixture.ticks) + 1, &mut recorder.commits);
+                flush_window(&window, &context, final_tick, &mut recorder.commits);
             }
             Err(fault) => recorder.faults.push(format!("on-deactivate: {fault}")),
         }
     }
+    // The seat leaves the bus (OD-E1 order puts it first; nothing is queued by now, so the order is not observable).
+    bus.unregister_instance(&bus_key, EndReason::InstanceStopped);
+    let (command_calls, hook_calls, stream_events, fuel_calls) = calls.into_trace();
 
     // Trace and fingerprint: everything observable, in a canonical order.
     let mut final_nodes: Vec<Value> = {
@@ -707,12 +821,17 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
         .collect();
     let trace = json!({
         "extension": { "id": manifest.id, "version": manifest.version },
+        "fixture_version": fixture.fixture_version,
         "ticks": fixture.ticks,
         "cadence_ms": cadence_ms,
         "events": recorder.events,
         "ingress_replies": recorder.replies,
+        "commands": command_calls,
+        "hooks": hook_calls,
+        "streams": stream_events,
         "commits": recorder.commits,
         "faults": recorder.faults,
+        "fuel": { "tick_limit": hook_fuel.min(HOST_FUEL_CEILING), "calls": fuel_calls },
         "readings": recorded_readings,
         "nodes": final_nodes,
     });
@@ -721,6 +840,7 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
     let summary = vec![
         format!("extension {}@{}", manifest.id, manifest.version),
         format!("ticks {} at {cadence_ms} ms, commits {}, readings {}", fixture.ticks, count("commits"), count("readings")),
+        format!("commands {}, hooks {}, stream events {}", count("commands"), count("hooks"), count("streams")),
         format!("faults {}", count("faults")),
         format!("fingerprint {fingerprint}"),
     ];

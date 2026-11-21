@@ -206,6 +206,22 @@ At most 32 parts and 16 KiB; lengths 0.01 to 1000. Anything outside that is refu
 
 *Watch for:* the node's own rotation and scale apply to the parts; `render.style` on the node tints every part.
 
+## Light the petal
+
+*Needs:* `scene.write: ["set_property"]` and `render.environment` inside `scene.property_scope`.
+
+Write `render.environment` (fe-sdk `RenderEnvironmentDescriptor`) on any node of the petal, and the renderer uses it while
+that petal is active:
+
+```json
+{ "sun_direction": [0.3, -1.0, 0.2], "sun_color": [1.0, 0.95, 0.85], "sun_illuminance": 20000,
+  "ambient_color": [0.6, 0.7, 0.9], "ambient_brightness": 300 }
+```
+
+`sun_direction` is the direction the light TRAVELS, in world axes with Y up (normalised on read; the renderer
+points the directional light along it with `look_to`). `[0, -1, 0]` is a sun straight overhead shining down; to
+place the sun at a direction `s` in the sky, write `-s`. A zero vector is refused. Colours are 0..1 RGB.
+
 ## Sharpen
 
 - **Pattern:** *pull a query, push a snapshot* (change-triggered re-run with a coalescing floor). It keeps

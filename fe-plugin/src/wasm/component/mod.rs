@@ -25,7 +25,9 @@ pub use self::bindings::fractalengine::plugin::types::{Binding, Caller, CallerKi
 pub use self::broker::{ExtensionBroker, NoBroker};
 pub use self::bus_bridge::BusBroker;
 pub use self::hooks::{HookCallError, HookReply, HookRequest, HooksGuest};
-pub use self::instance::{window_for_token, ExtensionInstance, HookFault, InstanceHandle, InstanceStats, InstanceStore};
+pub use self::instance::{
+    window_for_token, ExtensionInstance, FuelUse, HookFault, InstanceHandle, InstanceStats, InstanceStore,
+};
 pub use self::kv::{KvBackend, KvSlot, MemoryKv};
 pub use self::net_bridge::{HostBroker, NetBroker};
 pub use self::state::{InstanceSetup, InstanceState};

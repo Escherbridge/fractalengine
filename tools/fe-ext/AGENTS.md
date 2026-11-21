@@ -39,8 +39,9 @@ when every op and reading is valid (the production all-or-nothing flush).
   frames and an fe-sim `FleetModel` (validated, then stored as property `fleet.config` on node `fleet-1`, which is
   what the fleet-sim example's UI looks for), and an optional `terrain` grid (`FixtureTerrain`: `origin`, `cell`, `columns`,
   `rows` 2..=257, `heights` = columns x rows, `world_scale`, `origin_ele`) served through fe-plugin `GridTerrain` to a
-  `terrain: true` manifest only; without it `terrain` answers `not-available`. Bus events and egress completions are not fed yet: the broker is
-  `NoBroker`, so those calls answer `not-available`.
+  `terrain: true` manifest only; without it `terrain` answers `not-available`. Fixture `commands[]` and `hooks[]`
+  (fixture_version 2) are §sandbox-calls. Egress completions and host-source subscriptions are not fed: the bus has
+  no query or scene source and the broker's egress methods keep their `not-available` defaults.
 - Ingress frames pass the host's checks first (`admit_ingress`, production order from fe-plugin `net/ingress.rs`):
   undeclared endpoint or sub-path → 404, method → 405, size → 413 (websocket/mqtt: dropped), media type → 415; only
   the declared `forward_headers` minus credential headers reach the guest; http and websocket-accept frames carry a
@@ -50,6 +51,54 @@ when every op and reading is valid (the production all-or-nothing flush).
 - The binding's `source_class` is the class the token writes as (the fixture pick, or the manifest's only class),
   as in production; a manifest that declares a class SET needs `source_class` in the fixture or the bind is refused.
 - `--lab` is the separate mode below; `--sandbox` takes `--fixture`, `--lab` takes `--scenario`.
+
+## §sandbox-calls (src/sandbox/calls.rs)
+
+Fixture `commands[]`, `hooks[]`, stream capture and per-call fuel. The rule: the sandbox may never say yes where the
+host says no, so every verdict comes from host code, not a copy of it.
+
+- **One real `Bus`.** `sandbox_bus` builds `fe_plugin::bus::Bus` on the run's `ManualClock`, local DID
+  `did:key:sandbox` (Owner at its petal via `SandboxRoles`, no remote reach, no query or scene source). The instance
+  is registered (`Bus::register_instance`, the consented `capability_digest`) before `on-install`, as
+  `TickHost::launch` seats it, and unregistered at the end.
+- **Commands.** `Bus::call_command_local_client` runs bus.md §4 checks 1-8 (`reach_command`: exposed, role floor;
+  rate buckets; 16 KiB and `validate_args`; queue room) and records its `BusRefusal` code and REST status. The
+  caller is the local loopback client (as `fe` uses it): local DID, `role` as a `role_ceiling`, so a viewer meets the
+  floor refusal, not the remote not-found. An admitted call is delivered by `drain`, which is `Bus::dispatch`
+  unrolled (`next_work` + `BusHooks::on_command` on the `ExtensionInstance` + `complete_command`) only so each guest
+  entry gets its own fuel row; the reply (`CommandOutcome`) is read from the ticket.
+- **Hooks.** The real `fe_runtime::scene_hook_gate::SceneHookGate` over `SandboxBackend`: `begin` builds the input
+  (`SceneHookInput::to_json`), checks the input cap and property scope; `dispatch` parks the call; the run loop builds
+  the `HookRequest` the binary's `worker.rs` `scene_call` builds, runs `ExtensionInstance::call_hook` (the catalogue
+  deadline scaled by input size, epoch interrupt, per-byte fuel, crash restart) and answers with
+  `fe_plugin::host_bridge::scene_hook_reply` (new; the binary's `catalog.rs` `HookFailure` mapping plus
+  `scene_hook_reply_from_output`, in one function; the binary still has its own copy, switching it is a follow-up).
+  `ticket.poll` then gives the gate's own verdict (`parse_answer`, `admit_augment`, `clean_reason`). Mirrored, not
+  shared (both binary-private): the `SceneBinding` (`catalog.rs` `scene_binding`: property scope, `may_augment` =
+  `set_property` + `tick`) and the augment staging (all or nothing into the window). Fixture values pass through
+  `f32` because live `UpdateNodeTransform` carries `f32` and the gate widens it (`scene_write::widen`).
+- **Hook refusals at fixture load.** A hook outside the manifest's `provides`, a hook the sandbox does not drive yet
+  (add it to `scene_input` and `DRIVEN_HOOKS`), and a `config` that fails the hook's `config_schema` (`validate_args`,
+  the resolver's check) are fixture errors before anything runs.
+- **Streams.** `SandboxBroker` is the instance's `ExtensionBroker`; its bus methods are `BusBroker`'s, and
+  `bus_publish` also logs `{tick, call, stream, payload, published | refused}` with the `Bus::publish` verdict
+  (declared stream, `max_event_bytes` capped at 64 KiB, JSON, `max_rate_hz` capped at 50 on the manual clock). An
+  event over the import's 64 KiB JSON bound is refused by the import before the broker and is not logged.
+- **Fuel.** `ExtensionInstance::last_fuel()` (new in fe-plugin) is `{limit, consumed}` of the last guest entry:
+  `call` reads the store's fuel just before entering (after its refill, or the scheduler's `refuel` for `on-tick`),
+  `call_hook` takes `HooksGuest::call_fuel(input_len)` (the same function `HooksGuest::call` refills with) and reads
+  the remainder before a crash restart's `on-activate` overwrites it.
+- **Determinism.** Everything runs on the manual clock in one thread, so traces stay byte-identical. The one wall
+  clock is a hook's deadline (production's): a hook that runs close to it may differ between runs.
+- **Fixture versions.** `FIXTURE_VERSION` (2) and `FIXTURE_KEYS` in `src/sandbox.rs`; `parse_fixture` checks the
+  declared version and the top-level keys before serde, so an fe-ext meeting a newer fixture says it needs a newer
+  fe-ext. Adding a top-level key means: add it to `Fixture` and `FIXTURE_KEYS` and bump `FIXTURE_VERSION`. Builds
+  from before fixture_version 2 still print serde's `unknown field` for `commands`/`hooks`.
+
+| version | adds |
+|---|---|
+| 1 | nodes, ticks, cadence, source class, ingress, fleet, terrain (no `fixture_version` key) |
+| 2 | `fixture_version`, `commands[]`, `hooks[]`; trace `commands`, `hooks`, `streams`, `fuel` |
 
 ## §lab
 
@@ -165,7 +214,7 @@ lock governs it. None of these paths is git-ignored (each `.gitignore` says so).
 - Root `.gitignore` ignores `/tools/*` with a `!/tools/qa/` exception; this directory needs its own
   `!/tools/fe-ext/` line or none of it is ever committed (G3 found it untracked on 2026-11-08).
 - The scaffold's path dependencies point at this checkout (`env!("CARGO_MANIFEST_DIR")` at compile time).
-- `new` writes a fixture with the manifest's first source class when it declares a set, and stamps a key inside the
+- `new` writes a fixture stamped with the current `fixture_version`, with the manifest's first source class when it declares a set, and stamps a key inside the
   manifest's first `<prefix>.*` scope, so `new` → `build` → `run --sandbox` commits on every kind.
 
 ## Tests
@@ -178,6 +227,10 @@ printed, and `sign` under another key moving the content hash. With bi-push and 
 manifest over fleet-sim's hook-less component is refused `missing-export` by `validate` and by `pack` (nothing written).
 The packed examples then go through `index build` (each listed) and `index verify` against the index key (each
 `verified`, so `StaticIndexSource` fetched and checked every header and download), and a foreign pin is refused. The
+sandbox-calls leg (`sandbox_calls_leg`, always runs: its guest is hand-written WAT encoded with `wit-component`, as in
+fe-plugin's `test_guest.rs`) drives command ok / schema refusal / role-floor refusal, a `scene.transform` allow with a
+staged augment and a refusal with its reason, a rate-limited stream, fuel rows and two byte-identical traces, then
+refuses an unprovided hook, a newer `fixture_version` and an unknown top-level key. The
 model leg (`model_leg`, runs before that half): a two-model fixture folder (`tests/fixtures/model-pack/library.toml`;
 GLBs and PNGs are generated at run time) is packed, inspected, and refused after one flipped byte; then one table of
 refusals (unlisted GLB, symlink where the platform allows one, bad GLB, oversize, missing licence, empty attribution,

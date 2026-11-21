@@ -240,6 +240,13 @@ impl HooksGuest {
         &self.stats
     }
 
+    /// The fuel one call with `input_bytes` of input starts with: the manifest's plus the per-byte allowance.
+    pub fn call_fuel(&self, input_bytes: usize) -> u64 {
+        self.fuel
+            .saturating_add(HOOK_FUEL_PER_INPUT_BYTE.saturating_mul(input_bytes as u64))
+            .min(fe_sdk::manifest_v2::HOST_FUEL_CEILING.max(self.fuel))
+    }
+
     /// Keep the counters of the instance this one replaces after a crash.
     pub(crate) fn inherit_stats(&mut self, previous: HooksGuest) {
         self.stats = previous.stats;
@@ -263,10 +270,7 @@ impl HooksGuest {
         }
         // Delivery and parsing grow with the input: the deadline and fuel grow with it (src/wasm/AGENTS.md §hooks).
         let deadline = fe_runtime::scene_hook_gate::input_deadline(limits.deadline, request.input.len());
-        let fuel = self
-            .fuel
-            .saturating_add(HOOK_FUEL_PER_INPUT_BYTE.saturating_mul(request.input.len() as u64))
-            .min(fe_sdk::manifest_v2::HOST_FUEL_CEILING.max(self.fuel));
+        let fuel = self.call_fuel(request.input.len());
         if request.body.len() > limits.max_body_in {
             return Err(HookCallError::TooLarge("body"));
         }

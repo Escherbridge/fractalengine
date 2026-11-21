@@ -18,7 +18,7 @@ pub struct RenderEnvironmentDescriptor {
     pub ambient_color: Option<[f32; 3]>,
     /// Ambient light illuminance/brightness in lux-scaled units (`>= 0.0`).
     pub ambient_brightness: Option<f32>,
-    /// Directional sun/key light normalized direction `[x, y, z]` (pointing from origin toward light or world ray).
+    /// Direction the sun/key light TRAVELS, world `[x, y, z]` (Y up; normalized on parse): `[0, -1, 0]` shines straight down.
     pub sun_direction: Option<[f32; 3]>,
     /// Directional sun/key light RGB color `[r, g, b]`, clamped to `0.0..=1.0`.
     pub sun_color: Option<[f32; 3]>,

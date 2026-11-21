@@ -486,6 +486,7 @@ cargo test -p fractalengine --bin fractalengine -- extension_host::admin_channel
 | `fe-hexon-registry/**` | catalogue public and verbatim, the rest behind a token (`tests/registry_test.rs`) |
 | `fe-hexon/tests/remote_registry_test.rs` | real fe-hexon-registry round trip incl. the AC-6 sealed plugin install (feature `remote`; EXT-04, HEXON-03) |
 | `tools/fe-ext/src/index.rs`, `tools/fe-ext/tests/j8_cli.rs` | index build then verify journey (`index::tests::`); the `j8` legs include the index legs |
+| `tools/fe-ext/src/sandbox.rs`, `tools/fe-ext/src/sandbox/calls.rs` | sandbox fixture `commands[]`/`hooks[]`, stream capture, fuel rows, fixture versions: `sandbox_calls_leg` inside `j8` (WAT guest, always runs); also leans on `fe-plugin` `host_bridge::scene_hook_reply`, `ExtensionInstance::last_fuel`, `HooksGuest::call_fuel` |
 | `tools/fe-ext/guest/**`, `extensions/{fleet-sim,device-adapter,bi-push}/**` | standalone crates, own `[workspace]`; run via `--manifest-path` |
 
 ```bash
