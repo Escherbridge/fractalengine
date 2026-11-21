@@ -99,7 +99,7 @@ The section is the value of `portal` in `plugin/extension.json`. Every object in
 | `commands.invoke` | list ≤ 16 of `{package, command}` | extension commands, called through the bus as `<package>/<command>` with caller kind `portal` (sibling R14) |
 | `hooks` | list ≤ 16 of `{source}` | foreign extension streams the page consumes, `<package_id>/<stream>`; a `host/…` source is `target_invalid` (host streams are `subscriptions`) |
 | `streams` | list ≤ 8 of `{id, max_rate_hz, max_event_bytes, consumers?}` | streams the page produces, published as `<package_id>/<id>`; `max_rate_hz` 1–10; `max_event_bytes` 1–16 384; optional `consumers` names the only packages that may consume it (sibling R14) |
-| `ui_intents` | list of `focus_node`, `select_node` | local UI requests; never a write |
+| `ui_intents` | list of `focus_node`, `select_node`, `tour_nodes` (at most 3) | local UI requests; never a write |
 
 5.1. **Reserved property keys.** `node_kind` and every key under `portal.` are host-reserved. A `set_property.keys` pattern that matches or covers one of them (`node_kind`, `portal.*`, `portal.bundle_asset`, and any bare `*`) is `key_pattern_invalid`, and the host refuses those keys at write time regardless (`ipc-v1.md` §6.1). A bundle can therefore never rewrite its own repository-node reference and swap in other code.
 5.2. **No duplicates.** Duplicate origins, query names, key patterns, invoke targets, hook sources or stream ids are `duplicate`.

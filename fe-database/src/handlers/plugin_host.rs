@@ -104,7 +104,7 @@ fn snapshot_for_plugin(
         properties: state
             .properties
             .into_iter()
-            .filter(|(key, _)| admission.allows_property(key))
+            .filter(|(key, _)| admission.allows_property(key, fe_sdk::manifest_v2::ScopeAccess::Read))
             .map(|(key, value)| (key, fe_sdk::plugin_host::json_property(value)))
             .collect(),
     })
@@ -173,7 +173,7 @@ pub(crate) async fn read(
                 bindings.push(("plugin_read_name".into(), json!(name)));
             }
             if let Some(property) = &query.property {
-                if !admission.allows_property(&property.key) {
+                if !admission.allows_property(&property.key, fe_sdk::manifest_v2::ScopeAccess::Read) {
                     return Err(refuse(
                         PluginRefusal::CapabilityDenied,
                         "plugin property capability denied",
@@ -544,7 +544,7 @@ pub(crate) async fn commit(
         anyhow::ensure!(!node.deleted, "plugin batch accesses a node after deletion");
         let (operation, data, schema_versions) = match op {
             PendingOp::SetProperty { key, value, .. } => {
-                if !admission.allows_property(key) {
+                if !admission.allows_property(key, fe_sdk::manifest_v2::ScopeAccess::Write) {
                     return Err(refuse(
                         PluginRefusal::CapabilityDenied,
                         "plugin property capability denied",

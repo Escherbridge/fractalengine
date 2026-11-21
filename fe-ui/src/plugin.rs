@@ -1140,6 +1140,13 @@ impl Plugin for GardenerConsolePlugin {
             Update,
             resolve_local_role_on_nav_change.in_set(UiSet::ProcessActions),
         );
+        // Portal focus/select/tour intents (idempotent registrations; the intent writer lives in fe-webview).
+        app.add_message::<fe_webview::portal_bundle::PortalIntent>();
+        app.init_resource::<fe_renderer::camera::CameraTour>();
+        app.add_systems(
+            Update,
+            crate::portal::intents::apply_portal_intents.in_set(UiSet::ProcessActions),
+        );
         app.add_systems(Update, crate::invitations::drive.in_set(UiSet::ProcessActions).run_if(fe_runtime::maintenance::editor_running));
         // Surface asset-download outcomes (written by the main binary's bridge) as toasts.
         app.add_systems(Update, crate::asset_ops::surface_asset_download_status);

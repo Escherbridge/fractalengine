@@ -414,6 +414,9 @@ pub fn validate_transaction(ops: &[PendingOp]) -> Result<(), String> {
                 crate::storage::validate_node_id(node_id).map_err(|error| error.to_string())?;
                 crate::storage::validate_key(key).map_err(|error| error.to_string())?;
                 validate_property_value(value)?;
+                if key.as_str() == crate::render_mesh::RENDER_MESH_PROPERTY_KEY && !value.is_null() {
+                    crate::render_mesh::RenderMeshDescriptor::parse(value).map_err(|refusal| refusal.to_string())?;
+                }
             }
             PendingOp::CreateNode { petal_id, name } => {
                 crate::storage::validate_node_id(petal_id).map_err(|error| error.to_string())?;

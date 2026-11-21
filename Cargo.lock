@@ -5850,6 +5850,7 @@ dependencies = [
  "fe-format",
  "fe-policy",
  "fe-runtime",
+ "fe-sdk",
  "http",
  "ipnet",
  "raw-window-handle",

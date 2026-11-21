@@ -18,6 +18,7 @@
           "scene": false,
           "readings": false,
           "routes": false,
+          "terrain": false,
           "tick": false,
           "kv": false,
           "ingress": false,
@@ -63,6 +64,10 @@
     "readings": { "$ref": "#/$defs/readings" },
     "routes": {
       "description": "Grants the routes interface over route nodes in the bound petal.",
+      "type": "boolean"
+    },
+    "terrain": {
+      "description": "Grants the read-only terrain interface: elevation, slope and normal under points of the bound petal, while that petal's terrain is loaded on the host.",
       "type": "boolean"
     },
     "tick": { "$ref": "#/$defs/tick" },

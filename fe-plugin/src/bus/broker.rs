@@ -8,7 +8,7 @@ use fe_policy::RoleLevel;
 use fe_runtime::messages::SceneChange;
 use fe_runtime::plugin_host::{PluginRefusal, PluginReply, PluginResult};
 use fe_sdk::manifest_v2::{
-    metric_allowed, scope_allows, ConsumeEntry, ExposedCommand, ExposedStream, ExtensionManifest, RoleFloor,
+    metric_allowed, scope_allows, ConsumeEntry, ScopeAccess, ExposedCommand, ExposedStream, ExtensionManifest, RoleFloor,
 };
 use fe_sdk::plugin_host::{PendingOp, TransactionReceipt};
 use serde::Serialize;
@@ -1399,7 +1399,7 @@ impl Bus {
                             continue;
                         }
                         if let Some(key) = key {
-                            if !property_scope.as_deref().is_some_and(|scope| scope_allows(scope, key)) {
+                            if !property_scope.as_deref().is_some_and(|scope| scope_allows(scope, key, ScopeAccess::Read)) {
                                 continue;
                             }
                         }
@@ -2328,7 +2328,7 @@ fn project_properties(mut node: Value, scope: Option<&[String]>) -> Value {
     if let Some(object) = node.as_object_mut() {
         let kept: Map<String, Value> = match (object.remove("properties"), scope) {
             (Some(Value::Object(properties)), Some(scope)) => {
-                properties.into_iter().filter(|(key, _)| scope_allows(scope, key)).collect()
+                properties.into_iter().filter(|(key, _)| scope_allows(scope, key, ScopeAccess::Read)).collect()
             }
             _ => Map::new(),
         };

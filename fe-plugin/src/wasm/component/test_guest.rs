@@ -17,7 +17,18 @@ const FLEET: &str = include_str!("../../../../fe-sdk/schema/examples/fleet-sim.e
 /// The fleet manifest bound to petal `p1` of the mock host: v2 token, reader, shared window,
 /// a 64-byte kv budget and the unfiltered geometry reader.
 pub(crate) fn fleet_setup(host: &Arc<Mutex<MockHostEnv>>, clock: &ManualClock) -> InstanceSetup {
-    let validated = fe_sdk::manifest_v2::parse_and_validate(FLEET.as_bytes()).expect("fleet manifest validates");
+    setup_for(host, clock, FLEET.as_bytes())
+}
+
+/// [`fleet_setup`] with the manifest's `terrain: true` grant (no terrain source attached yet).
+pub(crate) fn terrain_setup(host: &Arc<Mutex<MockHostEnv>>, clock: &ManualClock) -> InstanceSetup {
+    let mut manifest: serde_json::Value = serde_json::from_str(FLEET).expect("fleet manifest is JSON");
+    manifest["terrain"] = serde_json::Value::Bool(true);
+    setup_for(host, clock, &serde_json::to_vec(&manifest).expect("manifest serializes"))
+}
+
+fn setup_for(host: &Arc<Mutex<MockHostEnv>>, clock: &ManualClock, manifest: &[u8]) -> InstanceSetup {
+    let validated = fe_sdk::manifest_v2::parse_and_validate(manifest).expect("fleet manifest validates");
     let scopes = V2Binding {
         verse_scope: "VERSE#mock".into(),
         petal_scope: "VERSE#mock-FRACTAL#mock-PETAL#p1".into(),

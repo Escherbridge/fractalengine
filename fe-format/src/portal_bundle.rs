@@ -42,7 +42,7 @@ const MAX_INVOKES: usize = 16;
 const MAX_HOOKS: usize = 16;
 const MAX_STREAMS: usize = 8;
 const MAX_CONSUMERS: usize = 16;
-const MAX_UI_INTENTS: usize = 2;
+const MAX_UI_INTENTS: usize = 3;
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_MEMBER_PATH_BYTES: usize = 512;
 const MAX_MEMBER_SEGMENTS: usize = 16;
@@ -50,7 +50,7 @@ const MAX_SEGMENT_BYTES: usize = 128;
 const MAX_STREAM_RATE_HZ: u32 = 10;
 const MAX_STREAM_EVENT_BYTES: u32 = 16_384;
 const QUERY_PARAM_TYPES: &[&str] = &["string", "integer", "number", "boolean", "node_id"];
-const UI_INTENTS: &[&str] = &["focus_node", "select_node"];
+const UI_INTENTS: &[&str] = &["focus_node", "select_node", "tour_nodes"];
 
 // ---------------------------------------------------------------------------
 // Typed section
@@ -945,7 +945,7 @@ mod tests {
             (RefusalClass::IdMismatch, run(|_| {}, |e| e["id"] = json!("org.other"), base_members(), |_| {})),
             (RefusalClass::SchemaUnsupported, portal_case(|p| p["schema"] = json!("fe-portal-bundle/2"))),
             (RefusalClass::VocabularyUnknown, portal_case(|p| p["csp"]["script"] = json!(["https://cdn.example.org"]))),
-            (RefusalClass::LimitExceeded, portal_case(|p| p["ui_intents"] = json!(["focus_node", "select_node", "focus_node"]))),
+            (RefusalClass::LimitExceeded, portal_case(|p| p["ui_intents"] = json!(["focus_node", "select_node", "tour_nodes", "focus_node"]))),
             (RefusalClass::OriginInvalid, portal_case(|p| p["navigation"] = json!(["https://docs.example.org/path"]))),
             (RefusalClass::OriginBlocked, portal_case(|p| p["navigation"] = json!(["https://blocked.example.org"]))),
             (RefusalClass::QueryInvalid, portal_case(|p| p["subscriptions"]["queries"][0]["sql"] = json!("SELECT 1; DROP TABLE x"))),
@@ -1003,6 +1003,7 @@ mod tests {
             (Box::new(|p| p["streams"][0]["max_rate_hz"] = json!(8)), true),
             (Box::new(|p| p["streams"][0]["consumers"] = json!(["org.example.viewer"])), false),
             (Box::new(|p| p["ui_intents"] = json!(["focus_node", "select_node"])), true),
+            (Box::new(|p| p["ui_intents"] = json!(["focus_node", "tour_nodes"])), true),
         ];
         for (i, (mutate, expected)) in cases.iter().enumerate() {
             let y = section(|p| mutate(p));

@@ -748,3 +748,40 @@ the actual accepted outcome. The independent Resource drains exact owned reads,
 commits, Resolve replies and failures in Update. No generic properties/replica
 refresh follows this background save. Other receipt producers keep their existing
 projection path.
+
+## §render-mesh
+
+`render.mesh` (fe-sdk `src/AGENTS.md` §render-mesh) rides the same feed as `render.style`: every site that calls
+`RenderOverrideCache::note_properties` already carries the full property bag, so local writes, extension
+commits and peer replication need no new path. `render_overrides.rs::reconcile_render_meshes` runs first in the
+second `Update` chain (before `reconcile_render_styles`, so `render.style` tints generated children).
+
+- **Children, not a merged mesh.** Each part is a leaf child (`ChildOf` + `RenderMeshPart`) drawn with
+  `build_primitive_mesh`; the owner keeps a `RenderMeshState` (descriptor + child ids). Plain `.despawn()` is
+  correct because children are leaves; the owner's own despawn (petal switch, node delete) removes them via
+  the linked-spawn relationship. Pick still works: `viewport_pick` finds the `Aabb` on descendants.
+- **Change detection.** The system returns before touching any query when no mesh is cached and no owner exists.
+  Otherwise it compares the cached descriptor with `RenderMeshState` per node (no allocation when equal), so a
+  freshly respawned node entity is rebuilt without a revision counter. Mesh changes do NOT bump
+  `RenderOverrideCache.revision` (that would re-clone every styled material and re-run the environment).
+- **Refusal = absence.** A refused value is logged with `warn!` in `note_properties` and treated as no mesh, so a
+  malformed remote value despawns instead of leaving stale geometry. Set re-reads via the `matches!` list in
+  `db_results/properties.rs`; delete invalidates in `db_results/mod.rs`.
+- **Precedence over sign and primitive.** While a node has generated geometry its own placeholder mesh is kept in
+  `suppressed_mesh` and restored on removal. A fallback placard loses its `Mesh3d`; a `PrimitiveNode` keeps the
+  component with `Handle::default()` (draws nothing), because `materialize_cached_primitives` matches primitives
+  on `Mesh3d` and would otherwise spawn a duplicate. If a primitive reconcile swaps a fresh mesh in, the next pass
+  stores it as the placeholder and hides it again, so removal restores the latest primitive. The plan's merged
+  vertex-colour mesh is deferred.
+- **Full precedence: GLTF asset > `render.mesh` > `primitive` > fallback sign.** A node entity carrying `SceneRoot`
+  is treated as `wanted = None`: it never gets parts, and parts it already owns are despawned (no placeholder is
+  restored onto it).
+- **Hidden placeholders are not pickable.** `viewport_pick` slab-tests every `Aabb` in the node's subtree, so the
+  suppressed sign/primitive's root `Aabb` would keep its old volume clickable. Suppression removes it (again after a
+  primitive re-mesh, since Bevy 0.18 `calculate_bounds` re-adds an `Aabb` to any entity with a loaded `Mesh3d` and
+  none). The parts carry their own bounds. Restoring the placeholder handle leaves the root without an `Aabb`, and
+  `calculate_bounds` recomputes it from the real mesh. It does not recompute while the handle is
+  `Handle::default()`, because that handle resolves to no asset.
+- **Tree nodes only.** The reconciler filters `With<ResidentNode>`: GPX ribbons and stamps also carry
+  `SpawnedNodeMarker` (`gpx_bridge::tag_track_lines_selectable`, `spawn_stamped_entity`) but are not tree nodes, so
+  a cached descriptor whose id matches a track never spawns parts on its ribbon.

@@ -22,12 +22,10 @@ pub(super) enum HookFailure {
     Fault(String),
 }
 
-/// Whether a `scene.property_scope` admits `key` (`*`, `prefix*` or exact; an empty scope admits nothing).
+/// Whether a `scene.property_scope` admits `key` (`*`, `prefix*` or exact; an empty scope admits nothing;
+/// exact-grant keys such as `render.mesh` need the verbatim entry).
 pub(super) fn property_allowed(scope: &[String], key: &str) -> bool {
-    scope.iter().any(|pattern| match pattern.strip_suffix('*') {
-        Some(prefix) => key.starts_with(prefix),
-        None => pattern == key,
-    })
+    fe_sdk::manifest_v2::scope_allows(scope, key, fe_sdk::manifest_v2::ScopeAccess::Write)
 }
 
 /// Instances this host staged, by context id; the serving build is the earliest one whose lease still holds, so a
@@ -225,6 +223,8 @@ pub(super) struct InstanceStager {
     pub(super) verified: VerifiedBuilds,
     pub(super) petals: PetalDirectory,
     pub(super) live: LiveInstances,
+    /// The published terrain snapshot; only `terrain: true` manifests get a source.
+    pub(super) terrain: TerrainSnapshots,
 }
 
 /// One build to stage at one petal under one context id.
@@ -363,6 +363,9 @@ impl InstanceStager {
             .with_broker(Arc::new(broker));
         if let Some(kv) = &manifest.kv {
             setup = setup.with_kv(KvSlot::new(Box::new(MemoryKv::new()), kv.max_bytes));
+        }
+        if manifest.terrain == Some(true) {
+            setup = setup.with_terrain(self.terrain.source());
         }
         let instance = components
             .instantiate(component, setup)

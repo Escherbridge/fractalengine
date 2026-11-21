@@ -2337,6 +2337,34 @@ Binary-side leaves of the extension host (`extension_host/`); `plugin_bridge::in
 - **Payload bytes.** `main.rs` binds `ExtensionBlobSlot` to the shared blob store right after
   `install_with`, so `ingest.decode` reads accepted payload files from the same content-addressed store.
 
+## §extension-terrain (core prerequisites 2026-11-20)
+
+`plugin_bridge/terrain.rs` feeds the extension `terrain` import (fe-plugin `src/wasm/AGENTS.md` §terrain) without
+the plugin worker ever touching ECS.
+
+- **Ownership.** `TerrainSnapshots` (a Bevy resource, cloned into `InstanceStager`) holds
+  `Arc<RwLock<Option<Arc<TerrainSnapshot>>>>`. Only the Bevy system `publish_terrain_snapshot` writes it; each
+  terrain-granted instance holds a `BridgeTerrainSource` that clones the inner `Arc` under the read lock and samples
+  `TerrainHeightField::height_at` on the worker.
+- **The `wanted` gate.** `TerrainSnapshots::source()` counts one per instance and the source's `Drop` uncounts it
+  (a respawn shares the same `Arc`, so it counts once). At zero the system returns before reading anything and drops
+  any published copy. `InstanceStager::assemble` asks for a source only when the manifest says `terrain: true`.
+- **When it clones.** Only when (verse, petal, field generation, assignment revision, world scale, `origin_ele`)
+  differs from the last publish. A refresh of a live snapshot waits at most every 250 ms (`SNAPSHOT_DEBOUNCE`), so a
+  streaming tile burst costs one clone, not one per tile; the first publish after a petal change or a withdrawal (no
+  current snapshot) skips the debounce. The clone is O(tiles): `TerrainHeightField` holds `Arc<HeightTile>`
+  (fe-renderer `src/AGENTS.md` §terrain-height). An idle frame compares integers and borrowed strings and allocates
+  nothing.
+- **Trailing edge.** `publish_step` returns `true` while a debounced publish is pending, and the system then writes
+  `RequestRedraw`: under the reactive loop nothing else may tick it once the tile burst ends, so without the wake the
+  last tiles would stay unpublished until some unrelated input.
+- **Which petal.** Published only when `NavigationManager.active_petal_id` equals `ActivePetalTerrain.petal_id` and
+  the assignment and projection exist; `origin_ele` comes from `ActiveTileSource.projection` (it is grounded after
+  load), the scale from `TerrainConfig::effective_world_scale`. Leaving the petal withdraws the snapshot at once
+  (no debounce), so an instance bound to the old petal is refused immediately (`not-available`).
+- **Residency.** Only tiles resident near the camera are in the field; sampling the whole tileset for headless use is
+  a follow-up (`ActiveTileSource.composite`).
+
 ## §extension-governance (extension_platform_20261107, turn 3 I-MAIN)
 
 How `main.rs` and `portal_host/mod.rs` hand governance state to the rest of the binary.

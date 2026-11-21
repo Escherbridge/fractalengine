@@ -282,16 +282,17 @@ pub fn is_reserved_property_key(key: &str) -> bool {
 }
 
 /// A key in the portal grammar `[a-z0-9_]+(\.[a-z0-9_]+)*`, not reserved, matched by an exact pattern or a
-/// `prefix.*` pattern (which needs at least one more segment).
+/// `prefix.*` pattern (which needs at least one more segment); exact-grant keys (`render.mesh`) need the exact entry.
 pub fn portal_key_allowed(patterns: &[String], key: &str) -> bool {
     let grammar = key.len() <= MAX_PROPERTY_KEY_BYTES
         && key.split('.').all(|segment| {
             !segment.is_empty() && segment.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
         });
+    let exact_only = fe_sdk::render_mesh::requires_exact_scope(key);
     grammar
         && !is_reserved_property_key(key)
         && patterns.iter().any(|pattern| match pattern.strip_suffix(".*") {
-            Some(base) => key.strip_prefix(base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.')),
+            Some(base) => !exact_only && key.strip_prefix(base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.')),
             None => pattern == key,
         })
 }

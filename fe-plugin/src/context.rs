@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::capability::CapabilityToken;
 use crate::host_env::HostEnv;
 use crate::transaction::{PluginTransaction, StagedCommitSink, StagedFlush};
-use fe_sdk::manifest_v2::SceneWrite;
+use fe_sdk::manifest_v2::{SceneWrite, ScopeAccess};
 use fe_sdk::plugin_host::StagedReading;
 use crate::PluginCommand;
 
@@ -149,7 +149,7 @@ impl PluginContext {
         node.properties.retain(|key, _| {
             validate_access(
                 &self.capabilities,
-                &CapabilityOperation::PropertyAccess { key: key.clone() },
+                &CapabilityOperation::PropertyAccess { key: key.clone(), access: ScopeAccess::Read },
             )
             .is_ok()
         });
@@ -213,6 +213,7 @@ impl PluginContext {
                 &self.capabilities,
                 &CapabilityOperation::PropertyAccess {
                     key: predicate.key.clone(),
+                    access: ScopeAccess::Read,
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -258,7 +259,7 @@ impl PluginContext {
             return Err(format!("plugin capability denied: scene write {kind:?}"));
         }
         if let Some(key) = property {
-            validate_access(&self.capabilities, &CapabilityOperation::PropertyAccess { key: key.clone() })
+            validate_access(&self.capabilities, &CapabilityOperation::PropertyAccess { key: key.clone(), access: ScopeAccess::Write })
                 .map_err(|error| error.to_string())?;
         }
         Ok(())

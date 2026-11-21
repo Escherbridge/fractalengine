@@ -37,7 +37,9 @@ when every op and reading is valid (the production all-or-nothing flush).
   sorting the trace by hand.
 - Fixtures (`Fixture` in `src/sandbox.rs`): nodes, ticks, cadence override, source-class pick, recorded ingress
   frames and an fe-sim `FleetModel` (validated, then stored as property `fleet.config` on node `fleet-1`, which is
-  what the fleet-sim example's UI looks for). Bus events and egress completions are not fed yet: the broker is
+  what the fleet-sim example's UI looks for), and an optional `terrain` grid (`FixtureTerrain`: `origin`, `cell`, `columns`,
+  `rows` 2..=257, `heights` = columns x rows, `world_scale`, `origin_ele`) served through fe-plugin `GridTerrain` to a
+  `terrain: true` manifest only; without it `terrain` answers `not-available`. Bus events and egress completions are not fed yet: the broker is
   `NoBroker`, so those calls answer `not-available`.
 - Ingress frames pass the host's checks first (`admit_ingress`, production order from fe-plugin `net/ingress.rs`):
   undeclared endpoint or sub-path → 404, method → 405, size → 413 (websocket/mqtt: dropped), media type → 415; only
@@ -84,6 +86,12 @@ host does (`fe-plugin/wit/AGENTS.md` §one-file).
   One generated world per build is why it is a feature, not a second macro: `export!` needs every export of the world,
   so a plain extension keeps the `extension` world and never carries an unused `hooks` export. Without it, a
   `provides` manifest fails `fe-ext build`/`validate`/`pack` with `missing-export` (bi-push enables it).
+- `terrain` (manifest `terrain: true`): `sample`, `sample_many` (chunks of 1 024, refuses a result that mixes
+  terrain generations with `TerrainError::Changed`) and the pure `footprint_stats`; the generated interface is
+  `wit_terrain` because the helper module owns the name. No feature flag: wit-bindgen emits each import shim only
+  inside the function that calls it, the linker drops uncalled ones, and wit-component lists only the imports the
+  core module still has, so a guest that never calls terrain does not import it and loads on hosts that predate it
+  (fe-plugin `wit/AGENTS.md` §additive-imports). Verify on a rebuilt component with `wasm-tools component wit`.
 - The helpers compile natively (wit-bindgen stubs the imports off-wasm), so their pure parts carry unit tests.
 
 ## §index

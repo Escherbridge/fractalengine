@@ -26,7 +26,7 @@ journey in `component/instance.rs`.
 `wit/fractal-plugin-2.wit`, never the directory (the directory also holds the 1.0 package; a WIT
 directory parses as one package; `fe-plugin/wit/AGENTS.md` §one-file). Because only one version of
 `fractalengine:plugin` is in the resolve, generated modules are unversioned:
-`bindings::fractalengine::plugin::{types,context,scene,txn,readings,routes,ingress,egress,bus,kv,log}`
+`bindings::fractalengine::plugin::{types,context,scene,txn,readings,routes,terrain,ingress,egress,bus,kv,log}`
 for imports and `bindings::exports::fractalengine::plugin::{lifecycle,ingress_hooks,egress_hooks,bus_hooks}`
 for exports. Imports and exports are synchronous and non-trappable: a host import never traps the
 guest; it returns `host-error` (WIT rule "a refused call returns host-error and changes nothing").
@@ -111,6 +111,26 @@ after, node id and petal equality). Without one it falls back to the scope-filte
 The cache keeps up to 32 flattened routes and rebuilds an entry whenever the raw property differs,
 so it is correct without the bus; `ExtensionInstance::invalidate_route` is the hook for
 `host/node-changes`.
+
+## §terrain
+
+`component/terrain.rs` answers `terrain.sample` / `sample-many` from a `TerrainSource` the host injects
+(`InstanceSetup::with_terrain`); no source is `not-available`. Check order per call: lease, `grants.terrain`
+(`capability-denied`), at most `MAX_TERRAIN_BATCH` (1 024) finite points (`invalid-input`), the hook deadline and
+`MAX_TERRAIN_SAMPLES_PER_HOOK` (16 384 points per hook, reset with the read budget; `budget-exceeded`), then one
+`source.sample(binding.verse_id, binding.petal_id, ..)` whose `Err` is `not-available`. A refused call costs no budget.
+
+- **Snapshot, not a round trip.** The worker never waits on a Bevy frame (the reactive loop may sleep 1 s). The
+  binary publishes a change-detected copy of the resident height field and its source reads it under a read lock
+  (fractalengine/src/AGENTS.md §extension-terrain); `GridTerrain` is the fixture and test source.
+- **Residency-limited.** Only the bound petal, only while it is the petal loaded on this host, only tiles resident
+  near the camera. An uncovered point is `none`, never a zero height; another petal or verse is `not-available`.
+- **Math.** `surface_at` takes world-unit heights: `elevation_m = surface_y / world_scale + origin_ele`; slope and
+  normal by central differences over `SLOPE_STEP_M` (1 real metre), one-sided where a neighbour is uncovered, so a
+  point at a tile edge still has a slope.
+- **Why a batch.** One `sample-many` is answered from one terrain generation, so a footprint never mixes old and new
+  tiles, and it pays the lock and the component boundary once. Its scratch `Vec` lives on `InstanceState`, so
+  steady-state calls allocate only the returned list.
 
 ## §broker-seam
 

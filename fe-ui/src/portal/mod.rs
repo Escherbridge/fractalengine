@@ -6,6 +6,7 @@ use fe_webview::ipc::BundleState;
 
 pub mod binding_offer;
 pub mod chrome;
+pub mod intents;
 pub mod repository;
 pub mod repository_view;
 

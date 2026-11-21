@@ -705,6 +705,9 @@ pub struct ExtensionManifest {
     /// Route geometry grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routes: Option<bool>,
+    /// Read-only terrain surface grant (elevation, slope, normal in the bound petal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<bool>,
     /// Cadence budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<TickBudget>,
@@ -1093,7 +1096,7 @@ impl ExtensionManifest {
                     return refuse(Refusal::ScopeConflict, format!("ui {} is an InspectorSection without scene.read", entry.id));
                 }
                 for key in entry.properties.iter().flatten() {
-                    if !scope_allows(scope, key) {
+                    if !scope_allows(scope, key, ScopeAccess::Read) {
                         return refuse(Refusal::ScopeConflict, format!("ui {} shows {key} outside property_scope", entry.id));
                     }
                 }
@@ -1299,8 +1302,21 @@ struct HookUseSets<'a> {
     reads_data: bool,
 }
 
-/// True when `key` is allowed by an exact key, a `prefix*` or `*` pattern.
-pub fn scope_allows(patterns: &[impl AsRef<str>], key: &str) -> bool {
+/// Whether a `property_scope` decision admits reading a key or writing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeAccess {
+    /// Seeing a key's value (projection, query predicate, change feed).
+    Read,
+    /// Staging or committing a value for a key.
+    Write,
+}
+
+/// True when `key` is allowed by an exact key, a `prefix*` or `*` pattern; writing an exact-grant key needs its entry.
+pub fn scope_allows(patterns: &[impl AsRef<str>], key: &str, access: ScopeAccess) -> bool {
+    // Exact-grant keys (`render.mesh`) ignore `*` and prefix patterns for writes only; see AGENTS.md §render-mesh.
+    if access == ScopeAccess::Write && crate::render_mesh::requires_exact_scope(key) {
+        return patterns.iter().any(|pattern| pattern.as_ref() == key);
+    }
     patterns.iter().any(|pattern| {
         let pattern = pattern.as_ref();
         pattern == "*"
@@ -1855,5 +1871,7 @@ mod tests {
         assert_ne!(parse_and_validate(&widened).unwrap().capability_digest, base);
         let providing = with(FLEET, |m| m["provides"] = serde_json::json!([{"hook":"petal.map"}]));
         assert_ne!(parse_and_validate(&providing).unwrap().capability_digest, base, "provides re-prompts consent");
+        let terrain = with(FLEET, |m| m["terrain"] = serde_json::json!(true));
+        assert_ne!(parse_and_validate(&terrain).unwrap().capability_digest, base, "terrain re-prompts consent");
     }
 }

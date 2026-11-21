@@ -3,8 +3,10 @@
 
 use bevy::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// One resident terrain tile's height grid (world units, same grid its mesh was built from).
+#[derive(Clone)]
 pub struct HeightTile {
     /// World-space SW-corner anchor (the chunk entity's translation).
     pub anchor: Vec3,
@@ -55,16 +57,17 @@ impl HeightTile {
 
 /// Resident terrain heights keyed by tile `(zoom, x, y)`, kept in lockstep with
 /// `TerrainChunk` spawns/despawns by fe-terrain; see `src/AGENTS.md` §terrain-height.
-#[derive(Resource, Default)]
+/// Tiles are shared, so a clone (the extension terrain snapshot, fractalengine `plugin_bridge::terrain`) is O(tiles).
+#[derive(Resource, Default, Clone)]
 pub struct TerrainHeightField {
-    tiles: HashMap<(u8, u32, u32), HeightTile>,
+    tiles: HashMap<(u8, u32, u32), Arc<HeightTile>>,
     generation: u64,
 }
 
 impl TerrainHeightField {
     /// Insert (or replace) the height tile for `key`.
     pub fn insert(&mut self, key: (u8, u32, u32), tile: HeightTile) {
-        self.tiles.insert(key, tile);
+        self.tiles.insert(key, Arc::new(tile));
         self.generation = self.generation.wrapping_add(1);
     }
 

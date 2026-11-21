@@ -1,6 +1,6 @@
 //! Trusted plugin admission and direct typed DB replies; see src/AGENTS.md.
 
-use fe_sdk::manifest_v2::SceneWrite;
+use fe_sdk::manifest_v2::{SceneWrite, ScopeAccess};
 use fe_sdk::plugin_host::{NodeQuery, TransactionReceipt, MAX_METRIC_LEN};
 use fe_sdk::source_class::SourceClass;
 use fe_sdk::NodeSnapshot;
@@ -126,9 +126,12 @@ impl PluginAdmission {
                 None => self.package.is_none(),
             }
     }
-    /// Check the admitted property patterns.
-    pub fn allows_property(&self, key: &str) -> bool {
-        patterns_allow(&self.property_scope, key, self.package.is_none())
+    /// Check the admitted property patterns for `access`; a 1.0 empty scope is a wildcard except for exact-grant writes.
+    pub fn allows_property(&self, key: &str, access: ScopeAccess) -> bool {
+        if self.property_scope.is_empty() && self.package.is_none() {
+            return access == ScopeAccess::Read || !fe_sdk::render_mesh::requires_exact_scope(key);
+        }
+        fe_sdk::manifest_v2::scope_allows(&self.property_scope, key, access)
     }
     /// Check admitted verse and full petal ancestry patterns.
     pub fn allows_scope(&self, verse: &str, scope: &str) -> bool {

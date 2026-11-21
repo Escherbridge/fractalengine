@@ -1,15 +1,19 @@
-//! Material/shader (`render.style`) and lighting/atmosphere (`render.environment`)
-//! reconcilers driven by committed node properties via [`fe_sdk`].
+//! Material/shader (`render.style`), lighting/atmosphere (`render.environment`) and
+//! generated geometry (`render.mesh`) reconcilers driven by committed node properties via
+//! [`fe_sdk`]. See `AGENTS.md` §render-mesh.
 
 use std::collections::{BTreeMap, HashMap};
 
+use bevy::camera::primitives::Aabb;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use fe_renderer::camera::OrbitCameraController;
 use fe_sdk::render_environment::{RenderEnvironmentDescriptor, RENDER_ENVIRONMENT_PROPERTY_KEY};
+use fe_sdk::render_mesh::{RenderMeshDescriptor, RENDER_MESH_PROPERTY_KEY};
 use fe_sdk::render_style::{RenderAlphaMode, RenderStyleDescriptor, RENDER_STYLE_PROPERTY_KEY};
 use serde_json::Value;
 
+use super::spawn::{build_primitive_mesh, FallbackSign, PrimitiveNode, ResidentNode};
 use crate::navigation_manager::NavigationManager;
 use crate::plugin::SpawnedNodeMarker;
 
@@ -17,11 +21,13 @@ const DEFAULT_CLEAR_RGB: [f32; 3] = [0.08, 0.08, 0.10];
 const DEFAULT_AMBIENT_BRIGHTNESS: f32 = 200.0;
 const DEFAULT_SUN_ILLUMINANCE: f32 = 5000.0;
 
-/// Cached `render.style` and `render.environment` descriptors keyed by `node_id`.
+/// Cached `render.style`, `render.environment` and `render.mesh` descriptors keyed by `node_id`.
 #[derive(Resource, Default)]
 pub struct RenderOverrideCache {
     styles: HashMap<String, RenderStyleDescriptor>,
     environments: BTreeMap<String, (Option<String>, RenderEnvironmentDescriptor)>,
+    /// Valid `render.mesh` values; compared by value, so they never bump `revision`.
+    meshes: HashMap<String, RenderMeshDescriptor>,
     revision: u64,
     applied_env_key: Option<(Option<String>, u64)>,
 }
@@ -70,6 +76,38 @@ impl RenderOverrideCache {
         if changed {
             self.revision = self.revision.saturating_add(1);
         }
+
+        // A refused value (e.g. from a remote peer) is ignored and logged, never applied.
+        let next_mesh = match properties.get(RENDER_MESH_PROPERTY_KEY) {
+            None | Some(Value::Null) => None,
+            Some(raw) => match RenderMeshDescriptor::parse(raw) {
+                Ok(mesh) => Some(mesh),
+                Err(refusal) => {
+                    bevy::log::warn!("ignoring render.mesh on node {node_id}: {refusal}");
+                    None
+                }
+            },
+        };
+        match next_mesh {
+            Some(mesh) => {
+                if self.meshes.get(node_id) != Some(&mesh) {
+                    self.meshes.insert(node_id.to_owned(), mesh);
+                }
+            }
+            None => {
+                self.meshes.remove(node_id);
+            }
+        }
+    }
+
+    /// Removes any cached `render.mesh` descriptor for `node_id`.
+    pub fn invalidate_mesh(&mut self, node_id: &str) {
+        self.meshes.remove(node_id);
+    }
+
+    /// Returns the cached, validated `render.mesh` descriptor for `node_id`, if any.
+    pub fn mesh_for(&self, node_id: &str) -> Option<&RenderMeshDescriptor> {
+        self.meshes.get(node_id)
     }
 
     /// Removes any cached `render.style` override for `node_id`.
@@ -90,6 +128,7 @@ impl RenderOverrideCache {
     pub fn remove_node(&mut self, node_id: &str) {
         let a = self.styles.remove(node_id).is_some();
         let b = self.environments.remove(node_id).is_some();
+        self.meshes.remove(node_id);
         if a || b {
             self.revision = self.revision.saturating_add(1);
         }
@@ -97,6 +136,7 @@ impl RenderOverrideCache {
 
     /// Clears all cached overrides (workspace switch / reset).
     pub fn clear(&mut self) {
+        self.meshes.clear();
         if !self.styles.is_empty() || !self.environments.is_empty() {
             self.styles.clear();
             self.environments.clear();
@@ -170,6 +210,129 @@ fn apply_style_to_material(mat: &mut StandardMaterial, style: &RenderStyleDescri
             RenderAlphaMode::Blend => AlphaMode::Blend,
             RenderAlphaMode::Mask => AlphaMode::Mask(0.5),
         };
+    }
+}
+
+/// Marker on every entity generated from a node's `render.mesh` (always a leaf child).
+#[derive(Component)]
+pub struct RenderMeshPart;
+
+/// Bookkeeping on a node entity that currently owns generated `render.mesh` children.
+#[derive(Component)]
+pub struct RenderMeshState {
+    descriptor: RenderMeshDescriptor,
+    children: Vec<Entity>,
+    /// The node's own placeholder mesh (fallback sign or `primitive`), hidden while generated geometry stands in.
+    suppressed_mesh: Option<Mesh3d>,
+}
+
+/// Materializes cached `render.mesh` descriptors as leaf children of each tree-node entity,
+/// rebuilding only the nodes whose descriptor changed and despawning on removal.
+/// Precedence: GLTF asset > `render.mesh` > `primitive` > fallback sign (see `AGENTS.md` §render-mesh).
+#[allow(clippy::type_complexity)]
+pub fn reconcile_render_meshes(
+    mut commands: Commands,
+    cache: Res<RenderOverrideCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    owners_q: Query<(), With<RenderMeshState>>,
+    mut nodes_q: Query<
+        (
+            Entity,
+            &SpawnedNodeMarker,
+            Option<&mut RenderMeshState>,
+            Option<&mut Mesh3d>,
+            Has<FallbackSign>,
+            Has<PrimitiveNode>,
+            Has<SceneRoot>,
+        ),
+        With<ResidentNode>,
+    >,
+) {
+    if cache.meshes.is_empty() && owners_q.is_empty() {
+        return;
+    }
+    for (entity, marker, mut state, mut own_mesh, is_sign, is_primitive, is_asset) in nodes_q.iter_mut() {
+        // A GLTF-backed node never draws generated geometry.
+        let wanted = if is_asset { None } else { cache.mesh_for(&marker.node_id) };
+        let unchanged = match (wanted, state.as_deref()) {
+            (None, None) => true,
+            (Some(descriptor), Some(owned)) => owned.descriptor == *descriptor,
+            _ => false,
+        };
+        if unchanged {
+            // A primitive reconcile may swap a fresh mesh in; keep it as the placeholder and hide it again.
+            if let (true, Some(owned), Some(mesh)) = (is_primitive, state.as_mut(), own_mesh.as_mut()) {
+                if mesh.0 != Handle::default() {
+                    owned.suppressed_mesh = Some(Mesh3d(std::mem::take(&mut mesh.0)));
+                    commands.entity(entity).remove::<Aabb>();
+                }
+            }
+            continue;
+        }
+
+        let placeholder = state
+            .as_deref()
+            .and_then(|owned| owned.suppressed_mesh.clone())
+            .or_else(|| if is_sign || is_primitive { own_mesh.as_deref().cloned() } else { None });
+        if let Some(owned) = state.as_deref() {
+            for child in &owned.children {
+                // Generated children are leaves, so a plain despawn is complete.
+                commands.entity(*child).try_despawn();
+            }
+        }
+
+        let Some(descriptor) = wanted else {
+            commands.entity(entity).remove::<RenderMeshState>();
+            if let (false, Some(placeholder)) = (is_asset, placeholder) {
+                commands.entity(entity).insert(placeholder);
+            }
+            continue;
+        };
+
+        let mut children = Vec::with_capacity(descriptor.parts.len());
+        for part in &descriptor.parts {
+            let [red, green, blue] = part.color;
+            let [offset_x, offset_y, offset_z] = part.offset;
+            let child = commands
+                .spawn((
+                    Mesh3d(meshes.add(build_primitive_mesh(&part.to_primitive()))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(red, green, blue),
+                        perceptual_roughness: 0.8,
+                        ..default()
+                    })),
+                    Transform {
+                        translation: Vec3::new(offset_x, offset_y + part.centre_lift(), offset_z),
+                        rotation: Quat::from_rotation_y(part.yaw_deg.to_radians()),
+                        ..default()
+                    },
+                    ChildOf(entity),
+                    RenderMeshPart,
+                    Name::new("render.mesh part"),
+                ))
+                .id();
+            children.push(child);
+        }
+        if placeholder.is_some() {
+            // The placeholder's bounds would keep its old volume pickable; Bevy recomputes them on restore.
+            commands.entity(entity).remove::<Aabb>();
+            if is_primitive {
+                // A primitive keeps its Mesh3d (the primitive materializer matches on it) but draws nothing.
+                if let Some(mesh) = own_mesh.as_mut() {
+                    if mesh.0 != Handle::default() {
+                        mesh.0 = Handle::default();
+                    }
+                }
+            } else {
+                commands.entity(entity).remove::<Mesh3d>();
+            }
+        }
+        commands.entity(entity).insert(RenderMeshState {
+            descriptor: descriptor.clone(),
+            children,
+            suppressed_mesh: placeholder,
+        });
     }
 }
 
@@ -388,6 +551,13 @@ mod tests {
         assert!(cache.style_for("node-1").is_none());
         assert!(cache.revision > rev_after_insert);
         assert!(cache.environment_for_petal(Some("petal-a")).is_some());
+
+        // render.mesh: valid value cached, refused value (unknown shape) ignored like absence.
+        let mesh = |shape: &str| json!({ "render.mesh": { "v": 1, "parts": [{ "shape": shape, "radius": 1.0 }] } });
+        cache.note_properties("node-1", Some("petal-a"), &mesh("sphere"));
+        assert_eq!(cache.mesh_for("node-1").map(|m| m.parts.len()), Some(1));
+        cache.note_properties("node-1", Some("petal-a"), &mesh("cone"));
+        assert!(cache.mesh_for("node-1").is_none(), "refused render.mesh is ignored");
     }
 
     #[test]
@@ -457,5 +627,88 @@ mod tests {
         let h1_after = app.world().get::<MeshMaterial3d<StandardMaterial>>(n1).unwrap().0.clone();
         assert_eq!(h1_after, shared);
         assert!(app.world().get::<RenderStyleState>(n1).is_none());
+
+        // render.mesh journey on n2: materialize, rebuild on change, refuse 33 parts, despawn on removal.
+        app.world_mut().entity_mut(n1).insert(ResidentNode);
+        app.world_mut().entity_mut(n2).insert(ResidentNode);
+        app.init_resource::<Assets<Mesh>>();
+        app.add_systems(Update, reconcile_render_meshes);
+        app.add_systems(PostUpdate, bevy::camera::visibility::calculate_bounds);
+        let part_count = |app: &mut App, owner: Entity| {
+            let world = app.world_mut();
+            let mut parts = world.query_filtered::<&ChildOf, With<RenderMeshPart>>();
+            parts.iter(world).filter(|child| child.parent() == owner).count()
+        };
+        let mesh_props = |count: usize| {
+            json!({ "render.mesh": { "v": 1, "parts": vec![json!({ "shape": "box", "size": [2.0, 3.0, 2.0] }); count] } })
+        };
+        let note = |app: &mut App, props: &Value| {
+            app.world_mut().resource_mut::<RenderOverrideCache>().note_properties("n2", Some("p1"), props);
+        };
+
+        note(&mut app, &mesh_props(2));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 2, "descriptor materializes one child per part");
+        assert_eq!(part_count(&mut app, n1), 0, "sibling node is untouched");
+        let first_children: Vec<Entity> = app.world().get::<RenderMeshState>(n2).unwrap().children.clone();
+
+        note(&mut app, &mesh_props(3));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 3, "changed descriptor rebuilds only n2's children");
+        assert!(first_children.iter().all(|old| app.world().get_entity(*old).is_err()), "old children despawned");
+
+        note(&mut app, &mesh_props(33));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 0, "33 parts is refused, so nothing is drawn");
+
+        note(&mut app, &mesh_props(1));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 1);
+        app.world_mut().resource_mut::<RenderOverrideCache>().invalidate_mesh("n2");
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 0, "removal despawns the generated children");
+        assert!(app.world().get::<RenderMeshState>(n2).is_none());
+
+        // Precedence: render.mesh hides a primitive's own mesh, survives a primitive re-mesh, and restores it on removal.
+        let cube = fe_sdk::primitive::PrimitiveDescriptor {
+            kind: fe_sdk::primitive::PrimitiveKind::Cube,
+            dims: vec![1.0, 1.0, 1.0],
+            texture_ref: None,
+        };
+        let primitive_mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(build_primitive_mesh(&cube));
+        app.world_mut().entity_mut(n2).insert((PrimitiveNode { descriptor: cube.clone() }, Mesh3d(primitive_mesh.clone())));
+        let drawn = |app: &App| app.world().get::<Mesh3d>(n2).map(|mesh| mesh.0.clone());
+        app.update();
+        assert!(app.world().get::<Aabb>(n2).is_some(), "the primitive starts with pickable bounds");
+        note(&mut app, &mesh_props(1));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 1);
+        assert_eq!(drawn(&app), Some(Handle::default()), "the primitive keeps Mesh3d but draws nothing");
+        assert!(app.world().get::<Aabb>(n2).is_none(), "the hidden primitive volume is not pickable");
+        let remeshed = app.world_mut().resource_mut::<Assets<Mesh>>().add(build_primitive_mesh(&cube));
+        app.world_mut().get_mut::<Mesh3d>(n2).unwrap().0 = remeshed.clone();
+        app.update();
+        assert_eq!(drawn(&app), Some(Handle::default()), "a primitive re-mesh is hidden again");
+        assert!(app.world().get::<Aabb>(n2).is_none(), "and its bounds stay removed");
+        app.world_mut().resource_mut::<RenderOverrideCache>().invalidate_mesh("n2");
+        app.update();
+        assert_eq!(drawn(&app), Some(remeshed), "removal restores the latest primitive mesh");
+        assert!(app.world().get::<Aabb>(n2).is_some(), "restored bounds make the primitive pickable again");
+
+        // Precedence: a GLTF-backed node drops generated parts; ribbons and stamps never receive any.
+        note(&mut app, &mesh_props(1));
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 1);
+        app.world_mut().entity_mut(n2).insert(bevy::scene::SceneRoot::default());
+        app.update();
+        assert_eq!(part_count(&mut app, n2), 0, "GLTF asset > render.mesh: owned parts despawn");
+        assert!(app.world().get::<RenderMeshState>(n2).is_none());
+        let ribbon = app
+            .world_mut()
+            .spawn(SpawnedNodeMarker { node_id: "ribbon".into(), petal_id: "p1".into() })
+            .id();
+        app.world_mut().resource_mut::<RenderOverrideCache>().note_properties("ribbon", Some("p1"), &mesh_props(1));
+        app.update();
+        assert_eq!(part_count(&mut app, ribbon), 0, "a marker without ResidentNode is not a tree node");
     }
 }

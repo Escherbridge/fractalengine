@@ -559,8 +559,9 @@ impl InstanceStore {
 #[cfg(test)]
 mod tests {
     use super::super::bindings::fractalengine::plugin::types::Vec3;
-    use super::super::bindings::fractalengine::plugin::{kv, readings, routes, scene, txn as wit_txn};
-    use super::super::test_guest::{self, fleet_setup};
+    use super::super::bindings::fractalengine::plugin::{kv, readings, routes, scene, terrain as wit_terrain, txn as wit_txn};
+    use super::super::terrain::{GridTerrain, GRID_TERRAIN_GENERATION, MAX_TERRAIN_BATCH, MAX_TERRAIN_SAMPLES_PER_HOOK};
+    use super::super::test_guest::{self, fleet_setup, terrain_setup};
     use super::super::{wasi, ComponentError, ComponentHost};
     use super::*;
     use crate::tick::ManualClock;
@@ -595,6 +596,8 @@ mod tests {
             ("wasi:cli/stdout@0.2.3", true, false),
             ("fractalengine:plugin/node-api@1.0.0", false, true),
             ("fractalengine:plugin/txn@2.1.0", false, true),
+            ("fractalengine:plugin/terrain@2.0.0", true, false),
+            ("fractalengine:plugin/terrain@2.1.0", false, true),
             ("fractalengine:plugin/lifecycle@2.0.0", false, false),
             ("wasi:sockets/tcp@0.2.0", false, false),
             ("wasi:clocks/monotonic-clock@0.2.0", true, false),
@@ -682,6 +685,8 @@ mod tests {
         state.reads_this_hook.store(budget, std::sync::atomic::Ordering::Relaxed);
         assert!(matches!(scene::Host::get_node(state, "r1".into()), Err(HostError::BudgetExceeded(_))));
         state.reset_hook_budgets();
+        // The fleet manifest declares no `terrain`, so the surface is refused before any source is asked.
+        assert!(matches!(wit_terrain::Host::sample(state, 50.0, 50.0), Err(HostError::CapabilityDenied(_))));
 
         // Scope, metric and budget refusals change nothing; create ordinals restart per window.
         let out_of_scope = wit_txn::Host::stage_set_property(state, "r1".into(), "other".into(), "1".into());
@@ -758,6 +763,52 @@ mod tests {
         assert_eq!(wit_txn::Host::window(state).ops, 4, "the refused stage changed nothing");
         window.lock().unwrap().take();
         drop(instance);
+
+        // Terrain (src/wasm/AGENTS.md §terrain): a granted instance samples a 10 % east ramp; a point no terrain
+        // covers is none (never a zero), a batch over the cap and a spent hook budget are refused, no source is
+        // not-available.
+        let ramp = GridTerrain {
+            origin: [0.0, 0.0],
+            cell: 10.0,
+            columns: 11,
+            rows: 11,
+            heights: (0..121).map(|index| f64::from(index % 11)).collect(),
+            world_scale: 1.0,
+            origin_ele: 100.0,
+        };
+        let mut grounded = host
+            .instantiate(&component, terrain_setup(&mock, &clock).with_terrain(Arc::new(ramp)))
+            .unwrap();
+        let state = grounded.store.data_mut();
+        let under = wit_terrain::Host::sample(state, 50.0, 50.0).unwrap().expect("inside the grid");
+        assert_eq!((under.surface_y, under.elevation_m), (5.0, 105.0));
+        assert!((under.slope_pct - 10.0).abs() < 1e-9 && under.normal.x < 0.0 && under.normal.y > 0.99 && under.normal.z == 0.0);
+        assert!(wit_terrain::Host::sample(state, 500.0, 50.0).unwrap().is_none(), "out of coverage is none, never a zero");
+        let batch = wit_terrain::Host::sample_many(state, vec![(0.0, 0.0), (100.0, 0.0), (-1.0, 0.0)]).unwrap();
+        let heights: Vec<_> = batch.samples.iter().map(|sample| sample.as_ref().map(|sample| sample.surface_y)).collect();
+        assert_eq!((batch.generation, heights), (GRID_TERRAIN_GENERATION, vec![Some(0.0), Some(10.0), None]));
+        assert!(matches!(
+            wit_terrain::Host::sample_many(state, vec![(1.0, 1.0); MAX_TERRAIN_BATCH + 1]),
+            Err(HostError::InvalidInput(_))
+        ));
+        assert!(matches!(wit_terrain::Host::sample(state, f64::NAN, 0.0), Err(HostError::InvalidInput(_))));
+        assert_eq!(state.terrain_samples_this_hook.load(std::sync::atomic::Ordering::Relaxed), 5, "refused calls cost nothing");
+        state.terrain_samples_this_hook.store(MAX_TERRAIN_SAMPLES_PER_HOOK, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(wit_terrain::Host::sample(state, 50.0, 50.0), Err(HostError::BudgetExceeded(_))));
+        state.reset_hook_budgets();
+        /// A source whose petal is not resident: every call is refused.
+        struct NotResident;
+        impl super::super::terrain::TerrainSource for NotResident {
+            fn sample(&self, _: &str, _: &str, _: &[(f64, f64)], _: &mut Vec<Option<super::super::terrain::TerrainPoint>>) -> Result<u64, String> {
+                Err("terrain of this petal is not resident on this host".into())
+            }
+        }
+        state.terrain = Some(Arc::new(NotResident));
+        assert!(matches!(wit_terrain::Host::sample_many(state, vec![(1.0, 1.0); 8]), Err(HostError::NotAvailable(_))));
+        assert_eq!(state.terrain_samples_this_hook.load(std::sync::atomic::Ordering::Relaxed), 0, "a not-available call costs no budget");
+        state.terrain = None;
+        assert!(matches!(wit_terrain::Host::sample(state, 50.0, 50.0), Err(HostError::NotAvailable(_))));
+        drop(grounded);
 
         // Hook crash recovery and the wall-clock bound (src/wasm/AGENTS.md §hooks): a trap is a fault (the gate refuses
         // the write), the instance restarts at once from the cached component, hooks are refused until the backoff

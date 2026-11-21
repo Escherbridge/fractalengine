@@ -12,6 +12,7 @@ pub mod kv;
 pub mod net_bridge;
 pub mod routes;
 pub mod state;
+pub mod terrain;
 pub mod wasi;
 #[cfg(test)]
 pub(crate) mod test_guest;
@@ -28,6 +29,7 @@ pub use self::instance::{window_for_token, ExtensionInstance, HookFault, Instanc
 pub use self::kv::{KvBackend, KvSlot, MemoryKv};
 pub use self::net_bridge::{HostBroker, NetBroker};
 pub use self::state::{InstanceSetup, InstanceState};
+pub use self::terrain::{GridTerrain, TerrainPoint, TerrainSource};
 use crate::trust_roots::RevocationSet;
 use crate::wasm::aot::AotCache;
 

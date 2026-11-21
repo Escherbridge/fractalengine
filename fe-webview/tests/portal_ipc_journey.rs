@@ -22,7 +22,7 @@ use fe_webview::portal_bundle::qa_rows::{self, IpcPostRow};
 use fe_webview::portal_bundle::{
     prepare, AdmissionVerdict, Attempt, BindRequest, BrokerClient, BrokerEvent, BundleHost, BundleIdentity, BundleParts,
     BundleResolver, BundleSource, BundleTarget, BundleWebview, Decision, DeliveryKind, Ingress, IpcError, Label,
-    MountMode, NavigationGate, PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalMounts, UiIntent,
+    MountMode, NavigationGate, PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalMounts, PortalTour, UiIntent,
     UNLOAD_URL,
 };
 use http::StatusCode;
@@ -41,6 +41,7 @@ const GRANTED: &[&str] = &[
     "invoke:org.example.fleet-sim/start",
     "emit:selection",
     "intent:focus_node",
+    "intent:tour_nodes",
 ];
 /// A share token whose payload is `{"v":1,"exp":1794240000}` (2026-11-09T16:00:00Z); the signature is never checked here.
 const SHARE_TOKEN: &str = "eyJ2IjoxLCJleHAiOjE3OTQyNDAwMDB9.c2lnbmF0dXJl";
@@ -78,7 +79,7 @@ fn sealed_bundle_with(key: &SigningKey, version: &str, keys: &[&str]) -> Fixture
                       "invoke": [{ "package": "org.example.fleet-sim", "command": "start" }] },
         "hooks": [{ "source": "org.example.fleet-sim/positions" }],
         "streams": [{ "id": "selection", "max_rate_hz": 4, "max_event_bytes": 2048 }],
-        "ui_intents": ["focus_node"]
+        "ui_intents": ["focus_node", "tour_nodes"]
     });
     let extension = json!({ "manifest_version": 2, "id": PACKAGE, "version": version, "kind": "web-bundle", "portal": portal });
     let manifest = json!({
@@ -285,6 +286,13 @@ impl FakeBroker {
             state: Mutex::new(FakeState::default()),
         })
     }
+    /// Like [`FakeBroker::new`] but withholding one capability, so the binding lacks it.
+    fn without(capability: &str) -> Arc<Self> {
+        Arc::new(FakeBroker {
+            granted: GRANTED.iter().filter(|granted| **granted != capability).map(|granted| (*granted).to_owned()).collect(),
+            state: Mutex::new(FakeState::default()),
+        })
+    }
     fn ignore_viewer(&self, ignores: bool) {
         self.state.lock().unwrap().ignores_viewer = ignores;
     }
@@ -421,6 +429,10 @@ struct Page {
 
 impl Page {
     fn open() -> Self {
+        Self::open_with(FakeBroker::new())
+    }
+
+    fn open_with(broker: Arc<FakeBroker>) -> Self {
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let publisher = fe_format::verifying_key_to_did(&key.verifying_key());
         let bundle = sealed_bundle(&key);
@@ -432,7 +444,6 @@ impl Page {
         let gate = Rc::new(NavigationGate::new(mounts.clone()));
         gate.expect_entry(mount.entry_url.clone());
         assert_eq!(gate.decide(&main_frame(&mount.entry_url)), Decision::AllowEnter);
-        let broker = FakeBroker::new();
         let dyn_broker: Arc<dyn PortalBroker> = broker.clone();
         let bridge = PortalBridge::new();
         bridge.set_visible(true);
@@ -901,6 +912,12 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
         ("invoke", json!({ "package": "org.example.fleet-sim", "command": "stop", "args": {} }), Err("capability_denied")),
         ("intent", json!({ "intent": "focus_node", "node_id": NODE_A }), Ok(json!({}))),
         ("intent", json!({ "intent": "select_node", "node_id": NODE_A }), Err("capability_denied")),
+        // Tour (§camera-tour): shape errors answer `invalid` before any token is taken; a valid tour is accepted.
+        ("intent", json!({ "intent": "tour_nodes", "node_ids": vec![NODE_A; 33] }), Err("invalid")),
+        ("intent", json!({ "intent": "tour_nodes", "node_ids": [NODE_A], "speed_mps": 0 }), Err("invalid")),
+        ("intent", json!({ "intent": "tour_nodes", "node_id": NODE_A }), Err("invalid")),
+        ("intent", json!({ "intent": "focus_node", "node_id": NODE_A, "speed_mps": 5 }), Err("invalid")),
+        ("intent", json!({ "intent": "tour_nodes", "node_ids": [NODE_A, NODE_A], "speed_mps": 30, "dwell_s": 1 }), Ok(json!({}))),
     ] {
         let id = page.send(kind, fields.clone());
         page.pump();
@@ -909,6 +926,13 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
             Err(code) => assert_eq!(page.error(id), code, "{kind} {fields}"),
         }
     }
+    // A binding without `intent:tour_nodes` refuses a tour exactly as an undeclared `select_node` is refused.
+    let mut ungranted = Page::open_with(FakeBroker::without("intent:tour_nodes"));
+    let tour = ungranted.send("intent", json!({ "intent": "tour_nodes", "node_ids": [NODE_A] }));
+    ungranted.pump();
+    assert_eq!(ungranted.error(tour), "capability_denied");
+    assert!(ungranted.intents.is_empty(), "a refused tour never reaches the camera");
+    drop(ungranted);
     let log = page.broker.log();
     assert!(log.contains(&"emit selection".to_owned()) && !log.contains(&"emit undeclared".to_owned()));
     assert!(log.contains(&"invoke org.example.fleet-sim/start".to_owned()));
@@ -926,12 +950,22 @@ fn subscriptions_actions_and_bus_route_through_the_broker() {
     );
     assert_eq!(
         page.intents,
-        vec![PortalIntent {
-            intent: UiIntent::FocusNode,
-            node_id: NODE_A.into(),
-            petal_id: PETAL.into(),
-            package_id: PACKAGE.into()
-        }]
+        vec![
+            PortalIntent {
+                intent: UiIntent::FocusNode,
+                node_id: NODE_A.into(),
+                petal_id: PETAL.into(),
+                package_id: PACKAGE.into(),
+                tour: None,
+            },
+            PortalIntent {
+                intent: UiIntent::TourNodes,
+                node_id: NODE_A.into(),
+                petal_id: PETAL.into(),
+                package_id: PACKAGE.into(),
+                tour: Some(PortalTour { node_ids: vec![NODE_A.into(), NODE_A.into()], speed_mm_s: 30_000, dwell_ms: 1_000 }),
+            },
+        ]
     );
     let stats = page.bridge.stats();
     assert!(stats.total.refused_capability >= 6 && stats.total.refused_role >= 3 && stats.total.rate_limited >= 13);

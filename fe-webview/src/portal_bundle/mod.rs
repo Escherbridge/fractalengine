@@ -13,7 +13,7 @@ pub mod qa_rows;
 
 pub use ipc::{
     BindRequest, BridgeWebview, BrokerClient, BrokerEvent, DeliveryKind, Ingress, IpcCounters, IpcError, IpcStats,
-    PendingReply, PortalBridge, PortalBroker, PortalIntent, UiIntent,
+    PendingReply, PortalBridge, PortalBroker, PortalIntent, PortalTour, UiIntent,
 };
 pub use mount::{
     bundle_max_bytes, prepare, prepare_target, AdmissionVerdict, BundleHost, BundleIdentity, BundleParts,

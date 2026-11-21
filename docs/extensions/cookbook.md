@@ -185,6 +185,27 @@ counters and the ordinal-to-node-id map from `stage-create-node`. Do not use it 
 the petal. *Example:* the per-fleet clock (`load_clock` / `save_clock`) in
 [`extensions/fleet-sim/src/lib.rs`](../../extensions/fleet-sim/src/lib.rs).
 
+## Mass a building from primitives
+
+*Needs:* `scene.write: ["set_property"]` and the exact key `"render.mesh"` in `scene.property_scope`. A `*` or `render.*`
+entry does not grant it; manifest validation and the host write gates treat it as an explicit grant.
+
+Write one JSON value to the node and every peer draws it (no asset, no new sync path):
+
+```json
+{ "v": 1, "parts": [
+  { "shape": "box", "size": [12, 6, 8], "color": [0.75, 0.7, 0.65] },
+  { "shape": "cylinder", "radius": 0.6, "height": 9, "offset": [5, 6, 3], "color": [0.4, 0.4, 0.45] },
+  { "shape": "plane", "size": [14, 10], "offset": [0, 0.02, 0], "color": [0.2, 0.3, 0.2] } ] }
+```
+
+Shapes are `box` (`size` w,h,d), `cylinder` (`radius`, `height`), `sphere` (`radius`) and `plane` (`size` w,d). Parts rest
+on their base at `offset` from the node origin, turn `yaw_deg` about +Y and take a `color` (0..1, default grey).
+At most 32 parts and 16 KiB; lengths 0.01 to 1000. Anything outside that is refused whole (staging returns
+`invalid-input`, and a peer that receives one ignores it). Stage `null` to clear it.
+
+*Watch for:* the node's own rotation and scale apply to the parts; `render.style` on the node tints every part.
+
 ## Sharpen
 
 - **Pattern:** *pull a query, push a snapshot* (change-triggered re-run with a coalescing floor). It keeps

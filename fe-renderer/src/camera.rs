@@ -345,6 +345,216 @@ pub fn frame_world_box(min: Vec3, max: Vec3, view_dir: Vec3, fov: f32) -> LookAt
 }
 
 // ---------------------------------------------------------------------------
+// Guided tour -- pure plan + sampler; see AGENTS.md §camera-tour
+// ---------------------------------------------------------------------------
+
+/// Most stops one tour holds (mirrored by fe-webview `limits::TOUR_MAX_NODES`).
+pub const MAX_TOUR_STOPS: usize = 32;
+/// Longest a whole tour may take; speed is raised and dwell capped to fit.
+pub const MAX_TOUR_SECONDS: f32 = 600.0;
+/// Shortest a single leg may take, so a zero-length leg still reads as a beat.
+pub const MIN_TOUR_LEG_SECONDS: f32 = 0.5;
+/// Accepted tour speed in real meters per second `(min, max)` (mirrored by fe-webview).
+pub const TOUR_SPEED_MPS: (f32, f32) = (0.5, 500.0);
+/// Accepted dwell per stop in seconds `(min, max)` (mirrored by fe-webview).
+pub const TOUR_DWELL_S: (f32, f32) = (0.0, 30.0);
+/// Speed used when a request carries none or a non-finite value.
+pub const TOUR_DEFAULT_SPEED_MPS: f32 = 20.0;
+/// Dwell used when a request carries none or a non-finite value.
+pub const TOUR_DEFAULT_DWELL_S: f32 = 2.0;
+
+/// Smoothstep ease for a leg progress `u` in `[0, 1]`.
+pub fn tour_smoothstep(u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// Fixed-size timetable of a tour: per stop a smoothstep leg then a dwell (Copy, no heap).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TourPlan {
+    origin: Vec3,
+    stops: [Vec3; MAX_TOUR_STOPS],
+    leg_end: [f32; MAX_TOUR_STOPS],
+    dwell_end: [f32; MAX_TOUR_STOPS],
+    len: u8,
+}
+
+/// One sampled instant of a [`TourPlan`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TourSample {
+    pub focus: Vec3,
+    pub stop: u8,
+    pub finished: bool,
+}
+
+impl TourPlan {
+    /// Raises speed (and caps dwell) so the whole tour fits `MAX_TOUR_SECONDS`; `None` on 0 stops or non-finite input.
+    pub fn new(origin: Vec3, stops: &[Vec3], speed_world_per_s: f32, dwell_s: f32) -> Option<Self> {
+        let stops = &stops[..stops.len().min(MAX_TOUR_STOPS)];
+        let count = stops.len();
+        let all_finite = origin.is_finite() && stops.iter().all(|stop| stop.is_finite());
+        if count == 0 || !all_finite || !(speed_world_per_s.is_finite() && speed_world_per_s > 0.0) || !(dwell_s.is_finite() && dwell_s >= 0.0) {
+            return None;
+        }
+        let count_f = count as f32;
+        let dwell = dwell_s.min(MAX_TOUR_SECONDS * 0.5 / count_f);
+        let travel_budget = MAX_TOUR_SECONDS - dwell * count_f;
+        let mut total_distance = 0.0_f32;
+        let mut previous = origin;
+        for stop in stops {
+            total_distance += previous.distance(*stop);
+            previous = *stop;
+        }
+        // Each leg is at most d/speed + MIN_TOUR_LEG_SECONDS, so this speed always fits the budget.
+        let speed_to_fit = total_distance / (travel_budget - count_f * MIN_TOUR_LEG_SECONDS);
+        let speed = speed_world_per_s.max(speed_to_fit);
+        if !speed.is_finite() {
+            return None;
+        }
+        let mut plan = Self {
+            origin,
+            stops: [Vec3::ZERO; MAX_TOUR_STOPS],
+            leg_end: [0.0; MAX_TOUR_STOPS],
+            dwell_end: [0.0; MAX_TOUR_STOPS],
+            len: count as u8,
+        };
+        let mut clock = 0.0_f32;
+        let mut previous = origin;
+        for (index, stop) in stops.iter().enumerate() {
+            clock += (previous.distance(*stop) / speed).max(MIN_TOUR_LEG_SECONDS);
+            plan.stops[index] = *stop;
+            plan.leg_end[index] = clock;
+            clock += dwell;
+            plan.dwell_end[index] = clock;
+            previous = *stop;
+        }
+        Some(plan)
+    }
+
+    /// Seconds from start to the end of the last dwell.
+    pub fn total_seconds(&self) -> f32 {
+        self.dwell_end[self.len as usize - 1]
+    }
+
+    /// Focus at `elapsed_s`: smoothstep within each leg, held through its dwell, `finished` past the end.
+    pub fn sample(&self, elapsed_s: f32) -> TourSample {
+        let elapsed = if elapsed_s.is_finite() { elapsed_s.max(0.0) } else { 0.0 };
+        let last = self.len as usize - 1;
+        if elapsed >= self.dwell_end[last] {
+            return TourSample { focus: self.stops[last], stop: last as u8, finished: true };
+        }
+        let mut index = 0;
+        while index < last && elapsed >= self.dwell_end[index] {
+            index += 1;
+        }
+        let (from, leg_start) = if index == 0 {
+            (self.origin, 0.0)
+        } else {
+            (self.stops[index - 1], self.dwell_end[index - 1])
+        };
+        let focus = if elapsed < self.leg_end[index] {
+            let progress = (elapsed - leg_start) / (self.leg_end[index] - leg_start);
+            from.lerp(self.stops[index], tour_smoothstep(progress))
+        } else {
+            self.stops[index]
+        };
+        TourSample { focus, stop: index as u8, finished: false }
+    }
+}
+
+/// This frame's user camera input, as the tour cancel rule reads it.
+#[derive(Clone, Copy, Default)]
+pub struct TourInputs {
+    pub button_pressed: bool,
+    pub scrolled: bool,
+    pub dragged: bool,
+    pub fly: bool,
+    pub escape: bool,
+    pub foreign_focus: bool,
+}
+
+/// Any user input, or another system taking the focus, cancels a running tour.
+pub fn tour_cancelled(inputs: TourInputs) -> bool {
+    inputs.button_pressed || inputs.scrolled || inputs.dragged || inputs.fly || inputs.escape || inputs.foreign_focus
+}
+
+/// A requested tour waiting for the camera system to build its plan from the live focus.
+#[derive(Clone, Copy)]
+struct PendingTour {
+    stops: [Vec3; MAX_TOUR_STOPS],
+    len: u8,
+    speed_mps: f32,
+    dwell_s: f32,
+}
+
+/// Local, never-replicated guided tour state; fe-ui starts it, `orbit_camera_system` advances it.
+#[derive(Resource, Default)]
+pub struct CameraTour {
+    pending: Option<PendingTour>,
+    active: Option<(TourPlan, f32)>,
+}
+
+impl CameraTour {
+    /// Queue a tour through `stops` (at most `MAX_TOUR_STOPS`); speed and dwell are clamped, an empty list is ignored.
+    pub fn start(&mut self, stops: &[Vec3], speed_mps: f32, dwell_s: f32) {
+        self.cancel();
+        let len = stops.len().min(MAX_TOUR_STOPS);
+        if len == 0 {
+            return;
+        }
+        let mut pending = PendingTour {
+            stops: [Vec3::ZERO; MAX_TOUR_STOPS],
+            len: len as u8,
+            speed_mps: if speed_mps.is_finite() { speed_mps.clamp(TOUR_SPEED_MPS.0, TOUR_SPEED_MPS.1) } else { TOUR_DEFAULT_SPEED_MPS },
+            dwell_s: if dwell_s.is_finite() { dwell_s.clamp(TOUR_DWELL_S.0, TOUR_DWELL_S.1) } else { TOUR_DEFAULT_DWELL_S },
+        };
+        pending.stops[..len].copy_from_slice(&stops[..len]);
+        self.pending = Some(pending);
+    }
+
+    /// Drop a queued or running tour.
+    pub fn cancel(&mut self) {
+        self.pending = None;
+        self.active = None;
+    }
+
+    /// Whether a tour is queued or running.
+    pub fn is_active(&self) -> bool {
+        self.pending.is_some() || self.active.is_some()
+    }
+
+    /// Stops of a queued tour not yet turned into a plan.
+    pub fn pending_stops(&self) -> &[Vec3] {
+        self.pending.as_ref().map_or(&[][..], |pending| &pending.stops[..pending.len as usize])
+    }
+}
+
+/// Build a queued plan, apply cancel rules, then step the focus; `true` while frames must keep coming.
+fn advance_tour(tour: &mut CameraTour, controller: &mut OrbitCameraController, mut inputs: TourInputs, world_scale: f32, delta_secs: f32) -> bool {
+    if let Some(pending) = tour.pending.take() {
+        controller.target_focus = None;
+        let scale = if world_scale.is_finite() && world_scale > 0.0 { world_scale } else { 1.0 };
+        tour.active = TourPlan::new(controller.focus, &pending.stops[..pending.len as usize], pending.speed_mps * scale, pending.dwell_s)
+            .map(|plan| (plan, 0.0));
+    }
+    let Some((plan, elapsed)) = tour.active.as_mut() else {
+        return false;
+    };
+    inputs.foreign_focus = controller.target_focus.is_some();
+    if tour_cancelled(inputs) {
+        tour.active = None;
+        return false;
+    }
+    *elapsed += delta_secs;
+    let sample = plan.sample(*elapsed);
+    controller.focus = sample.focus;
+    if sample.finished {
+        tour.active = None;
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Plugin + systems
 // ---------------------------------------------------------------------------
 
@@ -431,6 +641,7 @@ impl Plugin for CameraControllerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraScaleSettings>();
         app.init_resource::<TerrainHeightField>();
+        app.init_resource::<CameraTour>();
         app.add_systems(Startup, spawn_orbit_camera);
         app.add_systems(
             Update,
@@ -585,7 +796,13 @@ fn orbit_camera_system(
     region: Option<Res<CameraPointerRegion>>,
     editor_pointer: Option<Res<EditorScenePointerRequired>>,
     windows: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
+    mut tour: ResMut<CameraTour>,
+    mut redraw: MessageWriter<bevy::window::RequestRedraw>,
 ) {
+    let mut tour_inputs = TourInputs {
+        escape: keyboard.just_pressed(KeyCode::Escape),
+        ..default()
+    };
     // Check egui input state.
     let (egui_wants_pointer, egui_wants_keyboard) = if let Ok(ctx) = egui_ctx.ctx_mut() {
         // is_using_pointer() instead of wants_pointer_input(): the CentralPanel
@@ -629,6 +846,8 @@ fn orbit_camera_system(
         for ev in mouse_motion.read() {
             delta += ev.delta;
         }
+        tour_inputs.button_pressed = mouse_button.get_just_pressed().next().is_some();
+        tour_inputs.dragged = mouse_button.pressed(MouseButton::Middle);
 
         // Orbit: middle mouse button (no Shift).
         if mouse_button.pressed(MouseButton::Middle) && !keyboard.pressed(KeyCode::ShiftLeft) {
@@ -667,6 +886,7 @@ fn orbit_camera_system(
         // feels consistent across mice and trackpads. Proportional (log) zoom
         // keeps notches usable across scales (5 units .. 100 000 units).
         for ev in scroll.read() {
+            tour_inputs.scrolled = true;
             let delta = match ev.unit {
                 MouseScrollUnit::Line => ev.y,
                 MouseScrollUnit::Pixel => ev.y * 0.05,
@@ -682,12 +902,18 @@ fn orbit_camera_system(
         }
     }
 
-    if let Some((direction, sprint)) =
-        keyboard_fly_intent(&keyboard, egui_wants_keyboard, controller.yaw)
-    {
+    let fly_intent = keyboard_fly_intent(&keyboard, egui_wants_keyboard, controller.yaw);
+    tour_inputs.fly = fly_intent.is_some();
+    if let Some((direction, sprint)) = fly_intent {
         let speed = controller.move_speed * time.delta_secs();
         controller.target_focus = None;
         controller.focus += direction * speed * sprint;
+    }
+
+    // Guided tour (see AGENTS.md §camera-tour): user input cancels, otherwise it owns `focus`.
+    let tour_world_scale = scale_settings.as_ref().map_or(1.0, |settings| settings.world_scale);
+    if advance_tour(&mut tour, &mut controller, tour_inputs, tour_world_scale, time.delta_secs()) {
+        redraw.write(bevy::window::RequestRedraw);
     }
 
     // Ease distance/focus toward their targets (dt-independent; raw at rate 0).
@@ -714,6 +940,9 @@ fn orbit_camera_system(
         controller.focus = next;
         if next == target {
             controller.target_focus = None;
+        } else {
+            // A fly-to has no input driving frames under the reactive loop; keep them coming until it lands.
+            redraw.write(bevy::window::RequestRedraw);
         }
     }
 
@@ -1396,5 +1625,77 @@ mod tests {
             !world.get::<Camera>(foreign).unwrap().is_active,
             "a plain foreign camera must still be deactivated"
         );
+    }
+
+    #[test]
+    fn tour_plan_timing_limits_and_cancel_tables() {
+        let a = Vec3::new(10.0, 0.0, 0.0);
+        let b = Vec3::new(10.0, 0.0, 20.0);
+        let plan = TourPlan::new(Vec3::ZERO, &[a, b], 10.0, 1.0).expect("valid plan");
+        assert!((plan.total_seconds() - 5.0).abs() < EPSILON, "legs 1 s + 2 s, dwell 1 s each");
+        // (elapsed, expected focus, expected stop, finished): ordered stops, smoothstep midpoint, dwell hold, finish.
+        let timeline = [
+            (0.0, Vec3::ZERO, 0, false),
+            (0.5, Vec3::new(5.0, 0.0, 0.0), 0, false),
+            (1.5, a, 0, false),
+            (3.0, Vec3::new(10.0, 0.0, 10.0), 1, false),
+            (5.0, b, 1, true),
+            (f32::NAN, Vec3::ZERO, 0, false),
+        ];
+        for (elapsed, focus, stop, finished) in timeline {
+            let sample = plan.sample(elapsed);
+            assert!(sample.focus.distance(focus) < EPSILON, "focus at {elapsed}: {:?}", sample.focus);
+            assert_eq!((sample.stop, sample.finished), (stop, finished), "stop/finished at {elapsed}");
+        }
+        assert_eq!(tour_smoothstep(0.0), 0.0);
+        assert_eq!(tour_smoothstep(0.5), 0.5);
+        assert_eq!(tour_smoothstep(1.0), 1.0);
+
+        // A single stop tours; empty, non-finite and non-positive speed are refused.
+        assert!(TourPlan::new(Vec3::ZERO, &[a], 10.0, 0.0).is_some());
+        assert!(TourPlan::new(Vec3::ZERO, &[], 10.0, 0.0).is_none());
+        assert!(TourPlan::new(Vec3::ZERO, &[Vec3::NAN], 10.0, 0.0).is_none());
+        assert!(TourPlan::new(Vec3::ZERO, &[a], 0.0, 0.0).is_none());
+        assert!(TourPlan::new(Vec3::ZERO, &[a], 10.0, f32::NAN).is_none());
+
+        // Slow speed over a huge distance is raised, and 32 stops with maximal dwell are capped, to fit the bound.
+        let far = Vec3::new(1.0e6, 0.0, 0.0);
+        let raised = TourPlan::new(Vec3::ZERO, &[far], 1.0, 0.0).expect("raised plan");
+        assert!(raised.total_seconds() <= MAX_TOUR_SECONDS + EPSILON);
+        let crowded = [a; MAX_TOUR_STOPS + 5];
+        let capped = TourPlan::new(Vec3::ZERO, &crowded, 10.0, 30.0).expect("capped plan");
+        assert!(capped.total_seconds() <= MAX_TOUR_SECONDS + EPSILON);
+        assert_eq!(capped.len as usize, MAX_TOUR_STOPS);
+
+        // Cancel table: each input alone cancels, none does not.
+        assert!(!tour_cancelled(TourInputs::default()));
+        let each = [
+            TourInputs { button_pressed: true, ..Default::default() },
+            TourInputs { scrolled: true, ..Default::default() },
+            TourInputs { dragged: true, ..Default::default() },
+            TourInputs { fly: true, ..Default::default() },
+            TourInputs { escape: true, ..Default::default() },
+            TourInputs { foreign_focus: true, ..Default::default() },
+        ];
+        assert!(each.into_iter().all(tour_cancelled));
+
+        // Start clamps speed/dwell; the advance step builds, runs, and cancels on input or a foreign focus.
+        let mut tour = CameraTour::default();
+        tour.start(&[a, b], 1.0e9, -5.0);
+        assert_eq!(tour.pending_stops(), &[a, b]);
+        assert_eq!(tour.pending.map(|pending| (pending.speed_mps, pending.dwell_s)), Some((TOUR_SPEED_MPS.1, TOUR_DWELL_S.0)));
+        let mut controller = OrbitCameraController::default();
+        assert!(advance_tour(&mut tour, &mut controller, TourInputs::default(), 1.0, 0.1));
+        assert!(tour.is_active() && tour.pending.is_none(), "plan built from the live focus");
+        assert!(controller.focus.x > 0.0 && controller.focus.x < a.x, "focus moves toward the first stop");
+        assert!(!advance_tour(&mut tour, &mut controller, TourInputs { scrolled: true, ..Default::default() }, 1.0, 0.1));
+        assert!(!tour.is_active(), "scroll cancels");
+        tour.start(&[a], 10.0, 0.0);
+        controller.target_focus = Some(b);
+        // A foreign focus set before the plan is built is superseded; one set afterwards cancels.
+        assert!(advance_tour(&mut tour, &mut controller, TourInputs::default(), 1.0, 0.1));
+        controller.target_focus = Some(b);
+        assert!(!advance_tour(&mut tour, &mut controller, TourInputs::default(), 1.0, 0.1));
+        assert!(!tour.is_active());
     }
 }

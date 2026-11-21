@@ -35,6 +35,8 @@ tracing = { workspace = true }
 fe-database = { path = "../fe-database" }
 fe-policy = { path = "../fe-policy" }
 fe-runtime = { path = "../fe-runtime" }
+# Exact-grant property keys (`render.mesh`) for the portal set_property gate.
+fe-sdk = { path = "../fe-sdk" }
 # Portal bundles (src/portal_bundle): sealed-archive reads and the portal manifest validator.
 fe-format = { path = "../fe-format" }
 # Origin labels and the unsealed content hash.

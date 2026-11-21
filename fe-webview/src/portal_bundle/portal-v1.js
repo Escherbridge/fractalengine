@@ -122,9 +122,17 @@
     request("emit", { stream, data: data === undefined ? null : data }).then(() => undefined);
 
   const intent = (target) => {
-    const names = Object.keys(target || {});
+    // `speed_mps` and `dwell_s` are tour options, not intent names.
+    const names = Object.keys(target || {}).filter((name) => name !== "speed_mps" && name !== "dwell_s");
     if (names.length !== 1) return Promise.reject(new FePortalError("invalid", "Name exactly one intent"));
-    return request("intent", { intent: names[0], node_id: target[names[0]] }).then(() => undefined);
+    const name = names[0];
+    if (name === "tour_nodes") {
+      const body = { intent: name, node_ids: target.tour_nodes };
+      if (target.speed_mps !== undefined) body.speed_mps = target.speed_mps;
+      if (target.dwell_s !== undefined) body.dwell_s = target.dwell_s;
+      return request("intent", body).then(() => undefined);
+    }
+    return request("intent", { intent: name, node_id: target[name] }).then(() => undefined);
   };
 
   const api = Object.freeze({ api: API, hello, subscribe, act, invoke, emit, intent, FePortalError });

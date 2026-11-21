@@ -98,7 +98,10 @@ with `TerrainChunk` spawns/despawns/petal-switch — the same channel pattern as
 ≤ ~4 MB at max_chunks=256) — the camera clamp needs meter-scale fidelity, not
 mesh-scale. `height_at` scans resident tiles (≤ max_chunks, no allocation)
 preferring the highest zoom; readers treat the resource as `Option<Res>`
-(headless-safe).
+(headless-safe). Tiles are held as `Arc<HeightTile>`, so cloning the field
+(the extension terrain snapshot, fractalengine `src/AGENTS.md`
+§extension-terrain) copies at most `max_chunks` pointers, never the grids; the
+public API (`insert` takes an owned `HeightTile`) is unchanged.
 
 Ground avoidance (`orbit_camera_system` tail) is two-stage. The orbit `focus`
 floors at the terrain surface (margin 0 — focusing a point ON the ground is
@@ -338,3 +341,16 @@ identity and invalid original scale cannot become a persistable measurement.
 ## §proposal-layer-visible (`terrain_overlay.rs`)
 
 `ProposalLayerVisible` mirrors the ProposalOverlay layer's visibility. fe-terrain writes it through `proposal_layer_mirror.rs`; fe-ui reads it. It defaults to visible. The heatmap checkbox is hidden while it is false.
+
+## §camera-tour (`camera.rs`, portal `tour_nodes`)
+
+A portal page's `tour_nodes` intent moves the orbit camera through ordered nodes. Wire to camera: `fe-webview` `ipc.rs` validates and emits `PortalIntent { tour }`; fe-ui `portal/intents.rs::apply_portal_intents` resolves node positions once and calls `CameraTour::start`; `orbit_camera_system` builds the plan from the live focus and steps it.
+
+- **Pure core.** `TourPlan::new` (origin, stops, world speed, dwell) and `TourPlan::sample(elapsed)` are Copy, fixed-size (`MAX_TOUR_STOPS` = 32), allocation-free and unit-tested: smoothstep per leg, hold through the dwell, `finished` past the end. `tour_cancelled(TourInputs)` is the cancel rule as a table.
+- **Bounds.** Speed 0.5..500 real m/s and dwell 0..30 s (`TOUR_SPEED_MPS`, `TOUR_DWELL_S`, mirrored by `fe-webview` `limits.rs`; an fe-ui test pins the copies, since fe-webview does not depend on fe-renderer). The wire refuses out-of-range values; `CameraTour::start` clamps as defence in depth. Speed converts to world units by `CameraScaleSettings.world_scale`. A leg takes at least `MIN_TOUR_LEG_SECONDS`; if the whole tour would exceed `MAX_TOUR_SECONDS` (600) the dwell is capped and the speed raised so it fits.
+- **It owns `focus` only.** The tour writes `controller.focus` and keeps the user's yaw, pitch and distance; the terrain ground clamp after it is unchanged.
+- **Cancel rules.** Any mouse button just pressed, scroll, middle-drag, fly keys or Escape (pointer inputs only count when egui does not own the pointer), and any other system setting `target_focus` (sidebar focus, a `focus_node` intent, vision restore) cancels at once. fe-ui also cancels on an active-petal change. Starting a tour clears a pending `target_focus`.
+- **Redraw.** Under the reactive loop nothing else requests frames, so while a tour runs `orbit_camera_system` writes `RequestRedraw` each frame. `apply_portal_intents` also writes one when it starts a tour, sets a focus or queues a selection, so a page's intent takes effect without waiting for user input, and `orbit_camera_system` keeps writing one while a fly-to (`target_focus`) is still easing.
+- **A page never interrupts a drag.** A portal `select_node` arriving while `NodeManager::is_dragging()` or `gesture_active` is set is dropped with a `warn!`; selecting would end the user's gimbal drag.
+- **Capture lock.** `orbit_camera_system` is `run_if(camera_unlocked)`, so a running tour pauses (its clock stops) while an agent capture holds the camera.
+- **Local only.** `CameraTour` is a plain resource; nothing replicates it or writes it to the DB.

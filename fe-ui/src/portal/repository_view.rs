@@ -125,6 +125,7 @@ pub fn capability_label(capability: &str) -> String {
         "act:set_property" => "Set properties".into(),
         "intent:focus_node" => "Focus nodes".into(),
         "intent:select_node" => "Select nodes".into(),
+        "intent:tour_nodes" => "Tour the camera through nodes".into(),
         other => match other.split_once(':') {
             Some(("subscribe", target)) => match target.strip_prefix("query/") {
                 Some(name) => format!("Read query {name}"),

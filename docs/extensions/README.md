@@ -31,6 +31,8 @@ Reference contracts (normative; the guides above explain them, they do not repla
 | Local admin channel | [admin-channel.md](admin-channel.md) | `fe-ext admin`: the local, OS-user-only route to the Extensions panel's operations; consent stays in the GUI |
 | Extensions panel | [extensions-ui.md](extensions-ui.md) | Views, states, names, Browse and store flows, registry sources |
 | Scoped bindings | [bindings.md](bindings.md) | Which installed extension serves a hook point at a verse, fractal or petal, resolved per peer |
+| Terrain (read-only) | [manifest-v2.md §terrain](manifest-v2.md#terrain) | `terrain: true`: surface height, elevation, slope and normal in the bound petal |
+| Node geometry (`render.mesh`) | [cookbook.md](cookbook.md), [manifest-v2.md §Grant rules](manifest-v2.md#grant-rules) | Up to 32 box, cylinder, sphere or plane parts per node; exact `property_scope` grant only |
 
 ## Kinds
 

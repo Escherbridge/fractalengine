@@ -22,6 +22,16 @@ pub const SET_PROPERTY_RATE: (f64, f64) = (2.0, 5.0);
 pub const INVOKE_RATE: (f64, f64) = (5.0, 5.0);
 /// `intent` per second, and the burst.
 pub const INTENT_RATE: (f64, f64) = (2.0, 4.0);
+/// Most nodes in one `tour_nodes` intent; mirrors `fe_renderer::camera::MAX_TOUR_STOPS` (fe-ui test pins both).
+pub const TOUR_MAX_NODES: usize = 32;
+/// Accepted tour speed in real meters per second `(min, max)`; mirrors `fe_renderer::camera::TOUR_SPEED_MPS`.
+pub const TOUR_SPEED_MPS: (f64, f64) = (0.5, 500.0);
+/// Accepted dwell per stop in seconds `(min, max)`; mirrors `fe_renderer::camera::TOUR_DWELL_S`.
+pub const TOUR_DWELL_S: (f64, f64) = (0.0, 30.0);
+/// Tour speed when the page names none.
+pub const TOUR_DEFAULT_SPEED_MPS: f64 = 20.0;
+/// Tour dwell when the page names none.
+pub const TOUR_DEFAULT_DWELL_S: f64 = 2.0;
 /// Host ceiling on a declared stream's `max_rate_hz`.
 pub const MAX_EMIT_RATE_HZ: u32 = 10;
 /// Largest `act` value and `invoke` args, serialized.

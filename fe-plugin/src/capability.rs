@@ -6,7 +6,7 @@
 //! operations are validated against the token before execution.
 
 use fe_sdk::manifest_v2::{
-    metric_allowed, ExtensionManifest, ExtensionSourceClass, SceneWrite, SourceClassSet,
+    metric_allowed, ExtensionManifest, ExtensionSourceClass, SceneWrite, ScopeAccess, SourceClassSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +109,9 @@ pub struct V2Grants {
     pub readings_class: Option<ExtensionSourceClass>,
     /// `routes` grant.
     pub routes: bool,
+    /// `terrain` grant (read-only surface of the bound petal); absent in tokens minted before it existed.
+    #[serde(default)]
+    pub terrain: bool,
     /// Effective tick budget; `None` = no ticks and no flushes.
     pub tick: Option<TickBudget>,
 }
@@ -174,6 +177,7 @@ impl CapabilityToken {
                 metrics: manifest.readings.as_ref().map(|r| r.metrics.clone()).unwrap_or_default(),
                 readings_class,
                 routes: manifest.routes.unwrap_or(false),
+                terrain: manifest.terrain.unwrap_or(false),
                 tick: manifest.tick.as_ref().map(|budget| crate::tick::TickBudget::from_manifest(budget, manifest)),
             }),
         })
@@ -236,8 +240,8 @@ impl CapabilityToken {
 /// Operations that can be checked against a capability token.
 #[derive(Debug, Clone)]
 pub enum CapabilityOperation {
-    /// Read/write a node property.
-    PropertyAccess { key: String },
+    /// Read or write a node property.
+    PropertyAccess { key: String, access: ScopeAccess },
     /// Access a petal scope.
     PetalAccess { scope: String },
     /// Access a verse scope.
@@ -254,12 +258,14 @@ pub fn validate_access(
     operation: &CapabilityOperation,
 ) -> Result<(), CapabilityError> {
     match operation {
-        CapabilityOperation::PropertyAccess { key } => {
-            if token.property_scope.is_empty() && !token.strict_scopes {
+        CapabilityOperation::PropertyAccess { key, access } => {
+            // Writing an exact-grant key (`render.mesh`) is never covered by a wildcard, empty v1 scope included.
+            let exact_only = *access == ScopeAccess::Write && fe_sdk::render_mesh::requires_exact_scope(key);
+            if token.property_scope.is_empty() && !token.strict_scopes && !exact_only {
                 // v1: empty = wildcard (all properties allowed); v2: empty grants nothing
                 return Ok(());
             }
-            if token.property_scope.iter().any(|p| pattern_matches(p, key)) {
+            if fe_sdk::manifest_v2::scope_allows(&token.property_scope, key, *access) {
                 Ok(())
             } else {
                 Err(CapabilityError::PropertyDenied {
@@ -357,9 +363,18 @@ mod tests {
         let validated = fe_sdk::manifest_v2::parse_and_validate(FLEET.as_bytes()).unwrap();
         let binding = V2Binding { verse_scope: "VERSE#v1".into(), petal_scope: "VERSE#v1-FRACTAL#f1-PETAL#p1".into(), source_class: None };
         let token = CapabilityToken::mint_v2("fleet", &validated.manifest, &binding).unwrap();
-        let key = |k: &str| CapabilityOperation::PropertyAccess { key: k.into() };
+        let key = |k: &str| CapabilityOperation::PropertyAccess { key: k.into(), access: ScopeAccess::Write };
+        let read = |k: &str| CapabilityOperation::PropertyAccess { key: k.into(), access: ScopeAccess::Read };
         assert!(validate_access(&token, &key("fleet.speed")).is_ok());
         assert!(validate_access(&token, &key("other")).is_err());
+        // Writing render.mesh needs the exact entry; `*` and `render.*` still read it (fe-sdk §render-mesh).
+        let mut wide = token.clone();
+        wide.property_scope = vec!["*".into(), "render.*".into()];
+        assert!(validate_access(&wide, &key("render.style")).is_ok());
+        assert!(validate_access(&wide, &read("render.mesh")).is_ok(), "a wildcard reads render.mesh");
+        assert!(validate_access(&wide, &key("render.mesh")).is_err(), "wildcards refuse a render.mesh write");
+        wide.property_scope.push("render.mesh".into());
+        assert!(validate_access(&wide, &key("render.mesh")).is_ok(), "an exact grant admits the write");
         assert!(token.allows_scene_write(SceneWrite::SetTransform) && !token.allows_scene_write(SceneWrite::DeleteNode));
         assert!(token.allows_reading("altitude_m") && !token.allows_reading("pressure"));
         assert_eq!(token.tick_budget().map(|b| (b.cadence_ms, b.max_readings, b.fuel)), Some((500, 256, 200_000)));
@@ -370,6 +385,16 @@ mod tests {
         let nothing = CapabilityToken::mint_v2("bare", &bare, &binding).unwrap();
         assert!(validate_access(&nothing, &key("anything")).is_err(), "no property_scope grants no property");
         assert!(!nothing.has_capability(fe_sdk::CAP_STORAGE_READ) && !nothing.allows_scene_write(SceneWrite::CreateNode));
+        // `terrain` is granted only by an explicit `terrain: true`.
+        let terrain_grant = |manifest: &ExtensionManifest| {
+            CapabilityToken::mint_v2("t", manifest, &binding).unwrap().grants_v2.is_some_and(|grants| grants.terrain)
+        };
+        let mut terrain = validated.manifest.clone();
+        assert!(!terrain_grant(&terrain), "absent grants nothing");
+        terrain.terrain = Some(false);
+        assert!(!terrain_grant(&terrain));
+        terrain.terrain = Some(true);
+        assert!(terrain_grant(&terrain));
         let mut pick = validated.manifest.clone();
         pick.readings.as_mut().unwrap().source_class = SourceClassSet::Many(vec![ExtensionSourceClass::Device, ExtensionSourceClass::Connector]);
         assert!(CapabilityToken::mint_v2("p", &pick, &binding).is_err(), "a class set needs the operator's pick");
@@ -388,7 +413,8 @@ mod tests {
         assert!(validate_access(
             &token,
             &CapabilityOperation::PropertyAccess {
-                key: "color".into()
+                key: "color".into(),
+                access: ScopeAccess::Read,
             }
         )
         .is_ok());
@@ -403,7 +429,8 @@ mod tests {
         assert!(validate_access(
             &token,
             &CapabilityOperation::PropertyAccess {
-                key: "secret".into()
+                key: "secret".into(),
+                access: ScopeAccess::Read,
             }
         )
         .is_err());
@@ -500,7 +527,8 @@ mod tests {
         assert!(validate_access(
             &token,
             &CapabilityOperation::PropertyAccess {
-                key: "anything".into()
+                key: "anything".into(),
+                access: ScopeAccess::Write,
             }
         )
         .is_ok());

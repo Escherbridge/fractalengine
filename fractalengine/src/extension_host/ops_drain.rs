@@ -482,10 +482,11 @@ fn short_did(did: &str) -> String {
     }
 }
 
-const GRANT_KEYS: [(&str, &str); 9] = [
+const GRANT_KEYS: [(&str, &str); 10] = [
     ("scene", "Scene"),
     ("readings", "Readings"),
     ("routes", "Routes"),
+    ("terrain", "Terrain"),
     ("kv", "Storage"),
     ("ingress", "Ingress"),
     ("egress", "Egress"),
@@ -517,13 +518,25 @@ fn grant_lines(value: &Value) -> Vec<String> {
 
 /// One titled group per granted manifest section; lines are stable text so the version delta can diff them.
 fn grant_sections(raw: &Value) -> Vec<ConsentSection> {
-    GRANT_KEYS
+    let mut sections: Vec<ConsentSection> = GRANT_KEYS
         .iter()
         .filter_map(|(key, title)| {
             let lines = grant_lines(raw.get(*key)?);
             (!lines.is_empty()).then(|| ConsentSection { title: (*title).to_owned(), lines })
         })
-        .collect()
+        .collect();
+    // render.mesh is exact-grant only (fe-sdk §render-mesh), so only the verbatim scope entry shows this line.
+    let draws_geometry = raw
+        .pointer("/scene/property_scope")
+        .and_then(Value::as_array)
+        .is_some_and(|scope| scope.iter().any(|entry| entry.as_str() == Some(fe_sdk::render_mesh::RENDER_MESH_PROPERTY_KEY)));
+    if draws_geometry {
+        sections.push(ConsentSection {
+            title: "Visible geometry".to_owned(),
+            lines: vec!["Draws shapes on nodes it writes (render.mesh)".to_owned()],
+        });
+    }
+    sections
 }
 
 /// Read a package file under the package cap.
@@ -2221,5 +2234,23 @@ fn pump_extension_ops(
     }
     while let Ok(event) = bridge.events.try_recv() {
         panel.apply_event(event, &mut consent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Consent grouping: terrain gets its own section; only an exact render.mesh scope adds "Visible geometry".
+    #[test]
+    fn grant_sections_label_terrain_and_exact_render_mesh() {
+        let titles = |raw: Value| grant_sections(&raw).into_iter().map(|section| section.title).collect::<Vec<_>>();
+        assert_eq!(titles(json!({ "terrain": true, "routes": false })), ["Terrain"]);
+        assert_eq!(titles(json!({ "terrain": false })), Vec::<String>::new());
+        let wildcard = titles(json!({ "scene": { "property_scope": ["*", "render.*"] } }));
+        assert!(!wildcard.iter().any(|title| title == "Visible geometry"), "wildcards never draw geometry");
+        let exact = titles(json!({ "scene": { "property_scope": ["render.mesh"] } }));
+        assert_eq!(exact, ["Scene", "Visible geometry"]);
     }
 }

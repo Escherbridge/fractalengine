@@ -259,6 +259,7 @@ impl Plugin for VerseManagerPlugin {
             Update,
             (
                 advance_non_dragged_smooth_transforms,
+                render_overrides::reconcile_render_meshes,
                 render_overrides::reconcile_render_styles,
                 render_overrides::pulse_render_styles_system,
                 render_overrides::reconcile_render_environment,

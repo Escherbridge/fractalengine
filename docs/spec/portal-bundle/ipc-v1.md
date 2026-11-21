@@ -46,7 +46,7 @@ Cheap checks come first. Nothing is decoded before checks 1–3 pass.
 | `act` | `op: "set_property"`, `node_id`, `key`, `value` | `{node_id, key}`, after the DB result |
 | `invoke` | `package`, `command`, `args` | `{result}` |
 | `emit` | `stream`, `data` | `{}` |
-| `intent` | `intent: "focus_node" \| "select_node"`, `node_id` | `{}` |
+| `intent` | `intent: "focus_node" \| "select_node"` with `node_id`; or `intent: "tour_nodes"` with `node_ids` (1-32), optional `speed_mps` (0.5-500, default 20), optional `dwell_s` (0-30, default 2) | `{}` |
 
 3.2. **Reply:** `{"v":1,"n":"<token>","re":<id>,"ok":true,"data":{…}}` or `{"v":1,"n":"<token>","re":<id>,"ok":false,"error":{"code":"<code>","message":"<text>"}}`.
 3.3. **Delivery:** `{"v":1,"n":"<token>","sub":<u32>,"seq":<u64>,"kind":"snapshot"|"delta"|"resync_required"|"ended","data":{…}}`, plus `"dropped":<u64>` when the host dropped events for this subscription since the last delivery. `seq` starts at 0 with the first delivery and increases by exactly 1. `ended` carries `{reason}` (`bus.md` §5 reasons, plus `revoked` and the binding change of §5.6) and is the subscription's last delivery; the page may subscribe again.
@@ -78,7 +78,7 @@ fe.subscribe(stream, params, onDelivery)          // Promise<{ id, unsubscribe()
 fe.act({ op: "set_property", node_id, key, value }) // Promise<{ node_id, key }>
 fe.invoke({ package, command, args })             // Promise<any>  (the command's result)
 fe.emit(stream, data)                             // Promise<void>
-fe.intent({ focus_node: id } | { select_node: id }) // Promise<void>
+fe.intent({ focus_node: id } | { select_node: id } | { tour_nodes: [id, ...], speed_mps?, dwell_s? }) // Promise<void>
 ```
 
 4.2. **Semantics.**
@@ -89,7 +89,7 @@ fe.intent({ focus_node: id } | { select_node: id }) // Promise<void>
   - On a static mount the script answers `404`, so `window.fe` is `undefined`. Bundles test `if (!window.fe)` and degrade to static behaviour.
 4.3. **`hello` data.**
   - `api`: `"fe.portal.v1"`.
-  - `capabilities`: the granted set as strings — `subscribe:node`, `subscribe:readings`, `subscribe:query/<name>`, `subscribe:<package_id>/<stream>`, `act:set_property`, `invoke:<package_id>/<command>`, `emit:<stream>`, `intent:focus_node`, `intent:select_node`. Granted means declared and currently permitted to the installing identity (§6.5). It is informational: every call is re-checked at use.
+  - `capabilities`: the granted set as strings — `subscribe:node`, `subscribe:readings`, `subscribe:query/<name>`, `subscribe:<package_id>/<stream>`, `act:set_property`, `invoke:<package_id>/<command>`, `emit:<stream>`, `intent:focus_node`, `intent:select_node`, `intent:tour_nodes`. Granted means declared and currently permitted to the installing identity (§6.5). It is informational: every call is re-checked at use.
   - `context`: `{package_id, content_hash, version, publisher_did, repository_node_id, petal_id}`; `petal_id` is the binding petal, the repository node's petal.
   - `limits`: the §8 numbers.
 
@@ -126,7 +126,7 @@ The page never polls REST on a timer: every `GET /api/v1/hierarchy` also rebuilt
   - Replicas judge the resulting row by its author's role when written (QA-0131). Revocation never withdraws rows (OD-E1, user decision 2026-11-08 22:00): it stops the bundle after in-flight writes complete, and rows already written through its actions stay, exactly as an extension's do (`admission.md` §4.7, §5 step 3).
 6.2. **`invoke`.** The target is a declared `commands.invoke` entry, else `capability_denied`. `args` is at most 16 KiB. The broker call carries the caller `{kind: "portal", did: <installing identity>, package_id, content_hash, role_ceiling}`; `role_ceiling` is the installing identity's role at the bundle's scope and never above the viewer's token (steer 2026-11-08 23:40). A portal is a local caller, so the bus answers it with local codes (`bus.md` §4): no active instance at the petal is `unavailable`, a command not exposed or a role below its floor is `capability_denied`. The reply is `{result}`.
 6.3. **`emit`.** `stream` is a declared `streams` id, `data` is at most its `max_event_bytes`, and the rate is at most its `max_rate_hz` (else `rate_limited`). The host publishes it as `<package_id>/<id>`; only packages that declared it under `consume`, were consented and satisfy `consumers` receive it (sibling R14).
-6.4. **`intent`.** The intent is declared, and `node_id` is in the binding petal. The host turns it into the existing fe-ui focus or select action. It is local UI only, never a write, and it is not audited.
+6.4. **`intent`.** The intent is declared, and `node_id` is in the binding petal. The host turns it into the existing fe-ui focus or select action. It is local UI only, never a write, and it is not audited. `focus_node` flies the camera to the node, `select_node` selects it through the normal selection path, and `tour_nodes` moves the camera through the nodes in order (a whole tour costs one intent token). An id that is unknown, hidden or outside the binding petal is dropped by the host with a log line, never an error to the page, and a tour skips such ids. Tour options out of range are `invalid`, not clamped. Any user camera input, another focus request or a petal change cancels a running tour. A tour is local to this peer and is never replicated. `tour_nodes` is its own capability, so a bundle that declares only `focus_node` cannot tour.
 6.5. **The binding.** At mount, the host mints one binding per mount from the governance admission record plus the validated manifest: `{mount_id, package_id, content_hash, publisher_did, installing_did, role_ceiling, petal_id, repository_node_id, declared}`; `role_ceiling` is the bus `Caller.role_ceiling` of §6.2, and a broker client reported above the viewer's token is closed unused. This follows the `PluginAdmission` pattern, a "host-minted capability binding; never deserialized from plugin request data" (`fe-runtime/src/plugin_host.rs:6`). Nothing in it ever comes from page data. The installing identity is the local identity that admitted the bundle; each desktop peer has one. The binding dies with the mount.
 
 ## 7. Errors and counters

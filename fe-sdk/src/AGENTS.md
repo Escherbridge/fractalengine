@@ -358,3 +358,29 @@ renderer helpers stay separate on purpose (their accumulation order is a stamp-p
 `UiExtensionRegistry`, and `register_first_party_extension_ui` (fractalengine `main.rs`) fills it at Startup.
 No third-party package contributes to either registry yet (fractalengine/src/AGENTS.md §plugin-host), so
 a change to either shape breaks first-party consumers at once.
+
+## §render-mesh
+
+`render_mesh.rs` is the strict reader for the `render.mesh` node property: `{"v":1,"parts":[...]}` with
+1..=32 parts of `box`, `cylinder`, `sphere` or `plane`, each with optional `offset`, `yaw_deg`, `color`.
+(Module table row: `render_mesh` - `RenderMeshDescriptor`, `RenderMeshRefusal`.)
+
+- **Strictest reader.** Unlike `primitive` (tolerant, unbounded) the whole value is refused on any violation
+  and the reason is a typed `RenderMeshRefusal`. Bounds: 16 KiB serialized, lengths 0.01..=1000, offsets
+  within 1000, unknown shape or field refused. Colour channels clamp rather than refuse.
+- **No second mesh builder.** `MeshPart::to_primitive` maps a part onto the existing `PrimitiveDescriptor`, so
+  fe-ui draws it with `build_primitive_mesh`. `centre_lift` converts "rests on its base" into Bevy's
+  centre-origin primitives. `cone`, `gable`, `ring` (plan `core-prereqs-20261120`) need custom tessellation
+  and are refused as `UnknownShape` until that builder exists.
+- **Exact-scope grant (writes only).** `requires_exact_scope` makes `manifest_v2::scope_allows(.., ScopeAccess::Write)`
+  ignore `*` and prefix patterns for this key, so a wildcard manifest cannot draw geometry; `ScopeAccess::Read` keeps
+  the normal pattern rule, so a `*`-scoped extension still sees the value. Wired gates: guest writes
+  (`fe-plugin capability.rs::validate_access`, `PropertyAccess { access: Write }` from `context.rs::authorize_op`),
+  the DB commit door (`fe-runtime plugin_host.rs::allows_property`, called with `Write` from
+  `fe-database handlers/plugin_host.rs` staging and `Read` for projection and query predicates; a 1.0 empty scope
+  stays a wildcard except for this write), scene-hook augments (`fe-runtime scene_hook_gate.rs::admit_augment`,
+  `fractalengine plugin_bridge/catalog.rs::property_allowed`) and portal `set_property` (`fe-plugin bus/mod.rs::
+  portal_key_allowed`, `fe-webview portal_bundle/ipc.rs::key_allowed`). Reads (context projection, bus node-change
+  feeds and node projection, a scene hook judging a write) use `Read`.
+- **Writer mirror.** `plugin_host::validate_transaction` parses any non-null `render.mesh` value, so a guest
+  sees `invalid-input` at stage time; `null` is how a guest clears it (WIT has no delete-property op).

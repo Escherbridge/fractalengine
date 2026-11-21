@@ -1087,6 +1087,9 @@ pub(super) fn apply_db_results(
                     fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY => {
                         caches.render_overrides.invalidate_environment(node_id);
                     }
+                    fe_sdk::render_mesh::RENDER_MESH_PROPERTY_KEY => {
+                        caches.render_overrides.invalidate_mesh(node_id);
+                    }
                     _ => {}
                 }
                 if !properties::handle_node_property_deleted(

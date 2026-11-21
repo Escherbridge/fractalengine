@@ -34,7 +34,13 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
    and is accepted.
 3. **`*` must be written out** wherever a wildcard is allowed (property scope, metrics, ad-hoc query SQL).
 4. **Patterns** in `property_scope`: an exact key (`fleet.status`), a prefix ending in `*`
-   (`fleet.*`), or `*` alone. Nothing else is a pattern.
+   (`fleet.*`), or `*` alone. Nothing else is a pattern. **Exact-grant keys** are never covered by a
+   pattern for a WRITE: `render.mesh` (generated node geometry, [cookbook](cookbook.md)) is writable only when
+   `property_scope` lists the string `"render.mesh"` itself, so `*` or `render.*` does not grant the write. Reading
+   follows the normal rule: a `*` or `render.*` extension sees `render.mesh` in node reads, queries and change
+   feeds, and a scene hook with such a scope judges writes of it, but it cannot stage, augment or `set_property` it.
+   Every host write gate applies the same rule (guest writes, the commit door, scene-hook augments, portal
+   `set_property`), and consent shows a separate "Visible geometry" line for it.
 5. **Everything is per binding.** An instance is one installation bound to one petal (OD-E3);
    every grant is confined to that petal. Scoped bindings ([bindings.md](bindings.md)) only choose
    which installed extension serves a hook point at a verse, fractal or petal; each covered petal
@@ -76,6 +82,26 @@ not declare, the consent dialog renders exactly what it declares, and the verse 
 `true` grants `routes.info`, `routes.sample` and `routes.snap` over any route node of the bound
 petal. Geometry reads do not need the route's properties in `property_scope`; the results are
 derived numbers, never the raw property.
+
+### `terrain`
+
+`true` grants `terrain.sample(x, z)` and `terrain.sample-many(points)` over the bound petal: world-frame
+surface height (`surface-y`, what a node's `position.y` needs to sit on the ground), real elevation in metres,
+slope in percent and the unit surface normal. Nothing else is exposed: no tileset identity, no file paths, no
+other petal or verse.
+
+| Outcome | When |
+|---|---|
+| `none` for a point | No terrain resident on this host covers it (a typed absence, never a zero height). |
+| `not-available` | The bound petal is not the one loaded on this host, or the host has no terrain (headless). |
+| `invalid-input` | A point is not finite, or `sample-many` got more than 1 024 points. |
+| `budget-exceeded` | Over 16 384 sampled points in one hook call, or the hook's deadline passed. |
+| `capability-denied` | The manifest does not declare `terrain: true`. |
+
+`sample-many` answers every point from one terrain generation (`terrain-batch.generation`); equal
+generations mean comparable samples. Absent or `false` grants nothing; adding it changes the capability
+digest, so consent is asked again. A component imports `terrain` only when it calls it, so builds that do
+not use it load on hosts that predate it.
 
 ### `tick` — the cadence budget (spec R4, OD-E4)
 

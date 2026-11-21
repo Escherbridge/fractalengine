@@ -1094,7 +1094,8 @@ mod tests {
         let package = admission.package().map(|package| (package.package_id(), package.content_hash()));
         assert_eq!(package, Some((CONSOLE, hash.as_str())));
         assert_eq!(admission.bound_scope(), Some(scope.ancestry().as_str()));
-        assert!(admission.allows_property("console.note") && !admission.allows_property("console.other"));
+        let write = fe_sdk::manifest_v2::ScopeAccess::Write;
+        assert!(admission.allows_property("console.note", write) && !admission.allows_property("console.other", write));
         assert!(admission.allows_write(SceneWrite::SetProperty) && !admission.allows_write(SceneWrite::DeleteNode));
         assert_eq!(ops, vec![PendingOp::SetProperty { node_id: "node-1".into(), key: "console.note".into(), value: json!("hello") }]);
         assert!(readings.is_empty());

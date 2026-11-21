@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bevy::prelude::Resource;
+use fe_sdk::manifest_v2::ScopeAccess;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
@@ -517,7 +518,7 @@ impl SceneHookGate {
             return SceneGateTicket::proceed();
         };
         if let Some(key) = input.property_key() {
-            if !in_property_scope(&binding.property_scope, key) {
+            if !in_property_scope(&binding.property_scope, key, ScopeAccess::Read) {
                 self.count(&binding.package_id, hook, |c| c.skipped += 1);
                 return SceneGateTicket::proceed();
             }
@@ -619,7 +620,7 @@ impl SceneHookGate {
         let binding = self.backend.as_ref()?.bound(input.hook(), input.petal_id())?;
         let in_scope = input
             .property_key()
-            .is_none_or(|key| in_property_scope(&binding.property_scope, key));
+            .is_none_or(|key| in_property_scope(&binding.property_scope, key, ScopeAccess::Read));
         in_scope.then_some(binding.package_id)
     }
 
@@ -1066,19 +1067,14 @@ fn admit_augment(binding: &SceneBinding, ops: Vec<AugmentOp>) -> Vec<AugmentOp> 
         return Vec::new();
     }
     ops.into_iter()
-        .filter(|op| in_property_scope(&binding.property_scope, &op.key))
+        .filter(|op| in_property_scope(&binding.property_scope, &op.key, ScopeAccess::Write))
         .take(MAX_AUGMENT_OPS)
         .collect()
 }
 
-/// `*` matches every key, `prefix*` a prefix, anything else exactly (fe-plugin capability rule).
-fn in_property_scope(patterns: &[String], key: &str) -> bool {
-    patterns
-        .iter()
-        .any(|pattern| match pattern.strip_suffix('*') {
-            Some(prefix) => key.starts_with(prefix),
-            None => pattern == key,
-        })
+/// The shared `property_scope` rule: judging a write is a read of its key, staging an augment op is a write.
+fn in_property_scope(patterns: &[String], key: &str, access: ScopeAccess) -> bool {
+    fe_sdk::manifest_v2::scope_allows(patterns, key, access)
 }
 
 /// Guest text made safe to show: control characters become spaces, capped at a char boundary.
@@ -1495,6 +1491,12 @@ pub(crate) mod tests {
         }
         let counters = gate.counters("org.example.zoning", SceneHook::Property);
         assert_eq!((counters.faults, counters.refused), (2, 2));
+
+        // Judging a write reads its key (wildcards cover render.mesh); an augment op writes it (exact entry only).
+        let wide = ["*".to_string()];
+        assert!(in_property_scope(&wide, "render.mesh", ScopeAccess::Read));
+        assert!(!in_property_scope(&wide, "render.mesh", ScopeAccess::Write));
+        assert!(in_property_scope(&["render.mesh".to_string()], "render.mesh", ScopeAccess::Write));
 
         // An allowed transform stages only in-scope augment keys, on the written node.
         let augment = json!({"verdict": "allow", "augment": [{"key": "zone", "value": "A"}, {"key": "owner", "value": "x"}]});

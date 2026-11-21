@@ -205,6 +205,7 @@ mod catalog;
 mod hooks;
 mod ops;
 mod scene_backend;
+mod terrain;
 mod worker;
 
 #[allow(unused_imports)]
@@ -227,6 +228,7 @@ pub(crate) use self::worker::HookAnswer;
 
 #[allow(unused_imports)]
 use self::{bindings::*, catalog::*, hooks::*, ops::*, scene_backend::*, worker::*};
+use self::terrain::{publish_terrain_snapshot, TerrainSnapshots};
 
 // ---------------------------------------------------------------------------
 // Bevy systems: hierarchy mirror, navigation, replicated rows, bound slots
@@ -667,6 +669,10 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
             None
         }
     };
+    // Terrain-granted instances read the active petal's height field from this snapshot (src/AGENTS.md §extension-terrain).
+    let terrain_snapshots = TerrainSnapshots::default();
+    app.insert_resource(terrain_snapshots.clone());
+    app.add_systems(Update, publish_terrain_snapshot);
     let stager = InstanceStager {
         ticks: ticks.clone(),
         bus,
@@ -677,6 +683,7 @@ pub(crate) fn install_with(app: &mut App, config: ExtensionBridgeConfig) {
         verified,
         petals: petals.clone(),
         live: live.clone(),
+        terrain: terrain_snapshots,
     };
     let owners = VerseOwners {
         api: slot.clone(),
@@ -957,6 +964,7 @@ mod tests {
             metrics: vec!["temperature".into()],
             readings_class: Some(ExtensionSourceClass::Device),
             routes: false,
+            terrain: false,
             tick: None,
         }
     }
@@ -1017,5 +1025,11 @@ mod tests {
         let readings = stamped.readings().expect("readings bound");
         assert_eq!(readings.source_class(), SourceClass::Device);
         assert!(readings.allows_metric("temperature") && !readings.allows_metric("pressure"));
+
+        // Scene-hook augment gate: wildcards never cover render.mesh, the exact entry does.
+        let wide: Vec<String> = vec!["*".into(), "render.*".into()];
+        assert!(property_allowed(&wide, "render.style"));
+        assert!(!property_allowed(&wide, "render.mesh"), "wildcards refuse render.mesh");
+        assert!(property_allowed(&["render.mesh".to_string()], "render.mesh"), "an exact grant admits it");
     }
 }

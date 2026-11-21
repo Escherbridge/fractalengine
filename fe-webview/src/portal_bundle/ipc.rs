@@ -242,6 +242,7 @@ pub trait PortalBroker: Send + Sync + 'static {
 pub enum UiIntent {
     FocusNode,
     SelectNode,
+    TourNodes,
 }
 
 impl UiIntent {
@@ -250,17 +251,28 @@ impl UiIntent {
         match self {
             Self::FocusNode => "focus_node",
             Self::SelectNode => "select_node",
+            Self::TourNodes => "tour_nodes",
         }
     }
 }
 
-/// A page's focus/select request for fe-ui; never a write and never audited.
+/// The validated tour options of a `tour_nodes` intent; integers keep `PortalIntent: Eq` (see `portal_bundle/AGENTS.md` §camera-tour).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortalTour {
+    pub node_ids: Vec<String>,
+    pub speed_mm_s: u32,
+    pub dwell_ms: u32,
+}
+
+/// A page's focus/select/tour request for fe-ui; never a write and never audited.
+/// For a tour, `node_id` is the first stop and `tour` carries the whole ordered list.
 #[derive(Debug, Clone, PartialEq, Eq, bevy::prelude::Message)]
 pub struct PortalIntent {
     pub intent: UiIntent,
     pub node_id: String,
     pub petal_id: String,
     pub package_id: String,
+    pub tour: Option<PortalTour>,
 }
 
 /// What the backend gives the bridge: the shared state and a host→page post (OD-2).
@@ -289,7 +301,70 @@ enum PageMessage {
     Act { op: ActOp, node_id: String, key: String, value: Value },
     Invoke { package: String, command: String, args: Value },
     Emit { stream: String, data: Value },
-    Intent { intent: UiIntent, node_id: String },
+    Intent {
+        intent: UiIntent,
+        #[serde(default)]
+        node_id: Option<String>,
+        #[serde(default)]
+        node_ids: Option<Vec<String>>,
+        #[serde(default)]
+        speed_mps: Option<f64>,
+        #[serde(default)]
+        dwell_s: Option<f64>,
+    },
+}
+
+/// The raw, undecided fields of one `intent` message.
+struct IntentArgs {
+    node_id: Option<String>,
+    node_ids: Option<Vec<String>>,
+    speed_mps: Option<f64>,
+    dwell_s: Option<f64>,
+}
+
+impl IntentArgs {
+    /// Per-intent shape check: focus/select take only `node_id`; a tour takes 1..=32 `node_ids` and in-range options (never clamped).
+    fn validate(self, intent: UiIntent) -> Result<(String, Option<PortalTour>), IpcError> {
+        match intent {
+            UiIntent::FocusNode | UiIntent::SelectNode => match self {
+                Self {
+                    node_id: Some(node_id),
+                    node_ids: None,
+                    speed_mps: None,
+                    dwell_s: None,
+                } if is_node_id(&node_id) => Ok((node_id, None)),
+                _ => Err(IpcError::Invalid),
+            },
+            UiIntent::TourNodes => {
+                let Self {
+                    node_id: None,
+                    node_ids: Some(node_ids),
+                    speed_mps,
+                    dwell_s,
+                } = self
+                else {
+                    return Err(IpcError::Invalid);
+                };
+                let speed = speed_mps.unwrap_or(limits::TOUR_DEFAULT_SPEED_MPS);
+                let dwell = dwell_s.unwrap_or(limits::TOUR_DEFAULT_DWELL_S);
+                let in_range = |value: f64, (min, max): (f64, f64)| value.is_finite() && value >= min && value <= max;
+                if node_ids.is_empty()
+                    || node_ids.len() > limits::TOUR_MAX_NODES
+                    || !node_ids.iter().all(|id| is_node_id(id))
+                    || !in_range(speed, limits::TOUR_SPEED_MPS)
+                    || !in_range(dwell, limits::TOUR_DWELL_S)
+                {
+                    return Err(IpcError::Invalid);
+                }
+                let tour = PortalTour {
+                    speed_mm_s: (speed * 1000.0).round() as u32,
+                    dwell_ms: (dwell * 1000.0).round() as u32,
+                    node_ids,
+                };
+                Ok((tour.node_ids[0].clone(), Some(tour)))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1122,7 +1197,13 @@ impl BridgeState {
             } => self.act(&to, node_id, key, &value, now),
             PageMessage::Invoke { package, command, args } => self.invoke(&to, &package, &command, &args, now),
             PageMessage::Emit { stream, data } => self.emit(&stream, &data, now).map(Some),
-            PageMessage::Intent { intent, node_id } => self.intent(intent, node_id, now, intents).map(Some),
+            PageMessage::Intent {
+                intent,
+                node_id,
+                node_ids,
+                speed_mps,
+                dwell_s,
+            } => self.intent(intent, IntentArgs { node_id, node_ids, speed_mps, dwell_s }, now, intents).map(Some),
         };
         // Only the bridge's own check-5 refusals: the bus already audited one it returned.
         if let (Err(IpcError::CapabilityDenied), Some((operation, target)), false) = (&outcome, &audit, self.broker_refused) {
@@ -1323,7 +1404,7 @@ impl BridgeState {
         Ok(json!({}))
     }
 
-    fn intent(&mut self, intent: UiIntent, node_id: String, now: Instant, intents: &mut Vec<PortalIntent>) -> Result<Value, IpcError> {
+    fn intent(&mut self, intent: UiIntent, args: IntentArgs, now: Instant, intents: &mut Vec<PortalIntent>) -> Result<Value, IpcError> {
         let (mount_id, petal_id, package_id) = {
             let (binding, open) = self.client()?;
             let capability = format!("intent:{}", intent.as_str());
@@ -1332,9 +1413,8 @@ impl BridgeState {
             }
             (binding.mount_id, open.info.petal_id.clone(), binding.package_id.clone())
         };
-        if !is_node_id(&node_id) {
-            return Err(IpcError::Invalid);
-        }
+        let (node_id, tour) = args.validate(intent)?;
+        // A whole tour costs one token, like any other intent.
         if !self.buckets(mount_id, now).intent.try_take(now) {
             return Err(IpcError::RateLimited);
         }
@@ -1344,6 +1424,7 @@ impl BridgeState {
             node_id,
             petal_id,
             package_id,
+            tour,
         });
         Ok(json!({}))
     }
@@ -1698,10 +1779,12 @@ fn key_allowed(patterns: &[String], key: &str) -> bool {
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
         });
     let reserved = key == "node_kind" || key == "portal" || key.starts_with("portal.");
+    // Exact-grant keys (`render.mesh`) are never covered by a `prefix.*` pattern.
+    let exact_only = fe_sdk::render_mesh::requires_exact_scope(key);
     grammar
         && !reserved
         && patterns.iter().any(|pattern| match pattern.strip_suffix(".*") {
-            Some(base) => key.strip_prefix(base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.')),
+            Some(base) => !exact_only && key.strip_prefix(base).is_some_and(|rest| rest.len() > 1 && rest.starts_with('.')),
             None => pattern == key,
         })
 }
@@ -1855,5 +1938,7 @@ mod tests {
             assert_eq!(key_allowed(&patterns, key), allowed, "{key}");
         }
         assert!(!key_allowed(&["portal.*".to_owned()], "portal.bundle_asset"), "reserved whatever the patterns say");
+        assert!(!key_allowed(&["render.*".to_owned()], "render.mesh"), "prefix patterns never cover render.mesh");
+        assert!(key_allowed(&["render.mesh".to_owned()], "render.mesh"), "the exact entry admits it");
     }
 }

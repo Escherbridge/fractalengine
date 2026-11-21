@@ -43,6 +43,7 @@ Sidebar tree, verse/fractal/petal/node CRUD, NavigationManager, visibility group
 | Source paths | Approx. count |
 |---|---|
 | `fe-ui/src/navigation_manager.rs` | 6 |
+| `fe-ui/src/verse_manager/render_overrides.rs` (`render.style`/`render.environment`/`render.mesh` reconcilers; `verse_manager::render_overrides`, reached by no filter before 2026-11-20) | 2 |
 | `fe-ui/src/verse_manager/{mod,spawn,residency_ledger,primitive_reconcile,primitive_materialize,node_index,lifecycle_events,db_results/mod,db_results/query,db_results/tokens}.rs` | 106 |
 | `fe-ui/src/visibility/{mod,resolve,groups,cache}.rs` | 84 |
 | `fe-ui/src/atlas/{petal_wizard,visibility_control}.rs` | 9 |
@@ -54,7 +55,7 @@ Sidebar tree, verse/fractal/petal/node CRUD, NavigationManager, visibility group
 **Total ≈ 262**
 
 ```bash
-cargo test -p fe-ui --lib -- navigation_manager:: verse_manager::tests:: verse_manager::spawn verse_manager::residency_ledger verse_manager::primitive verse_manager::node_index verse_manager::lifecycle_events verse_manager::db_results::tests:: verse_manager::db_results::query verse_manager::db_results::tokens visibility:: atlas::petal_wizard atlas::visibility_control dialogs::create_entity
+cargo test -p fe-ui --lib -- navigation_manager:: verse_manager::tests:: verse_manager::spawn verse_manager::residency_ledger verse_manager::primitive verse_manager::node_index verse_manager::lifecycle_events verse_manager::db_results::tests:: verse_manager::db_results::query verse_manager::db_results::tokens verse_manager::render_overrides visibility:: atlas::petal_wizard atlas::visibility_control dialogs::create_entity
 cargo test -p fe-database --lib -- verse:: handlers::crud:: handlers::node_view:: handlers::visibility_groups::
 cargo test -p fe-database --test node_lifecycle_test --test node_view_test --test node_data_write_readback_test --test visibility_groups_test
 cargo test -p fe-api --test visibility_groups_api_test
@@ -77,6 +78,7 @@ Selection, gimbal, transforms, snapping, viewport camera, GLTF asset import, rig
 | `fe-ui/src/editor_batch/**` (ordered selection and shared editor routing, DATA-02) | new |
 | `fe-database/src/handlers/editor_batch/**` (no tests at HEAD), `fe-database/src/handlers/stamp_transform.rs` (`euler_to_quat_xyzw` table, 1 test) | 1 |
 | `fe-renderer/src/{camera,axis_gizmo,addressing,grid,instancing}.rs`, `fe-renderer/tests/renderer_test.rs` | 76 |
+| `fe-renderer/src/camera.rs` camera-tour tables (`TourPlan`, `tour_cancelled`; narrow: `cargo test -p fe-renderer --lib -- camera::tests::`) | new |
 | `fractalengine/src/asset_bridge.rs` | 11 |
 | `fe-runtime/src/scene_write.rs` (shared scene door: GUI and REST verdicts, `scene_write::tests::`; turn 3) | new |
 
@@ -213,6 +215,8 @@ Toasts, dialogs, window chrome, status bar, embedded webview (PetalPortal), app 
 | `fe-ui/src/dialogs/join.rs`, `fe-ui/src/panels/{widgets,toolbar,sidebar,mod,tool_options,tool_inspector,tool_panel}.rs` | 51 |
 | `fe-ui/src/settings.rs`, `fe-ui/src/portal/mod.rs`, `fe-ui/src/plugin.rs` (shared wiring — see consolidation note) | 35 |
 | `fe-webview/**` | 64 |
+| `fe-ui/src/portal/intents.rs` (`apply_portal_intents`: focus, tour, petal cancel, limits parity; reached by `portal::`; narrow: `cargo test -p fe-ui --lib -- portal::intents::tests::`) | new |
+| `fe-webview/tests/portal_ipc_journey.rs` tour legs (accepted, 33 nodes, speed 0, ungranted `tour_nodes` → `capability_denied`; narrow: `cargo test -p fe-webview --test portal_ipc_journey`) | ext |
 | `fractalengine/src/{panic_log,window_chrome}.rs` | 5 |
 | `fe-ui/src/actions/mod.rs` (`actions::tests::` module: notice queue, active dialog, reveal, proposal select, path delete; superset of the UI-07 `active_dialog_entity_settings` journey) | 20 |
 | `fe-ui/src/dialogs/peer_debug.rs` (network diagnostics panel) | new |
@@ -410,8 +414,18 @@ fe-plugin, fe-plugin-test, fe-hexon, fe-hexon-registry, fe-format, fe-sdk, Atlas
 | `fe-runtime/src/{extension_binding,scene_hook_gate}.rs` | 7 |
 | `tools/fe-ext/**` (host CLI in the workspace; `guest/` is excluded and builds standalone) | 5 |
 | `extensions/{bi-push,device-adapter,fleet-sim}/**` (standalone crates, own `[workspace]`) | 4 |
+| `fe-plugin/src/wasm/component/terrain.rs` (`surface_at`/`GridTerrain` table, `wasm::component::terrain::tests::`) and the terrain legs of `instance.rs` | new |
+| `fractalengine/src/plugin_bridge/terrain.rs` (`plugin_bridge::terrain::tests::`, snapshot publisher) | new |
+| `fractalengine/src/extension_host/ops_drain.rs` (`extension_host::ops_drain::tests::`, consent sections: Terrain, Visible geometry) | new |
+| `fe-sdk/src/render_mesh.rs` (`render_mesh::tests::`), exact-scope legs in `fe-plugin/src/{capability,bus/tests}.rs` and `plugin_bridge/mod.rs` | new |
 
 **Total ≈ 335**
+
+**Core prerequisites (plan `core-prereqs-20261120`), narrow commands** (subsets of the lines below, so not fenced):
+terrain `cargo test -p fe-plugin --lib -- wasm::component::terrain::tests:: wasm::component::instance::tests::`;
+render.mesh `cargo test -p fe-sdk --lib -- render_mesh::tests::` and `cargo test -p fe-plugin --lib -- capability::tests:: bus::tests::`;
+binary `cargo test -p fractalengine --bin fractalengine -- plugin_bridge::terrain::tests:: plugin_bridge::tests:: extension_host::ops_drain::tests::`;
+camera table R2, portal intents R6, guest `footprint_stats` R11-STORE (`cargo test --manifest-path tools/fe-ext/guest/Cargo.toml -- terrain::tests::`).
 
 ```bash
 cargo test -p fe-plugin -- --skip admin::tests:: --skip registry_client::tests::

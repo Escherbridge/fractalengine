@@ -140,6 +140,7 @@ pub(super) fn handle_node_property_set(
             | "instance_index"
             | fe_sdk::render_style::RENDER_STYLE_PROPERTY_KEY
             | fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY
+            | fe_sdk::render_mesh::RENDER_MESH_PROPERTY_KEY
     );
     if primitive_write || presentation_write {
         primitive_cache.invalidate(node_id);
@@ -208,6 +209,7 @@ pub(super) fn handle_node_property_deleted(
                 | "instance_index"
                 | fe_sdk::render_style::RENDER_STYLE_PROPERTY_KEY
                 | fe_sdk::render_environment::RENDER_ENVIRONMENT_PROPERTY_KEY
+                | fe_sdk::render_mesh::RENDER_MESH_PROPERTY_KEY
         )
     {
         primitive_cache.invalidate(node_id);

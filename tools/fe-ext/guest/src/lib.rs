@@ -25,6 +25,7 @@ pub mod bindings {
 pub mod hooks;
 pub mod query;
 pub mod readings_batch;
+pub mod terrain;
 pub mod tracking;
 pub mod window;
 
@@ -35,6 +36,8 @@ pub use bindings::exports::fractalengine::plugin::lifecycle::{DeactivateReason, 
 pub use bindings::fractalengine::plugin::egress::{self, IncomingResponse, OutgoingRequest};
 pub use bindings::fractalengine::plugin::types::{Binding, Caller, CallerKind, HostError, NodeSnapshot, Quat, Vec3};
 pub use bindings::fractalengine::plugin::{bus, context, ingress, kv, log, readings, routes, scene, txn};
+/// The generated `terrain` import (helpers: [`terrain`]); linked into a component only when called.
+pub use bindings::fractalengine::plugin::terrain as wit_terrain;
 
 /// Every hook of the world with a no-op default; only `on_tick` is required.
 pub trait Extension: 'static {

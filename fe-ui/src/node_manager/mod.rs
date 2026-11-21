@@ -278,6 +278,11 @@ impl NodeManager {
             remaining_frames: 120,
         });
     }
+    /// Queue a plain selection through the normal entity resolver, without moving the camera.
+    pub fn request_select(&mut self, node_id: &str) {
+        self.pending_navigation_select = None;
+        self.pending_sidebar_select = Some(node_id.to_owned());
+    }
     /// Queue selection through the normal entity resolver and frame its live transform.
     pub fn request_select_and_frame(
         &mut self,

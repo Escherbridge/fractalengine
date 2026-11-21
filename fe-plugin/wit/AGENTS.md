@@ -120,6 +120,27 @@ for less, never more):
 | kv | keys ≤ 256 bytes, values ≤ 65 536 bytes, manifest `kv.max_bytes` (≤ 1 MiB) per instance |
 | log | 4 KiB per message, 50 messages/s per instance (excess dropped and counted) |
 | instance memory | 16 MiB (today's pooled cap; OD-E4 measures) |
+| terrain `sample-many` | 1 024 points per call (`invalid-input` past it) |
+| terrain samples | 16 384 points per hook call (`budget-exceeded`) |
+
+## §additive-imports
+
+`terrain` (2026-11-20) was added to world `extension` at the same `@2.0.0`, and `"terrain"` joined
+`wasi.rs::CONTRACT_IMPORTS`. A component's import list is the subset of the world its core module actually
+calls (wit-component drops the rest; `test_guest.rs` proves it every run, importing only `txn` and `log`), and
+a linker may define more than a component imports, so every already-signed component loads unchanged. A new
+component that calls `terrain` fails cleanly on an older host: `forbidden-import fractalengine:plugin/terrain@2.0.0`
+at install, and its manifest's `terrain` key is refused as `schema` before that.
+
+Rejected: bumping to `@2.1.0` (every interface name of every newly built guest would change, and today's hosts
+refuse a non-2.0 import even when the guest never calls terrain), and a separate world (that pattern exists for an
+optional EXPORT, `hooks`; an import gains nothing from it). The rule for the next read-only import is the same.
+
+The cost: contract `2.0.0` no longer names one exact import set. An older host refuses a terrain-using component
+as an unknown import, so in a verse with mixed host versions one peer runs the build and another refuses it, and
+nothing in the manifest says which hosts can. Deferred remedy: a manifest contract minor version (`2.0` vs `2.1`)
+that the host gates on before compiling, so the refusal names the missing contract instead of an import. Trigger:
+the first report of a mixed-version verse where a build runs on one peer and is refused on another.
 
 ## §hooks
 

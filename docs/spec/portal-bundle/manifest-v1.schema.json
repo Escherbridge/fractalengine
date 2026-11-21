@@ -112,9 +112,9 @@
     },
     "ui_intents": {
       "type": "array",
-      "maxItems": 2,
+      "maxItems": 3,
       "uniqueItems": true,
-      "items": { "enum": ["focus_node", "select_node"] }
+      "items": { "enum": ["focus_node", "select_node", "tour_nodes"] }
     }
   },
   "$defs": {

@@ -17,6 +17,7 @@ use super::bindings::fractalengine::plugin::types::{Binding, HostError};
 use super::broker::{ExtensionBroker, NoBroker};
 use super::kv::KvSlot;
 use super::routes::RouteCache;
+use super::terrain::{TerrainPoint, TerrainSource};
 use super::wasi::{build_wasi_ctx, GuestLog};
 use super::ComponentError;
 
@@ -51,6 +52,8 @@ pub struct InstanceSetup {
     pub broker: Arc<dyn ExtensionBroker>,
     /// Unfiltered reader for route geometry; without it `routes` sees only in-scope properties.
     pub geometry_reader: Option<Arc<Mutex<dyn NodeReader>>>,
+    /// Resident terrain for the `terrain` import; absent answers `not-available` (src/wasm/AGENTS.md §terrain).
+    pub terrain: Option<Arc<dyn TerrainSource>>,
     /// Activation count of this binding; seeds the guest's deterministic randomness.
     pub activation: u64,
 }
@@ -71,6 +74,7 @@ impl InstanceSetup {
             kv: None,
             broker: Arc::new(NoBroker),
             geometry_reader: None,
+            terrain: None,
             activation: 1,
         }
     }
@@ -90,6 +94,12 @@ impl InstanceSetup {
     /// Read route geometry through the host's own reader (same petal pin, no property filter).
     pub fn with_geometry_reader(mut self, reader: Arc<Mutex<dyn NodeReader>>) -> Self {
         self.geometry_reader = Some(reader);
+        self
+    }
+
+    /// Serve the `terrain` import from `source` (the grant is still checked per call).
+    pub fn with_terrain(mut self, source: Arc<dyn TerrainSource>) -> Self {
+        self.terrain = Some(source);
         self
     }
 
@@ -152,6 +162,11 @@ pub struct InstanceState {
     pub(crate) broker: Arc<dyn ExtensionBroker>,
     pub(crate) routes: RouteCache,
     pub(crate) geometry_reader: Option<Arc<Mutex<dyn NodeReader>>>,
+    pub(crate) terrain: Option<Arc<dyn TerrainSource>>,
+    /// Terrain points sampled in the current hook call (reset on every guest entry).
+    pub(crate) terrain_samples_this_hook: AtomicU32,
+    /// Reused sample buffer, so steady-state terrain calls do not allocate host-side.
+    pub(crate) terrain_scratch: Vec<Option<TerrainPoint>>,
     pub(crate) log: Arc<Mutex<GuestLog>>,
     /// Scene/route reads in the current hook call (reset on every guest entry).
     pub(crate) reads_this_hook: AtomicU32,
@@ -192,6 +207,9 @@ impl InstanceState {
             broker: setup.broker,
             routes: RouteCache::default(),
             geometry_reader: setup.geometry_reader,
+            terrain: setup.terrain,
+            terrain_samples_this_hook: AtomicU32::new(0),
+            terrain_scratch: Vec::new(),
             log,
             reads_this_hook: AtomicU32::new(0),
             decode_stamp: None,
@@ -223,6 +241,9 @@ impl InstanceState {
             broker: self.broker.clone(),
             routes: RouteCache::default(),
             geometry_reader: self.geometry_reader.clone(),
+            terrain: self.terrain.clone(),
+            terrain_samples_this_hook: AtomicU32::new(0),
+            terrain_scratch: Vec::new(),
             log: self.log.clone(),
             reads_this_hook: AtomicU32::new(0),
             decode_stamp: None,
@@ -272,9 +293,10 @@ impl InstanceState {
         Ok(())
     }
 
-    /// Start a hook call's read budget afresh.
+    /// Start a hook call's read and terrain budgets afresh.
     pub(crate) fn reset_hook_budgets(&self) {
         self.reads_this_hook.store(0, Ordering::Relaxed);
+        self.terrain_samples_this_hook.store(0, Ordering::Relaxed);
     }
 
     /// Refuse every effect once the host revoked this instance's lease.

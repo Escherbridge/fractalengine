@@ -281,6 +281,35 @@ interface routes {
     snap: func(route: node-id, position: vec3) -> result<snap-result, host-error>;
 }
 
+/// Read-only terrain surface of the bound petal, from the host's resident height field.
+/// Requires manifest `terrain: true`. x/z are in the frame node positions use.
+/// A petal not loaded on this host is not-available; a point no resident terrain covers is none.
+interface terrain {
+    use types.{vec3, host-error};
+
+    record terrain-sample {
+        /// World-frame surface height (a node's position.y to sit on it).
+        surface-y: f64,
+        /// Real elevation in metres above the terrain datum.
+        elevation-m: f64,
+        /// Steepest rise over run, percent (100 = 45 degrees).
+        slope-pct: f64,
+        /// Unit surface normal, +y up.
+        normal: vec3,
+    }
+
+    record terrain-batch {
+        /// Changes whenever resident terrain changes; equal values mean comparable samples.
+        generation: u64,
+        samples: list<option<terrain-sample>>,
+    }
+
+    /// The surface under (x, z); none where no resident terrain covers the point.
+    sample: func(x: f64, z: f64) -> result<option<terrain-sample>, host-error>;
+    /// At most 1024 points, all answered from one terrain generation; more is invalid-input.
+    sample-many: func(points: list<tuple<f64, f64>>) -> result<terrain-batch, host-error>;
+}
+
 /// Outbound traffic on declared websocket endpoints (both directions of a websocket are one
 /// declared ingress endpoint, so sending on it lives here, not in egress).
 interface ingress {
@@ -580,6 +609,7 @@ world extension {
     import txn;
     import readings;
     import routes;
+    import terrain;
     import ingress;
     import egress;
     import bus;

@@ -456,6 +456,10 @@ fn bus_journey_queries_streams_commands_and_audit() {
     for key in ["portal.bundle_asset", "node_kind", "secret"] {
         assert!(matches!(bus.client_set_property(console.id, "n1", key, &json!(1)), Err(BusRefusal::CapabilityDenied(_))));
     }
+    // render.mesh is exact-grant: a `render.*` pattern never covers it, the verbatim entry does.
+    assert!(portal_key_allowed(&["render.*".into()], "render.style"));
+    assert!(!portal_key_allowed(&["render.*".into()], "render.mesh"), "a prefix pattern refuses render.mesh");
+    assert!(portal_key_allowed(&["render.mesh".into()], "render.mesh"), "an exact grant admits it");
     let mut denied = bus.client_set_property(viewer.id, "n1", "fleet.speed", &json!(4)).unwrap();
     assert!(matches!(denied.reply.try_recv().unwrap(), WriteOutcome::RoleDenied(_)));
     assert_eq!(writes.seen.lock().unwrap().len(), 1, "nothing but the one accepted write reached the write path");

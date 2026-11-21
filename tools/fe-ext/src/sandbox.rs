@@ -11,7 +11,7 @@ use fe_plugin::context::PluginContext;
 use fe_plugin::tick::{self, Clock, ManualClock};
 use fe_plugin::transaction::{StagedCommitSink, StagedFlush};
 use fe_plugin::wasm::component::bindings::exports::fractalengine::plugin::ingress_hooks::{IngressFrame, Transport};
-use fe_plugin::wasm::component::{window_for_token, Binding, ComponentHost, InstanceSetup, KvSlot, MemoryKv};
+use fe_plugin::wasm::component::{window_for_token, Binding, ComponentHost, GridTerrain, InstanceSetup, KvSlot, MemoryKv};
 use fe_plugin_test::mock_host::MockHostEnv;
 use fe_sdk::manifest_v2::{is_credential_header, ExtensionManifest, ExtensionSourceClass, Ingress, Method};
 use fe_sdk::node::NodeSnapshot;
@@ -95,6 +95,64 @@ pub struct Fixture {
     pub fleet: Option<fe_sim_model::fleet::FleetModel>,
     #[serde(default)]
     pub ingress: Vec<FixtureIngress>,
+    /// A deterministic height grid served to `terrain: true` manifests (else `terrain` answers `not-available`).
+    #[serde(default)]
+    pub terrain: Option<FixtureTerrain>,
+}
+
+/// Fixture terrain: a row-major height grid sampled bilinearly (fe-plugin `GridTerrain`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureTerrain {
+    /// World `(x, z)` of the first sample.
+    pub origin: [f64; 2],
+    /// Sample spacing, world units (finite, > 0).
+    pub cell: f64,
+    /// Samples along +x (2..=257).
+    pub columns: u32,
+    /// Samples along +z (2..=257).
+    pub rows: u32,
+    /// `columns * rows` finite world-unit heights.
+    pub heights: Vec<f64>,
+    /// World units per real metre.
+    #[serde(default = "default_world_scale")]
+    pub world_scale: f64,
+    /// Real elevation (metres) at world height 0.
+    #[serde(default)]
+    pub origin_ele: f64,
+}
+
+impl FixtureTerrain {
+    /// Bounds-checked conversion into the host's grid source.
+    fn to_grid(&self) -> Result<GridTerrain> {
+        const AXIS: std::ops::RangeInclusive<u32> = 2..=257;
+        if !AXIS.contains(&self.columns) || !AXIS.contains(&self.rows) {
+            bail!("fixture terrain: columns and rows must be 2..=257");
+        }
+        if !(self.cell.is_finite() && self.cell > 0.0) {
+            bail!("fixture terrain: cell must be finite and > 0");
+        }
+        if self.heights.len() != (self.columns as usize) * (self.rows as usize) {
+            bail!("fixture terrain: heights must hold columns * rows values");
+        }
+        let finite = self.origin.iter().chain(&self.heights).chain([&self.origin_ele]).all(|value| value.is_finite());
+        if !finite || !(self.world_scale.is_finite() && self.world_scale > 0.0) {
+            bail!("fixture terrain: values must be finite and world_scale > 0");
+        }
+        Ok(GridTerrain {
+            origin: self.origin,
+            cell: self.cell,
+            columns: self.columns,
+            rows: self.rows,
+            heights: self.heights.clone(),
+            world_scale: self.world_scale,
+            origin_ele: self.origin_ele,
+        })
+    }
+}
+
+fn default_world_scale() -> f64 {
+    1.0
 }
 
 fn default_petal() -> String {
@@ -530,6 +588,10 @@ pub fn run(extension_json: &[u8], component: &[u8], fixture: &Fixture) -> Result
         .with_geometry_reader(host.clone());
     if let Some(kv) = &manifest.kv {
         setup = setup.with_kv(KvSlot::new(Box::new(MemoryKv::new()), kv.max_bytes));
+    }
+    // Production only wires a source for `terrain: true`; the grant check stays the host's.
+    if let (Some(true), Some(terrain)) = (manifest.terrain, &fixture.terrain) {
+        setup = setup.with_terrain(Arc::new(terrain.to_grid()?));
     }
 
     let component_host = ComponentHost::new().map_err(|error| anyhow!("{error}"))?;

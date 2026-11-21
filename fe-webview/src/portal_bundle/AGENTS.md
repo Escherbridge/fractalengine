@@ -363,3 +363,7 @@ binary's portal host is `review-turn2/R-POR-IPC.md`.
 
 Desk review only. Nothing in this module has been built or run. SP-1..SP-9 are desk-checked against pinned wry and
 WebView2 sources (protocol.md §12) but not executed on hardware.
+
+## §camera-tour — the `tour_nodes` intent (ipc.rs, limits.rs)
+
+`tour_nodes` is its own capability (`intent:tour_nodes`, a third `ui_intents` entry), not an option on `focus_node`, so an existing consent is never silently widened. `IntentArgs::validate` checks the per-intent shape: focus/select take only `node_id`; a tour takes `node_ids` (1..=`TOUR_MAX_NODES`, each a valid node id) with optional `speed_mps` and `dwell_s`. Out-of-range options are `invalid`, never clamped. The validated tour is `PortalTour` (integer mm/s and ms so `PortalIntent` stays `Eq`); `PortalIntent.node_id` is the first stop. A whole tour costs one intent-bucket token and shape errors cost none. The consumer and the camera rules are in `fe-renderer/src/AGENTS.md` §camera-tour; fe-ui drops ids outside the mount's active petal with a `warn!`, so there is no existence oracle.

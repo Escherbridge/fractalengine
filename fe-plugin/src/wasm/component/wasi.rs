@@ -16,8 +16,8 @@ pub const CONTRACT_PACKAGE: &str = "fractalengine:plugin";
 pub const CONTRACT_MAJOR_MINOR: &str = "2.0.";
 
 /// Interfaces of `fractalengine:plugin@2.0.0` a component may import.
-const CONTRACT_IMPORTS: [&str; 11] = [
-    "types", "context", "scene", "txn", "readings", "routes", "ingress", "egress", "bus", "kv", "log",
+const CONTRACT_IMPORTS: [&str; 12] = [
+    "types", "context", "scene", "txn", "readings", "routes", "terrain", "ingress", "egress", "bus", "kv", "log",
 ];
 
 /// WASI 0.2 interfaces a component may import (virtualized); anything else is `forbidden-import`.
