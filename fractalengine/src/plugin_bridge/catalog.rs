@@ -379,6 +379,7 @@ impl InstanceStager {
         let spec = InstanceSpec {
             installation_id: installation_id.to_string(),
             content_hash: facts.content_hash.clone(),
+            capability_digest: facts.capability_digest.clone(),
             verse_id: petal.verse_id.clone(),
             petal_id: petal.petal_id.clone(),
             identity_did: self.local_did.clone(),

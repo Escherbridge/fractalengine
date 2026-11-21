@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use fe_api::extensions::{
     administer, caller_of, command, extension_audit, extension_command_tool, extension_status,
-    get_verse_policy, ingress, list_extensions, put_verse_policy, AdminOp, AdminRefusal, AdminReply,
+    get_verse_policy, ingress, list_extension_commands, list_extensions, put_verse_policy, AdminOp, AdminRefusal, AdminReply,
     AdminVerb, ApiCaller, ApiCallerKind, CommandFailure, CommandReply, ExtError, ExtensionHost,
     ExtensionStreams, HostRefusal, IngressAnswer, IngressCall, IngressRefusal, IngressRequestParts, WsAcceptCall,
     WsData, WsHostSession, WsOut, open_ingress_websocket,
@@ -57,6 +57,8 @@ struct Seen {
     ws_kept: Vec<WsData>,
     ws_dropped: u32,
     ws_closed: Vec<u64>,
+    /// Callers the discovery route reached the host with.
+    discovered_by: Vec<ApiCaller>,
 }
 
 /// The stand-in endpoint's `max_frame_bytes` and `max_connections`.
@@ -148,6 +150,26 @@ impl ExtensionHost for FakeHost {
             _ => return Err(HostRefusal::NotFound),
         });
         Ok(rx)
+    }
+    fn exposed(&self, caller: &ApiCaller, petal_id: &str) -> Vec<Value> {
+        self.seen.lock().unwrap().discovered_by.push(caller.clone());
+        if petal_id != PETAL {
+            return vec![];
+        }
+        // Out of id order on purpose: the route sorts packages before it digests them.
+        let mut packages = vec![
+            json!({"package_id": PACKAGE, "commands": [{"id": "start", "role_floor": "editor", "callable": false}], "streams": []}),
+            json!({"package_id": "org.example.bi-push", "commands": [], "streams": [{"id": "rows", "role_floor": "viewer", "subscribable": true}]}),
+        ];
+        // Like the bus: build identity only for the local identity.
+        if caller.did == LOCAL && caller.role_ceiling == fe_policy::RoleLevel::Owner {
+            for package in &mut packages {
+                package["version"] = json!("0.1.0");
+                package["content_hash"] = json!("ab");
+                package["capability_digest"] = json!("cd");
+            }
+        }
+        packages
     }
     fn ingress(&self, call: IngressCall) -> Result<oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal> {
         self.seen.lock().unwrap().ingress.push(call);
@@ -434,6 +456,36 @@ async fn extensions_api_journey() {
     assert_eq!(host.seen.lock().unwrap().admin.last().unwrap().1, AdminVerb::KillListOverride);
     let mismatch = gui(host.as_ref(), op(AdminVerb::KillListOverride, None, json!({"refuse": "confirmation-mismatch"}))).unwrap_err();
     assert_eq!((mismatch.status, mismatch.code), (409, "confirmation-mismatch"));
+
+    // Discovery (AGENTS.md §extensions "Discovery"): a viewer token reads the host's catalog for an in-scope petal,
+    // packages sorted by id under a digest of exactly what was returned.
+    let viewer = ApiClaims { max_role: "viewer".into(), ..claims(LOCAL) };
+    let catalog = list_extension_commands(host.as_ref(), &viewer, ApiCallerKind::Rest, true, PETAL).unwrap();
+    assert_eq!(catalog["petal_id"], PETAL);
+    let ids: Vec<&str> = catalog["packages"].as_array().unwrap().iter().map(|p| p["package_id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["org.example.bi-push", PACKAGE]);
+    assert_eq!(catalog["packages"][1]["commands"][0], json!({"id": "start", "role_floor": "editor", "callable": false}));
+    let digest = catalog["catalog_digest"].as_str().unwrap();
+    assert!(digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()), "{digest}");
+    assert!(catalog["packages"][0].get("content_hash").is_none(), "a delegated viewer is remote: no build identity");
+    // The Owner's local token gets build identity, and the digest covers what each caller received.
+    let owned = list_extension_commands(host.as_ref(), &claims(LOCAL), ApiCallerKind::Rest, true, PETAL).unwrap();
+    assert_eq!(owned["packages"][0]["content_hash"], "ab");
+    assert_ne!(owned["catalog_digest"], catalog["catalog_digest"]);
+    // MCP parity: the same core with caller kind mcp answers the identical document.
+    let via_mcp = list_extension_commands(host.as_ref(), &viewer, ApiCallerKind::Mcp, true, PETAL).unwrap();
+    assert_eq!(via_mcp, catalog);
+    assert_eq!(
+        host.seen.lock().unwrap().discovered_by,
+        vec![caller_of(&viewer, ApiCallerKind::Rest), caller_of(&claims(LOCAL), ApiCallerKind::Rest), caller_of(&viewer, ApiCallerKind::Mcp)]
+    );
+    // An out-of-scope petal is the uniform not-found and never reaches the host.
+    assert_eq!(list_extension_commands(host.as_ref(), &viewer, ApiCallerKind::Rest, false, PETAL).unwrap_err(), ExtError::not_found());
+    assert_eq!(host.seen.lock().unwrap().discovered_by.len(), 3);
+    // A petal with nothing exposed answers an empty catalog with a different digest.
+    let empty = list_extension_commands(host.as_ref(), &viewer, ApiCallerKind::Rest, true, "petal-2").unwrap();
+    assert_eq!(empty["packages"], json!([]));
+    assert_ne!(empty["catalog_digest"], catalog["catalog_digest"]);
 }
 
 #[tokio::test]

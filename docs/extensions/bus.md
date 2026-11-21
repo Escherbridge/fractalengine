@@ -303,8 +303,26 @@ the log once it becomes rows.
 |---|---|
 | REST | `POST /api/v1/petals/{petal_id}/extensions/{package_id}/commands/{command}`, body `{"args": {…}}`, reply `ApiResponse` with the result in `data`. |
 | WS (`/ws`) | Extension streams only. Client: `{"type": "bus_subscribe", "petal_id", "source": "<package_id>/<stream>"}` and `{"type": "bus_unsubscribe", "sub"}`. Server: `{"type": "bus_subscribed", "sub", "source"}` and `{"type": "bus_event", …envelope}`. Unknown, foreign and forbidden targets get the identical denial `/ws` already gives (`ws_unknown_and_foreign_ids_get_identical_denials`). Host streams keep their existing WS/REST paths. |
-| MCP | `extension_command {petal_id, package_id, command, args}`; `list_extensions` (read-only). |
+| REST discovery | `GET /api/v1/petals/{petal_id}/extension-commands`: the commands and streams the caller may use at the petal (below). |
+| MCP | `extension_command {petal_id, package_id, command, args}`; `list_extensions` (read-only); `list_extension_commands {petal_id}` (discovery, read-only). |
 | Portal IPC (`fe.portal.v1`) | One more broker client; table below. |
+
+**Discovery.** A viewer token whose scope covers the petal reads
+
+```json
+{"petal_id":"P","catalog_digest":"<blake3 of the canonical packages array>","packages":[{"package_id":"org.example.fleet-sim",
+ "version":"0.1.0","content_hash":"…","capability_digest":"…",
+ "commands":[{"id":"start","description":"…","role_floor":"editor","rate_hz":1.0,"external":false,"args_schema":{…},"callable":true}],
+ "streams":[{"id":"positions","description":null,"role_floor":"viewer","max_rate_hz":4.0,"max_event_bytes":4096,"external":false,"subscribable":true}]}]}
+```
+
+The broker replays checks 1-4 of §4 for each declared entry (and the stream equivalents of §3) without spending
+any rate budget or writing an audit row. A remote caller sees only entries a call or subscribe would admit, so
+the listing reveals nothing the uniform not-found hides; a local caller sees every entry, with `callable` or
+`subscribable` false below its role floor. `version`, `content_hash` and `capability_digest` are sent to local
+callers only, so a remote caller cannot fingerprint the installed build; `catalog_digest` covers exactly what the
+caller received. Packages and entries are sorted by id; caps are the effective ones
+(§6). An out-of-scope petal is the uniform not-found.
 
 **Portal IPC mapping** (portal_surface_20261107 §6.4; caller kind `portal`, identity = local DID,
 grants = the bundle manifest's declarations ∩ consent):
@@ -394,6 +412,10 @@ With a fake query source, a fake scene feed and a fake readings feed:
 9. An extension caller that spends its command budget gets `rate-limited` while a `ui` call to the
    same command in the same second succeeds (per-caller keying, §4 check 6); a call to a package
    with no instance at the petal answers the extension caller `not-available`.
+10. Discovery (§8): a remote caller lists only the external command it could call; a delegated
+    viewer token is remote unless verified as the loopback client, which then sees `start` with
+    `callable: false`; twenty listings later the remote caller still holds its whole command budget,
+    and no listing wrote an audit row.
 
 ## 11. Decision record
 

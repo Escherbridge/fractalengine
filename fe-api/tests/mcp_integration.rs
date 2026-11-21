@@ -52,12 +52,12 @@ use fractalengine_test_harness::api::ApiHarness;
 /// plus 5 sim = 37. agent_vision_20261031 added `get_camera` (shares
 /// `ToolSeam::Screenshot` with `screenshot`), for 38; its folded-in
 /// `agent_input_surface_20261031` added `inject_input` (its own
-/// `ToolSeam::Input`), for 39 total; the extension platform adds 5 host-gated
-/// tools (`list_extensions`, `extension_command`, `list_bindings`,
+/// `ToolSeam::Input`), for 39 total; the extension platform adds 6 host-gated
+/// tools (`list_extensions`, `extension_command`, `list_extension_commands`, `list_bindings`,
 /// `set_binding`, `clear_binding`) beyond the original table.
 /// (`list_roles`, `assign_role`, `revoke_role` are DB-backed; the other five
 /// require peering/diagnostics bridges).
-const EXPECTED_TOOLS: [&str; 63] = [
+const EXPECTED_TOOLS: [&str; 64] = [
     "get_hierarchy",
     "create_verse",
     "create_fractal",
@@ -119,6 +119,7 @@ const EXPECTED_TOOLS: [&str; 63] = [
     // Extension platform: hosts wired by the GUI binary only (ToolSeam::Extensions / Bindings, §extensions)
     "list_extensions",
     "extension_command",
+    "list_extension_commands",
     "list_bindings",
     "set_binding",
     "clear_binding",
@@ -1248,6 +1249,7 @@ async fn tools_list_inventory() {
                         | "ui_logs"
                         | "list_extensions"
                         | "extension_command"
+                        | "list_extension_commands"
                         | "list_bindings"
                         | "set_binding"
                         | "clear_binding"
@@ -1311,6 +1313,7 @@ async fn tools_list_inventory() {
                         | "ui_logs"
                         | "list_extensions"
                         | "extension_command"
+                        | "list_extension_commands"
                         | "list_bindings"
                         | "set_binding"
                         | "clear_binding"
@@ -1351,6 +1354,7 @@ async fn tools_list_inventory() {
                         | "ui_logs"
                         | "list_extensions"
                         | "extension_command"
+                        | "list_extension_commands"
                         | "list_bindings"
                         | "set_binding"
                         | "clear_binding"
@@ -2543,9 +2547,9 @@ async fn every_scoped_tool_rejects_a_foreign_scope_token() {
         );
     }
     // 23 + set_petal_render_distance (S6) + the four CDL-SPEC10 device tools,
-    // + extension_command (PetalArg) + the three BindingTarget binding tools
+    // + extension_command and list_extension_commands (PetalArg) + the three BindingTarget binding tools
     // + the four VerseArg peering/role tools (issue_verse_invite, list_roles, assign_role, revoke_role).
-    assert_eq!(scoped, 41, "every non-Global/None row is scope-checked");
+    assert_eq!(scoped, 42, "every non-Global/None row is scope-checked");
     assert!(
         model.lock().unwrap().log.is_empty(),
         "no denied call may write"

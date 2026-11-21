@@ -96,6 +96,34 @@ subscribe (`not-available`), never left silently stale.
   by an *extension* caller is mapped: `invalid-input` → `invalid-input`, `refused` → `policy-denied`,
   `failed` → `backend` (`CommandError::into_host_error`). REST keeps 400/409/502.
 
+## §discovery (fe-cli S1, 2026-11-20)
+
+`Bus::exposed_at(caller, petal)` lists the commands and streams of the active instances at a petal for a CLI or
+agent to build verbs from (fe-api `GET /api/v1/petals/{p}/extension-commands`, MCP `list_extension_commands`).
+
+- **One predicate, no drift.** Checks 3-4 live in `reach` (remote reach under `external` + verse policy, then
+  the capped role); checks 1-4 for a command are `reach_command`, which `admit_call` now calls first. Discovery
+  calls the same `reach_command` per declared command, and for streams the same `lookup_producer` + `reach` that
+  `plan_client` uses. Changing a check changes calls, subscriptions and discovery together.
+- **Read-only.** No bucket is touched (check 6 is after the shared predicate), no `Effects`, so no audit row; a
+  refused entry's error text is built and dropped. Verdicts are taken under the lock (role and policy reads are
+  in-memory, §sources) and the JSON is rendered after it is released.
+- **Visibility.** A remote caller sees an entry only when a call or subscribe would pass checks 1-4, so the
+  listing never reveals what the uniform not-found hides; a package with nothing visible is omitted. A local
+  caller sees every entry, with `callable` / `subscribable` false below its floor. For commands `local` is
+  normalised exactly as for calls: `exposed_at` like `call_command`, `exposed_at_local_client` like
+  `call_command_local_client` (the binary picks by `is_local_client`). For streams `subscribable` follows the
+  rule the subscribe path enforces (`open_client`: local only at an Owner ceiling), so a capped loopback client
+  is never told it can subscribe to a stream the subscription would refuse. Extension and portal caller kinds
+  get an empty list.
+- **Build identity is local-only.** `version`, `content_hash` and `capability_digest` are omitted (keys absent)
+  for a non-local caller: only the local CLI needs them (cache key, help), and a remote caller must not
+  fingerprint the installed build (minimal exposure, coordinator steer 2026-11-20).
+- **Shape.** Packages and entries sorted by id; caps are the effective ones (`rate_hz` ≤ `MAX_COMMAND_RATE_HZ`,
+  stream rate and size under the §6 ceilings). `capability_digest` is the consented digest the binary puts on
+  `InstanceSpec` (`PackageFacts::capability_digest`), not one recomputed from the parsed manifest (re-serialising
+  changes number text and defaults, so it would not match the consent record).
+
 ## §clients — UI, WS and portal IPC
 
 `open_client(did, kind, grants)` returns a `ClientHandle` whose `notify` fires when events queue; the

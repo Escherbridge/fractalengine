@@ -1,0 +1,38 @@
+[package]
+name = "fe-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Local-only operator CLI for FractalEngine (loopback REST/MCP; never executes extension code)"
+
+[lib]
+name = "fe_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fe"
+path = "src/main.rs"
+
+# Hard rule: no fe-plugin / wasm runtime here (see AGENTS.md).
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { workspace = true }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+# tests/cli_journey.rs only: a real fe-api router + real DB thread on loopback, and the catalog drift leg.
+fe-api = { path = "../../fe-api" }
+fe-database = { path = "../../fe-database" }
+fe-runtime = { path = "../../fe-runtime" }
+fe-identity = { path = "../../fe-identity" }
+fe-policy = { path = "../../fe-policy" }
+anyhow = { workspace = true }
+axum = { workspace = true }
+crossbeam = { workspace = true }
+tempfile = "3"

@@ -258,6 +258,10 @@ pub trait ExtensionHost: Send + Sync {
         command: &str,
         args: &Value,
     ) -> Result<CommandReply, HostRefusal>;
+    /// The `packages[]` of the discovery route: what `caller` may learn of at a petal (AGENTS.md §extensions "Discovery").
+    fn exposed(&self, _caller: &ApiCaller, _petal_id: &str) -> Vec<Value> {
+        vec![]
+    }
     /// Route one request to the accept-mode ingress mount.
     fn ingress(&self, call: IngressCall) -> Result<oneshot::Receiver<Option<IngressAnswer>>, IngressRefusal>;
     /// Admit a websocket on an accept-mode endpoint (role floor, `max_connections` -> `TooManyRequests`).
@@ -609,6 +613,52 @@ pub async fn command(
     }
 }
 
+/// `GET /api/v1/petals/{petal_id}/extension-commands` and MCP `list_extension_commands`: the extension commands and
+/// streams the caller may learn of at a petal; an unauthorized petal is the uniform not-found.
+pub fn list_extension_commands(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    kind: ApiCallerKind,
+    petal_authorized: bool,
+    petal_id: &str,
+) -> Result<Value, ExtError> {
+    gate(host, claims)?;
+    exposed_catalog(host, claims, kind, petal_authorized, petal_id)
+}
+
+/// The discovery document after the gate: packages sorted by id, `catalog_digest` = blake3 of their canonical JSON.
+fn exposed_catalog(
+    host: &dyn ExtensionHost,
+    claims: &ApiClaims,
+    kind: ApiCallerKind,
+    petal_authorized: bool,
+    petal_id: &str,
+) -> Result<Value, ExtError> {
+    if !petal_authorized {
+        return Err(ExtError::not_found());
+    }
+    let mut packages = host.exposed(&caller_of(claims, kind), petal_id);
+    packages.sort_by(|a, b| a["package_id"].as_str().cmp(&b["package_id"].as_str()));
+    let canonical = format!("[{}]", packages.iter().map(canonical_json).collect::<Vec<_>>().join(","));
+    let catalog_digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+    Ok(json!({ "petal_id": petal_id, "catalog_digest": catalog_digest, "packages": packages }))
+}
+
+/// Sorted-keys, no-whitespace JSON (the rule fe-plugin's `bus::canonical_json` follows).
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Array(items) => format!("[{}]", items.iter().map(canonical_json).collect::<Vec<_>>().join(",")),
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let entries: Vec<String> =
+                keys.into_iter().map(|key| format!("{}:{}", Value::String(key.clone()), canonical_json(&map[key]))).collect();
+            format!("{{{}}}", entries.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Request parts the ingress mount hands over (before stripping).
 #[derive(Debug, Clone)]
 pub struct IngressRequestParts {
@@ -849,6 +899,7 @@ pub fn routes(host: Arc<dyn ExtensionHost>) -> Router<Arc<ApiState>> {
         .route("/api/v1/extensions/{installation}", get(get_status).delete(delete_uninstall))
         .route("/api/v1/extensions/{installation}/audit", get(get_audit))
         .route("/api/v1/extensions/{installation}/{verb}", post(post_installation_verb))
+        .route("/api/v1/petals/{petal_id}/extension-commands", get(get_extension_commands))
         .route(
             "/api/v1/petals/{petal_id}/extensions/{package_id}/commands/{command}",
             post(post_command),
@@ -1059,6 +1110,20 @@ async fn post_command(
         )
         .await,
     )
+}
+
+async fn get_extension_commands(
+    State(state): State<Arc<ApiState>>,
+    Extension(host): Extension<ExtensionHostHandle>,
+    Extension(claims): Extension<ApiClaims>,
+    Path(petal_id): Path<String>,
+) -> Response {
+    // Gated once, before the scope lookup (a remote token is charged one rate unit per request).
+    if let Err(e) = gate(host.0.as_ref(), &claims) {
+        return error_response(e);
+    }
+    let authorized = authorized_petal_scope(&state, &claims, &petal_id).await.is_some();
+    respond(exposed_catalog(host.0.as_ref(), &claims, ApiCallerKind::Rest, authorized, &petal_id))
 }
 
 async fn any_ingress_root(

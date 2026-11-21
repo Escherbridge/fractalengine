@@ -4,11 +4,33 @@ use super::{Guard, shared};
 use bevy_egui::egui;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-static EPOCH: AtomicU64 = AtomicU64::new(1);
-static OBSERVED: AtomicU64 = AtomicU64::new(1);
-static POISONED: AtomicBool = AtomicBool::new(false);
-static NATIVE_DIALOGS: AtomicUsize = AtomicUsize::new(0);
-static PORTAL_UNPROVED: AtomicBool = AtomicBool::new(false);
+// Process-wide in production; per-thread under test so parallel tests cannot invalidate each other's
+// passes (see AGENTS.md "Test isolation of surface state").
+#[cfg(test)]
+struct PerThread<A: 'static>(&'static std::thread::LocalKey<&'static A>);
+#[cfg(test)]
+impl<A> std::ops::Deref for PerThread<A> {
+    type Target = A;
+    fn deref(&self) -> &A { self.0.with(|cell| *cell) }
+}
+#[cfg(test)]
+macro_rules! surface_global {
+    ($name:ident: $ty:ty = $init:expr) => {
+        static $name: PerThread<$ty> = {
+            thread_local!(static CELL: &'static $ty = Box::leak(Box::new($init)));
+            PerThread(&CELL)
+        };
+    };
+}
+#[cfg(not(test))]
+macro_rules! surface_global {
+    ($name:ident: $ty:ty = $init:expr) => { static $name: $ty = $init; };
+}
+surface_global!(EPOCH: AtomicU64 = AtomicU64::new(1));
+surface_global!(OBSERVED: AtomicU64 = AtomicU64::new(1));
+surface_global!(POISONED: AtomicBool = AtomicBool::new(false));
+surface_global!(NATIVE_DIALOGS: AtomicUsize = AtomicUsize::new(0));
+surface_global!(PORTAL_UNPROVED: AtomicBool = AtomicBool::new(false));
 
 #[allow(deprecated)] // try_update needs Rust 1.95; MSRV is 1.91
 pub fn transition() {

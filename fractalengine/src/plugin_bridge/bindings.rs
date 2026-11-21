@@ -392,6 +392,16 @@ impl ExtensionHost for BusExtensionHost {
         Ok(rx)
     }
 
+    fn exposed(&self, caller: &ApiCaller, petal_id: &str) -> Vec<Value> {
+        // The caller normalisation `call_command` uses, so discovery and calls agree on who is local.
+        let bus_caller = self.bus_caller(caller);
+        if self.is_local_client(caller) {
+            self.parts.bus.exposed_at_local_client(&bus_caller, petal_id)
+        } else {
+            self.parts.bus.exposed_at(&bus_caller, petal_id)
+        }
+    }
+
     fn ingress(
         &self,
         call: IngressCall,

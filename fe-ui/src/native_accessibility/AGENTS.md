@@ -328,3 +328,13 @@ placement. Complete fixed/numeric footprints move above occupied responses or
 omit; the native producer inventory and authority are unchanged. The host orders
 outer EndPass after CameraUpdateSystems and TransformSystems::Propagate, retaining
 EndPass -> ProcessOutput -> Owner observation -> provider handoff/annotation.
+
+## Test isolation of surface state
+
+surface.rs EPOCH/OBSERVED/POISONED/NATIVE_DIALOGS/PORTAL_UNPROVED are process-wide in production
+but per-thread under cfg(test) (PerThread + surface_global!). Any parallel test that opened or closed
+a dialog (UiManager::replace_dialog), switched an Inspector tab or entered a NativeDialog bumped the
+shared EPOCH/OBSERVED mid-frame, so the long confirmation journey's passes were invalidated, no
+bounded Petal read was submitted and navigation_ui_journey `reply()` found an empty channel (CI
+"Test sweep" flake on Linux release). Each test runs on its own thread, so the journey now sees only
+its own transitions; production semantics are unchanged.

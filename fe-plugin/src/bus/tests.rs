@@ -160,6 +160,7 @@ fn spec(installation_id: &str, manifest: Value) -> InstanceSpec {
     InstanceSpec {
         installation_id: installation_id.into(),
         content_hash: "ab".repeat(32),
+        capability_digest: "ef".repeat(32),
         verse_id: "01JVERSE".into(),
         petal_id: PETAL.into(),
         identity_did: LOCAL.into(),
@@ -176,7 +177,7 @@ fn fleet_manifest() -> Value {
             "commands": [
                 { "id": "start", "role_floor": "editor", "rate_hz": 1,
                   "args_schema": { "type": "object", "properties": { "node_id": { "type": "string", "maxLength": 128 } }, "additionalProperties": false } },
-                { "id": "ping", "role_floor": "viewer", "rate_hz": 10 }
+                { "id": "ping", "description": "Liveness probe", "role_floor": "viewer", "rate_hz": 10, "external": true }
             ]
         } }
     })
@@ -344,6 +345,59 @@ fn bus_journey_queries_streams_commands_and_audit() {
     // G1: a delegated token of this node carries the local DID under a viewer ceiling; it is not local (same not-found).
     let delegated = Caller { role_ceiling: Some(fe_policy::RoleLevel::Viewer), ..rest.clone() };
     assert_eq!(bus.call_command(&delegated, PETAL, FLEET, "start", &json!({})).unwrap_err(), BusRefusal::NotFound);
+
+    // Discovery (bus/AGENTS.md §discovery): checks 1-4 replayed with no rate spent and no audit row.
+    let audited = audit.0.lock().unwrap().len();
+    let ids = |packages: &[Value], group: &str| -> Vec<(String, Value)> {
+        packages
+            .iter()
+            .flat_map(|package| package[group].as_array().cloned().unwrap_or_default())
+            .map(|entry| {
+                let verdict = entry.get("callable").or_else(|| entry.get("subscribable")).cloned().unwrap_or_default();
+                (entry["id"].as_str().unwrap_or_default().to_string(), verdict)
+            })
+            .collect()
+    };
+    // A remote caller learns only what a call would admit: the external `ping`; never `start`, the local-only stream
+    // or a package that exposes nothing.
+    let seen_remote = bus.exposed_at(&remote, PETAL);
+    assert_eq!(seen_remote.len(), 1);
+    assert_eq!(seen_remote[0]["package_id"], json!(FLEET));
+    for key in ["version", "content_hash", "capability_digest"] {
+        assert!(seen_remote[0].get(key).is_none(), "a remote caller never sees build identity ({key})");
+    }
+    assert_eq!(
+        seen_remote[0]["commands"],
+        json!([{ "id": "ping", "description": "Liveness probe", "role_floor": "viewer", "rate_hz": 10.0, "external": true, "args_schema": null, "callable": true }])
+    );
+    assert_eq!(seen_remote[0]["streams"], json!([]));
+    // A delegated viewer token is remote too, unless the host verified it as its loopback client: then it is local for
+    // commands and sees every entry, `start` flagged below its floor. Its stream client stays capped (remote), so the
+    // local-only stream is listed but not subscribable, exactly as the subscribe answers.
+    assert_eq!(bus.exposed_at(&delegated, PETAL), seen_remote);
+    let seen_local = bus.exposed_at_local_client(&delegated, PETAL);
+    assert_eq!(
+        (seen_local[0]["version"].clone(), seen_local[0]["content_hash"].clone(), seen_local[0]["capability_digest"].clone()),
+        (json!("0.1.0"), json!("ab".repeat(32)), json!("ef".repeat(32)))
+    );
+    assert_eq!(ids(seen_local.as_slice(), "commands"), [("ping".to_string(), json!(true)), ("start".to_string(), json!(false))]);
+    assert_eq!(ids(seen_local.as_slice(), "streams"), [("positions".to_string(), json!(false))]);
+    let owner_client = Caller { role_ceiling: Some(RoleLevel::Owner), ..rest.clone() };
+    assert_eq!(ids(bus.exposed_at_local_client(&owner_client, PETAL).as_slice(), "streams"), [("positions".to_string(), json!(true))]);
+    assert!(bus.exposed_at(&Caller { kind: CallerKind::Extension, package_id: Some(FLEET.into()), ..rest.clone() }, PETAL).is_empty());
+    // Twenty looks later the remote caller still holds its whole budget: ten pings land, the eleventh is rate-limited.
+    for _ in 0..20 {
+        bus.exposed_at(&remote, PETAL);
+    }
+    assert_eq!(audit.0.lock().unwrap().len(), audited, "discovery writes no audit row");
+    // The capped loopback client's stream subscribe is refused, matching its `subscribable: false` above.
+    let capped = bus.open_client_capped(LOCAL, CallerKind::Rest, Some(RoleLevel::Viewer), ClientGrants::Api);
+    assert_eq!(bus.client_subscribe(capped.id, PETAL, &format!("{FLEET}/positions"), &json!({})).unwrap_err(), BusRefusal::NotFound);
+    bus.close_client(capped.id);
+    let pings: Vec<_> = (0..11).map(|_| bus.call_command(&remote, PETAL, FLEET, "ping", &json!({}))).collect();
+    assert_eq!(pings.iter().filter(|outcome| outcome.is_ok()).count(), 10);
+    assert!(matches!(pings[10], Err(BusRefusal::RateLimited(_))));
+    assert_eq!(bus.dispatch(&fleet, &mut Guest::default(), 64), 10);
 
     // ---- A mounted portal bundle (portal ipc-v1.md §5-§6, A-13) -----------------------------------------------
 

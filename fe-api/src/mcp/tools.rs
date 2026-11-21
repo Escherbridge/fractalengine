@@ -829,6 +829,22 @@ pub(super) fn extension_command(call: ToolCall<'_>) -> ToolFuture<'_> {
     })
 }
 
+pub(super) fn list_extension_commands(call: ToolCall<'_>) -> ToolFuture<'_> {
+    Box::pin(async move {
+        let host = extension_host(&call)?;
+        let petal_id = call.args.get("petal_id").and_then(Value::as_str).ok_or_else(|| "petal_id is required".to_string())?;
+        // The dispatcher resolved the petal scope and checked token containment: it is authorized.
+        crate::extensions::list_extension_commands(
+            host,
+            call.claims,
+            crate::extensions::ApiCallerKind::Mcp,
+            call.scope.is_some(),
+            petal_id,
+        )
+        .map_err(|e| e.message)
+    })
+}
+
 /// Parse the tool arguments into a binding request type; a malformed shape is a plain argument error.
 fn binding_args<T: serde::de::DeserializeOwned>(args: &Value) -> Result<T, String> {
     serde_json::from_value(args.clone()).map_err(|e| format!("invalid binding arguments: {e}"))
@@ -1650,6 +1666,16 @@ pub(super) mod schema {
                 "args": { "type": "object", "description": "Command arguments (default {})" }
             },
             "required": ["petal_id", "package_id", "command"]
+        })
+    }
+
+    pub fn list_extension_commands() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "petal_id": { "type": "string", "description": "The petal whose extension commands and streams to list" }
+            },
+            "required": ["petal_id"]
         })
     }
 

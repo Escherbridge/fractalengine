@@ -1247,6 +1247,7 @@ mod tests {
         let spec = crate::bus::InstanceSpec {
             installation_id: "inst-1".into(),
             content_hash: "ab".repeat(32),
+            capability_digest: "cd".repeat(32),
             verse_id: "v1".into(),
             petal_id: "p1".into(),
             identity_did: LOCAL.into(),

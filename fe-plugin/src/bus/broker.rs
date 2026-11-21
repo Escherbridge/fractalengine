@@ -45,6 +45,8 @@ const PRUNE_EVERY_MS: u64 = 10_000;
 pub struct InstanceSpec {
     pub installation_id: String,
     pub content_hash: String,
+    /// The consented capability digest (manifest-v2.md §Capability digest), reported by discovery.
+    pub capability_digest: String,
     pub verse_id: String,
     pub petal_id: String,
     /// The host's local DID: every bus call of the instance is judged as it.
@@ -364,6 +366,29 @@ struct ProducerStream {
     from_portal: bool,
 }
 
+/// bus.md §4 checks 3-4 for one exposed command or stream (bus/AGENTS.md §discovery).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Check 3: a remote caller and not `external` under the verse policy.
+    Hidden,
+    /// Check 4: the caller's capped role is below the floor.
+    BelowFloor,
+    Admitted,
+}
+
+/// One package's discovery verdicts, taken under the lock and rendered after it.
+struct ExposedPackage {
+    manifest: Arc<ExtensionManifest>,
+    content_hash: String,
+    capability_digest: String,
+    /// A local caller also gets the build identity (`version`, `content_hash`, `capability_digest`).
+    local: bool,
+    /// `(index in expose.commands, callable)` for each command the caller may learn of.
+    commands: Vec<(usize, bool)>,
+    /// `(index in expose.streams, subscribable)` for each stream the caller may learn of.
+    streams: Vec<(usize, bool)>,
+}
+
 /// An active instance's exposed stream wins over a portal's declared one at the same address.
 enum ProducerLookup {
     Missing,
@@ -532,6 +557,47 @@ impl Bus {
         match caller.role_ceiling {
             Some(ceiling) if !ceiling.is_at_least(role) => ceiling,
             _ => role,
+        }
+    }
+
+    /// bus.md §4 checks 3-4 for one exposed entry; calls, client subscriptions and discovery all judge through this.
+    fn reach(&self, caller: &Caller, petal_id: &str, verse_id: &str, external: bool, floor: RoleLevel) -> Reach {
+        // 3. remote reach is opt-in per entry and per verse
+        if !caller.local && !(external && self.sources.policy.external_access_allowed(verse_id)) {
+            return Reach::Hidden;
+        }
+        // 4. the caller's role at the petal, read now
+        if !self.role_of(caller, petal_id).is_at_least(floor) {
+            return Reach::BelowFloor;
+        }
+        Reach::Admitted
+    }
+
+    /// bus.md §4 checks 1-4 for `<package_id>/<command_id>` (no rate, no audit); `admit_call` and discovery share it.
+    fn reach_command<'s>(
+        &self,
+        state: &'s BrokerState,
+        caller: &Caller,
+        petal_id: &str,
+        package_id: &str,
+        command_id: &str,
+    ) -> Result<(&'s InstanceSpec, &'s ExposedCommand), BusRefusal> {
+        let hide = |local: BusRefusal| if caller.local { local } else { BusRefusal::NotFound };
+        // 1. an active instance at the petal
+        let instance = state
+            .instances
+            .get(&InstanceKey::new(petal_id, package_id))
+            .ok_or_else(|| hide(BusRefusal::NotAvailable(format!("no active {package_id} at this petal"))))?;
+        // 2. the command is exposed
+        let command = exposed_command(&instance.spec.manifest, command_id)
+            .ok_or_else(|| hide(BusRefusal::CapabilityDenied(format!("{package_id}/{command_id} is not exposed"))))?;
+        // 3-4.
+        match self.reach(caller, petal_id, &instance.spec.verse_id, command.external == Some(true), role_level(command.role_floor)) {
+            Reach::Hidden => Err(BusRefusal::NotFound),
+            Reach::BelowFloor => {
+                Err(hide(BusRefusal::CapabilityDenied(format!("{package_id}/{command_id} needs role {:?}", command.role_floor))))
+            }
+            Reach::Admitted => Ok((&instance.spec, command)),
         }
     }
 
@@ -783,6 +849,86 @@ impl Bus {
         self.call_command_admitted(&caller, petal_id, package_id, command_id, args)
     }
 
+    /// The commands and streams `caller` may learn of at `petal_id`: checks 1-4 replayed, no rate spent, no audit
+    /// (bus/AGENTS.md §discovery). One JSON object per package, packages and entries sorted by id.
+    pub fn exposed_at(&self, caller: &Caller, petal_id: &str) -> Vec<Value> {
+        let caller = self.normalized(caller);
+        self.exposed_admitted(&caller, petal_id)
+    }
+
+    /// [`Self::exposed_at`] for a verified loopback client, normalised exactly as `call_command_local_client`.
+    pub fn exposed_at_local_client(&self, caller: &Caller, petal_id: &str) -> Vec<Value> {
+        let caller = Caller { local: caller.did == &*self.local_did, ..caller.clone() };
+        self.exposed_admitted(&caller, petal_id)
+    }
+
+    fn exposed_admitted(&self, caller: &Caller, petal_id: &str) -> Vec<Value> {
+        // The same caller kinds `call_command` accepts; extensions and portals have their own doors.
+        if !matches!(caller.kind, CallerKind::Ui | CallerKind::Rest | CallerKind::Mcp) {
+            return Vec::new();
+        }
+        let packages: Vec<ExposedPackage> = {
+            let state = self.lock();
+            let mut keys: Vec<&InstanceKey> = state.instances.keys().filter(|key| key.petal_id == petal_id).collect();
+            keys.sort();
+            let packages = keys.into_iter().filter_map(|key| self.exposed_package(&state, caller, key)).collect();
+            packages
+        };
+        packages.into_iter().map(render_exposed).collect()
+    }
+
+    /// One package's verdicts: a local caller sees every entry (flagged), a remote one only what checks 1-4 admit.
+    fn exposed_package(&self, state: &BrokerState, caller: &Caller, key: &InstanceKey) -> Option<ExposedPackage> {
+        let spec = &state.instances.get(key)?.spec;
+        let expose = spec.manifest.bus.as_ref().and_then(|bus| bus.expose.as_ref())?;
+        let verdict = |reached: bool| match (reached, caller.local) {
+            (true, _) => Some(true),
+            (false, true) => Some(false),
+            (false, false) => None,
+        };
+        // A client subscription normalises `local` with `is_local` (no loopback-client exception), so streams do too.
+        let stream_caller = self.normalized(caller);
+        let commands: Vec<(usize, bool)> = expose
+            .commands
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let reached = self.reach_command(state, caller, &key.petal_id, &key.package_id, &command.id).is_ok();
+                verdict(reached).map(|callable| (index, callable))
+            })
+            .collect();
+        let streams: Vec<(usize, bool)> = expose
+            .streams
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, stream)| {
+                // The producer as a subscription resolves it, then the same checks 3-4 (`plan_client`).
+                let reached = match lookup_producer(state, key, &stream.id) {
+                    ProducerLookup::Found(producer) => {
+                        self.reach(&stream_caller, &key.petal_id, &producer.verse_id, producer.external, producer.role_floor) == Reach::Admitted
+                    }
+                    ProducerLookup::Missing | ProducerLookup::Undeclared => return None,
+                };
+                verdict(reached).map(|subscribable| (index, subscribable))
+            })
+            .collect();
+        if commands.is_empty() && streams.is_empty() {
+            return None;
+        }
+        Some(ExposedPackage {
+            manifest: spec.manifest.clone(),
+            content_hash: spec.content_hash.clone(),
+            capability_digest: spec.capability_digest.clone(),
+            local: caller.local,
+            commands,
+            streams,
+        })
+    }
+
     fn call_command_admitted(&self, caller: &Caller, petal_id: &str, package_id: &str, command_id: &str, args: &Value) -> Result<CommandTicket, BusRefusal> {
         match caller.kind {
             CallerKind::Extension => return Err(BusRefusal::InvalidInput("extension callers use the bus.call import".into())),
@@ -824,28 +970,12 @@ impl Bus {
         args: &Value,
         now: u64,
     ) -> Result<(InstanceKey, String), BusRefusal> {
-        let remote = !caller.local;
-        let hide = |local: BusRefusal| if remote { BusRefusal::NotFound } else { local };
         let address = format!("{package_id}/{command_id}");
         let target = InstanceKey::new(petal_id, package_id);
-        // 1. an active instance at the petal
-        let instance = state
-            .instances
-            .get(&target)
-            .ok_or_else(|| hide(BusRefusal::NotAvailable(format!("no active {package_id} at this petal"))))?;
-        // 2. the command is exposed
-        let command: ExposedCommand = exposed_command(&instance.spec.manifest, command_id)
-            .cloned()
-            .ok_or_else(|| hide(BusRefusal::CapabilityDenied(format!("{address} is not exposed"))))?;
-        let installation_id = instance.spec.installation_id.clone();
-        // 3. remote reach is opt-in per command and per verse
-        if remote && !(command.external == Some(true) && self.sources.policy.external_access_allowed(&instance.spec.verse_id)) {
-            return Err(BusRefusal::NotFound);
-        }
-        // 4. the caller's role at the petal, read now
-        if !self.role_of(caller, petal_id).is_at_least(role_level(command.role_floor)) {
-            return Err(hide(BusRefusal::CapabilityDenied(format!("{address} needs role {:?}", command.role_floor))));
-        }
+        // 1-4. the predicate discovery replays (`reach_command`)
+        let (spec, command) = self.reach_command(state, caller, petal_id, package_id, command_id)?;
+        let command: ExposedCommand = command.clone();
+        let installation_id = spec.installation_id.clone();
         // 5. an extension caller lists the target and is not calling itself
         if caller.kind == CallerKind::Extension {
             let own = caller.package_id.clone().unwrap_or_default();
@@ -1669,16 +1799,16 @@ impl Bus {
                     ProducerLookup::Undeclared => return Err(not_granted()),
                     ProducerLookup::Found(producer) => producer,
                 };
-                if remote && !(producer.external && self.sources.policy.external_access_allowed(&producer.verse_id)) {
-                    return Err(BusRefusal::NotFound);
+                // Checks 3-4, shared with discovery; the consumers list binds package consumers only.
+                match self.reach(caller, petal_id, &producer.verse_id, producer.external, producer.role_floor) {
+                    Reach::Hidden => return Err(BusRefusal::NotFound),
+                    Reach::BelowFloor => return Err(not_granted()),
+                    Reach::Admitted => {}
                 }
                 if let (ClientGrants::Portal(portal), Some(consumers)) = (grants, &producer.consumers) {
                     if !consumers.contains(&portal.package_id) {
                         return Err(not_granted());
                     }
-                }
-                if !self.role_of(caller, petal_id).is_at_least(producer.role_floor) {
-                    return Err(not_granted());
                 }
                 verse_id = producer.verse_id.clone();
                 PlanKind::Stream {
@@ -2050,6 +2180,56 @@ fn exposed_stream<'a>(manifest: &'a ExtensionManifest, id: &str) -> Option<&'a E
 
 fn exposed_command<'a>(manifest: &'a ExtensionManifest, id: &str) -> Option<&'a ExposedCommand> {
     manifest.bus.as_ref()?.expose.as_ref()?.commands.as_ref()?.iter().find(|command| command.id == id)
+}
+
+/// A package's discovery document (the fe-api route's `packages[]` entry), entries sorted by id; caps are effective.
+fn render_exposed(package: ExposedPackage) -> Value {
+    let manifest = &package.manifest;
+    let expose = manifest.bus.as_ref().and_then(|bus| bus.expose.as_ref());
+    let declared_commands = expose.and_then(|expose| expose.commands.as_deref()).unwrap_or_default();
+    let declared_streams = expose.and_then(|expose| expose.streams.as_deref()).unwrap_or_default();
+    let mut commands: Vec<Value> = package
+        .commands
+        .iter()
+        .filter_map(|&(index, callable)| {
+            let command = declared_commands.get(index)?;
+            Some(json!({
+                "id": command.id,
+                "description": command.description,
+                "role_floor": command.role_floor,
+                "rate_hz": command.rate_hz.min(MAX_COMMAND_RATE_HZ),
+                "external": command.external == Some(true),
+                "args_schema": command.args_schema,
+                "callable": callable,
+            }))
+        })
+        .collect();
+    let mut streams: Vec<Value> = package
+        .streams
+        .iter()
+        .filter_map(|&(index, subscribable)| {
+            let stream = declared_streams.get(index)?;
+            Some(json!({
+                "id": stream.id,
+                "description": stream.description,
+                "role_floor": stream.role_floor.unwrap_or(RoleFloor::Viewer),
+                "max_rate_hz": stream.max_rate_hz.min(MAX_STREAM_RATE_HZ),
+                "max_event_bytes": stream.max_event_bytes.min(MAX_STREAM_EVENT_BYTES as u64),
+                "external": stream.external == Some(true),
+                "subscribable": subscribable,
+            }))
+        })
+        .collect();
+    commands.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    streams.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    let mut document = json!({ "package_id": manifest.id, "commands": commands, "streams": streams });
+    // Build identity is for local callers only: a remote one must not fingerprint the installed build.
+    if package.local {
+        document["version"] = json!(manifest.version);
+        document["content_hash"] = json!(package.content_hash);
+        document["capability_digest"] = json!(package.capability_digest);
+    }
+    document
 }
 
 fn consumed<'a>(consume: &'a [ConsumeEntry], address: &str) -> Result<&'a ConsumeEntry, HostError> {

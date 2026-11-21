@@ -42,7 +42,8 @@ fractalengine/          (workspace root)
 ├── fe-network/         libp2p network thread (no iroh dependency — its iroh_blobs/iroh_docs modules are local placeholders; the real iroh stack lives in fe-sync)
 ├── fe-webview/         Embedded webview for node webpage_url display (Tauri backend default)
 ├── fe-identity/        Identity key management
-└── fe-test-harness/    Integration test utilities
+├── fe-test-harness/    Integration test utilities
+└── tools/fe-cli/       `fe`, the loopback-only operator CLI over REST/MCP (tools/fe-cli/AGENTS.md)
 ```
 
 Dependency direction (fe-ui is the leaf that imports everything):

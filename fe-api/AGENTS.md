@@ -85,7 +85,8 @@ when a route lands.
 | Agent token bootstrap (§qa-dev-token) | Not a route: the GUI writes loopback-only API tokens (Owner where the node owns the verse) for every local verse to `FE_API_DEV_TOKEN_OUT` once the API listens; unset = off |
 | Relay advertisement (§relay-advertise) | `POST /api/v1/verses/{verse_id}/relays`, `DELETE /api/v1/verses/{verse_id}/relays` |
 | Network diagnostics (§network-diagnostics) | `GET /api/v1/network/diagnostics` (scope-confined; also MCP `get_network_diagnostics`) |
-| MCP | `POST /mcp` (`mcp::mcp_handler`) — 55-row `ToolSpec` table (length assert `mcp/mod.rs:813`): `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
+| Extensions (§extensions) | `GET /api/v1/petals/{p}/extension-commands` (discovery, viewer + petal scope), `POST /api/v1/petals/{p}/extensions/{package}/commands/{command}`, `/api/v1/petals/{p}/extensions/{package}/ingress/{endpoint}[/…]`, `GET\|PUT /api/v1/verses/{v}/extension-policy`, local-only `/api/v1/extensions[/…]` |
+| MCP | `POST /mcp` (`mcp::mcp_handler`) — 64-row `ToolSpec` table (length assert `mcp/mod.rs:859`): `screenshot`/`get_camera` only on a GUI host (either capture bridge wired), `inject_input` only when its own input bridge is wired, the 5 QA-debug tools (`ui_tree`, `ui_state`, `ui_logs`, `dialog_answers`, `window`) only when the QA-debug seam is wired (GUI host), the 5 `sim_*` only on a sim lab host (§mcp-dispatch; the table's `requires` column and the length assert in `mcp/mod.rs` are the source of truth); 16 MiB body cap + 8-way concurrency limit (§asset-ingest) |
 
 ## §existence-oracle (REST/WS denial unification, 2026-10-10)
 
@@ -2431,8 +2432,21 @@ No operation_id requires native NONE owner/anchor/provenance and zero complete a
   constructors) but an axum `Extension` over the whole router, which is how `/mcp` and `/ws` reach it; the
   stand-ins never go into `ApiHosts`, so MCP still hides the tools and `/ws` still answers not-found.
   `Method::PUT` joined the CORS list for `PUT /api/v1/bindings`.
+- **Discovery (fe-cli S1, 2026-11-20).** `GET /api/v1/petals/{petal_id}/extension-commands` and MCP
+  `list_extension_commands` (Viewer, `PetalArg`) share `list_extension_commands`: `gate`, then the petal scope
+  (`authorized_petal_scope`, verse-scoped tokens only; out of scope is the uniform not-found before the host is
+  asked), then `ExtensionHost::exposed(caller, petal)`. The trait default answers `[]`, so the relay, the absent
+  host and test fakes keep compiling and answer an empty catalog. The core sorts `packages` by `package_id` and
+  sets `catalog_digest` = blake3 of their canonical JSON (sorted keys, compact), so a client can cache by it; it
+  is not `capability_digest` (that one strips descriptions). The binary's host runs `Bus::exposed_at`, which
+  replays bus checks 1-4 with the SAME caller normalisation as `call_command` (`bus_caller`, and
+  `exposed_at_local_client` for a verified loopback client): no rate spent, no audit row, and a remote caller
+  sees only what a call would admit (fe-plugin `src/bus/AGENTS.md` §discovery). Entries report effective caps
+  (`rate_hz` ≤ 10, `max_rate_hz` ≤ 50, `max_event_bytes` ≤ 64 KiB) and `callable` / `subscribable`. Package
+  `version`, `content_hash` and `capability_digest` go to local callers only (keys absent otherwise), so a
+  remote caller cannot fingerprint the build; `catalog_digest` is over what that caller received.
 - **MCP.** `list_extensions`, `extension_command` (PetalArg: the dispatcher's petal scope is the
-  `petal_authorized` input), `list_bindings`, `set_binding`, `clear_binding` carry `ToolSeam::Extensions` /
+  `petal_authorized` input), `list_extension_commands` (same), `list_bindings`, `set_binding`, `clear_binding` carry `ToolSeam::Extensions` /
   `Bindings`: `tool_available(spec, state, hosts)` hides them (and answers "unknown tool") when the host is
   absent. The binding tools use `ScopeRule::BindingTarget`: the DISPATCHER parses `verse_id` (+ `fractal_id`,
   `petal_id`, each a ULID) and resolves it with the REST routes' `bindings::authorized_target_scope` (exact

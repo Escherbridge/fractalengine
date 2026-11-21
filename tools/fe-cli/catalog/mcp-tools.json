@@ -1,0 +1,1854 @@
+[
+  {
+    "description": "Get the full verse/fractal/petal/node hierarchy, filtered to the token scope. Requires viewer role.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_hierarchy",
+    "scope_rule": "None"
+  },
+  {
+    "description": "Create a new verse. Requires manager role (verses have no parent scope).",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "create_verse",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Create a fractal in an existing verse; a fractal_id or petal_id in the args is rejected (would escalate past the verse anchor). Requires editor role + the verse's scope.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "create_fractal",
+    "scope_rule": "HierarchyArgs(Verse)"
+  },
+  {
+    "description": "Create a petal in an existing fractal; authorized against the fractal's stored hierarchy (verse_id, if sent, must match it; a petal_id in the args is rejected). Requires editor role + scope.",
+    "inputSchema": {
+      "properties": {
+        "fractal_id": {
+          "description": "Parent fractal (its stored verse is the authz anchor)",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "verse_id": {
+          "description": "Optional; must match the fractal's stored verse",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fractal_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "create_petal",
+    "scope_rule": "HierarchyArgs(Fractal)"
+  },
+  {
+    "description": "Create an empty node in an existing petal; authorized against the petal's stored hierarchy (verse_id/fractal_id, if sent, must match it). Requires editor role + scope.",
+    "inputSchema": {
+      "properties": {
+        "fractal_id": {
+          "description": "Optional; must match the petal's stored fractal",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "Parent petal (its stored hierarchy is the authz anchor)",
+          "type": "string"
+        },
+        "position": {
+          "description": "[x, y, z] in world units (meters × the petal map's world_scale; 1 world unit = 1 m when world_scale is 1)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "verse_id": {
+          "description": "Optional; must match the petal's stored verse",
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "create_node",
+    "scope_rule": "HierarchyArgs(Petal)"
+  },
+  {
+    "description": "Update a node's position, rotation, and scale (persisted asynchronously, broadcast to live subscribers). Requires editor role + the node's scope.",
+    "inputSchema": {
+      "properties": {
+        "node_id": {
+          "type": "string"
+        },
+        "position": {
+          "description": "[x, y, z] in world units (meters × the petal map's world_scale; 1 world unit = 1 m when world_scale is 1)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "rotation": {
+          "description": "[x, y, z] Euler angles in radians, XYZ order (the in-app inspector displays degrees)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "scale": {
+          "description": "[x, y, z] unitless scale multipliers (1.0 = authored size)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "node_id",
+        "position",
+        "rotation",
+        "scale"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "update_transform",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Read an object's full payload by node id (common fields + type-specific stamp/earthwork/path data). Tombstoned nodes read as not found. Requires viewer role + scope.",
+    "inputSchema": {
+      "properties": {
+        "node_id": {
+          "description": "Node ULID or promoted-stamp instance id (<ulid>#inst-<n>)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "read_node",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Read a durable object journal page with coverage metadata and per-object commit versions. A page holds up to `limit` entries (default 20, max 200) and ends early once its entries reach 4 MiB (always at least one); continue from next_after_version until it is null. Requires viewer role and current or retained object scope.",
+    "inputSchema": {
+      "properties": {
+        "after_version": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_node_history",
+    "scope_rule": "HistoryNodeArg(\"node_id\")"
+  },
+  {
+    "description": "Read the object's state at one exact commit version (the stored state of that commit, after checking the interval since its baseline), with explicit unavailable/incomplete coverage. Requires viewer role and current or retained object scope.",
+    "inputSchema": {
+      "properties": {
+        "at_version": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "at_version"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "read_node_at_version",
+    "scope_rule": "HistoryNodeArg(\"node_id\")"
+  },
+  {
+    "description": "Commit a typed property replacement/removal or full transform and return persisted state plus history_version. Requires editor role and object scope.",
+    "inputSchema": {
+      "properties": {
+        "mutation": {
+          "description": "Tagged op: property_set {key,value}, property_deleted {key}, full_transform {position,rotation,scale}; rotation radians",
+          "type": "object"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "mutation"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "commit_node_mutation",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Resolve a node id to its stable fe://verse/fractal/petal/node endpoint URI. Requires viewer role + scope.",
+    "inputSchema": {
+      "properties": {
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "node_address",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Sync-safe tombstone delete of a node (never a raw drop; survives P2P merge). Set cascade=true to tombstone the whole subtree atomically. Requires editor role + scope; authorized by fe-policy.",
+    "inputSchema": {
+      "properties": {
+        "cascade": {
+          "description": "Tombstone the node's whole descendant subtree in one atomic op",
+          "type": "boolean"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "delete_node",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Materialize a full addressable node for a single stamp instance (lazy promotion, idempotent). Requires editor role + petal scope; authorized by fe-policy.",
+    "inputSchema": {
+      "properties": {
+        "instance_index": {
+          "description": "Zero-based instance index within the stamp group",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path_id": {
+          "description": "Owning path node id whose curve the stamp follows",
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "path_id",
+        "instance_index"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "promote_instance",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Run a distributed timeseries query over a petal's sharded IoT fabric. The query fans out to online peers hosting the petal's shards and merges commutatively (aggregate: mean/min/max/count as an exact monoid; raw rows: union deduped by reading_id; latest: max timestamp per anchor). Results carry covered/missing shard honesty metadata — an offline peer's shards are invisible at replication factor 1, served from a surviving mirror at R>=2. Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "end_ms": {
+          "description": "Window end, epoch ms exclusive (required for window_aggregate and readings_in_window)",
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Query shape: window_aggregate = per-anchor mean/min/max/count over a half-open [start_ms, end_ms) window; latest_per_anchor = newest reading per (anchor, metric); readings_in_window = raw rows in the window; all_readings = the whole merged view of the petal",
+          "enum": [
+            "window_aggregate",
+            "latest_per_anchor",
+            "readings_in_window",
+            "all_readings"
+          ],
+          "type": "string"
+        },
+        "metric": {
+          "description": "Metric name (required for window_aggregate and readings_in_window; optional filter for latest_per_anchor)",
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "The petal whose shard fabric is queried",
+          "type": "string"
+        },
+        "start_ms": {
+          "description": "Window start, epoch ms inclusive (required for window_aggregate and readings_in_window)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "petal_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "query_timeseries",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Start a deterministic simulation-lab session (fe-sim): spawns in-process simulated peers on a virtual network and prepares the scripted fleet. One session at a time. Requires owner role and a host started as a sim lab.",
+    "inputSchema": {
+      "properties": {
+        "script": {
+          "description": "A ScenarioScript object, its JSON text, or a built-in name: default | sharded_query | offline_degraded"
+        }
+      },
+      "required": [
+        "script"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "sim_start",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Stop the live sim session: settle every peer, return the canonical outcome fingerprint, and tear it down. Requires owner role.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "sim_stop",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Snapshot the live sim session (peers + online state, action cursor, sim clock offset, readings ingested, injected faults, network counters); {running:false} when idle. Requires owner role.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "sim_status",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Execute the next n scripted actions (fleet ticks, scripted faults, distributed queries) of the live sim session; returns the queries completed. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "n": {
+          "description": "Actions to execute (default 1)",
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "sim_step",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Apply a network fault to the live sim session NOW: peer_offline / peer_online {peer}, partition {groups}, heal, set_latency {latency_ms}. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "event": {
+          "description": "A ScriptedEvent, e.g. {\"kind\":\"peer_offline\",\"peer\":\"alice\"} (at_ms is ignored)",
+          "type": "object"
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "sim_inject_fault",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Upload a GLB (binary glTF 2.0, textures embedded) as base64; stored content-addressed (BLAKE3) and registered as an asset row. Max 11 MiB decoded over MCP (the /mcp body cap is 16 MiB); larger GLBs (up to 256 MiB) go through REST multipart POST /api/v1/petals/{petal_id}/assets. Returns {asset_id, content_hash, size_bytes}. Requires editor role + the anchor petal's scope.",
+    "inputSchema": {
+      "properties": {
+        "data_base64": {
+          "description": "Standard base64 of a GLB (binary glTF 2.0) file, max 11 MiB decoded (use REST multipart for larger)",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display/file name for the asset",
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "Authz anchor petal (asset rows themselves are node-global)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "name",
+        "data_base64"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "upload_asset",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Create a node in a petal bound to an uploaded asset_id, at position (world units) with Euler XYZ rotation (radians) and scale. The asset must have been uploaded to a petal within the token's scope, or already be used by a node within it (a legacy asset with no upload petal may also be unplaced). Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "asset_id": {
+          "description": "From upload_asset",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "position": {
+          "description": "[x, y, z] in world units (meters × the petal map's world_scale; 1 world unit = 1 m when world_scale is 1)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "rotation": {
+          "description": "[x, y, z] Euler angles in radians, XYZ order (the in-app inspector displays degrees)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "scale": {
+          "description": "[x, y, z] unitless scale multipliers (1.0 = authored size)",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "petal_id",
+        "asset_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "place_asset",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Set one custom property (any JSON value) on a node. Requires editor role + the node's scope.",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "value": {
+          "description": "Any non-null JSON value (use delete_property to remove)"
+        }
+      },
+      "required": [
+        "node_id",
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "set_property",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Read all custom properties of a node. Requires viewer role + the node's scope.",
+    "inputSchema": {
+      "properties": {
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_properties",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Read a field's enforced property schema and immutable revision list. Requires viewer role and the stored definition scope.",
+    "inputSchema": {
+      "properties": {
+        "field_def_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field_def_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_field_schema",
+    "scope_rule": "FieldDefArg(\"field_def_id\")"
+  },
+  {
+    "description": "Install the next bounded property-schema revision after validating current values. No implicit defaults or migrations. Requires manager role and stored definition scope.",
+    "inputSchema": {
+      "properties": {
+        "descriptor": {
+          "type": "object"
+        },
+        "field_def_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field_def_id",
+        "descriptor"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "set_field_schema",
+    "scope_rule": "FieldDefArg(\"field_def_id\")"
+  },
+  {
+    "description": "Delete one custom property from a node. Requires editor role + the node's scope.",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "key"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "delete_property",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Create a waypoint node at WGS84 lat/lon/ele, projected through the petal's terrain origin. Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "ele": {
+          "description": "Elevation, meters (default 0)",
+          "type": "number"
+        },
+        "lat": {
+          "description": "WGS84 latitude, degrees",
+          "type": "number"
+        },
+        "lon": {
+          "description": "WGS84 longitude, degrees",
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "name",
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "create_waypoint",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Move a waypoint node to a new WGS84 lat/lon (ele optional), reprojecting its transform. Requires editor role + the node's scope.",
+    "inputSchema": {
+      "properties": {
+        "ele": {
+          "description": "Meters (default 0)",
+          "type": "number"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lon": {
+          "type": "number"
+        },
+        "node_id": {
+          "description": "The waypoint node",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "lat",
+        "lon"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "move_waypoint",
+    "scope_rule": "NodeArg(\"node_id\")"
+  },
+  {
+    "description": "Import a GPX document (base64, max 11 MiB decoded, max 10000 points) as track/waypoint nodes in a petal. Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "data_base64": {
+          "description": "Standard base64 of a GPX 1.1 document (max 11 MiB decoded, max 10000 points)",
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "data_base64"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "import_gpx",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Set (object) or clear (null) a petal's terrain config, like REST PUT/DELETE /petals/{id}/terrain. The object must be a valid TerrainConfig; returns the stored terrain. Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "petal_id": {
+          "type": "string"
+        },
+        "terrain": {
+          "description": "A TerrainConfig object, or null to clear",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "set_petal_terrain",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Set (>= 0) or clear (null) a petal's durable residency horizon (petal.render_distance; replicates to peers), like REST PUT/DELETE /petals/{id}/render-distance. Returns the stored value. Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "petal_id": {
+          "type": "string"
+        },
+        "render_distance": {
+          "description": "World units, >= 0; null clears it (inherit the global setting)",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "set_petal_render_distance",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List a petal's visibility Groups ({id, name, visible, order}), like REST GET /petals/{id}/visibility-groups. Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_visibility_groups",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Upsert one visibility Group (name/visible/order; a new group needs a name) or delete it (delete: true), like REST PATCH/DELETE /petals/{id}/visibility-groups/{group_id}. Returns the stored registry. Requires editor role + petal scope; the DB re-checks Editor+ via fe-policy.",
+    "inputSchema": {
+      "properties": {
+        "delete": {
+          "description": "true removes the Group",
+          "type": "boolean"
+        },
+        "group_id": {
+          "description": "Stable Group id (created if absent and a name is given)",
+          "type": "string"
+        },
+        "name": {
+          "description": "1..=80 chars; required to create",
+          "type": "string"
+        },
+        "order": {
+          "description": "Display order (ascending)",
+          "type": "number"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "petal_id",
+        "group_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "set_visibility_group",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List the installed terrain tilesets bound to a petal's terrain config. Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_tilesets",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Install a .hexon terrain-tileset archive (base64, max 11 MiB decoded — the same cap as the REST install route) already bound only to this petal's terrain. Requires editor role + petal scope; authorized by fe-policy (Install).",
+    "inputSchema": {
+      "properties": {
+        "data_base64": {
+          "description": "Standard base64 of the .hexon terrain-tileset archive (max 11 MiB decoded)",
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "The petal whose terrain already binds this tileset id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "data_base64"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "install_tileset",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List a petal's geo-positioned nodes with gis.annotation.* data; optional single spatial filter (bbox, bbox_ll, or radius+cx+cz). Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "bbox": {
+          "description": "Local-meter AABB: minx,minz,maxx,maxz",
+          "type": "string"
+        },
+        "bbox_ll": {
+          "description": "Lat/lon AABB: minLat,minLon,maxLat,maxLon (needs a petal terrain origin)",
+          "type": "string"
+        },
+        "cx": {
+          "type": "number"
+        },
+        "cz": {
+          "type": "number"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "radius": {
+          "description": "Radius in local meters (with cx + cz)",
+          "type": "number"
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_gis_nodes",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Run a read-only SurrealQL SELECT through the /api/v1/query guard pipeline (rate limit, SELECT-only, table whitelist, token-scope filter injection, row/byte caps). A top-level LIMIT must be a number <= 10000 (none = capped at 10000 rows); the result errors past 10000 rows or 8 MiB, counted while reading. Page large results with LIMIT/START. Requires viewer role.",
+    "inputSchema": {
+      "properties": {
+        "sql": {
+          "description": "One read-only SurrealQL SELECT; the token scope filter is injected",
+          "type": "string"
+        },
+        "vars": {
+          "description": "Bind variables",
+          "type": "object"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "query",
+    "scope_rule": "None"
+  },
+  {
+    "description": "Read-only peer-network snapshot (relay mode, home relay, peers confined to the token's verses, addresses redacted unless the operator opted in and the caller is Owner). Requires viewer role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_network_diagnostics",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Declare a device payload format (format_id + mime + optional informative JSON Schema, never enforced in v1) for a verse; immutable per (verse_id, format_id) — re-declaring the SAME mime is an idempotent success, a DIFFERENT mime is a conflict. Requires manager role + verse scope.",
+    "inputSchema": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "format_id": {
+          "description": "<namespace>/<name>@<major>",
+          "type": "string"
+        },
+        "mime": {
+          "description": "MIME every asset ingested under this format must carry",
+          "type": "string"
+        },
+        "schema": {
+          "description": "Informative JSON Schema for the payload bytes; never enforced in v1",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "format_id",
+        "mime"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "register_device_format",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "List every device_format declared for a verse. Requires viewer role + verse scope.",
+    "inputSchema": {
+      "properties": {
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_device_formats",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "Ingest one device payload: base64 files (order preserved into asset_ids; total decoded size <= 11 MiB over MCP, use REST multipart POST /api/v1/petals/{petal_id}/iot/payloads for larger payloads), stored as generic assets under a declared format's mime, then recorded as one device_payload row. Requires editor role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "files": {
+          "description": "Standard base64 of each opaque file, order preserved into asset_ids; total decoded size <= 11 MiB (use REST multipart for larger payloads)",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "format_id": {
+          "description": "A format already declared via register_device_format",
+          "type": "string"
+        },
+        "node_id": {
+          "description": "Anchor node the payload is spatially attached to",
+          "type": "string"
+        },
+        "payload_id": {
+          "description": "Client-supplied id for an idempotent retry",
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "recorded_at": {
+          "description": "RFC-3339 sensor timestamp; server ingest time when absent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "node_id",
+        "format_id",
+        "files"
+      ],
+      "type": "object"
+    },
+    "min_role": "Editor",
+    "name": "ingest_device_payload",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List device_payload rows for a petal, optionally filtered by node_id, format_id and a recorded-time window (from_ms/to_ms). Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "format_id": {
+          "type": "string"
+        },
+        "from_ms": {
+          "description": "recorded_at_ms window start, inclusive",
+          "type": "integer"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        },
+        "to_ms": {
+          "description": "recorded_at_ms window end, exclusive",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_device_payloads",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "Capture the application view as a PNG image. Empty arguments capture the live window exactly like plain GET. A `pose` (exactly one of camera/orbit/geo/tile/focus) and `mode` (window: moves the main camera, settles, restores by default; scene: off-screen render at any width/height, no UI, user's view untouched) move where the capture looks; the response's second content block is the resolved pose JSON. On by default (set FE_API_SCREENSHOT_ALLOW=0 to disable); scope-confined: the token must cover the open verse (uniform not-found otherwise); 1 capture/sec. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "height": {
+          "description": "only with include_ui: false (a UI capture is the window's own size); 64..=4096, default 720",
+          "type": "integer"
+        },
+        "include_ui": {
+          "description": "include_ui (default true): include the app's UI panels in the image; false renders only the 3D scene off-screen without moving the user's view",
+          "type": "boolean"
+        },
+        "mode": {
+          "description": "Same switch as include_ui (window = true, scene = false); kept for compatibility. Giving both with different answers is refused (include_ui_conflicts_with_mode).",
+          "enum": [
+            "window",
+            "scene"
+          ],
+          "type": "string"
+        },
+        "pose": {
+          "description": "Optional; EXACTLY ONE of camera/orbit/geo/tile/focus.",
+          "properties": {
+            "camera": {
+              "properties": {
+                "fov_deg": {
+                  "description": "1..=170, default 45",
+                  "type": "number"
+                },
+                "position": {
+                  "description": "[x, y, z] world position",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "target": {
+                  "description": "[x, y, z] look-at point",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "up": {
+                  "description": "[x, y, z], default [0, 1, 0]",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "position",
+                "target"
+              ],
+              "type": "object"
+            },
+            "focus": {
+              "description": "Frames a node's or petal's AABB; exactly one of node_id/petal_id.",
+              "properties": {
+                "navigate": {
+                  "description": "only with include_ui: true; navigate into the target's petal (same verse only) first; undone afterwards unless restore is false",
+                  "type": "boolean"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "petal_id": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "geo": {
+              "properties": {
+                "altitude_m": {
+                  "description": "-500..=1e6, default 300",
+                  "type": "number"
+                },
+                "heading_deg": {
+                  "description": "0..360, default 0 = north",
+                  "type": "number"
+                },
+                "lat": {
+                  "description": "±85.0511 (Web-Mercator)",
+                  "type": "number"
+                },
+                "lon": {
+                  "description": "±180",
+                  "type": "number"
+                },
+                "pitch_deg": {
+                  "description": "-90..=89, default -45",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "lat",
+                "lon"
+              ],
+              "type": "object"
+            },
+            "orbit": {
+              "properties": {
+                "distance": {
+                  "description": "(0, 1e7]",
+                  "type": "number"
+                },
+                "focus": {
+                  "description": "[x, y, z] orbit focus point",
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "pitch_deg": {
+                  "description": "±89",
+                  "type": "number"
+                },
+                "yaw_deg": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "focus",
+                "yaw_deg",
+                "pitch_deg",
+                "distance"
+              ],
+              "type": "object"
+            },
+            "tile": {
+              "description": "Frames a Web-Mercator slippy tile (NW(x,y)..NW(x+1,y+1)) through the active petal's terrain projection.",
+              "properties": {
+                "x": {
+                  "type": "integer"
+                },
+                "y": {
+                  "type": "integer"
+                },
+                "z": {
+                  "description": "0..=24",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "z",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "restore": {
+          "description": "only with include_ui: true; default true — puts the camera (and any navigation) back afterwards",
+          "type": "boolean"
+        },
+        "settle_frames": {
+          "description": "<=600; default 30 with a pose, 0 for a bare window capture",
+          "type": "integer"
+        },
+        "width": {
+          "description": "only with include_ui: false (a UI capture is the window's own size); 64..=4096, default 1280",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "screenshot",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read the live main-camera pose, locked state, active verse/fractal/petal and terrain projection info — pairs with `screenshot`'s pose kinds for a closed read-look loop. Shares the screenshot opt-in (on by default; set FE_API_SCREENSHOT_ALLOW=0 to disable); 10 reads/sec. Requires owner role.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "get_camera",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read the primary window accessibility tree in physical screenshot pixels. Scoped to the active verse; FE_API_INPUT_ALLOW=1 required. Requires owner role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "interactive": {
+          "type": "boolean"
+        },
+        "name": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "role": {
+          "maxLength": 64,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "ui_tree",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Queue bounded open/save/folder answers for QA file dialogs in the active verse. Requires input opt-in, an actual loopback listener and an isolated QA root; paths stay inside that run. Requires owner role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "answers": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "cancel": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "open",
+                  "save",
+                  "folder"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "maxLength": 4096,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "answers"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "dialog_answers",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Request QA window size in physical pixels, app UI scale, maximize/restore/minimize, or close confirmation. Requires input opt-in, loopback listener and isolated QA root. Close never bypasses confirmation. Requires owner role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "size",
+            "ui_scale",
+            "maximize",
+            "restore",
+            "minimize",
+            "close"
+          ],
+          "type": "string"
+        },
+        "factor": {
+          "maximum": 2.0,
+          "minimum": 0.75,
+          "type": "number"
+        },
+        "height": {
+          "maximum": 8192,
+          "minimum": 480,
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 8192,
+          "minimum": 640,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "window",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read authoritative navigation, selection, tool, viewport, notices and pending state. FE_API_INPUT_ALLOW=1 required. Requires owner role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "ui_state",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read a bounded, redacted log tail for the current verse generation. FE_API_INPUT_ALLOW=1 required. Requires owner role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "type": "string"
+        },
+        "since": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "ui_logs",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "List the extension installations on this node with state and capabilities. Local operator only (the node's own owner token): every other caller gets the uniform not-found. Requires viewer role.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_extensions",
+    "scope_rule": "None"
+  },
+  {
+    "description": "Invoke a command an extension exposes in a petal: {petal_id, package_id, command, args}. Runs with the caller's DID and role ceiling; the extension's own gates apply. Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "Command arguments (default {})",
+          "type": "object"
+        },
+        "command": {
+          "description": "A command id the package exposes",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "The extension package id",
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id",
+        "package_id",
+        "command"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "extension_command",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List the extension commands and streams this caller may call or subscribe to in a petal, like REST GET /api/v1/petals/{petal_id}/extension-commands: {petal_id, catalog_digest, packages[{package_id, version?, content_hash?, capability_digest? (local callers only), commands[{id, description, role_floor, rate_hz, external, args_schema, callable}], streams[...]}]}. Read-only: spends no command rate and writes no audit row. Requires viewer role + petal scope.",
+    "inputSchema": {
+      "properties": {
+        "petal_id": {
+          "description": "The petal whose extension commands and streams to list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "petal_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_extension_commands",
+    "scope_rule": "PetalArg(\"petal_id\")"
+  },
+  {
+    "description": "List the judged extension-binding versions at one exact scope (verse_id, plus fractal_id or petal_id for a deeper level), like REST GET /api/v1/bindings. Requires viewer role + scope.",
+    "inputSchema": {
+      "properties": {
+        "fractal_id": {
+          "description": "With verse_id: bind at this fractal",
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "With verse_id (and fractal_id): bind at this petal",
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_bindings",
+    "scope_rule": "BindingTarget"
+  },
+  {
+    "description": "Bind a hook point at a scope: {verse_id, fractal_id?, petal_id?, hook, key, mode, package_id?, version_req?, config?, runs_on?}, like REST PUT /api/v1/bindings. The nearest scope wins; mode inherit clears. Requires manager role + scope.",
+    "inputSchema": {
+      "properties": {
+        "config": {
+          "type": "object"
+        },
+        "fractal_id": {
+          "description": "With verse_id: bind at this fractal",
+          "type": "string"
+        },
+        "hook": {
+          "description": "Hook point id, e.g. petal.map",
+          "type": "string"
+        },
+        "key": {
+          "description": "Point key within the hook (default empty)",
+          "type": "string"
+        },
+        "mode": {
+          "description": "extension, builtin or inherit (inherit clears)",
+          "type": "string"
+        },
+        "package_id": {
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "With verse_id (and fractal_id): bind at this petal",
+          "type": "string"
+        },
+        "runs_on": {
+          "description": "DID of the peer that runs it",
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        },
+        "version_req": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "hook",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "set_binding",
+    "scope_rule": "BindingTarget"
+  },
+  {
+    "description": "Clear a binding by writing mode inherit at the scope: {verse_id, fractal_id?, petal_id?, hook, key}, like REST DELETE /api/v1/bindings. Requires manager role + scope.",
+    "inputSchema": {
+      "properties": {
+        "fractal_id": {
+          "description": "With verse_id: bind at this fractal",
+          "type": "string"
+        },
+        "hook": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "petal_id": {
+          "description": "With verse_id (and fractal_id): bind at this petal",
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "hook"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "clear_binding",
+    "scope_rule": "BindingTarget"
+  },
+  {
+    "description": "Synthesize pointer/keyboard/scroll input into the running GUI: a batch of up to 64 commands (pointer_move, pointer_click, pointer_drag, key_press, text_entry, scroll), an optional wait_frames to settle (<=120) and an optional capture_after to attach a PNG of the result (capture_after also needs the screenshot surface on and spends its 1 capture/sec budget). Scope-confined: the token must cover the open verse. OFF by default (set FE_API_INPUT_ALLOW=1 to enable) — unlike the default-on screenshot/camera surfaces, this MUTATES state; combined with them an Owner token gets full remote control. Refused with 409 while a posed capture holds the camera. Control/Super+C/V/X clipboard chords are refused, and text/image clipboard writes from UI controls are suppressed throughout injection and settling, including its final frame; idle user copies remain enabled. Synthetic input never reads or writes the host OS clipboard. 5 requests/sec. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "capture_after": {
+          "description": "attach a PNG of the window after the batch applies; also needs the screenshot surface (FE_API_SCREENSHOT_ALLOW) and its 1 capture/sec budget; default false",
+          "type": "boolean"
+        },
+        "commands": {
+          "description": "1..=64 commands, applied in order; primary-window pixel coordinates (the same space a prior screenshot's PNG dimensions give an agent).",
+          "items": {
+            "properties": {
+              "button": {
+                "description": "pointer_click/pointer_drag",
+                "enum": [
+                  "left",
+                  "right",
+                  "middle"
+                ],
+                "type": "string"
+              },
+              "dx": {
+                "description": "scroll",
+                "type": "number"
+              },
+              "dy": {
+                "description": "scroll",
+                "type": "number"
+              },
+              "from": {
+                "description": "pointer_drag start",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              "key": {
+                "description": "key_press; a bevy KeyCode variant name, e.g. \"Enter\", \"KeyA\", \"ArrowLeft\" (<=32 ASCII alphanumeric chars)",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "pointer_move",
+                  "pointer_click",
+                  "pointer_drag",
+                  "key_press",
+                  "text_entry",
+                  "scroll"
+                ],
+                "type": "string"
+              },
+              "text": {
+                "description": "text_entry; 1..=4096 characters",
+                "type": "string"
+              },
+              "to": {
+                "description": "pointer_drag end",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              "x": {
+                "description": "pointer_move/pointer_click",
+                "type": "number"
+              },
+              "y": {
+                "description": "pointer_move/pointer_click",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "wait_frames": {
+          "description": "frames to settle before replying; <=120, default 0",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "inject_input",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read this node's P2P identity (DID, endpoint_id, and relay state; direct addresses only for owner when detail is enabled). Requires viewer role.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "get_identity",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Issue an addressed P2P invitation for a recipient DID at a verse or sub-scope: {verse_id, recipient_did, role?, expiry_hours?, scope?}. Requires manager role.",
+    "inputSchema": {
+      "properties": {
+        "expiry_hours": {
+          "description": "1..=720 (default 24)",
+          "type": "integer"
+        },
+        "recipient_did": {
+          "description": "Target peer's did:key",
+          "type": "string"
+        },
+        "role": {
+          "description": "Default: editor",
+          "enum": [
+            "viewer",
+            "editor",
+            "manager"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "description": "Optional sub-scope within the verse",
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "recipient_did"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "issue_verse_invite",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "Join a remote verse from an addressed P2P invitation string: {invite, wait?, timeout_secs?}. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "invite": {
+          "description": "Addressed fe-join-v2:... credential",
+          "type": "string"
+        },
+        "timeout_secs": {
+          "description": "1..=60 when wait=true (default 20)",
+          "type": "integer"
+        },
+        "wait": {
+          "description": "Wait for P2P readiness convergence (default true)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "invite"
+      ],
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "join_verse",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "List materialized roles, role_grant statements, and members for a verse or sub-scope: {verse_id, scope?}. Requires viewer role.",
+    "inputSchema": {
+      "properties": {
+        "scope": {
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id"
+      ],
+      "type": "object"
+    },
+    "min_role": "Viewer",
+    "name": "list_roles",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "Assign a role (viewer, editor, manager, or owner-only none) to a peer DID at a verse or sub-scope: {verse_id, peer_did, role, scope?}. Requires manager role.",
+    "inputSchema": {
+      "properties": {
+        "peer_did": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "viewer",
+            "editor",
+            "manager",
+            "none"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "peer_did",
+        "role"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "assign_role",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "Revoke this node's own role grant for a peer DID at a verse or sub-scope: {verse_id, peer_did, scope?}. Requires manager role.",
+    "inputSchema": {
+      "properties": {
+        "peer_did": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verse_id",
+        "peer_did"
+      ],
+      "type": "object"
+    },
+    "min_role": "Manager",
+    "name": "revoke_role",
+    "scope_rule": "VerseArg(\"verse_id\")"
+  },
+  {
+    "description": "Read sync-thread replica state, quarantine/byte-gate counters, and optional verse/node DB clock/log tails: {verse_id?, node_id?, limit?}. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "1..=200 (default 50)",
+          "type": "integer"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "verse_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "get_sync_state",
+    "scope_rule": "Global"
+  },
+  {
+    "description": "Read bounded extension hook/command/ingress/egress trace events and active installations: {package_id?, petal_id?, limit?}. Requires owner role.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "description": "1..=512 (default 100)",
+          "type": "integer"
+        },
+        "package_id": {
+          "type": "string"
+        },
+        "petal_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "min_role": "Owner",
+    "name": "get_extensions_trace",
+    "scope_rule": "Global"
+  }
+]

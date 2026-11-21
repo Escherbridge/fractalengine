@@ -343,6 +343,21 @@ cargo test -p fractalengine --bin fractalengine -- screenshot_bridge vision_brid
 cargo test -p fractalengine --test security_harness
 ```
 
+### R9-CLI — local operator CLI `fe` (loopback REST/MCP client)
+
+| Source paths | Note |
+|---|---|
+| `tools/fe-cli/src/**` (routing, classification, schema flags, terminal sanitiser) | module `tests::` tables; `--lib` |
+| `tools/fe-cli/tests/cli_journey.rs`, `tools/fe-cli/catalog/mcp-tools.json` | one journey against a real router + DB thread on 127.0.0.1:0; its last leg is the MCP snapshot drift check (`FE_CLI_BLESS=1` re-blesses) |
+
+```bash
+cargo test -p fe-cli --lib
+cargo test -p fe-cli --test cli_journey
+```
+
+**Runner note:** the runner reads `## R9` as the batch id, so `-Batches R9` also runs these two lines. A change to
+`fe-api/src/mcp/` can fail the drift leg here: re-bless the snapshot, do not edit it by hand.
+
 ---
 
 ## R10 — Identity & persistence
@@ -584,6 +599,7 @@ Non-cargo check (not a runner chunk; the extension docs link check, EXT-08): `py
 | `tools/fe-ext/src/model.rs`, `tools/fe-ext/tests/fixtures/model-pack/**` | R11-STORE (`j8`) |
 | `fe-ui/src/extensions/**` | R11 |
 | `fe-plugin/src/admin/**`, `fractalengine/src/extension_host/admin_channel.rs`, `tools/fe-ext/src/admin.rs` | R11-ADMIN |
+| `tools/fe-cli/**`, `fe-api/src/mcp/{mod,tools}.rs` (snapshot drift leg) | R9-CLI |
 | `fe-plugin/src/registry_client.rs`, `fe-hexon/src/registry_source.rs`, `fe-hexon-registry/**`, `tools/fe-ext/src/index.rs` | R11-STORE |
 | `fe-format/src/entitlement.rs`, `fe-hexon/src/entitlement_client.rs`, `fe-hexon/src/entitlement_gate.rs` | R11-ENT |
 | `fe-runtime/src/scene_write.rs` | R2 (shared scene door; R9 points here) |

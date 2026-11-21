@@ -246,7 +246,7 @@ use ScopeRule::{
     BindingTarget, FieldDefArg, Global, HierarchyArgs, HistoryNodeArg, NodeArg, PetalArg, VerseArg,
 };
 
-/// DEC-C14: the 20-name mcp_scene_primitives vocabulary plus later additions (55 rows today; README.md MCP surface states the count).
+/// DEC-C14: the 20-name mcp_scene_primitives vocabulary plus later additions (64 rows today; README.md MCP surface states the count).
 static TOOLS: &[ToolSpec] = &[
     tool!(get_hierarchy, Viewer, ScopeRule::None,
         "Get the full verse/fractal/petal/node hierarchy, filtered to the token scope. Requires viewer role."),
@@ -361,6 +361,8 @@ static TOOLS: &[ToolSpec] = &[
         "List the extension installations on this node with state and capabilities. Local operator only (the node's own owner token): every other caller gets the uniform not-found. Requires viewer role."),
     tool!(extension_command, Viewer, PetalArg("petal_id"), requires Extensions,
         "Invoke a command an extension exposes in a petal: {petal_id, package_id, command, args}. Runs with the caller's DID and role ceiling; the extension's own gates apply. Requires viewer role + petal scope."),
+    tool!(list_extension_commands, Viewer, PetalArg("petal_id"), requires Extensions,
+        "List the extension commands and streams this caller may call or subscribe to in a petal, like REST GET /api/v1/petals/{petal_id}/extension-commands: {petal_id, catalog_digest, packages[{package_id, version?, content_hash?, capability_digest? (local callers only), commands[{id, description, role_floor, rate_hz, external, args_schema, callable}], streams[...]}]}. Read-only: spends no command rate and writes no audit row. Requires viewer role + petal scope."),
     tool!(list_bindings, Viewer, BindingTarget, requires Bindings,
         "List the judged extension-binding versions at one exact scope (verse_id, plus fractal_id or petal_id for a deeper level), like REST GET /api/v1/bindings. Requires viewer role + scope."),
     tool!(set_binding, Manager, BindingTarget, requires Bindings,
@@ -855,9 +857,9 @@ mod tests {
         }
         assert_eq!(
             TOOLS.len(),
-            63,
+            64,
             "DEC-C14: 27 non-sim + 5 sim + S6 set_petal_render_distance + 4 R5 device tools + \
-             screenshot + get_camera + inject_input + 5 host-gated extension tools + \
+             screenshot + get_camera + inject_input + 6 host-gated extension tools + \
              get_network_diagnostics + 6 peering/role tools + get_sync_state + get_extensions_trace"
         );
         // Binding tools address their scope by ids the dispatcher resolves, never in the handler.

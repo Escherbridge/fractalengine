@@ -1177,8 +1177,10 @@ teaching depth inside (file:line links, quoted load-bearing lines, why/what-to-w
 diagrams where they help.
 
 **Carried from earlier:** DEC-C1…C22 (`conductor/tracks/_archive/mission_prodready_continuation_20261008/spec.md`);
-canonical-data-log network rollout / relay seeding / inbound P2P / `/ws/canonical` mount stay
-NO-GO (local Workstream G implementation is GO); `../gis-tile-etl` kept, never pushed.
+canonical-data-log network rollout / relay seeding / inbound P2P / `/ws/canonical` mount were
+NO-GO until the owner lifted the gate 2026-11-20 (D-CL35; approved, not yet built, track
+`relay_record_warehouse_20261120`; the `canonical_authoritative_local` cutover stays owner-gated);
+`../gis-tile-etl` kept, never pushed.
 
 ## 4. Assumptions (highest reversal cost first — confirm the top line before building on it)
 
@@ -1474,6 +1476,66 @@ leak grep before every public commit.
    no PERMISSIONS clause, no 2 GB cache tiers (critic findings 2026-11-08).
 
 ## 8. Session log
+
+### 2026-11-20 — takeover from the Antigravity session; `fe` CLI phase 1 built; UNCOMMITTED in both repos
+
+Read this entry first; §2 State and §7 above are stale from 2026-11-17 onward.
+
+**Where things stand (public repo, working tree on top of `92946362`, nothing committed or pushed):**
+- **`fe` CLI phase 1** (`tools/fe-cli/**`, new workspace crate; design `.omc/plans/fe-cli-20261120.md`, rationale
+  `tools/fe-cli/AGENTS.md`). Local instances only: loopback IP literals, no TLS stack, reads the instance's dev-token
+  file. Verbs: instance/use/ctx/verse/fractal/petal/node, `fe x <package> <command>` built from discovery,
+  `fe help --json`, per-invocation journal, locked command budget. Gate run: `cargo check -p fe-cli --all-targets`
+  clean; batch **R9-CLI** run and green (`--lib` 11 passed, `--test cli_journey` 1 passed).
+- **Engine discovery** (`GET /api/v1/petals/{petal_id}/extension-commands`, MCP `list_extension_commands`, 64 tools):
+  `Bus::exposed_at` shares `reach`/`reach_command` with `admit_call` (`fe-plugin/src/bus/broker.rs`). Compiles
+  (`cargo check` fe-plugin, fe-api `--all-targets`, fractalengine `--features plugin-host`). Its new test legs (bus J4,
+  `extensions_api_test`, `mcp_integration`) are WRITTEN, NOT RUN: batches R9 and R11 when the user names them.
+- **Red CI** (`main` failed on `bc925ee7` and `92946362`; one test,
+  `panels::widgets::tests::confirm_button_requires_second_click_and_disarms`): cause is five process-wide atomics in
+  `fe-ui/src/native_accessibility/surface.rs` shared by parallel tests; fix makes them per-thread under `cfg(test)`.
+  UNPROVEN: not reproducible locally (30/30 full-binary runs pass with and without it). Confirm on the next CI run.
+  Reviewer caveat: Bevy pool threads could split that state inside one test; none found failing.
+- **Review ledger:** adversarial review of the CLI + discovery + atomics change: PASS-WITH-FIXES, 0 blockers; fixes
+  1-11 applied and re-swept green (exit codes for `fe x` via REST status, `--retry` only on pre-admission 429,
+  token-in-args refusal, locked budget counter, id validation, cache keyed by caller, help sanitising, journal
+  redaction, stream `subscribable` rule, `delete_node` refusal → exit 5). Not reviewed in depth: `cli_journey.rs`,
+  dry-run/wait logic, `help.rs`. No `/security-review` skill run was recorded separately.
+
+**Commercial repo (`fractalengine-commercial`, on top of `189351d`, uncommitted):** reserved `x-fe-*` egress headers
+renamed in `tool-telemetry` and `device-env-transform` (both bumped 0.1.0 → 0.1.1, repacked, re-signed with the
+existing keys in `~/.fractalengine/`, catalog re-verified); four `qa/ecosystem_harness.py` fixes; `qa/runs/` ignored.
+Live `--drive-ops` pass: `all_ok: true`, 13/13 steps, report `qa/runs/drive-ops-20261120b/report.json` (app was the
+`bc925ee7` stage, `-AllowStaleStage`).
+
+**Decisions (user, this session):** the CLI drives LOCAL instances only; remote use = sign into the server and run
+it there. Extensions may contribute CLI verbs (`fe x`). A small agent swarm will use the CLI for random goals to
+model real usage. Land-feasibility stays a commercial spec; "get the core in place".
+
+**Assumptions (unconfirmed, highest reversal cost first):**
+1. Swarm = exploration whose journals replay without an LLM and graduate into `tools/qa/sim` scenarios, consistent
+   with the 2026-11-07 "scripts execute, agents design" decision. Asked; not answered.
+2. "Core in place" = the three prerequisites in `.omc/plans/core-prereqs-20261120.md`, built after CLI phase 1.
+3. Extension administration stays on the local admin channel; consent stays a GUI click.
+4. The session-open grill loop (§0) was skipped at the user's "take over and keep driving".
+
+**Next, in order:**
+1. User go-ahead, then commit both repos (leak grep first; public commit must carry no commercial identifiers) and
+   push; delegate the CI watch to a background haiku agent (memory `no-ci-babysitting`).
+2. CLI phase 2: `--wait peers`, `fe replay` / `--emit-scenario`, remaining verbs (plan §3 "Later phases").
+3. CLI phase 3: swarm harness `tools/qa/swarm/` (goal bank, journal → events adapter, oracles, friction report).
+4. Core prerequisites: three disjoint slices + one integration step (plan file above). First verify risk 1 there:
+   that a rebuilt guest does not import `terrain@2.0.0` unless it calls it (`wasm-tools component wit`).
+5. CLI phases 4-5: `fe ext *` over an extracted `fe-admin-channel` crate; headless relay token emission and
+   `exposed()` so a server reached over SSH can be driven.
+
+**Gotchas found today:** `focus_node` / `select_node` portal intents have NO consumer (camera never moves;
+`fe-webview/src/plugin.rs:515-533`). `fe-ext run --sandbox` never exercises commands or egress
+(`docs/extensions/authoring-guide.md:199`). REST errors are often `200 {ok:false}` with text only, so CLI exit codes
+for non-extension verbs depend on server wording. Subagent output files under `%TEMP%\claude\...\tasks\` can be
+empty; full reports are in `~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl`. A `python3` heredoc
+from Git Bash can hang forever on Windows (Store stub); use `python -I`. Disk: prune `target\debug\deps\*.exe|*.pdb`
+older than a day and keep two QA stages (freed 33 GB today).
 
 ### 2026-11-13 18:25 MST — resume; CI fix for four tests
 - Done: `44ecc1b6` — `GuiSend::Busy` at the scene write door (fe-ui queue-full pair) and two stale

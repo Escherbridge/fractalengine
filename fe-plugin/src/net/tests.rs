@@ -122,6 +122,7 @@ fn instance(petal: &str, installation: &str) -> InstanceSpec {
     InstanceSpec {
         installation_id: installation.into(),
         content_hash: "cd".repeat(32),
+        capability_digest: "ef".repeat(32),
         verse_id: "01JVERSE".into(),
         petal_id: petal.into(),
         identity_did: LOCAL.into(),
@@ -614,6 +615,7 @@ fn empty_body_get_skips_content_type_enforcement() {
     let spec = InstanceSpec {
         installation_id: "inst-get".into(),
         content_hash: "ab".repeat(32),
+        capability_digest: "ef".repeat(32),
         verse_id: "01JVERSE".into(),
         petal_id: PETAL.into(),
         identity_did: LOCAL.into(),

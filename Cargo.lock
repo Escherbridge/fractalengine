@@ -5357,6 +5357,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "fe-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "blake3",
+ "clap",
+ "crossbeam",
+ "fe-api",
+ "fe-database",
+ "fe-identity",
+ "fe-policy",
+ "fe-runtime",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
 name = "fe-database"
 version = "0.1.0"
 dependencies = [
