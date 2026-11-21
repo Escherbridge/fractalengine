@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use fe_ext::{admin, index, inspect, key, lab, new, pack, project::Project, sandbox, validate};
+use fe_ext::{admin, index, inspect, key, lab, new, pack, portal, project::Project, sandbox, validate};
 
 // Binary-local module: `lib.rs` is outside this task's files (see `AGENTS.md` §model-pack).
 mod model;
@@ -43,6 +43,12 @@ enum Cmd {
         project: PathBuf,
         #[arg(long)]
         component: Option<PathBuf>,
+        /// Package id for a section-only `portal.json` project (an `extension.json` carries its own).
+        #[arg(long)]
+        package_id: Option<String>,
+        /// Package version for a section-only `portal.json` project.
+        #[arg(long)]
+        package_version: Option<String>,
     },
     /// Build the sealed, signed plugin hexon (after the same component checks as `validate`).
     Pack {
@@ -138,7 +144,17 @@ fn run(cli: Cli) -> Result<()> {
             println!("next: cd {} && fe-ext build && fe-ext run --sandbox --fixture fixtures/basic.json", created.display());
         }
         Cmd::Build { project, debug } => build(&project, debug)?,
-        Cmd::Validate { project, component } => {
+        Cmd::Validate { project, component, package_id, package_version } => {
+            if let Some(source) = portal::detect(&project) {
+                if component.is_some() {
+                    anyhow::bail!("a web-bundle has no component; drop --component");
+                }
+                let identity = package_id.as_deref().zip(package_version.as_deref());
+                for line in portal::report(&portal::validate_project(&project, &source, identity)?) {
+                    println!("{line}");
+                }
+                return Ok(());
+            }
             let project = Project::open(&project)?;
             let validated = validate::validate_manifest(&project.read_manifest()?)?;
             println!(

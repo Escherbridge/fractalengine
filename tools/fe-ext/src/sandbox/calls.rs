@@ -62,6 +62,9 @@ pub struct FixtureCommand {
     /// `ui` (default), `rest` or `mcp`.
     #[serde(default)]
     pub caller: Option<String>,
+    /// Echoed into this call's trace record, and into the stream and fuel rows its guest call produced.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// One scripted hook judgment (`hooks[]`): `input` is the hook input without `caller`.
@@ -83,6 +86,16 @@ pub struct FixtureHook {
     /// A remote author's DID; absent = this host's identity.
     #[serde(default)]
     pub caller_did: Option<String>,
+    /// Echoed into this call's trace record, and into the stream and fuel rows its guest call produced.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Add `label` to a trace record when the fixture entry carries one (absent otherwise, so old traces keep their bytes).
+fn stamp_label(record: &mut Value, label: Option<&str>) {
+    if let Some(label) = label {
+        record["label"] = json!(label);
+    }
 }
 
 fn empty_object() -> Value {
@@ -197,6 +210,7 @@ impl Planned {
 struct Cursor {
     tick: u64,
     call: String,
+    label: Option<String>,
 }
 
 /// Shared between the run loop and [`SandboxBroker`]: the cursor and the publish log.
@@ -236,6 +250,7 @@ impl ExtensionBroker for SandboxBroker {
         let payload = serde_json::from_str::<Value>(event).unwrap_or_else(|_| Value::String(event.to_string()));
         let mut log = lock(&self.log);
         let mut record = json!({ "tick": log.cursor.tick, "call": log.cursor.call, "stream": stream, "payload": payload });
+        stamp_label(&mut record, log.cursor.label.as_deref());
         match &outcome {
             Ok(()) => record["published"] = json!(true),
             Err(error) => record["refused"] = json!({ "code": error.code(), "detail": host_error_detail(error) }),
@@ -425,14 +440,21 @@ impl Calls {
 
     /// Name the guest call about to run (stream records carry it).
     pub fn enter(&self, tick: u64, call: &str) {
-        lock(&self.log).cursor = Cursor { tick, call: call.to_string() };
+        self.enter_labeled(tick, call, None);
+    }
+
+    /// As [`Self::enter`], also carrying the fixture entry's `label` (the entry that caused this guest call).
+    fn enter_labeled(&self, tick: u64, call: &str, label: Option<&str>) {
+        lock(&self.log).cursor = Cursor { tick, call: call.to_string(), label: label.map(str::to_string) };
     }
 
     /// Record the fuel of the guest call that just returned.
     pub fn note_fuel(&mut self, instance: &ExtensionInstance) {
         if let Some(fuel) = instance.last_fuel() {
             let cursor = lock(&self.log).cursor.clone();
-            self.fuel.push(json!({ "tick": cursor.tick, "call": cursor.call, "limit": fuel.limit, "consumed": fuel.consumed }));
+            let mut record = json!({ "tick": cursor.tick, "call": cursor.call, "limit": fuel.limit, "consumed": fuel.consumed });
+            stamp_label(&mut record, cursor.label.as_deref());
+            self.fuel.push(record);
         }
     }
 
@@ -464,12 +486,13 @@ impl Calls {
             "args": entry.args,
             "role": entry.role.as_deref().unwrap_or("owner"),
         });
+        stamp_label(&mut record, entry.label.as_deref());
         match self.bus.call_command_local_client(&caller, &self.key.petal_id, &self.key.package_id, &entry.command, &entry.args) {
             Err(refusal) => {
                 record["host_refused"] = json!({ "code": refusal.code(), "status": refusal.http_status(), "detail": refusal_detail(&refusal) });
             }
             Ok(mut ticket) => {
-                self.drain(tick, instance);
+                self.drain(tick, entry.label.as_deref(), instance);
                 record["reply"] = match ticket.reply.try_recv() {
                     Ok(CommandOutcome::Ok(text)) => {
                         json!({ "ok": serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)) })
@@ -488,12 +511,12 @@ impl Calls {
     }
 
     /// Deliver queued bus work to the guest the way `Bus::dispatch` does, naming each call for the fuel log.
-    fn drain(&mut self, tick: u64, instance: &mut ExtensionInstance) {
+    fn drain(&mut self, tick: u64, label: Option<&str>, instance: &mut ExtensionInstance) {
         for _ in 0..DRAIN_LIMIT {
             let Some(work) = self.bus.next_work(&self.key) else { return };
             match work {
                 GuestWork::Command { call, command, args, caller } => {
-                    self.enter(tick, &format!("on-command {command}"));
+                    self.enter_labeled(tick, &format!("on-command {command}"), label);
                     let result = BusHooks::on_command(instance, &command, &args, &caller);
                     self.note_fuel(instance);
                     self.bus.complete_command(call, result);
@@ -527,6 +550,7 @@ impl Calls {
         let mut ticket = self.gate.begin(input, caller);
         let parked = self.backend.parked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let mut record = json!({ "tick": tick, "hook": entry.hook, "input": entry.input });
+        stamp_label(&mut record, entry.label.as_deref());
         if let Some((call, reply)) = parked {
             record["input"] = call.input.clone();
             // The request the binary's `scene_call` builds (fractalengine plugin_bridge/worker.rs).
@@ -538,7 +562,7 @@ impl Calls {
                 input: call.input.to_string(),
                 body: Vec::new(),
             };
-            self.enter(tick, &format!("hook {}", call.hook.id()));
+            self.enter_labeled(tick, &format!("hook {}", call.hook.id()), entry.label.as_deref());
             let outcome = instance.call_hook(&request, None);
             self.note_fuel(instance);
             let _ = reply.send(scene_hook_reply(outcome));

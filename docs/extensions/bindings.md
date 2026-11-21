@@ -543,7 +543,10 @@ valid.
 - *Call hooks* get one call per use.
 
 **Limits per call.**
-- its own fuel refill (`tick.fuel`);
+- its own fuel refill: the tick limit (`tick.fuel`, default 1 000 000, at most 20 000 000) plus 64 fuel per input byte
+  (`HooksGuest::call_fuel`, `fe-plugin/src/wasm/component/hooks.rs`), the sum capped at 20 000 000 unless `tick.fuel` is
+  already above it. A hook is therefore not limited to the tick budget: a 64 KiB `scene.*` input adds up to 4 194 304;
+  `fe-ext run --sandbox` reports each call's `limit` and `consumed` in the trace `fuel` rows;
 - JSON in and out ≤ 64 KiB (`scene.*`: ≤ one node payload, the node limit plus 8 KiB);
 - `body` ≤ the hook's cap in §6;
 - the §6 deadline.

@@ -10,6 +10,7 @@ in `docs/extensions/` and `fe-plugin/wit/fractal-plugin-2.wit`; this file holds 
 | `new <kind> <name>` | `src/new.rs` | Simulation, device-adapter and bi-connector scaffolds copy the shipped `fe-sdk/schema/examples/*.extension.json` with identity swapped, so they cannot drift from the schema; `general` is a minimal handwritten manifest. The scaffold is validated before anything is written. |
 | `build` | `src/main.rs` | `cargo build --target wasm32-wasip2 --target-dir <project>/target` (explicit, so a `CARGO_TARGET_DIR` or a config `target-dir` cannot move the artifact), copy to `dist/component.wasm`, then the host's install admission (`ComponentHost::compile`). |
 | `validate` | `src/validate.rs` | `fe_sdk::manifest_v2::parse_and_validate` (the entry REST install shares) plus the 64 KiB header ceiling; component checks (`validate_component_for`: admission plus `check_provides`) when `dist/component.wasm` exists. |
+| `validate` (portal project) | `src/portal.rs` | See §portal-validate. |
 | `pack` | `src/pack.rs` | Runs the `validate` component checks first (a `provides` manifest over a component without `hooks` is refused before anything is written), then `PluginHexonBuilder` seals and signs and the result is re-verified with `verify_plugin_package`. `--out` is a file, or a folder (existing, or ending in `/`) that gets `<id>-<version>.hexon`. |
 | `sign` | `src/pack.rs` | Re-seals the same members under another publisher key (a sealed manifest cannot be edited in place). Licensed packages are refused. |
 | `countersign` | `src/pack.rs` | Appends `plugin/countersignatures.json` by raw-copying every other zip member, so `content_hash` never moves. Signs `signing_bytes` with `fe_format::sign_manifest` (package-format.md §Signatures: the same bytes and base64 as the publisher). Until fe-hexon's verifier checks entries with `fe_format::verify_manifest` instead of its raw-bytes `signature::verify_manifest`, the re-verify here refuses with `countersignature-mismatch` (handed off by G3). |
@@ -90,6 +91,13 @@ host says no, so every verdict comes from host code, not a copy of it.
   the remainder before a crash restart's `on-activate` overwrites it.
 - **Determinism.** Everything runs on the manual clock in one thread, so traces stay byte-identical. The one wall
   clock is a hook's deadline (production's): a hook that runs close to it may differ between runs.
+- **Labels.** `commands[]` and `hooks[]` take an optional `label`; `Cursor.label` is set by `enter_labeled` for the guest
+  call an entry causes (a command's `on-command`, a hook's `hook <id>`), so `bus_publish` and `note_fuel` stamp it on the
+  `streams` and `fuel` rows (`stamp_label`: no key when absent, so unlabelled traces keep their bytes and fingerprints).
+  `call` alone already tells `on-tick` from `on-command <id>` / `hook <id>`; it cannot tell two entries for the same
+  command or hook apart, which is what `label` is for. A queued `on-events` or `on-call-result` that runs inside a command's
+  drain carries no label (it is not that entry's call). No `FIXTURE_VERSION` bump: serde's `deny_unknown_fields` makes an
+  older binary refuse the file loudly rather than misread it.
 - **Fixture versions.** `FIXTURE_VERSION` (2) and `FIXTURE_KEYS` in `src/sandbox.rs`; `parse_fixture` checks the
   declared version and the top-level keys before serde, so an fe-ext meeting a newer fixture says it needs a newer
   fe-ext. Adding a top-level key means: add it to `Fixture` and `FIXTURE_KEYS` and bump `FIXTURE_VERSION`. Builds
@@ -99,6 +107,23 @@ host says no, so every verdict comes from host code, not a copy of it.
 |---|---|
 | 1 | nodes, ticks, cadence, source class, ingress, fleet, terrain (no `fixture_version` key) |
 | 2 | `fixture_version`, `commands[]`, `hooks[]`; trace `commands`, `hooks`, `streams`, `fuel` |
+
+## §portal-validate (src/portal.rs)
+
+`validate --project <dir>` on a portal project (`portal::detect`: `extension.json` with `kind: "web-bundle"`, or no
+`extension.json` and a `portal.json`) runs `fe_format::portal_bundle::validate_portal_bundle`, the validator the host's
+upload and mount paths use, over `BundleFacts` built from the files: members are every regular file under `web/`
+(symlinks refused), `hexon_id`/`hexon_version` are the document's own `id`/`version`, no integrity failure (nothing is
+sealed yet). The layouts are the two in the repo: a project `extension.json` (`manifest_version`, `kind`, `id`, `version`,
+`portal`), which is the sealed archive's `plugin/extension.json` byte for byte; and the QA bundles' `portal.json` section
+(`tools/qa/portal/bundles/<name>/`), which `build_bundles.py` wraps with an id and version, so here `--package-id` and
+`--package-version` stand in. The origin rule is `portal::origin_allowed`, shared with `inspect` (`https://` prefix); the
+host's real rule (`fe_runtime::portal_url::is_url_allowed`) is stricter, so a bundle that passes here can still meet
+`origin_blocked` at install.
+
+- `archive_bytes` is the sum of the member sizes, an upper bound on the deflated archive. Only a bundle whose raw files
+  exceed the 32 MiB cap can be falsely refused `too_large`; the sealed archive's real size is checked at upload.
+- `pack` and `sign` still take extension projects only; packing a web bundle is `seal_hexon` today (qa `build_bundles.py`).
 
 ## §lab
 

@@ -7,6 +7,7 @@ pub mod key;
 pub mod lab;
 pub mod new;
 pub mod pack;
+pub mod portal;
 pub mod project;
 pub mod sandbox;
 pub mod validate;

@@ -315,6 +315,7 @@ fn sandbox_calls_component() -> Vec<u8> {
   (func (export "fractalengine:plugin/egress-hooks@2.0.0#on-egress-result") (param i64 i32 i32 i32 i32 i32 i32 i32 i32 i32))
   (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-events") (param i32 i32))
   (func (export "fractalengine:plugin/bus-hooks@2.0.0#on-command") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)
+    (call $publish (i32.const 352) (i32.const {stream_len}) (i32.const 368) (i32.const {beat_len}) (i32.const 1664))
     (i32.store8 (i32.const 1600) (i32.const 0))
     (i32.store (i32.const 1604) (i32.const 64))
     (i32.store (i32.const 1608) (i32.const {pong_len}))
@@ -363,6 +364,64 @@ fn sandbox_calls_component() -> Vec<u8> {
     wit_component::ComponentEncoder::default().module(&module).expect("module matches the world").validate(true).encode().expect("component encodes")
 }
 
+/// `validate` on an unsealed portal project: the host's validator over `web/` in both in-repo layouts, and its typed refusals.
+fn portal_validate_leg(root: &Path) {
+    let section = serde_json::json!({
+        "schema": "fe-portal-bundle/1", "entry": "web/index.html", "title": "Example portal",
+        "csp": { "connect": [], "img": [], "font": [], "media": [], "frame": [], "wasm": false, "inline_styles": false },
+        "navigation": [], "subscriptions": { "node": true, "readings": false, "queries": [] },
+        "commands": {}, "hooks": [], "streams": [], "ui_intents": ["focus_node"]
+    });
+    let project = root.join("portal-one");
+    std::fs::create_dir_all(project.join("web")).unwrap();
+    std::fs::write(project.join("web/index.html"), b"<!doctype html><title>x</title>").unwrap();
+    std::fs::write(project.join("web/app.js"), b"console.log(1);").unwrap();
+    let extension = serde_json::json!({ "manifest_version": 2, "kind": "web-bundle", "id": "org.example.portal", "version": "1.2.3", "portal": section });
+    std::fs::write(project.join("extension.json"), serde_json::to_vec_pretty(&extension).unwrap()).unwrap();
+
+    let ok = fe_ext(&["validate", "--project", "portal-one"], root);
+    assert!(ok.status.success(), "portal validate: {}", stderr(&ok));
+    let printed = stdout(&ok);
+    let lines: Vec<&str> = printed.lines().collect();
+    assert!(lines[0].starts_with("ok org.example.portal@1.2.3 kind=web-bundle capability_digest="), "{printed}");
+    let digest = lines[0].rsplit('=').next().unwrap().to_string();
+    assert_eq!(digest.len(), 64, "{printed}");
+    assert_eq!(
+        &lines[1..],
+        ["entry web/index.html", "members 2", "  web/app.js text/javascript; charset=utf-8", "  web/index.html text/html; charset=utf-8"]
+    );
+
+    // The QA layout (`portal.json` section only plus `web/`) needs the identity on the command line and agrees on the digest.
+    let section_only = root.join("portal-two");
+    std::fs::create_dir_all(section_only.join("web")).unwrap();
+    std::fs::write(section_only.join("web/index.html"), b"<!doctype html>").unwrap();
+    std::fs::write(section_only.join("portal.json"), serde_json::to_vec(&section).unwrap()).unwrap();
+    let bare = fe_ext(&["validate", "--project", "portal-two"], root);
+    assert!(!bare.status.success() && stderr(&bare).contains("--package-id"), "{}", stderr(&bare));
+    let named = fe_ext(&["validate", "--project", "portal-two", "--package-id", "org.example.portal", "--package-version", "1.2.3"], root);
+    assert!(named.status.success() && stdout(&named).contains(&digest), "{}{}", stdout(&named), stderr(&named));
+
+    // The host's typed refusals, not a manifest-table error: a missing entry, a member under `web/__fe/`, a plain-http origin.
+    type Edit = fn(&mut Value);
+    let refusals: [(&str, Option<&str>, Edit); 3] = [
+        ("entry_missing", None, |doc| doc["portal"]["entry"] = serde_json::json!("web/gone.html")),
+        ("member_reserved", Some("web/__fe/x.js"), |_| {}),
+        ("origin_invalid", None, |doc| doc["portal"]["csp"]["connect"] = serde_json::json!(["http://example.org"])),
+    ];
+    for (expected, extra_member, edit) in refusals {
+        let mut bad = extension.clone();
+        edit(&mut bad);
+        std::fs::write(project.join("extension.json"), serde_json::to_vec(&bad).unwrap()).unwrap();
+        if let Some(member) = extra_member {
+            std::fs::create_dir_all(project.join(member).parent().unwrap()).unwrap();
+            std::fs::write(project.join(member), b"1").unwrap();
+        }
+        let refused = fe_ext(&["validate", "--project", "portal-one"], root);
+        assert!(!refused.status.success() && stderr(&refused).contains("invalid web-bundle") && stderr(&refused).contains(expected), "{expected}: {}", stderr(&refused));
+        std::fs::remove_dir_all(project.join("web/__fe")).ok();
+    }
+}
+
 /// Sandbox calls leg of J8: bus commands, a scene.transform hook and stream capture through the real bus and gate,
 /// fuel per guest call, two byte-identical traces; then the fixture refusals an author meets.
 fn sandbox_calls_leg(root: &Path) {
@@ -396,12 +455,12 @@ fn sandbox_calls_leg(root: &Path) {
         "cadence_ms": 500,
         "nodes": [{ "id": "n1" }, { "id": "locked~1" }],
         "commands": [
-            { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor" },
+            { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor", "label": "first-ping" },
             { "at_tick": 1, "command": "ping", "args": { "n": "one" } },
             { "at_tick": 2, "command": "ping", "args": { "n": 2 }, "role": "viewer" }
         ],
         "hooks": [
-            { "at_tick": 2, "hook": "scene.transform", "input": { "node": "n1", "proposed": pose.clone() } },
+            { "at_tick": 2, "hook": "scene.transform", "input": { "node": "n1", "proposed": pose.clone() }, "label": "judge-n1" },
             { "after_tick": 2, "hook": "scene.transform", "input": { "node": "locked~1", "proposed": pose } }
         ]
     });
@@ -432,21 +491,26 @@ fn sandbox_calls_leg(root: &Path) {
     assert_eq!((hooks[1]["verdict"]["refused"].as_str(), hooks[1]["verdict"]["reason"].as_str()), (Some("refused"), Some("node is locked")));
     assert_eq!(node(&trace, "n1")["properties"]["sbx.judged"], serde_json::json!(true), "the augment flushed with tick 2");
 
-    // Streams: 1 Hz on a 500 ms cadence publishes, is rate-limited by the bus, then publishes again.
-    let streams: Vec<(Option<&str>, bool)> = trace["streams"]
-        .as_array()
-        .expect("streams")
-        .iter()
-        .map(|event| (event["refused"]["code"].as_str(), event["published"].as_bool() == Some(true)))
-        .collect();
-    assert_eq!(streams, vec![(None, true), (Some("rate-limited"), false), (None, true)]);
-    assert_eq!(trace["streams"][0]["payload"], serde_json::json!({ "beat": 1 }));
+    // Labels: echoed on the call's record, and on the stream and fuel rows its guest call produced (absent elsewhere).
+    assert_eq!((commands[0]["label"].as_str(), hooks[0]["label"].as_str()), (Some("first-ping"), Some("judge-n1")));
+    assert!(commands[1].get("label").is_none() && hooks[1].get("label").is_none(), "an unlabelled entry carries no label key");
+
+    // Streams: the labelled command's publish takes the 1 Hz token, the next two on-ticks are rate-limited by the bus,
+    // the third publishes again; each row names the guest call that produced it.
+    let rows = trace["streams"].as_array().expect("streams");
+    let streams: Vec<(Option<&str>, bool)> =
+        rows.iter().map(|event| (event["refused"]["code"].as_str(), event["published"].as_bool() == Some(true))).collect();
+    assert_eq!(streams, vec![(None, true), (Some("rate-limited"), false), (Some("rate-limited"), false), (None, true)]);
+    assert_eq!(rows[0]["payload"], serde_json::json!({ "beat": 1 }));
+    let calls: Vec<(&str, Option<&str>)> = rows.iter().map(|event| (event["call"].as_str().unwrap(), event["label"].as_str())).collect();
+    assert_eq!(calls, vec![("on-command ping", Some("first-ping")), ("on-tick", None), ("on-tick", None), ("on-tick", None)]);
 
     // Fuel: every guest call records its limit and what it burned.
     let fuel = trace["fuel"]["calls"].as_array().expect("fuel calls");
     assert_eq!(trace["fuel"]["tick_limit"].as_u64(), Some(200_000));
-    for call in ["on-tick", "on-command ping", "hook scene.transform"] {
+    for (call, label) in [("on-tick", None), ("on-command ping", Some("first-ping")), ("hook scene.transform", Some("judge-n1"))] {
         let entry = fuel.iter().find(|entry| entry["call"] == call).unwrap_or_else(|| panic!("fuel for {call}: {}", trace["fuel"]));
+        assert_eq!(entry["label"].as_str(), label, "{entry}");
         assert!(entry["consumed"].as_u64().is_some_and(|burned| burned > 0 && burned <= entry["limit"].as_u64().unwrap()), "{entry}");
     }
 
@@ -504,6 +568,7 @@ fn j8_new_validate_pack_inspect_countersign_and_sandbox() {
     }
     assert_eq!(reasons.len(), 3, "each refusal carries its own reason");
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&good).unwrap()).unwrap();
+    portal_validate_leg(root);
 
     let key = root.join("publisher.key");
     let counter_key = root.join("reviewer.key");

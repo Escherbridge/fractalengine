@@ -1506,6 +1506,26 @@ leak grep before every public commit.
   (commercial repo, Package 1 of `extensions/LAND-FEASIBILITY-SPEC.md`; the portal bundle is not started).
 - Next: review + commit those two; run the swarm once against live instances (owner's word needed —
   it launches instances); land-feasibility portal bundle; CLI phases 4-5 (`fe ext *`, relay token).
+- **Update, same day (evening).** Landed since the lines above:
+  - Public, committed LOCALLY and deliberately NOT pushed while CI run 44861927755 (on `5a7d1838`)
+    is in progress (a push supersedes/cancels it — the first run on `13b6dd44` was cancelled that
+    way, so the a11y race fix still has zero test evidence): `f53e3b4e` swarm harness
+    (`tools/qa/swarm/`, selftest 10/10, never run against a real `fe` or live peers), `27873f0b`
+    `fe replay` re-binds pre-existing ids by name path + journal `elapsed_ms`/`binds` (R9-CLI green),
+    `98470a73` sandbox fixture_version 2 (`commands[]`, `hooks[]`, stream + fuel traces through the
+    real bus and scene-hook gate; `cargo test -p fe-ext -- j8` green). Push them once the run ends.
+  - A background poll writes failures of that run to `.omc/research/ci-44861927755-20261120.log`.
+  - Commercial, pushed: `51a812d` land-feasibility extension, `3cc503f` scenario ported to native
+    sandbox commands/hooks (driver build deleted), `9fc8491` solver tree pass on a spatial grid +
+    640-site cap (schema-legal args used to exhaust 20M fuel); tick fuel 17,500,000 measured.
+    Sandbox scenario 104 checks, two identical traces. Never run in a live instance, not packed/signed.
+  - In flight: `extensions/land-feasibility-portal/` (Package 2 HUD bundle, commercial repo).
+  - Open owner decision: an extension's fuel limit is not part of the capability digest, so it can
+    change without re-consent. Left as is.
+  - Engine follow-ups found by extension authoring (not started): single-writer rule per petal for
+    reconciling extensions; terrain interface does not expose world scale; no "has key" node query;
+    create-with-properties (new nodes take two ticks); fixture labels echoed into the sandbox trace;
+    `scene.create` and other hook families in the sandbox; `--emit-scenario` should use `binds`.
 
 ### 2026-11-20 — takeover from the Antigravity session; `fe` CLI phase 1 built; UNCOMMITTED in both repos
 

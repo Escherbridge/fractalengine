@@ -130,6 +130,12 @@ because both use one validator (`fe_sdk::manifest_v2::parse_and_validate`). A re
 code. `build` then runs the component through the host's install admission, so a missing export or
 a forbidden import fails here rather than at install.
 
+`validate` also checks an unsealed **portal bundle** project (`extension.json` with `"kind": "web-bundle"` and a
+`portal` section, plus the page under `web/`). It runs the host's own bundle validator over the files and prints the
+package id, version, entry, the `web/` members with their served types and the capability digest, or the typed
+refusal (`entry_missing`, `member_reserved`, `origin_invalid`, ...). A folder with only a section-only `portal.json`
+needs `--package-id` and `--package-version`. There is no component for a bundle, so `--component` is refused.
+
 ## 5. Run in the sandbox
 
 ```bash
@@ -160,7 +166,7 @@ driver build:
   "ticks": 3,
   "nodes": [{ "id": "n1" }],
   "commands": [
-    { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor" },
+    { "at_tick": 1, "command": "ping", "args": { "n": 1 }, "role": "editor", "label": "first-ping" },
     { "after_tick": 2, "command": "ping", "args": { "n": "one" } }
   ],
   "hooks": [
@@ -173,6 +179,10 @@ driver build:
 - **When.** `at_tick: n` runs before tick n's `on-tick` (its staged writes flush with tick n); `after_tick: n` runs
   after tick n's flush (they flush with the next tick, or the final flush after the last one). Commands run before
   hooks, each list in order.
+- **`label`** (optional, on a command or a hook): a name echoed into that entry's trace record and into the `streams`
+  and `fuel` rows its guest call produced, so two calls to the same command stay apart in the trace. An entry without
+  a label adds no key. It needs no `fixture_version` bump: an fe-ext from before labels refuses the fixture
+  (`unknown field`), it never reads it differently.
 - **`commands[]`** go through the host's own bus admission (`Bus::call_command_local_client`): the command must be
   under `bus.expose.commands`, `args` must match its `args_schema`, the caller's `role` (`owner` by default;
   `manager`, `editor`, `viewer`, `none`) must meet its `role_floor`, and the rate limits apply. The trace records
@@ -188,7 +198,8 @@ driver build:
   `caller_did` are optional. A hook your manifest does not `provides` is a fixture error. `scene.transform` and
   `scene.property` are driven today.
 - **`streams`** (trace only): every `bus.publish` your guest makes, with tick, the guest call it came from, the
-  stream and the payload, plus `published: true` or the host's refusal (`rate-limited` over `max_rate_hz`,
+  stream and the payload, plus `label` when that call came from a labelled entry (`call` is `on-tick`,
+  `on-command <id>`, `hook <id>`, `on-events`, ...), plus `published: true` or the host's refusal (`rate-limited` over `max_rate_hz`,
   `invalid-input` over `max_event_bytes`, `capability-denied` for an undeclared stream).
 - **`fuel`** (trace only): `tick_limit` is your manifest's `tick.fuel` (clamped to the host ceiling), and `calls`
   lists every guest entry (`on-tick`, `on-command <id>`, `hook <id>`, `on-ingress <endpoint>`, lifecycle hooks) with

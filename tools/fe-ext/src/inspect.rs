@@ -72,7 +72,7 @@ fn inspect_web_bundle(package_bytes: &[u8], ext_raw: &[u8]) -> Result<Value> {
         hexon_id: &manifest.hexon_id,
         hexon_version: &manifest.version,
     };
-    let validated = validate_portal_bundle(&facts, &|origin| origin.starts_with("https://"))
+    let validated = validate_portal_bundle(&facts, &crate::portal::origin_allowed)
         .map_err(|error| anyhow!("invalid web-bundle: {error}"))?;
     Ok(json!({
         "package_id": validated.package_id,
