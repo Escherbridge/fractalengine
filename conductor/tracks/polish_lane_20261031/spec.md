@@ -81,7 +81,7 @@ Every feature a user can reach either works, says plainly why it can't, or is re
 |---|---|
 | Lane B deliverables (frameless window, title bar, close X, icon, screenshot route, MCP `screenshot`, F12) | Owned by Lane B. This lane only reviews T-01 conformance (W3-S5) and consumes the screenshot surface. |
 | The user's in-app look for any wave | User-gated. Agents may capture screenshots as evidence, but that never replaces the user's verify. |
-| `CANON-WS` mount, `CDL-NET` network rollout of canonical-log | NO_GO by owner decision (local GO, network NO-GO). |
+| `CANON-WS` mount, `CDL-NET` network rollout of canonical-log | Was NO_GO by owner decision (local GO, network NO-GO); gate lifted 2026-11-20 (D-CL35), now owned by `relay_record_warehouse_20261120`. Still out of this lane. |
 | D-23 production relay host | Needs a user action (name a host/domain). |
 | T28 / BLOB-HASH-CAPABILITY | A security design decision (membership filter vs namespace rotation) is required first. Route it to the role_propagation_20261013 design lane. |
 | S-1 relay message signing | Needs its own recon/spec pass. |

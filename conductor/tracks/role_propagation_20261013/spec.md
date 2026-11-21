@@ -161,8 +161,8 @@ Two consequences of combining that rule with R7's subtree authority are made exp
 
 The full justification is in plan §6, the deferral audit.
 
-- Relayed gossip attribution and signed editor ops: SYNC-SIGNED-PLANE, NO_GO until the
-  canonical network rollout.
+- Relayed gossip attribution and signed editor ops: SYNC-SIGNED-PLANE, was NO_GO until the
+  canonical network rollout; gate lifted 2026-11-20 (D-CL35), now owned by `relay_record_warehouse_20261120` (not yet built).
 - Docs-ALPN peer admission and namespace rotation (needs a decision).
 - Scoped-invite redemption and the FR-4 role UI (D-32, user-scheduled after this track).
 - Pinning the relay's bootstrap owner (D-23 relay host undecided).

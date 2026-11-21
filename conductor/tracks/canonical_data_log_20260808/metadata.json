@@ -10,11 +10,9 @@
   "blocks": [
     "canonical-log network rollout"
   ],
-  "network_enablement": "prohibited",
+  "network_enablement": "owner_approved_2026-11-20_D-CL35",
   "owner_approval_required_for": [
-    "network_rollout",
-    "relay_seeding",
-    "inbound_p2p"
+    "canonical_authoritative_cutover"
   ],
   "tasks": {
     "SPEC-1": "owner_approved_2026-08-08",

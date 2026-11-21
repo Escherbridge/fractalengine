@@ -339,8 +339,8 @@ classes is `WireError::WrongShape` (key 2 or 3), not a denial. A session names n
 the leaf's own `scope_epoch` stands in for `operation_scope_epoch` (step 9 still compares it with
 the persistent view) and every per-operation caveat input is absent: a leaf carrying an
 allowlist caveat cannot bind a session, and each operation is re-verified at admission anyway.
-Requester binding is only as strong as the connection's authentication, which the NO_GO
-`/ws/canonical` mount (CANON-WS) owns; nothing here mounts or instantiates it.
+Requester binding is only as strong as the connection's authentication, which the not-yet-built
+`/ws/canonical` mount (CANON-WS; approved 2026-11-20, D-CL35) owns; nothing here mounts or instantiates it.
 
 ## §crate-surface — the curated prelude, and the frozen module tree underneath it
 
@@ -366,19 +366,19 @@ crate's own tests; what is missing is the *durable*, database-backed caller a la
 | Trait | Production implementor | Production caller |
 | --- | --- | --- |
 | `CandidateVerifier` | `compose::ComposedCandidateVerifier` (W4-3) | `fe-database canon_log::verifier::durable_candidate_verifier` (W4-7) — the one production instantiation; `admit_and_append_durably` is its admission door |
-| wire `CapabilityVerifier` | `compose::ChainCapabilityVerifier` (W4-3) | none — `/ws/canonical` (CANON-WS) is NO_GO; never mounted or instantiated |
+| wire `CapabilityVerifier` | `compose::ChainCapabilityVerifier` (W4-3) | none yet — `/ws/canonical` (CANON-WS) is approved (D-CL35, 2026-11-20) but not built; never mounted or instantiated today |
 | `SealedArtifactStore` | `compose::ByteStoreSealedArtifactStore` (W4-4) | over `fe-database canon_log::artifact_store::SurrealArtifactStore` (W4-7), the local-only `ContentByteStore` + `PayloadCiphertextSource` (`put_sealed_artifact`) |
-| `ProofEnvironment` | `compose::SealedProofEnvironment` (W4-4) | none yet — its only real consumer, checkpoint bootstrap/seeding from received segments, is relay/peer distribution and stays NO_GO; exercised directly by this crate's own tests and by W4-5's `cross_spec_integration.rs` |
+| `ProofEnvironment` | `compose::SealedProofEnvironment` (W4-4) | none yet — its only real consumer, checkpoint bootstrap/seeding from received segments, is relay/peer distribution, approved 2026-11-20 (D-CL35) but not yet built; exercised directly by this crate's own tests and by W4-5's `cross_spec_integration.rs` |
 | `ScopeKeyResolver` | `crypto::scope_key::LaneScopeKeyResolver` (W3-crypto) | `compose::SealedProofEnvironment` (W4-4), in-process |
 | `ScopeKeyStore` (custody) + `retention::crypto_shred::ShredLedger` (unified W4-4) | `crypto::scope_key::InMemoryScopeKeyStore`; durable: `fe-database canon_log::scope_key_custody::SecretStoreScopeKeyCustody` (W4-7) | `retention::crypto_shred::crypto_shred` / `crypto::scope_key::ScopeKeyLifecycle` (this crate); the durable verifier's payload key resolution (W4-7) |
-| `CanonicalCommitPipeline` | `compose::VerifyingCommitPipeline` (W4-4) | none — its production mount is inside `fe-api`'s CANON-WS surface, which stays NO_GO; exercised directly by this crate's own tests and by W4-5 |
+| `CanonicalCommitPipeline` | `compose::VerifyingCommitPipeline` (W4-4) | none — its production mount is inside `fe-api`'s CANON-WS surface, approved 2026-11-20 (D-CL35) but not yet built; exercised directly by this crate's own tests and by W4-5 |
 | `AuthorKeyLifecycleView` | `compose::CausalLifecycleView` (W4-3); durable: `fe-database canon_log::author_lifecycle::DurableAuthorKeyLifecycle` (W4-7), rebuilt from `verified_op_log` | `compose::ComposedCandidateVerifier::verify_authorization`, inside the durable verifier (W4-7) |
 | `admit_rotation` / `admit_disavow` / `admit_disavow_rescind` / `admit_continuity_grant` | `author_key::admission` (W2) | `compose::LifecycleDispatcher::dispatch` (W4-3) — the four SPEC-2 entrypoints now have a production caller |
 | `CausalMaterializer` for kind 5 | `observation::ObservationBatchMaterializer` (CDL-SPEC10 B1) | none yet — CDL-SPEC10 B3 wires it into `fe-database` replay/rebuild through B2b's facts source |
 | `MaterializerVersion::registry_id` mapping | `materialize::identity::MaterializerVersion` (W4-3) | `compose::checkpoint_binding_for_selection` (W4-3) |
 | `DeviceEnrolmentView` | `crypto::device_enrolment::EnrolmentRegistry` (W4-6) | fe-database `canon_log::device_enrolment::DurableDeviceEnrolmentView` (W4-8) loads its table into it, re-verifying every row; exercised in-process by `cross_spec_integration.rs::a_device_enrolment_gates_a_scope_key_wrap` |
 | `ManagerPlusAuthorizationView` | `fe-database canon_log::canonical_epoch::DurableAuthorizationView` (W4-7; checkpoint chains from `chain_store::ChainStore`) | `fe-database canon_log::rebuild::AdmittedCheckpoint::admit` |
-| `DeliveryAuthorizationView` | fe-database `canon_log::device_enrolment::DurableDeliveryView` (W4-8): issuer half from `DurableAuthorizationView`, device half from `DurableDeviceEnrolmentView`, recipient `decrypt/op` from held chains in `ChainStore` | `crypto::key_wrap::issue_scope_key_wrap` / `RecipientDeviceBinding::resolve`; the §10.2.4 delivery transport that would call them in production is NO_GO |
+| `DeliveryAuthorizationView` | fe-database `canon_log::device_enrolment::DurableDeliveryView` (W4-8): issuer half from `DurableAuthorizationView`, device half from `DurableDeviceEnrolmentView`, recipient `decrypt/op` from held chains in `ChainStore` | `crypto::key_wrap::issue_scope_key_wrap` / `RecipientDeviceBinding::resolve`; the §10.2.4 delivery transport that would call them in production is approved (D-CL35, 2026-11-20) but not yet built |
 
 ## §materializer-identity — one mapping from name/number to identifier
 
@@ -969,7 +969,7 @@ they add are provisional (D-CL34, register above).
   yet; CDL-SPEC10 B1 embeds `ObservationSource` in the batch payload.
 
 No network path was added: the bulk lane is local sealing, receipt, and opening only. Canonical
-network exposure (CDL-NET, CANON-WS) stays NO_GO.
+network exposure (CDL-NET, CANON-WS) is approved (D-CL35, 2026-11-20) but not yet built.
 
 ## Owner-ratified errata, 2026-10-13 (CDL-W4, E-W4-1)
 

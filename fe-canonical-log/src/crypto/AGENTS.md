@@ -5,8 +5,8 @@ ciphertext as opaque bytes; this is the only place a key, a nonce, or an AEAD ca
 
 Scope boundary: protocol only. No socket, listener, connection, iroh, libp2p, `fe-network` or
 `fe-sync` reference; no wrap delivery transport, no relay seeding, no durable storage.
-§10.2.4 delivery and §10.3.4 network enablement remain owner-gated and are deliberately unbuilt
-here. `key_wrap`'s three view traits are the seams those surfaces answer through: they ask
+§10.2.4 delivery and §10.3.4 network enablement were approved 2026-11-20 (D-CL35; track
+`relay_record_warehouse_20261120`) and are not yet built; this crate stays protocol-only. `key_wrap`'s three view traits are the seams those surfaces answer through: they ask
 questions, they store nothing, and each is deny-by-default until something answers.
 `device_enrolment` (W4-6) is the one exception that holds state, and only in memory: the pure
 `EnrolmentRegistry` the durable fe-database table loads into (§device-enrolment).

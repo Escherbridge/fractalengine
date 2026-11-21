@@ -1,6 +1,6 @@
 # Canonical log operation envelope v1
 
-**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P remain owner-gated.
+**Status:** Owner-approved 2026-08-09. Implementation (Workstream G) is unlocked; network rollout, relay seeding, and inbound P2P were owner-gated until 2026-11-20 (lifted, D-CL35; approved, not yet built, track `relay_record_warehouse_20261120`; the `canonical_authoritative_local` cutover stays owner-gated).
 
 This document defines the immutable operation artifact for the Canonical
 Fractal Data Log. It implements D-CL1 through D-CL9 at the envelope boundary.

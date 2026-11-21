@@ -1,6 +1,6 @@
 # Canonical log observation plane v1
 
-**Status:** PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending). Decisions D-CL30..34, RUNBOOK §3 R7. Local implementation in default-off shadow modes is unlocked; network rollout, relay seeding, inbound P2P, the `/ws/canonical` mount, and `canonical_authoritative_local` cutover remain owner-gated.
+**Status:** PRE-APPROVED 2026-10-13 (owner pre-approved the draft's defaults; post-review pending). Decisions D-CL30..34, RUNBOOK §3 R7. Local implementation in default-off shadow modes is unlocked; network rollout, relay seeding, inbound P2P and the `/ws/canonical` mount were owner-gated until 2026-11-20 (lifted, D-CL35; approved, not yet built, track `relay_record_warehouse_20261120`); the `canonical_authoritative_local` cutover remains owner-gated.
 
 This document defines the observation plane of the Canonical Fractal Data Log.
 It is SPEC-10. It implements D-CL26 (two-plane architecture) and the

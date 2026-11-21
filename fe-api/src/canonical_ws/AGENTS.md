@@ -21,8 +21,10 @@ network code lives in `fe_canonical_log` itself — that crate is transport-agno
 `BranchRegistry` / `ScopeSnapshotSource` / `CapabilityVerifier` / `AuthorizationView`
 implementations (all four wire traits plus the capability view are dormant test-double-only
 here; the real ones are `fe-database`'s job, a different wave-3 slice), and deciding the
-`/ws/canonical` route's auth story — is an explicit, owner-gated decision this slice does not
-make. The endpoint ships written, compiled, colocated-tested, and structurally sound; it is not
+`/ws/canonical` route's auth story — was an explicit, owner-gated decision this slice did not
+make. **Gate lifted 2026-11-20 (D-CL35):** the mount is approved, auth = verse-scoped token then
+capability chain (D-CL41), not yet implemented; owned by track `relay_record_warehouse_20261120`.
+Until that lands the following stays true: the endpoint ships written, compiled, colocated-tested, and structurally sound; it is not
 reachable from any process today. `router.rs`'s own tests exercise this via `tower::oneshot`
 rather than a live listener, so the "unmounted" property is verified without contradicting it.
 
@@ -256,7 +258,7 @@ Both checks are meant to compose: this one is cheap and connection-local,
 `ScopeNotAuthorized` is documented as "deny without private-object existence details"
 (`wire/error.rs`), so a peer probing scopes outside its authority must not be able to tell a scope
 that exists elsewhere from one that exists nowhere. This was audited before any mount
-(CANON-WS stays NO_GO), across every scope-bearing emission in `handler.rs`:
+(CANON-WS, approved 2026-11-20 D-CL35, not yet mounted), across every scope-bearing emission in `handler.rs`:
 
 - `dispatch_authorize`: every verifier and binding failure maps to `ScopeNotAuthorized`; the
   epoch/expiry `AuthorizationRevalidationRequired` runs only AFTER the chain verified the scope,

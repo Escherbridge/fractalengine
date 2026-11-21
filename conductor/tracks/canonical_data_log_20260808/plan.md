@@ -52,8 +52,9 @@ duplicated them and does not start now:
 (`G-WAVE-4`, ledger `CDL-W4`) and the production `DeviceEnrolmentView`/
 `IssuerAuthorityView` implementors (ledger `CDL-R2`) are DONE-pending-sweep —
 code-complete and reviewed, tests written but not yet run. Network rollout,
-relay seeding and inbound P2P on the canonical path remain owner-gated (NO-GO)
-per this plan's own `network_enablement: prohibited`.
+relay seeding and inbound P2P on the canonical path were owner-gated (NO-GO,
+`network_enablement: prohibited`) as of this date; **lifted 2026-11-20 (D-CL35)**,
+build owned by track `relay_record_warehouse_20261120`.
 
 **Status as of 2026-10-15:** `CDL-SPEC10` (SPEC-10 observation plane + errata
 G3/G6, `campaign-plan-spec10-20261013.md`) is also DONE-pending-sweep. Both
@@ -70,8 +71,9 @@ campaign-end workspace sweep this plan's Execution rules call for still
 covers both. Phase B runs only under `MigrationMode::DualEmitShadow`/
 `ShadowRebuild`; the live default stays `legacy_only` (SPEC-8 §3 rule 1), so
 the hot tables are unaffected until the owner flips the mode. Network
-rollout, relay seeding, inbound P2P, PLUG-HOST decoder plugins, and the
-`canonical_authoritative_local` cutover remain owner-gated (NO-GO), unchanged.
+rollout, relay seeding and inbound P2P were then owner-gated (lifted 2026-11-20,
+D-CL35; built under `relay_record_warehouse_20261120`). PLUG-HOST decoder plugins
+and the `canonical_authoritative_local` cutover remain owner-gated (NO-GO).
 
 ## Execution rules
 

@@ -70,7 +70,7 @@ provisioning and without trusting the wire. On top of that:
   blocker was that no role data reached the sync plane (`fe-sync/src/AGENTS.md`
   §transport-admission-control item 5). Doc entries are already author-signed by iroh-docs,
   and `__peers` self-declaration already relies on that (`fe-sync/src/sharding.rs:348-365`).
-  Relayed-gossip attribution and signed editor ops stay NO_GO.
+  Relayed-gossip attribution and signed editor ops stayed NO_GO here (gate lifted 2026-11-20, D-CL35; now owned by `relay_record_warehouse_20261120`, not yet built).
 
 **Refinement of the §4 assumption ("LWW by HLC per (verse, peer) row").** Implemented
 literally, it fails in three ways:
@@ -1428,7 +1428,7 @@ updates are handed to their owning agent (§4).
 
 | Item left out | Justification class | Detail |
 |---|---|---|
-| Relayed-gossip attribution, signed gimbal and editor ops (rest of SYNC-SIGNED-PLANE) | **NO_GO** | Needs per-op signing, which exists only in the canonical log; adopting it on the sync plane is the canonical network rollout, which RUNBOOK §3 ("Carried from earlier") keeps NO_GO. The `__shards` gate IS included (RP-5): doc entries are already author-signed |
+| Relayed-gossip attribution, signed gimbal and editor ops (rest of SYNC-SIGNED-PLANE) | **NO_GO** (lifted 2026-11-20, D-CL35; now owned by `relay_record_warehouse_20261120`, not yet built) | Needs per-op signing, which exists only in the canonical log; adopting it on the sync plane is the canonical network rollout, which RUNBOOK §3 ("Carried from earlier") kept NO_GO at the time. The `__shards` gate IS included (RP-5): doc entries are already author-signed |
 | Docs-ALPN peer-level admission and namespace rotation | **Missing user decision** | `fe-sync/src/AGENTS.md` §namespace-id-capability: "needs a decision, no network change in this pass" |
 | Scoped-invite redemption, plus the FR-4 role list, invites, presets and audit UI | **User decision (D-32, R5)** | FR-4 is scheduled "after role propagation" in the second campaign. Today `join_verse_by_invite_handler` ignores the scoped role (`handlers/invite.rs:~117-124`), and a proper redeem flow needs the Manager to publish a statement for the invitee DID, which is FR-4 design. This track supplies the substrate |
 | Pinning the bootstrap owner for relays that open replicas without an invite | **Missing user decision (D-23)** | The relay host and provisioning are undecided (R6). The pin mechanism ships in RP-4; only the relay-side source of the expected owner waits. TOFU is a documented residual |

@@ -58,7 +58,7 @@ allocates `0` invalid, `1` `telemetry_sample_v1`, `2..=1023` reserved for specif
 - **`anchor`** comes from `observation::node_anchor` (the one `fe_sdk::legacy_identifier`
   mapping, SPEC-10 §4.5). `preview.rs` itself does not import `observation`; the caller builds the
   anchor, so the module-boundary isolation above is unchanged.
-- **No transport.** Nothing here sends or receives: `/ws/canonical` (CANON-WS) stays NO_GO, and
+- **No transport.** Nothing here sends or receives: `/ws/canonical` (CANON-WS) is approved (D-CL35, 2026-11-20) but not yet mounted (track `relay_record_warehouse_20261120`), and
   §6 rule 4 forbids turning a preview into a reading, a batch, or hot-plane state. The durable
   copy of the same observation goes ingest door → hot plane → kind-5 batch.
 - Provisional key numbers: `src/AGENTS.md` §Provisional wire numbering, "SPEC-10 §6".

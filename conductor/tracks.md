@@ -356,7 +356,7 @@ with `asset_id`/rotation/scale (MCP-2.4).
 
 ### [~] canonical_data_log — signed canonical log program (SPEC-1..10, Workstream G)
 
-_Link: [./tracks/canonical_data_log_20260808/](./tracks/canonical_data_log_20260808/) · in_progress · local implementation GO, network rollout NO-GO_
+_Link: [./tracks/canonical_data_log_20260808/](./tracks/canonical_data_log_20260808/) · in_progress · local implementation GO; network gate lifted 2026-11-20 (D-CL35), build owned by `relay_record_warehouse_20261120`; authoritative-write cutover still owner-gated_
 
 SPEC-1..8 owner-approved; HARD-1..6, Waves 1–3 (+3R remediation) landed. ~~Open and
 agent-doable: Wave 4 serial integration incl. the six D-CL20 bypass counters
@@ -369,9 +369,22 @@ tests written, campaign-end sweep not yet run); the SPEC-10 draft (CDL-SPEC10) l
 and is PRE-APPROVED. What is still agent-doable now is **CDL-SPEC10 A2..A6 (+A3b),
 B1..B4 (+B2b)**. Needs a
 ratification: SPEC-9 availability floor, provisional CBOR numbering, rotation-fork
-resolver, WIT s64, dual-emit cut-over. Network rollout, relay seeding, inbound P2P and
-mounting `/ws/canonical` stay owner-gated. The old "is_available() must stay false"
+resolver, WIT s64, dual-emit cut-over. **Amended 2026-11-20 (D-CL35):** network
+rollout, relay seeding, inbound P2P and mounting `/ws/canonical` are APPROVED but not
+yet built (still unmounted/unwired in code); the build is owned by
+`relay_record_warehouse_20261120`. Only the `canonical_authoritative_local` cutover
+stays owner-gated. The old "is_available() must stay false"
 constraint now applies to the canonical path only (F1/F2 made the legacy row path real).
+
+### [ ] relay_record_warehouse_20261120 — relays as the canonical-log point of record
+
+_Link: [./tracks/relay_record_warehouse_20261120/](./tracks/relay_record_warehouse_20261120/) · planned · created 2026-11-20 from the owner's lifting of the network gate (D-CL35..D-CL45)_
+
+Owns CDL-NET, CANON-WS and the remainder of SYNC-SIGNED-PLANE: relay seeding of sealed
+segments, the `/ws/canonical` mount, inbound canonical P2P, the signed sync plane,
+dual-emit (D-CL37) and the per-verse warehouse-mode setting (D-CL43). Approved, not yet
+implemented. The `canonical_authoritative_local` cutover is NOT in scope (owner-gated).
+Decisions: `decisions/canonical-data-log-20260808.md` D-CL35..D-CL45.
 
 ### [ ] hexon_unification — one canonical .hexon + portable petal snapshot
 

@@ -26,6 +26,12 @@ No task in this track may enable iroh-docs, open relay replicas, enable inbound
 P2P, or extend `WriteRowEntry` row-replication. The local editor must remain
 fully functional.
 
+> **Superseded 2026-11-20:** the owner lifted the network gate (D-CL35..D-CL44 in
+> the decision register). Relay seeding, the `/ws/canonical` mount, inbound
+> canonical P2P and the signed sync plane are approved. Only the cutover to a
+> canonical-authoritative write path remains owner-gated. Approved, not yet
+> implemented; the build is owned by track `relay_record_warehouse_20261120`.
+
 ## Ratified architecture
 
 1. Every payload and segment is encrypted under its scope key; public data uses

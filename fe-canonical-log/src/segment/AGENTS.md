@@ -16,7 +16,7 @@ code. Nothing here references `fe-network`, `fe-sync`, or `fe-runtime`, nothing 
 a port, and nothing here can influence `fe-sync`'s `IrohDocsEngineHolder::is_available()`
 (owned solely by the fe-sync sync thread's P2P stack spawn — this crate has no path to it).
 `decide_seed` and `decide_fetch` answer *whether* a transport would be permitted to
-act; the transport itself remains owner-gated and unbuilt. Relay work here is local artifact
+act; the transport itself is approved (D-CL35, 2026-11-20; track `relay_record_warehouse_20261120`) but not yet built. Relay work here is local artifact
 handling only.
 
 ### One seal entry point, for all five lanes
@@ -185,7 +185,7 @@ statistics artifact (SPEC-10 §9) are the first producers, both in CDL-SPEC10 B3
   `topic()` as the authenticated scope.
 - **Relay policy.** Unchanged and deliberately so: `decide_seed`/`decide_fetch` key on `LaneKey`,
   and a bulk artifact rides its petal's payload `LaneKey`. No relay seeding or network path exists
-  (CDL-NET NO_GO).
+  yet (CDL-NET approved 2026-11-20, D-CL35; track `relay_record_warehouse_20261120`).
 - **`BLAKE3(content_bytes)` is not the `artifact_id`** (rule 9). `BulkArtifactBody::content_hash`
   is the plaintext object's address, which only the committing operation's encrypted payload may
   name (SPEC-10 `asset_refs`).

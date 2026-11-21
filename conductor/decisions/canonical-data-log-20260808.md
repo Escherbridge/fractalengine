@@ -179,3 +179,33 @@ provisional wire-number domains (above) ship with no interop claim and await the
 same D-CL24(3) batch ratification as the rest of the `CDL-PROV` register.
 Product retention durations, replication-factor numbers, and the
 network-rollout gate remain work items, not unrecorded protocol decisions.
+
+## Network gate lifted, relays as point of record (owner, 2026-11-20)
+
+Owner decisions taken in a two-round question session on 2026-11-20. They
+supersede the "network rollout NO-GO" boundary and the last sentence of
+"Pending ratification" above as far as the network-rollout gate is concerned.
+
+| ID | Decision |
+|---|---|
+| D-CL35 | **The canonical-log network gate is lifted in full.** Relay seeding, the `/ws/canonical` mount, inbound canonical P2P and the signed sync plane are all approved (ledger rows CDL-NET, CANON-WS, SYNC-SIGNED-PLANE). The owner chose "open everything" over the recommended segment-seeding-only first step. |
+| D-CL36 | **Relays are the point of record.** Sealed canonical-log segments held on relays are the durable record. Every SurrealDB instance, on a relay or a peer, is a rebuildable projection. |
+| D-CL37 | **Dual-emit everything.** Every scene write also emits a canonical operation that ships to relays. Legacy row replication stays authoritative until SPEC-8 equivalence validates. Cutover to `canonical_authoritative_local` is NOT approved by this decision. |
+| D-CL38 | **Relay records are pre-GA and resettable.** The provisional wire numbering is not frozen; relay-held records may be wiped until the `CDL-PROV` batch ratification. |
+| D-CL39 | **Durability floor = R relays.** A segment counts as recorded once R relays hold it, where R is the verse's existing timeseries-fabric replication factor. A peer may prune behind a checkpoint only after that. |
+| D-CL40 | **SPEC-7 gains a distinct retryable "held" answer.** A quarantined commit is no longer reported as rejected. This replaces, rather than ratifies, the W4-4 Quarantine-to-Rejected mapping and so discharges the CANON-WS pre-mount precondition (AC-39). The new wire value is provisional (D-CL24). |
+| D-CL41 | **`/ws/canonical` auth = token, then capability chain.** The connection authenticates with the existing verse-scoped API token, then presents a SPEC-3 capability chain bound to that identity. |
+| D-CL42 | **On in our build.** The four paths are enabled in the project's own build rather than behind off-by-default switches. The owner's condition: QA and test the seams, and run security review loops on them. (Recommended alternative, staged default-off flags, was declined.) |
+| D-CL43 | **Warehouse mode is a per-verse setting.** The verse admin (Manager+ at verse scope) sets whether a verse is in warehouse mode in verse settings. The remaining knobs follow from it and are admin-set there, including whether a relay may hold the verse's scope key (blind by default). |
+| D-CL44 | **Approved work items:** move the distributed timeseries partial query off the DB thread onto a reader connection; add a columnar scan for ad hoc local BI over pulled segments. |
+| D-CL45 | **One relay serves one verse.** A relay is tied to a single verse and records only that verse. With D-CL39 this means a verse's durability floor of R is met by R relays dedicated to it. |
+
+Interpretation notes (orchestrator's reading, not owner wording):
+
+- D-CL42 "our build" is read as the project's own binaries, with seam tests and
+  security review as gates that must pass, not as switches.
+- D-CL43 "the rest" is read as every relay/warehouse knob not fixed by D-CL35
+  through D-CL42, with relay scope-key custody the main one.
+
+Still open after this session: `CDL-PROV` batch ratification, product retention
+durations, and the cutover decision named in D-CL37.

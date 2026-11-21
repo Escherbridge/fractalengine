@@ -369,7 +369,7 @@ CDL-SPEC10 B3, 2026-10-15. SPEC-10 (`docs/spec/canonical-log/observation-plane.m
 authoritative. `observation/` is the storage half of the observation plane; the pure half (kind
 5, payload codec, reduction) is `fe-canonical-log` `src/observation/`, and the hexon codec is
 `fe-query` `columnar/observation`. Nothing here touches a network: the artifact store is the
-local `canon_sealed_artifact` table, never the iroh blob store (CDL-NET stays NO_GO).
+local `canon_sealed_artifact` table, never the iroh blob store (CDL-NET approved 2026-11-20, D-CL35, not yet built).
 
 | File | SPEC-10 | Contents |
 | --- | --- | --- |
@@ -608,7 +608,7 @@ chain and artifact stores share one cache.
 
 **Local-only, never served.** Chains are access-controlled local data (SPEC-3 privacy table):
 no `replicate_row`, no fe-api route. The artifact store is deliberately not the iroh blob store,
-whose content is served to peers — that is the canonical network exposure that stays NO_GO.
+whose content is served to peers — that is canonical network exposure, approved 2026-11-20 (D-CL35) but not yet built.
 Nothing here is reachable from a live handler (§parallel-and-dormant).
 
 **Scope keys never enter SurrealDB.** Material lives in `fe_identity::SecretStore` under service
@@ -724,7 +724,7 @@ failure is `RequestFailed` when correlated, else `Error`):
   no transport and does not change the shape of `WriteRowEntry`.
 - **Explicit only.** Nothing auto-enrols when a replica opens. A published X25519 key is a stable
   identifier every replica member sees (campaign plan §5 risk 3). The only consumer, §10.2.4 wrap
-  delivery, is NO_GO, so publishing a key nobody asked for would only add linkability.
+  delivery, is approved (D-CL35, 2026-11-20) but not yet built, so publishing a key nobody asked for would only add linkability.
 - Revocation dominates forever, so a revoked key can never be re-enrolled. `RevokeLocalDevice`
   of this node's current key therefore deletes that secret AFTER the tombstone is stored, and
   the next enrolment mints a fresh key. A crash between the two leaves a revoked secret, which
