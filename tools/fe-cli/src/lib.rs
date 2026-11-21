@@ -1,5 +1,6 @@
 //! fe-cli library: local-only operator CLI. See `tools/fe-cli/AGENTS.md`.
 
+pub mod binds;
 pub mod catalog;
 pub mod commands;
 pub mod context;
@@ -104,6 +105,7 @@ mod spine {
         note: Option<String>,
         human_text: Option<String>,
         created_ids: Vec<String>,
+        binds: Vec<journal::Bind>,
         wait: Option<Value>,
         /// Bearers held by the resolved instance, redacted from the journal wherever they appear.
         secrets: Vec<String>,
@@ -126,6 +128,7 @@ mod spine {
                 note: None,
                 human_text: None,
                 created_ids: Vec::new(),
+                binds: Vec::new(),
                 wait: None,
                 secrets: Vec::new(),
             }
@@ -328,6 +331,10 @@ mod spine {
                 tokio::time::sleep(Duration::from_millis(delay)).await;
                 result = invoke(&request, &client, &loaded, &state_dir).await;
             }
+            // Name paths of ids first used here, for `fe replay` re-binding (a refused transport records nothing).
+            if let Some(journal_path) = non_empty(&env, "FE_JOURNAL").filter(|_| !dry_run && result.outcome.exit != ExitCode::Transport) {
+                report.binds = crate::binds::collect(&client, &loaded, result.resolved_args.as_ref(), &result.created_ids, Path::new(journal_path), non_empty(&env, "FE_AGENT_ID")).await;
+            }
         }
 
         if let Some(resolved_args) = &result.resolved_args {
@@ -520,6 +527,7 @@ mod spine {
                 t: envelope::format_rfc3339(now),
                 unix_ms: now,
                 latency_ms,
+                elapsed_ms: report.started.elapsed().as_millis() as u64,
                 argv: redact_argv(&report.argv).iter().map(|word| journal::redact_word(word, &report.secrets)).collect(),
                 resolved: ResolvedOp {
                     args: report.resolved.args.as_ref().map(|args| journal::redact_with(args, &report.secrets)),
@@ -532,6 +540,7 @@ mod spine {
                 code: envelope.code.clone(),
                 envelope_digest: blake3::hash(line.as_bytes()).to_hex().to_string(),
                 created_ids: report.created_ids.clone(),
+                binds: report.binds.clone(),
                 data_small: envelope.data.as_ref().map(|data| journal::redact_strings(&journal::data_small(data), &report.secrets, None)),
                 wait: report.wait.clone(),
                 help: report.help,

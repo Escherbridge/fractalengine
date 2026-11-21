@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use super::hierarchy::{name_index, read_verses, Named};
 use super::scenario::{self, kebab_name};
 use super::{created_id, make_outcome, ok_outcome, usage_outcome, CommandRequest, CommandResult};
 use crate::envelope::{EnvelopeContext, ExitCode};
+use crate::context::Context;
 use crate::journal::{self, JournalLine};
-use crate::transport::Outcome;
+use crate::transport::{Client, Outcome};
 
 /// Shortest id the replay rewrites inside argv words (shorter strings are names, not ids).
 const MIN_REWRITTEN_ID_CHARS: usize = 8;
@@ -83,7 +85,7 @@ fn read_journal(path: &Path) -> Result<Vec<JournalLine>, Outcome> {
 
 async fn replay(request: &CommandRequest) -> Outcome {
     let Some(journal_arg) = request.positionals.first() else {
-        return usage_outcome("missing-required", "usage: fe replay <journal.jsonl> [--map agent=instance] [--bind old=new] [--strict] [--emit-scenario out.json]");
+        return usage_outcome("missing-required", "usage: fe replay <journal.jsonl> [--map agent=instance] [--bind old=new] [--strict] [--exact-ids] [--emit-scenario out.json]");
     };
     let journal_path = resolve_path(request, journal_arg);
     let lines = match read_journal(&journal_path) {
@@ -99,6 +101,7 @@ async fn replay(request: &CommandRequest) -> Outcome {
         (Err(outcome), _) | (_, Err(outcome)) => return outcome,
     };
     let strict = request.args.get("strict").and_then(Value::as_bool).unwrap_or(false);
+    let exact_ids = request.args.get("exact_ids").and_then(Value::as_bool).unwrap_or(false);
 
     if request.global.dry_run {
         let steps: Vec<Value> = lines
@@ -116,6 +119,19 @@ async fn replay(request: &CommandRequest) -> Outcome {
     let mut context_files: BTreeMap<String, PathBuf> = BTreeMap::new();
     let (mut replayed, mut skipped) = (0usize, 0usize);
     let mut divergence: Option<(String, Value)> = None;
+    // Target hierarchies per instance selector, read once up front so replayed creates cannot make a name ambiguous.
+    let mut snapshots: BTreeMap<Option<String>, Vec<Named>> = BTreeMap::new();
+    if !exact_ids {
+        for line in lines.iter().filter(|line| skip_reason(line).is_none() && !line.binds.is_empty()) {
+            let selector = selector_for(&maps, line);
+            if !snapshots.contains_key(&selector) {
+                match read_snapshot(request, selector.as_deref()).await {
+                    Ok(index) => snapshots.insert(selector, index),
+                    Err(message) => return usage_outcome("replay-unbindable", message),
+                };
+            }
+        }
+    }
     for line in &lines {
         if skip_reason(line).is_some() {
             skipped += 1;
@@ -129,7 +145,13 @@ async fn replay(request: &CommandRequest) -> Outcome {
         let agent = agent_key(line);
         let next_index = context_files.len();
         let context_file = context_files.entry(agent.clone()).or_insert_with(|| state_root.join(format!("ctx-{next_index}.json"))).clone();
-        let selector = maps.get(&agent).or_else(|| maps.get(&line.instance.name)).cloned();
+        let selector = selector_for(&maps, line);
+        if let Some(index) = snapshots.get(&selector) {
+            if let Err(message) = bind_by_name(line, index, &mut id_map) {
+                let _ = std::fs::remove_dir_all(&state_root);
+                return usage_outcome("replay-unbindable", message);
+            }
+        }
         let (exit, envelope) = run_step(request, line, &id_map, &context_file, &agent, selector.as_deref()).await;
         replayed += 1;
         if exit != line.exit {
@@ -209,6 +231,54 @@ fn emit_scenario(request: &CommandRequest, lines: &[JournalLine], source: &str, 
     let mut outcome = ok_outcome(report);
     outcome.message = "scenario written; check it with `python tools/qa/sim/run.py validate <path>`".to_string();
     outcome
+}
+
+/// The instance a line's agent is mapped to (`--map`), else `None` (the invoking instance).
+fn selector_for(maps: &BTreeMap<String, String>, line: &JournalLine) -> Option<String> {
+    maps.get(&agent_key(line)).or_else(|| maps.get(&line.instance.name)).cloned()
+}
+
+/// The name-path index of the target instance's hierarchy (every verse token it holds).
+async fn read_snapshot(request: &CommandRequest, selector: Option<&str>) -> Result<Vec<Named>, String> {
+    let mut env = request.env.clone();
+    if let Some(selector) = selector {
+        env.insert("FE_INSTANCE".to_string(), selector.to_string());
+    }
+    let flag = if selector.is_none() { request.instance_flag.as_deref() } else { None };
+    let unbindable = |what: &str, why: String| format!("cannot read the target hierarchy to re-bind pre-existing ids ({what}): {why}");
+    let resolved = crate::instance::resolve(flag, &env, &request.cwd).map_err(|error| unbindable("instance", error.message))?;
+    let client = Client::new(resolved).map_err(|error| unbindable("instance", error.message))?;
+    let read = read_verses(&client, &Context::default(), None).await.map_err(|outcome| unbindable("hierarchy", outcome.message))?;
+    Ok(name_index(&read.verses))
+}
+
+/// Name-based re-binding of the pre-existing ids a line is the first to use. An id that already exists on the target
+/// is kept (same instance replay); otherwise its name path must match exactly one object, else the replay refuses.
+/// Ids already in the map (`--bind`, or created by the replay) are never touched.
+fn bind_by_name(line: &JournalLine, index: &[Named], id_map: &mut BTreeMap<String, String>) -> Result<(), String> {
+    for bind in &line.binds {
+        if id_map.contains_key(&bind.id) || index.iter().any(|named| named.id == bind.id && named.level == bind.level) {
+            continue;
+        }
+        let found: Vec<&Named> = index.iter().filter(|named| named.level == bind.level && named.path == bind.path).collect();
+        match found.as_slice() {
+            [only] => {
+                id_map.insert(bind.id.clone(), only.id.clone());
+            }
+            _ => {
+                return Err(format!(
+                    "step {} ({}): the {} at \"{}\" has {} on the target; replay needs exactly one (use --bind {}=<id> or --exact-ids)",
+                    line.seq,
+                    line.resolved.verb,
+                    bind.level,
+                    bind.path.join("/"),
+                    if found.is_empty() { "no match".to_string() } else { format!("{} matches", found.len()) },
+                    bind.id,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Runs one journal line through the spine as a child invocation and returns its exit code and envelope.

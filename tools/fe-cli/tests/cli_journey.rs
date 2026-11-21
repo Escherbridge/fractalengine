@@ -530,6 +530,63 @@ fn cli_operator_journey() {
     assert_eq!(diverged["code"], "replay-diverged");
     let at = &diverged["data"]["diverged_at"];
     assert_eq!((at["seq"].clone(), at["recorded_exit"].clone(), at["replayed_exit"].clone()), (tampered[last]["seq"].clone(), json!(0), json!(5)), "{diverged}");
+    // Replay onto a second instance whose fixture ids differ but whose names match: pre-existing ids are re-bound by
+    // name path (an id that exists on the target is kept; an ambiguous path is refused with 6; `--bind` wins).
+    let lantern = id_of(&expect(&owner, &["node", "create", "Lantern", "--json"], 0));
+    let second_root = tempfile::tempdir().expect("second tempdir");
+    let second = Engine::start(second_root.path());
+    second.bootstrap_verse("Campus");
+    let second_tokens = second_root.path().join("owner").join("tokens.json");
+    second.emit_tokens(&second_tokens);
+    let mut second_env = env(&second_tokens, "second");
+    second_env.remove("FE_JOURNAL");
+    let campus_b = expect(&second_env, &["use", "verse", "Campus", "--json"], 0)["data"]["context"]["verse"]["id"].as_str().expect("verse id").to_string();
+    let north_b = id_of(&expect(&second_env, &["fractal", "create", "North", "--json"], 0));
+    expect(&second_env, &["use", "fractal", &north_b, "--json"], 0);
+    let plaza_b = id_of(&expect(&second_env, &["petal", "create", "Plaza", "--json"], 0));
+    expect(&second_env, &["use", "petal", &plaza_b, "--json"], 0);
+    let lantern_b = id_of(&expect(&second_env, &["node", "create", "Lantern", "--json"], 0));
+    assert!(campus_b != campus && plaza_b != plaza && lantern_b != lantern, "the second instance must not share fixture ids");
+
+    let journal_two = root.path().join("recorded-two.jsonl");
+    write_file(
+        &root.path().join("recorder2-ctx.json"),
+        &json!({"v": 1, "verse": {"id": campus, "name": "Campus"}, "fractal": {"id": north, "name": "North"}, "petal": {"id": plaza, "name": "Plaza"}}).to_string(),
+    );
+    let mut recorder_two = env(&owner_tokens, "recorder2");
+    recorder_two.insert("FE_JOURNAL".into(), journal_two.to_string_lossy().into_owned());
+    let beacon = id_of(&expect(&recorder_two, &["node", "create", "Beacon", "--json"], 0));
+    expect(&recorder_two, &["node", "get", &lantern, "--json"], 0);
+    expect(&recorder_two, &["node", "get", &beacon, "--json"], 0);
+    let two_lines: Vec<Value> = std::fs::read_to_string(&journal_two).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    // Journal schema: every line carries a monotonic `elapsed_ms` beside `unix_ms`; binds hold names only, first use only.
+    assert!(two_lines.iter().all(|line| line["unix_ms"].as_u64().is_some() && line["elapsed_ms"].as_u64() >= line["latency_ms"].as_u64()), "{two_lines:?}");
+    assert_eq!(two_lines[1]["binds"], json!([{"id": lantern, "level": "node", "path": ["Campus", "North", "Plaza", "Lantern"]}]), "the first use of a pre-existing node records its name path");
+    assert_eq!(two_lines[2]["binds"], json!([]), "a node the journal created needs no bind");
+    assert!(two_lines[0]["binds"].as_array().unwrap().iter().any(|bind| bind["level"] == "petal" && bind["path"] == json!(["Campus", "North", "Plaza"])));
+
+    expect(&owner, &["node", "delete", &lantern, "--json"], 0);
+    expect(&owner, &["node", "delete", &beacon, "--json"], 0);
+    let mut replayer_b = env(&second_tokens, "replayer-b");
+    replayer_b.remove("FE_JOURNAL");
+    let journal_two_path = journal_two.to_string_lossy().into_owned();
+    let rebound = expect(&replayer_b, &["replay", &journal_two_path, "--json"], 0);
+    let rebound_map = &rebound["data"]["id_map"];
+    assert_eq!((rebound_map[&campus].clone(), rebound_map[&north].clone(), rebound_map[&plaza].clone(), rebound_map[&lantern].clone()), (json!(campus_b), json!(north_b), json!(plaza_b), json!(lantern_b)), "{rebound}");
+    let listed_b = expect(&second_env, &["node", "list", "--petal", &plaza_b, "--json"], 0);
+    assert!(listed_b["data"]["nodes"].as_array().unwrap().iter().any(|node| node["name"] == "Beacon"), "the replayed create landed in the second instance's petal: {listed_b}");
+    // `--exact-ids` turns the name re-binding off: the recorded ids do not exist there.
+    assert_ne!(fe(&replayer_b, &["replay", &journal_two_path, "--exact-ids", "--json"]).0, 0);
+    // A second Plaza makes the path ambiguous: refused with 6, naming the path, never a guess.
+    let plaza_b2 = id_of(&expect(&second_env, &["petal", "create", "Plaza", "--json"], 0));
+    let ambiguous = expect(&replayer_b, &["replay", &journal_two_path, "--json"], 6);
+    assert_eq!(ambiguous["code"], "replay-unbindable");
+    assert!(ambiguous["message"].as_str().unwrap().contains("Campus/North/Plaza"), "{ambiguous}");
+    // An explicit `--bind` takes precedence over the name lookup.
+    let bound = expect(&replayer_b, &["replay", &journal_two_path, "--bind", &format!("{plaza}={plaza_b2}"), "--json"], 0);
+    assert_eq!(bound["data"]["id_map"][&plaza], json!(plaza_b2), "{bound}");
+    second.shutdown();
+
     // The same journal converts to a sim scenario: created ids become action references, the fixture petal is named.
     let scenario_path = root.path().join("scenario.json");
     let emitted = expect(&replayer, &["replay", &recorded.to_string_lossy(), "--emit-scenario", &scenario_path.to_string_lossy(), "--scenario-name", "cli-journey", "--json"], 0);
@@ -558,6 +615,9 @@ fn cli_operator_journey() {
     *engine.host.petal.lock().unwrap() = plaza.clone();
     let catalog = expect(&owner, &["x", "--list", "--json"], 0);
     assert_eq!(catalog["data"]["packages"][0]["package_id"], PACKAGE);
+    // `--list` carries what a script needs to build a valid call: package, command id, role floor, args schema.
+    let spawn = catalog["data"]["packages"][0]["commands"].as_array().unwrap().iter().find(|command| command["id"] == "spawn").expect("spawn listed").clone();
+    assert_eq!((spawn["role_floor"].clone(), spawn["args_schema"]["required"].clone()), (json!("editor"), json!(["count"])), "{catalog}");
     let help = expect(&owner, &["x", "fleet-sim", "spawn", "--help", "--json"], 0);
     let help_text = help["data"]["help"].as_str().unwrap();
     assert!(help_text.contains("Fleet Name"), "args-json-only property is listed: {help}");

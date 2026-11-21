@@ -107,6 +107,39 @@ pub fn resolve(entries: &[Entry], level: Level, query: &str, within_verse: Optio
     }
 }
 
+/// One hierarchy object with its name path from the root (verse, fractal, petal, node names).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Named {
+    pub level: &'static str,
+    pub id: String,
+    pub path: Vec<String>,
+}
+
+/// Every verse, fractal, petal and node of `get_hierarchy` verse objects with its name path.
+pub fn name_index(verses: &[Value]) -> Vec<Named> {
+    let mut index = Vec::new();
+    let mut push = |level: &'static str, id: String, parents: &[String], name: String| {
+        let mut path = parents.to_vec();
+        path.push(name);
+        index.push(Named { level, id, path: path.clone() });
+        path
+    };
+    for verse in verses {
+        let verse_path = push("verse", text(verse, "id"), &[], text(verse, "name"));
+        for fractal in items(verse, "fractals") {
+            let fractal_path = push("fractal", text(fractal, "id"), &verse_path, text(fractal, "name"));
+            for petal in items(fractal, "petals") {
+                let petal_path = push("petal", text(petal, "id"), &fractal_path, text(petal, "name"));
+                for node in items(petal, "nodes") {
+                    let id = Some(text(node, "id")).filter(|id| !id.is_empty()).unwrap_or_else(|| text(node, "node_id"));
+                    push("node", id, &petal_path, text(node, "name"));
+                }
+            }
+        }
+    }
+    index
+}
+
 /// The node objects of one petal, from verse objects.
 pub fn petal_nodes(verses: &[Value], petal_id: &str) -> Vec<Value> {
     verses

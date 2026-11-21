@@ -134,8 +134,10 @@ while `CommandFailure` (post-admission) never maps to 429. A write whose 7 came 
 ## Journal (JSONL, one line per invocation, `FE_JOURNAL`)
 
 `{v, run, agent, seq, t (RFC3339 UTC), unix_ms (wall-clock epoch ms, same instant as t; not monotonic), latency_ms,
-argv (secret flags blanked), resolved{verb, via, tool, args (redacted), method, path}, ctx_before, ctx_after,
+elapsed_ms (monotonic `Instant` duration of the whole invocation, taken when the line is written; compare it across
+lines, never `unix_ms` deltas across processes), argv (secret flags blanked), resolved{verb, via, tool, args (redacted), method, path}, ctx_before, ctx_after,
 instance{name, api_base, role}, exit, code, envelope_digest (blake3 hex of the printed envelope line), created_ids,
+binds[{id, level, path[names]}] (§replay-binding),
 data_small (redacted, ≤2 KB else {truncated, bytes}), wait, help, note, cli_version, catalog_digest}`.
 Capability values appear only as `<redacted blake3:<16 hex>>`.
 
@@ -194,12 +196,13 @@ list|assign|revoke`, `net diag`, `identity`, `sync state`, `query`, `replay`. Pe
 - Global-scope and token-scope tools pick their own bearer (`join` uses the operator token); `sync state` needs a verse.
 - `--dry-run` redacts secret-named keys of the planned args (`journal::redact`).
 - `resolved.args` in the journal is now the final tool arguments (positionals and context merged), which is what
-  `fe replay --emit-scenario` converts; phase-1 journals hold flag-only args and emit weaker scenarios.
+  `fe replay --emit-scenario` converts; `fe x --list --json` is the discovery document verbatim (package_id, version,
+  commands[{id, description, role_floor, rate_hz, external, callable, args_schema}]), enough to build a valid call; phase-1 journals hold flag-only args and emit weaker scenarios.
 
 ## §replay
 
-`fe replay <journal.jsonl> [--map agent=instance] [--bind old=new] [--strict] [--emit-scenario out.json
-[--scenario-name n]]`. No LLM: every journal line is re-run as a child `fe` invocation (`execute_boxed`, in-process,
+`fe replay <journal.jsonl> [--map agent=instance] [--bind old=new] [--strict] [--exact-ids] [--emit-scenario
+out.json [--scenario-name n]]`. No LLM: every journal line is re-run as a child `fe` invocation (`execute_boxed`, in-process,
 output captured) from its recorded `argv`, in recorded order, with `--verse/--fractal/--petal` from `ctx_before` so the
 step needs no context file (a per-agent temp context file only holds the 2 s hierarchy spacing).
 
@@ -219,6 +222,28 @@ step needs no context file (a per-agent temp context file only holds the 2 s hie
   petals as `$fixture.verse_id|petal_a_id|petal_b_id`, a step per write with an `agree` expectation (node, transform,
   properties, groups or hierarchy probe). Other ids stay verbatim and are listed in `data.unbound_ids`. Validate with
   `python tools/qa/sim/scenario.py validate <path>`.
+
+## §replay-binding
+
+Ids that existed before the journal started (fixture verse, fractal, petal, nodes) differ on a fresh instance, so the
+journal records how to find them again, by name.
+
+- **Recording** (`src/binds.rs`, called from the spine after dispatch): the first time an agent uses an id (context
+  verse/fractal/petal, or `verse_id|fractal_id|petal_id|node_id` in the final tool args) that it did not create, the line
+  gets `binds[{id, level, path}]`, `path` being the names from the verse down (`["Campus","North","Plaza","Lantern"]`).
+  Context ids take their names from the context file (no read); others cost one `get_hierarchy` read. "First use" and
+  "created here" live in an append-only sidecar `<journal>.<agent digest>.ids` (created ids are appended on creation),
+  so no journal scan is needed. Names only: tokens, invites and verse secrets never enter `binds`.
+- **Replay** (`replay::bind_by_name`) is ON by default; `--exact-ids` turns it off. Rationale: the lookup only fires for an
+  id that is missing on the target, i.e. exactly where the replay would otherwise diverge at once, and an id that exists
+  on the target (replay onto the recording instance) is kept as is, so it cannot change an exact-id replay. Precedence:
+  explicit `--bind old=new` > ids created by the replay > name lookup. The target hierarchy is read once per instance
+  selector before the first step (so replay-created objects cannot make a name ambiguous).
+- **Refusal**: a path with zero or several matches exits 6 `replay-unbindable`, naming the path
+  (`the petal at "Campus/North/Plaza" has 2 matches on the target`); never a guess. Journals from before this field have no
+  `binds` and replay as before.
+- Cost: a pre-existing node first used costs the recording agent one hierarchy read (the GUI rebuilds its tree on each,
+  QA-0125); swarm journals with many fixture nodes pay it once per node.
 
 ## Deliberately absent
 

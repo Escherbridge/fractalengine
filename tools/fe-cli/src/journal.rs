@@ -25,6 +25,15 @@ pub struct JournalInstance {
     pub role: Option<String>,
 }
 
+/// A pre-existing id and its name path from the root (`[verse, fractal, petal, node]` prefixes), for replay re-binding.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Bind {
+    pub id: String,
+    /// `verse`, `fractal`, `petal` or `node`.
+    pub level: String,
+    pub path: Vec<String>,
+}
+
 /// One journal line (plan §2 "Journal line").
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct JournalLine {
@@ -37,6 +46,9 @@ pub struct JournalLine {
     /// Wall-clock Unix epoch milliseconds (same instant as `t`; not monotonic).
     pub unix_ms: u64,
     pub latency_ms: u64,
+    /// Monotonic (`Instant`) duration of the whole invocation, measured when the line is written; `unix_ms` is wall time.
+    #[serde(default)]
+    pub elapsed_ms: u64,
     pub argv: Vec<String>,
     pub resolved: ResolvedOp,
     pub ctx_before: Value,
@@ -47,6 +59,9 @@ pub struct JournalLine {
     /// blake3 hex digest of the printed envelope line.
     pub envelope_digest: String,
     pub created_ids: Vec<String>,
+    /// Name paths of pre-existing ids this line is the first to use (names only; see AGENTS.md §replay-binding).
+    #[serde(default)]
+    pub binds: Vec<Bind>,
     /// Response data trimmed to 2 KB.
     pub data_small: Option<Value>,
     pub wait: Option<Value>,
@@ -87,9 +102,33 @@ pub struct Charge {
 
 /// `<journal>.<agent digest>.count`: the per-agent counter beside the journal (the agent id never names a file).
 pub fn counter_path(journal: &Path, agent: Option<&str>) -> std::path::PathBuf {
+    sidecar_path(journal, agent, "count")
+}
+
+/// `<journal>.<agent digest>.ids`: ids this agent created or already bound, one per line (append-only).
+pub fn known_ids_path(journal: &Path, agent: Option<&str>) -> std::path::PathBuf {
+    sidecar_path(journal, agent, "ids")
+}
+
+/// Ids listed in a known-ids sidecar (a missing file is empty).
+pub fn load_known_ids(path: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(path).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+/// Appends ids to a known-ids sidecar as one write.
+pub fn remember_ids(path: &Path, ids: &[String]) -> std::io::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let text: String = ids.iter().map(|id| format!("{id}
+")).collect();
+    std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(text.as_bytes())
+}
+
+fn sidecar_path(journal: &Path, agent: Option<&str>, suffix: &str) -> std::path::PathBuf {
     let digest = blake3::hash(agent.unwrap_or("").as_bytes()).to_hex();
     let name = journal.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "journal".into());
-    journal.with_file_name(format!("{name}.{}.count", &digest.as_str()[..16]))
+    journal.with_file_name(format!("{name}.{}.{suffix}", &digest.as_str()[..16]))
 }
 
 /// Under an exclusive file lock: read `counted lines`, refuse when `counted >= max`, else count; always bump `lines`.

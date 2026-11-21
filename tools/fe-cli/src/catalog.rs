@@ -306,6 +306,7 @@ fn local_specs(verb: &Verb) -> Vec<FlagSpec> {
             repeatable("map", "agent=instance: run that agent's steps on that instance (default: the current instance)"),
             repeatable("bind", "old=new: seed the id map, e.g. a fixture verse of the instance being replayed against"),
             plain_spec("strict", FlagKind::Boolean, "Also compare each step's data (ids normalised) with the journal"),
+            plain_spec("exact_ids", FlagKind::Boolean, "Do not re-bind pre-existing ids by name path (ids missing on the target then diverge)"),
             plain_spec("emit_scenario", FlagKind::String, "Write a tools/qa/sim scenario to this path instead of replaying"),
             plain_spec("scenario_name", FlagKind::String, "Scenario name for --emit-scenario (lowercase kebab-case)"),
         ],
