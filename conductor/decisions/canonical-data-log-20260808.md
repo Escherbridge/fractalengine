@@ -199,6 +199,10 @@ supersede the "network rollout NO-GO" boundary and the last sentence of
 | D-CL43 | **Warehouse mode is a per-verse setting.** The verse admin (Manager+ at verse scope) sets whether a verse is in warehouse mode in verse settings. The remaining knobs follow from it and are admin-set there, including whether a relay may hold the verse's scope key (blind by default). |
 | D-CL44 | **Approved work items:** move the distributed timeseries partial query off the DB thread onto a reader connection; add a columnar scan for ad hoc local BI over pulled segments. |
 | D-CL45 | **One relay serves one verse.** A relay is tied to a single verse and records only that verse. With D-CL39 this means a verse's durability floor of R is met by R relays dedicated to it. |
+| D-CL46 | **Capability issuance is rooted in the verse role table.** Manager or above in the existing role table may issue capability chains (pre-launch session, 2026-11-20). |
+| D-CL47 | **D-CL20 is lifted for three kinds.** glTF import, node duplicate and node rename are mapped to canonical operations now, so the relay record is complete. Needs a multi-row atomicity erratum. |
+| D-CL48 | **D-CL45 binds record relays only.** A relay acting as a verse's warehouse record serves one verse; connectivity relays and desktop relay mode keep serving many. |
+| D-CL49 | **Warehouse settings are exposed in the `fe` CLI and covered by the QA simulator.** The build runs as one six-wave orchestrated campaign, coordinating with other sessions working in the tree. |
 
 Interpretation notes (orchestrator's reading, not owner wording):
 
