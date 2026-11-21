@@ -1,0 +1,184 @@
+{
+  "schema": "fe-qa-swarm-goals-v1",
+  "base_allow": ["help", "use", "ctx", "instance", "note"],
+  "oracle_names": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+  "goals": [
+    {
+      "id": "navigate-hierarchy",
+      "area": "navigation",
+      "story": "You have just opened the app and want to know what is in it. Find out which verses, fractals and petals you can see, open each level in turn, and report what the biggest petal contains.",
+      "role": ["owner", "editor", "viewer"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["verse", "fractal", "petal", "node"],
+      "max_commands": 25,
+      "oracles": ["convergence", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "use petal", "exit": 0, "min": 1}, {"verb": "node list", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "build-campus-and-share",
+      "area": "node CRUD, invites",
+      "story": "Build a small campus in a new petal: a fractal named for the campus, a petal in it, and five buildings placed apart from each other. Then invite the viewer peer so they can look at it.",
+      "role": ["owner"],
+      "preconditions": ["peers joined to the fixture verse", "the viewer peer is a local instance"],
+      "allow": ["fractal", "petal", "node", "invite", "role"],
+      "max_commands": 60,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "petal create", "exit": 0, "min": 1}, {"verb": "node create", "exit": 0, "min": 5}, {"verb": "invite create", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "rearrange-others-nodes",
+      "area": "node CRUD, properties",
+      "story": "Someone else already put nodes in the shared petal. Find them, line them up in a tidy row along one axis, and give each a property called 'row' with its position in the row.",
+      "role": ["editor"],
+      "preconditions": ["peers joined to the fixture verse", "the owner already created at least three nodes in one petal"],
+      "allow": ["verse", "fractal", "petal", "node"],
+      "max_commands": 50,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "node move", "exit": 0, "min": 3}, {"verb": "node set", "exit": 0, "min": 3}]
+    },
+    {
+      "id": "viewer-edit-and-recover",
+      "area": "roles and refusals",
+      "story": "You were asked to adjust a node, so try to move one. If that is not allowed for you, work out why from the tool's own output and do the most useful thing you can still do, such as describing what you found.",
+      "role": ["viewer"],
+      "preconditions": ["peers joined to the fixture verse", "the viewer role is read-only"],
+      "allow": ["verse", "fractal", "petal", "node", "role", "group"],
+      "max_commands": 30,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "node move", "exit": 4, "min": 1}, {"verb": "node get", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "node-lifecycle",
+      "area": "node CRUD",
+      "story": "Create a node, read it back, move it, rename-by-property it, then delete it and confirm it is gone for good.",
+      "role": ["owner", "editor"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["verse", "fractal", "petal", "node"],
+      "max_commands": 30,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "node create", "exit": 0, "min": 1}, {"verb": "node move", "exit": 0, "min": 1}, {"verb": "node delete", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "annotate-with-properties",
+      "area": "properties",
+      "story": "Pick three nodes and describe them: set a few custom properties, change one, remove one, then list the properties and look at a node's history to see your own edits.",
+      "role": ["owner", "editor"],
+      "preconditions": ["peers joined to the fixture verse", "at least three nodes exist"],
+      "allow": ["petal", "node"],
+      "max_commands": 45,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "node set", "exit": 0, "min": 3}, {"verb": "node unset", "exit": 0, "min": 1}, {"verb": "node props", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "visibility-groups",
+      "area": "groups",
+      "story": "Make two visibility groups in a petal for different audiences, change one of them, list them, and delete the one you no longer need.",
+      "role": ["owner"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["petal", "node", "group"],
+      "max_commands": 35,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "group set", "exit": 0, "min": 2}, {"verb": "group list", "exit": 0, "min": 1}, {"verb": "group delete", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "roles-and-refusals",
+      "area": "roles and refusals",
+      "story": "Review who has which role in the verse. Make the editor peer a viewer, confirm the list changed, then give the role back. Report anything surprising.",
+      "role": ["owner"],
+      "preconditions": ["peers joined to the fixture verse", "an editor peer exists"],
+      "allow": ["role", "identity", "verse"],
+      "max_commands": 30,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "role list", "exit": 0, "min": 2}, {"verb": "role assign", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "editor-cannot-manage-roles",
+      "area": "roles and refusals",
+      "story": "As an editor, try to find out who else is in the verse and to promote yourself. Explain what you were and were not able to do.",
+      "role": ["editor"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["role", "identity", "verse", "node"],
+      "max_commands": 25,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "role assign", "exit": 4, "min": 1}]
+    },
+    {
+      "id": "invite-and-join",
+      "area": "invites and join",
+      "story": "A teammate whose app has not joined the verse yet needs access. Create an addressed invite for that instance as a viewer, and, from that instance, join with it.",
+      "role": ["owner"],
+      "needs_unjoined_peer": true,
+      "preconditions": ["one peer instance has NOT joined the fixture verse (start it with peers.ps1 and skip peers_join for it)"],
+      "allow": ["invite", "join", "role", "identity", "verse"],
+      "max_commands": 25,
+      "oracles": ["convergence", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "invite create", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "terrain-set-and-clear",
+      "area": "terrain",
+      "story": "See whether a petal has a terrain map, give it one, look at it again, then remove it.",
+      "role": ["owner"],
+      "preconditions": ["peers joined to the terrain fixture verse (peers.ps1 -Fixture terrain)"],
+      "allow": ["petal", "terrain"],
+      "max_commands": 30,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "terrain get", "exit": 0, "min": 1}, {"verb": "terrain set", "exit": 0, "min": 1}, {"verb": "terrain clear", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "terrain-as-viewer",
+      "area": "terrain, roles and refusals",
+      "story": "Read the terrain of the active petal and describe it. Then try to change it and note what happens.",
+      "role": ["viewer"],
+      "preconditions": ["peers joined to the terrain fixture verse (peers.ps1 -Fixture terrain)"],
+      "allow": ["petal", "terrain"],
+      "max_commands": 20,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "terrain get", "exit": 0, "min": 1}, {"verb": "terrain set", "exit": 4, "min": 1}]
+    },
+    {
+      "id": "extension-discover-and-call",
+      "area": "extension commands (fe x)",
+      "story": "Find out what extensions are offering in the current petal, read the help of one command, and run it. Say whether the result matched what the help promised.",
+      "role": ["owner", "editor"],
+      "preconditions": ["peers joined to the fixture verse", "at least one extension command is exposed to the caller"],
+      "allow": ["petal", "x"],
+      "max_commands": 25,
+      "oracles": ["no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "x", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "extension-above-my-role",
+      "area": "extension commands (fe x), roles and refusals",
+      "story": "List the extension commands you can see as a viewer, try one that changes something, and describe how the refusal reads.",
+      "role": ["viewer"],
+      "preconditions": ["peers joined to the fixture verse", "an extension command with a role floor above viewer is exposed"],
+      "allow": ["petal", "x"],
+      "max_commands": 20,
+      "oracles": ["no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "x", "min": 2}]
+    },
+    {
+      "id": "cleanup-subtree",
+      "area": "node CRUD, orphans",
+      "story": "Make a parent node with three children, then remove the whole group in the cleanest way the tool allows, and check that nothing is left behind.",
+      "role": ["owner", "editor"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["petal", "node"],
+      "max_commands": 40,
+      "oracles": ["convergence", "role_refusals", "no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "node create", "exit": 0, "min": 4}, {"verb": "node delete", "exit": 0, "min": 1}]
+    },
+    {
+      "id": "diagnose-my-instance",
+      "area": "diagnostics",
+      "story": "Something feels slow. Find out who you are, what your connectivity looks like, and the sync state of the verse, and summarise it.",
+      "role": ["owner", "editor", "viewer"],
+      "preconditions": ["peers joined to the fixture verse"],
+      "allow": ["identity", "net", "sync", "verse", "query"],
+      "max_commands": 20,
+      "oracles": ["no_server_faults", "no_secrets", "budget", "friction"],
+      "success": [{"verb": "identity", "exit": 0, "min": 1}, {"verb": "net diag", "exit": 0, "min": 1}]
+    }
+  ]
+}

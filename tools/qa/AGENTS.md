@@ -1052,6 +1052,10 @@ covers it. Under a validated `FE_QA_STORAGE_ROOT` the dev-token file also carrie
 (scope `QA-OPERATOR`, see fractalengine `src/AGENTS.md` §qa-operator); `fe.py` falls back to it only after
 every owner verse token is refused, so owner flows behave exactly as before.
 
+## §swarm
+
+`tools/qa/swarm/` drives a few `fe`-only agents (LLM sessions or the built-in seeded walker) through user-style goals on the local peers, judges their journals with no-LLM oracles and graduates clean ones into `sim/scenarios/swarm-graduated/`; see `tools/qa/swarm/AGENTS.md`.
+
 ## §swarm-barrier
 
 `python tools/qa/swarm_barrier.py --run DIR --step K --peer NAME --count N [--timeout 180] [--then CMD ...]`

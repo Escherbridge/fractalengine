@@ -1477,6 +1477,36 @@ leak grep before every public commit.
 
 ## 8. Session log
 
+### 2026-11-20 (later) — CLI phase 2 + core prerequisites pushed; swarm harness and land-feasibility in flight
+
+**Supersedes the "UNCOMMITTED" state of the entry below.** Owner said "push as needed just keep driving".
+
+- Pushed (public): `13b6dd44` CLI phase 1 + discovery + a11y test-race fix; `f30314b3` CLI phase 2
+  (`--wait peers`, `fe replay`, `--emit-scenario`, 19 verbs; R9-CLI ran green: 11 + 1);
+  `5a7d1838` terrain interface, `render.mesh`, portal camera intents (`tour_nodes`).
+  Pushed (commercial): `77faed4` header rename + harness fixes.
+- `5a7d1838` was reviewed adversarially (PASS-WITH-FIXES, 12 findings, all applied) and passes
+  `cargo check --all-targets` on every touched crate. **None of its new test legs have run** and
+  nothing was seen in the running app. CI on that commit is the first execution; a background
+  watcher reports into `.omc/research/ci-<id>-20261120.log` on failure.
+- Decisions made without the owner (cheap to reverse):
+  - `render.mesh` WRITES need the exact scope entry at every extension/portal gate; READS follow
+    normal scope (`ScopeAccess` in `fe-sdk/src/manifest_v2.rs`). A `*`-scoped scene hook can still
+    judge (veto) a `render.mesh` write — flip `scene_hook_gate.rs` ~:521/:623 to `Write` to change.
+  - `terrain` was added inside contract 2.0.0 as an additive import; an older host refuses a
+    terrain-using component. Remedy (contract minor gate) deferred until a mixed-version verse report.
+  - `tour_nodes` is its own intent + capability, not an option on `focus_node`.
+  - Out-of-coverage terrain is `none` per point, not an error; coverage = tiles resident near the camera.
+- Known gaps: `render.mesh` shapes are box/cylinder/sphere/plane only (no cone/gable/ring, no merged
+  mesh); QA dashboard "Tour" button + `portal-core.json` step not added; fleet-sim does not use
+  terrain yet; `--wait peers` is read-back, no per-verse digest route exists in fe-api; CLI `join` /
+  `invite create` covered as dry runs only.
+- In flight at time of writing (check `git status` in both repos for their uncommitted output):
+  `tools/qa/swarm/` (CLI phase 3 swarm harness, public repo) and `extensions/land-feasibility/`
+  (commercial repo, Package 1 of `extensions/LAND-FEASIBILITY-SPEC.md`; the portal bundle is not started).
+- Next: review + commit those two; run the swarm once against live instances (owner's word needed —
+  it launches instances); land-feasibility portal bundle; CLI phases 4-5 (`fe ext *`, relay token).
+
 ### 2026-11-20 — takeover from the Antigravity session; `fe` CLI phase 1 built; UNCOMMITTED in both repos
 
 Read this entry first; §2 State and §7 above are stale from 2026-11-17 onward.
