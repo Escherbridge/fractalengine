@@ -10,7 +10,8 @@ D-CL1, D-CL2, D-CL3, and D-CL4. It is read with
 
 Section 9 applies the D-CL17 V1 AEAD, nonce, and scope-key delivery contract
 to stored artifacts. This document authorizes neither its implementation nor
-network wiring or a change to the currently disabled iroh paths.
+network wiring or a change to the currently disabled iroh paths. (Network
+wiring was approved separately on 2026-11-20, D-CL35; see Errata R1.)
 
 ## 1. Conformance vocabulary and boundaries
 
@@ -296,17 +297,43 @@ network wiring or a change to the currently disabled iroh paths.
 
 ## 6. Relay and seeder constraints
 
-1. A relay is a transport and ciphertext seeder only. It MAY retain opaque
-   immutable artifacts and answer authorized fetches; it is not an operation
-   author, capability issuer, admission service, branch authority, or
-   checkpoint authority.
+1. A relay is a transport and ciphertext seeder. It MAY retain immutable
+   artifacts and answer authorized fetches. Whatever its key custody (rule 3),
+   it is never an operation author, capability issuer, branch authority, or
+   checkpoint authority, and it never admits on another principal's behalf. A
+   record relay (rule 7) also signs custody receipts; a receipt attests
+   possession only (SPEC-9 relay scope,
+   [relay-custody-durability.md](relay-custody-durability.md)).
 2. A relay MUST require a currently valid `seed` capability before accepting a
    seed commitment and a currently valid `fetch` capability before disclosing
    an artifact. Possession of an `artifact_id`, a previous cache entry, or a
    relay URL is never sufficient authority.
-3. A relay MAY operate without `decrypt` authority. It MUST NOT decrypt,
-   inspect, transform, repack, re-encrypt, or fabricate payloads, headers,
-   HashSeq nodes, manifests, checkpoints, capabilities, or signatures.
+3. Relay key custody is the verse admin's per-verse `relay_key_custody`
+   setting (D-CL43): `blind` (the default) or `keyholder`.
+
+   1. A blind relay holds no scope key and no `decrypt` authority. It MUST
+      NOT decrypt or inspect payloads, headers, HashSeq nodes, manifests, or
+      checkpoints.
+   2. Only while the verse is set to `keyholder` may one of that verse's
+      record relays receive a scope key, and only through SPEC-3 section 10.2
+      recipient-device wrap delivery: an enrolled device key bound to the
+      relay principal, a currently valid `decrypt` capability for the exact
+      scope and epoch, and a Manager+ issuer. No other key path exists.
+   3. A keyholder relay MAY decrypt and admit through the SPEC-4 pipeline to
+      materialize its own local projection. That projection is rebuildable
+      and confers no authority under rule 1.
+   4. No relay, blind or keyholder, may transform, repack, re-encrypt, or
+      fabricate payloads, headers, HashSeq nodes, manifests, checkpoints,
+      capabilities, or signatures. A keyholder relay MUST NOT disclose
+      plaintext or projection contents; it serves only sealed artifacts under
+      rule 2.
+   5. Switching `keyholder` to `blind` bumps the epoch of every scope the
+      relay held a key for (SPEC-3 section 10.3 rule 2), so the relay
+      receives no e+1 wrap. It SHOULD destroy its retained keys and
+      projection. A key or plaintext it already holds is not erased (SPEC-3
+      section 10.3 rule 3).
+   6. A connectivity relay or desktop relay never receives a wrap in its relay
+      role.
 4. A relay MUST consult the persistent SPEC-3 authorization view after restart
    and on epoch invalidation. Missed notification traffic is a cache miss, not
    permission to disclose. Revocation prevents future service; retention and
@@ -319,6 +346,12 @@ network wiring or a change to the currently disabled iroh paths.
    availability outcomes. They MUST return an explicit unavailable result; no
    peer may substitute mutable row replication, a different selected frontier,
    or unverified local state as a recovery path.
+7. A record relay serves exactly one verse (D-CL45, D-CL48). Its custody
+   receipts, the durability floor, its single-verse binding, and its pre-GA
+   reset are normative in SPEC-9 relay scope
+   ([relay-custody-durability.md](relay-custody-durability.md)). Connectivity
+   relays and desktop relay mode keep serving many verses and sign no custody
+   receipts.
 
 ## 7. Blinded discovery and selective fetch
 
@@ -373,7 +406,8 @@ named tests:
    checksums with a wrong final stored digest never enter the available set.
 10. **`relay_seed_and_fetch_capabilities_are_independent`** — a relay accepts
     seed only with `seed`, discloses only with `fetch`, and never gains
-    `decrypt`, `append`, or checkpoint authority by storing bytes.
+    `decrypt`, `append`, or checkpoint authority by storing bytes, including
+    a keyholder relay.
 11. **`private_discovery_uses_blinded_lane_separation`** — raw verse/petal/
     resource IDs and raw private hashes do not appear in topic names; header,
     payload, and availability labels differ for the same scope epoch.
@@ -415,6 +449,12 @@ named tests:
 23. **`bulk_artifact_discovery_is_payload_lane_petal_affine`** — discovery
      labels use lane 1 and the artifact's petal scope; a verse-wide scope is
      refused.
+24. **`blind_relay_never_receives_a_scope_key_wrap`** — with custody `blind`,
+     no wrap is issued to a record relay's device, and a wrap to a
+     connectivity or desktop relay is refused (track AC-8.2).
+25. **`keyholder_to_blind_bumps_epoch_and_locks_out_relay`** — after the
+     switch, a payload sealed at the new epoch cannot be opened with the
+     relay's old key, and no e+1 wrap reaches the relay (track AC-8.3).
 
 ## 9. D-CL17 sealed-artifact key lifecycle
 
@@ -432,9 +472,10 @@ named tests:
    validation. After removal, the epoch bump creates an e+1 key and prevents
    future e-key wraps; old ciphertext may remain immutable evidence.
 4. A relay may retain and serve opaque sealed artifacts only under the existing
-   `fetch`/`seed` checks. It receives neither scope keys nor decryption
-   authority. Workstream G remains blocked: this contract does not enable Iroh,
-   relay replicas, inbound P2P handlers, or network transport.
+   `fetch`/`seed` checks. A blind relay receives neither scope keys nor
+   decryption authority. A keyholder relay receives scope keys only as section
+   6 rule 3.2 states. Network enablement is governed by D-CL35, not by this
+   contract.
 
 ## 10. Design notes
 
@@ -460,6 +501,13 @@ named tests:
   That keeps the manifest grammar fixed and keeps every bulk artifact inside
   the causal history that justifies it: an artifact no admitted operation
   names is unreferenced bytes, not data.
+- **Custody is a key choice, not a trust upgrade:** D-CL36 makes relay-held
+  segments the record, and D-CL43 lets an admin hand a record relay the scope
+  key so it can rebuild a projection. §6 keeps the two apart. A keyholder
+  relay reads more, but it still authors nothing, issues nothing, and signs no
+  checkpoint, so handing it a key changes confidentiality and never changes
+  who can write history. Blind stays the default because the admin opts in to
+  a data custodian.
 
 ### Errata
 
@@ -489,3 +537,20 @@ landed 2026-10-13, when the observation plane (SPEC-10) first needed it.
   migration; a lane class whose artifacts ride their operation is an addition.
   The lane's wire value (5) and AAD domain are provisional and recorded in the
   `fe-canonical-log` register (D-CL34).
+
+From owner decisions D-CL36, D-CL39, D-CL43, D-CL45 and D-CL48, 2026-11-20
+(track `relay_record_warehouse_20261120`).
+
+- **R1 (2026-11-20):** §6 rules 1 and 3 changed, rule 7 is new, §9 rule 4
+  changed, §8 test 10 was widened, and tests 24 and 25 are new. Rule 3 used
+  to say every relay "MUST NOT decrypt". That contradicted D-CL43, which lets
+  the verse admin make a record relay a keyholder, and D-CL36, under which a
+  keyholder relay's projection is rebuildable from relay-held segments. A
+  relay still never becomes an author, issuer, or checkpoint authority (rule
+  1). It may hold a scope key only when the admin opts in, and only through
+  SPEC-3 §10.2 wrap delivery. Blind is the default. Custody receipts, the
+  durability floor of R relays, the one-verse binding of record relays, and
+  the pre-GA reset are a new document,
+  [relay-custody-durability.md](relay-custody-durability.md), rather than
+  new sections here: they concern relay placement, which is SPEC-9's subject,
+  not segment layout. No SPEC-6 wire format changes.

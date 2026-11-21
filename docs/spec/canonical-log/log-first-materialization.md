@@ -156,6 +156,7 @@ attach implementation-specific diagnostics without changing their meaning.
 | `missing_parent` | A syntactically valid candidate references a parent not yet admitted locally. | Place outside the verified log in pending quarantine; do not materialize. Re-evaluate only after its full parent closure arrives. Bounds and expiry are SPEC-5 decisions. |
 | `unknown_schema` | The schema hash or required deterministic interpreter is unavailable. | Quarantine outside the verified log; do not materialize or reinterpret. Re-evaluate only after the exact registered schema is available and validates. Bounds and expiry are SPEC-5 decisions. |
 | `unknown_kind` | The candidate's `operation_kind` has no registered structural rule, schema, and reduction in this build (SPEC-1 §6 rule 7). | Quarantine outside the verified log; do not materialize or reinterpret as a neighbouring kind. Re-evaluate only after this build gains that exact kind. Distinct from `unknown_schema`: a schema arrives through the registry, a kind through a build upgrade. Its budget is partitioned from every other reason per SPEC-5 §4 rule 4. |
+| `authorization_evidence_unavailable` | The admitting peer cannot decide authority yet: the referenced capability chain, the scope-epoch state, or the payload scope key is not locally held. Distinct from `unauthorized_operation`, which is a decided denial. | Quarantine outside the verified log; do not materialize. Re-evaluate only after the missing evidence arrives. Retryable, like `missing_parent`; SPEC-7 answers it `held`. A missing payload key for a held payload artifact is this category; a missing payload artifact is `opaque_payload`. |
 | `opaque_payload` | The header is available but the local materializer lacks an authorized, verified payload artifact. | Retain only the non-admitted header/index evidence; do not materialize. Fetch and key-distribution policy is SPEC-3/SPEC-6. |
 | `referenced_artifact_unavailable` | A deterministic reduction cannot construct the verified reference section 4 rule 8 permits it to write, because the artifact's binding evidence is not locally held. | Mark the projection position pending replay; do not advance the apply marker, substitute a default or empty reference, or record a semantic exclusion. Retryable, like `missing_parent`. Fetch and key-distribution policy is SPEC-3/SPEC-6. |
 | `materialization_failed` | A verified append succeeded but deterministic reduction or SurrealDB commit did not finish. | Mark pending replay; do not expose the affected projection position as committed. Retry or rebuild solely from verified history. |
@@ -291,6 +292,17 @@ at least the following names and outcomes.
     held fails the computation with `referenced_artifact_unavailable` instead
     of shrinking the set; and two computations with the same extended identity
     read identical observation relations.
+15. **`multi_member_set_admits_all_or_nothing`** — one table row for each
+    multi-member kind (glTF import, cascade tombstone, editor batch, snapshot
+    import, and any later mapping with more than one member): failing any one
+    member's validation or the set's append leaves zero
+    members in the verified log; a receiver holding every member but the
+    closing one projects none of them.
+16. **`lifted_kinds_reduce_from_their_own_bytes`** — `ImportGltf`,
+    `DuplicateNode`, and `RenameNode` replay to identical projection roots on
+    a peer holding the GLB bytes and the duplicate source's current row and on
+    a peer holding neither; a later edit to a duplicate's source changes no
+    replayed copy.
 
 ## 9. Design notes
 
@@ -347,12 +359,160 @@ landed 2026-10-13, when the observation plane (SPEC-10) first needed it.
   local availability shape the set, the analytics form of the §4 rule 8 bright
   line.
 
-## 10. D-CL20 approved legacy-operation deferral
+Owner decision D-CL47, 2026-11-20 (track `relay_record_warehouse_20261120`).
+
+- **RRW-3 (2026-11-20):** §10 was the D-CL20 deferral for six kinds. It now
+  holds atomic intent contracts for `ImportGltf` (§10.1), `DuplicateNode`
+  (§10.2), and `RenameNode` (§10.3), the general multi-member rule (§10.4),
+  and the remaining deferral for Verse/Fractal/Petal creation (§10.5). §8
+  gained tests 15 and 16. D-CL37 makes relays the durable record of every
+  scene write, so a scene write with no canonical meaning would leave holes
+  in that record. The design choices:
+  - Import splits into an asset member and a node member so that the content
+    address is its own canonical fact, shared by every node that places the
+    same bytes. The bytes stay by-reference under §4 rule 8.
+  - Duplicate carries its copied values instead of a "copy of X" instruction.
+    A reduction that read the source would make the copy a function of the
+    source's current projection, which breaks §4 rule 1 the moment the source
+    is edited. The source anchor keeps provenance and causal order without
+    becoming an input.
+  - Rename carries no old name, the intent-only rule applied to the smallest
+    case.
+  - §10.4 makes atomicity hold on receivers as well as on the author.
+    All-or-nothing admission alone would let a relay or peer project a node
+    whose asset member never arrived. Chaining members and gating the
+    projection on the closing member closes that gap without a new structural
+    operation kind.
+- **RRW-3a (2026-11-20, advocate review):** §5 gained the
+  `authorization_evidence_unavailable` category, which SPEC-7 §6 maps to
+  `held` (D-CL40) and the implementation already returns; without it SPEC-7
+  cited a SPEC-4 disposition SPEC-4 did not define. §10.4 rule 4 now states
+  that a not-yet-closed member is admitted with its projection pending, not
+  quarantined like `missing_parent`. Test 15 names every multi-member kind
+  track AC-4.5 lists.
+- **RRW-3b (2026-11-20, critic review):** §10.4 rules 1 and 2 are scoped to
+  the authoring peer. Read unscoped, rule 1 (one durable append for the whole
+  set) contradicted rules 4 and 5, under which a receiver holds an admitted
+  member whose closing member has not arrived. A receiver admits each member
+  under §2 and gets atomicity from the projection gate instead. The
+  `authorization_evidence_unavailable` row now separates a missing payload
+  key (this category, as the implementation's `PayloadKeyUnavailable` reason
+  does) from a missing payload artifact (`opaque_payload`).
+
+## 10. Legacy multi-row operation contracts (D-CL20, D-CL47)
+
+D-CL20 deferred the multi-row legacy operations rather than inventing a replay
+meaning during hardening. D-CL47 lifts that deferral for `ImportGltf`,
+`DuplicateNode`, and `RenameNode`; §10.1-§10.3 are their atomic intent
+contracts, and §10.4 is the rule every multi-member candidate set follows.
+`CreateVerse`, `CreateFractal`, and `CreatePetal` stay deferred (§10.5).
+
+Common to §10.1-§10.3:
+
+1. Each member is a normal intent operation (`operation_kind = 1`, SPEC-1 §6
+   rule 4) under a registered schema whose hash follows the SPEC-10 §4.1
+   rule 3 convention. Schema field numbering is provisional (D-CL24(3),
+   D-CL38).
+2. Every node the intent names enters canonical bytes as its SPEC-10 §4.5
+   `legacy_identifier("node", node_id)`, fixed before either side effect
+   (SPEC-8 §4.2 rule 6).
+3. Positions, rotations, and scales are SPEC-1 canonical integers quantized at
+   the ingress boundary. No member carries a float or a prior value of its own
+   target (SPEC-8 §4.2 rule 3).
+4. A locally decidable legacy refusal, such as a missing or tombstoned target,
+   a failed role check, or a KTX2 refusal, is `precondition_failed` (§5): no
+   member is constructed and nothing is appended.
+
+### 10.1 `ImportGltf`
+
+1. The candidate set has two members in this order: the **asset member**, then
+   the **node member**.
+2. The asset member binds the asset's content address: the 32-byte BLAKE3
+   content hash, the exact byte length, and the scene content type. The GLB
+   bytes are referenced by that hash and MUST NOT be inlined in any member
+   payload or envelope. They stay in the blob store and move on the payload or
+   bulk-artifact plane under SPEC-6.
+3. The node member creates the node: its identifier, petal scope, display
+   name, quantized position, initial rotation and scale, and a reference to the
+   asset member's content address. It lists the asset member among its
+   parents.
+4. The legacy `asset_id` and `created_at` are local projection identifiers,
+   not canonical state. A materializer derives the asset row key from the
+   content address; the cutover comparator compares `node.asset_id` through
+   that content address as a lossless representation conversion (SPEC-8 §5.3
+   rule 3).
+5. The reduction writes the content-address reference and MUST NOT read the
+   GLB bytes, their presence, or their parsed facts (§4 rule 8).
+6. Admission is all-or-nothing under §10.4: an asset row with no node, or a
+   node whose asset member was not appended, is never admitted.
+
+### 10.2 `DuplicateNode`
+
+1. The candidate set has one member, the **duplicate member**, and is atomic
+   under §10.4 like every set.
+2. The duplicate member creates a new node with its own identifier and every
+   value the new node is created with: petal scope, display name, quantized
+   position, rotation and scale, interactive flag, asset content-address
+   reference, and the copied properties with path-binding identity keys
+   already stripped. These values are the user's intent to create this copy,
+   resolved at the boundary from the source as the caller saw it before either
+   side effect. They are the new node's initial state, not a prior value of
+   any target.
+3. The member records the **source anchor**: the source node's
+   `legacy_identifier`. When the source has admitted operations, the latest
+   one this peer has admitted for that node is also listed among the member's
+   parents, so the copy is causally after the state it copied. A source with
+   no admitted operation, because it predates capture, gets the anchor
+   identifier alone, and SPEC-8 §5.1 rule 2 already excludes it from parity
+   claims.
+4. The reduction applies the carried values and MUST NOT read the source's
+   projected row, re-derive the name suffix or position offset, or re-strip
+   properties at replay. The anchor is provenance and a causal edge, never a
+   reduction input. A later edit to the source therefore never changes the
+   copy.
+
+### 10.3 `RenameNode`
+
+1. The candidate set has one member: the target node's `legacy_identifier`
+   and the new display name in Unicode NFC, non-empty after trimming and at
+   most 1024 bytes.
+2. It names no previous display name, position, or row image. The legacy
+   handler's row-unchanged guards are preconditions (common rule 4), not
+   intent.
+3. The reduction sets the display name of a live node. Against a tombstoned
+   node it records a semantic exclusion (§4 rule 6) and changes nothing.
+
+### 10.4 Multi-member atomicity
+
+1. On the authoring peer, a candidate set is admitted all-or-nothing. Every
+   member MUST pass §2 rule 1 validation before any member is appended, and
+   the members MUST be appended to the verified log in one durable commit.
+   A receiver admits members one at a time under §2 as they arrive; for it,
+   atomicity is a projection rule (rules 4 and 5), not an append rule.
+2. On the authoring peer, if any member fails validation or the append does
+   not complete, no member is appended. A partial admission rolls back with no member appended; an
+   implementation that cannot make the set's append atomic MUST NOT admit a
+   multi-member set. The failure is recorded as evidence (SPEC-8 §4.3 rule 7)
+   and never repaired by minting a replacement member.
+3. Members have a deterministic order fixed by the mapping. Each member after
+   the first lists its predecessor among its parents, and each member's
+   payload binds its set position and the set size. The last member is the
+   **closing member**, and its causal closure holds the whole set.
+4. A materializer applies a set's members in one atomic projection commit, with
+   their apply markers (§3 rule 5), only once the closing member is admitted.
+   An earlier member whose closing member is not yet admitted stays in the
+   verified log with its projection position pending: the apply marker does
+   not advance, as for `referenced_artifact_unavailable`. It is not a
+   semantic exclusion, and it is never projected alone.
+5. A receiver that admits members from a segment or the wire applies rule 4
+   unchanged. A relay that holds part of a set therefore exposes no partial
+   intent.
+
+### 10.5 Remaining D-CL20 deferral
 
 HARD-1's local `commit_operation` seam is not a canonical materializer for
-GLTF import, node duplicate/rename, or Verse/Fractal/Petal creation. D-CL20
-approves deferring those multi-row operation contracts to SPEC-4/SPEC-8 rather
-than inventing a replay meaning during hardening. They remain excluded from any
-canonical cutover, shadow parity claim, or Workstream G implementation until
-each has an atomic intent schema, exact candidate set, deterministic reduction,
-and failure/replay contract.
+Verse, Fractal, or Petal creation. They remain excluded from any canonical
+cutover, shadow parity claim, or dual-emit mapping until each has an atomic
+intent schema, exact candidate set, deterministic reduction, and failure and
+replay contract. They are hierarchy creation, not scene writes, so the
+`SCENE_WRITE_CENSUS` dual-emit scope does not include them.

@@ -187,8 +187,8 @@ type with optional fields.
 ### 4.2 `commit_ack`
 
 1. A `commit_ack` correlates to `commit_submit` and contains its
-   `claimed_op_id`, one state below, and either a durable cursor or a stable
-   error category.
+   `claimed_op_id`, one state below, and, depending on the state, a durable
+   cursor, a stable error category, or neither (`held`).
 
    | State | Required meaning |
    | --- | --- |
@@ -196,6 +196,7 @@ type with optional fields.
    | `accepted_pending_materialization` | Exact bytes are durably admitted and appended, but no projection cursor has committed them yet. This is not a committed success. |
    | `committed` | The operation is applied in the named projection and visible at the supplied durable cursor. |
    | `already_committed` | Exact bytes were previously committed; the supplied cursor identifies that committed observation or a later compatible observation. |
+   | `held` | The service has not admitted the operation because a precondition it does not yet hold may still arrive (D-CL40). Nothing is committed and nothing is final. The client MAY resubmit the identical bytes and `claimed_op_id` later; it MUST NOT mint a replacement operation. |
 
 2. `accepted_pending_materialization` MUST NOT include a durable cursor,
    `commit_delta`, snapshot claim, or analytics-success assertion. Recovery is
@@ -207,14 +208,25 @@ type with optional fields.
    or materializer version.
 4. The normalized API response uses the same states: `committed` is a created
    or successful idempotent result, `accepted_pending_materialization` is an
-   accepted-but-not-committed result, and `rejected` is a protocol error. HTTP
+   accepted-but-not-committed result, `held` is a retryable not-yet-admitted
+   result, and `rejected` is a protocol error. HTTP
    status selection MUST NOT alter these state meanings.
 5. A `commit_ack` body contains the session generation, authorization binding
    ID, claimed op ID, state, and—only for `committed` or
    `already_committed`—the branch ID, scope, projection identity, and durable
    cursor. For `rejected`, it instead contains exactly one public error
    category from section 6. For `accepted_pending_materialization`, it contains
-   no cursor and no private diagnostic beyond the pending state.
+   no cursor and no private diagnostic beyond the pending state. For `held`,
+   it contains no cursor, no branch ID, no error category, and no private
+   diagnostic beyond the `held` state itself.
+6. `held` is retryable and is not a rejection. A service answers `held` only
+   for the section 6 dispositions mapped to it. It MUST NOT emit a
+   `commit_delta` or a committed success for a held operation, and a later
+   identical resubmission is evaluated afresh under the SPEC-4 pipeline: it may
+   become `committed`, `already_committed`, or
+   `accepted_pending_materialization`, remain `held`, or become `rejected`. The service MAY
+   retain the held bytes under SPEC-4 quarantine custody, but that custody is
+   not visible on the wire.
 
 ### 4.3 `commit_delta`
 
@@ -316,7 +328,10 @@ type with optional fields.
    issue a new session authorization generation and require a fresh
    subscription or resume check; it MUST NOT revive an old cursor or queued
    preview solely because the principal appears unchanged.
-3. `protocol_error` carries one stable category from this table. For an
+3. `protocol_error` carries one stable category from this table, except the
+   rows whose required result names a `commit_ack` state (`held`,
+   `accepted_pending_materialization`): those are answered by that state and
+   never by a `protocol_error`. For an
    unauthorized request, diagnostics MUST NOT disclose whether a private
    operation, artifact, branch, or cursor exists.
 
@@ -332,7 +347,7 @@ type with optional fields.
    | `conflicting_op_bytes` | Reject both claimed substitution and any projection effect. |
    | `invalid_envelope`, `unauthorized_operation`, `invalid_payload` | Use the corresponding SPEC-4 admission disposition. |
     | `unsupported_payload_suite` | Reject a non-empty candidate unless it uses D-CL17 `suite_id = 1`, a current authorized key, and a valid 24-byte nonce. |
-   | `missing_parent`, `unknown_schema`, `opaque_payload` | Use SPEC-4 quarantine disposition; do not emit a committed success. |
+   | SPEC-4 `missing_parent`, `unknown_schema`, `opaque_payload`, `unknown_kind`, `authorization_evidence_unavailable` | Answer `commit_ack` state `held` (section 4.2 rules 1 and 6); not a `protocol_error`, not `rejected`; no cursor or branch; do not emit a committed success. The client resubmits the identical bytes. |
    | `materialization_pending` | Report only `accepted_pending_materialization`; no cursor or delta. |
    | `cursor_invalid` | Require a valid compatible cursor or snapshot; do not approximate. |
    | `snapshot_required` | Stop replay at a known boundary and send the recovery path. |
@@ -426,6 +441,17 @@ named tests:
      replay-complete claim, or checkpoint/bootstrap result is accepted only
      when the D-CL19 hash and Manager+-authorized branch-control history match.
 
+14. **`held_dispositions_answer_held_and_retry_identical_bytes`** — each of
+    `missing_parent`, `unknown_schema`, `opaque_payload`, `unknown_kind` and
+    `authorization_evidence_unavailable` yields `commit_ack` `held` with no
+    cursor, branch, or error category (`commit_ack` keys `4`..`8`
+    structurally absent: key `4` is the category, keys `5`..`8` the branch,
+    scope, projection and cursor); resubmitting the identical bytes after the
+    missing precondition arrives yields `committed`,
+    `accepted_pending_materialization`, or `already_committed` (when the same
+    bytes were committed meanwhile by another path), with exactly one append
+    and at most one materialized effect.
+
 ## 9. Design notes
 
 - **One signed artifact, many delivery paths:** API and WebSocket submission
@@ -446,6 +472,26 @@ named tests:
   the unsafe write path this protocol is designed to remove.
 
 ## Errata
+
+- **2026-11-20 (relay_record_warehouse S1, owner decision D-CL40).** Section 4.2
+  adds the `held` acknowledgement state, and section 6 rule 3 moves
+  `missing_parent`, `unknown_schema`, `opaque_payload`, SPEC-4 `unknown_kind`
+  and `authorization_evidence_unavailable` from the quarantine disposition to
+  `held`. `held` is retryable (identical-bytes resubmission) and carries no
+  cursor or branch. This replaces, rather than ratifies, the W4-4
+  Quarantine-to-Rejected mapping and discharges AC-39 (the CANON-WS pre-mount
+  precondition). The `held` wire value is provisional (D-CL24): `commit_ack`
+  state `4`, to be recorded in the single `CDL-PROV` register in
+  `fe-canonical-log/src/AGENTS.md` §Provisional wire numbering (track slice
+  I8 owns that file; until then the register still lists states `0`..`3`),
+  never in a second table. Conformance test 14 is added to section 8. Advocate review
+  (same day): rule 6 and test 14 admit `accepted_pending_materialization` and
+  `already_committed` as retry outcomes (track AC-7.1), and section 6 rule 3
+  states that the `held` and pending rows are ack states, not
+  `protocol_error` categories. Critic review (same day): test 14 now names
+  `already_committed` as the advocate entry already claimed, and asserts key
+  `4` (category) absent as well as keys `5`..`8`, since the register sends a
+  category for `rejected` only.
 
 - **2026-10-15 (CDL-SPEC10 D-CL33, owner-ratified under D-CL28's precedent for
   spec-cross-reference errata).** Section 7.1 rule 1's "registered non-zero

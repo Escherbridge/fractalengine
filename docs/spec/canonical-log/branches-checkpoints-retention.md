@@ -264,7 +264,8 @@ is fixed by SPEC-3 section 10; implementation remains gated as stated below.
 
 1. A mobile peer may release old payload ciphertext after it has an eligible,
    authorized checkpoint/snapshot/tail path for its declared selection, subject
-   to D-CL19 and section 5.4. It MAY retain headers longer than payloads.
+   to D-CL19, section 5.4, and the durability floor in rule 6. It MAY retain
+   headers longer than payloads.
 2. A relay MAY refuse a lease before acknowledgement for capacity, policy, or
    authorization reasons. After acknowledgement, it MUST either meet the lease
    or report a durable lease-failure state; silent eviction is prohibited.
@@ -286,11 +287,45 @@ is fixed by SPEC-3 section 10; implementation remains gated as stated below.
    | Checkpoint retention | The peer MUST retain the verifying checkpoint and enough manifest/reachability evidence to prove the released range's closure was covered, per section 3.2 and section 5.1 rule 5. A checkpoint it cannot itself re-verify does not authorize release. |
    | Tombstone continuity | The peer MUST retain tombstone evidence for every suppression whose effect a retained bootstrap path could otherwise undo, per section 5.4 rules 1 and 2. Header release MUST NOT resurrect a suppressed operation. |
    | Closure detectability | The peer MUST still be able to detect a missing causal closure rather than present a released range as complete history, per the mobile-peer obligation above. |
+   | Durability floor | The peer MUST hold floor evidence for every segment the release covers, per rule 6. |
 
 5. The size of the recent window a mobile peer keeps behind its frontier, and
    any product promise about it, are owner-approved operational policy under
    section 8 rule 3. This specification fixes only that releasing headers is
    permitted and what it costs, never how much a device keeps.
+6. **Pruning behind a checkpoint requires floor evidence for every covered
+   segment** (D-CL39). A peer MUST NOT release payload ciphertext, snapshot
+   components, or verified headers behind a checkpoint, under rule 1 or
+   rule 4, unless it holds **floor evidence** for every sealed segment the
+   release covers. Floor evidence for a segment is custody receipts for its
+   manifest from R distinct qualifying record relays, where R is the verse's
+   `ts_replication_factor`. Receipt format, signature domain, and the
+   qualifying-relay predicate are defined in
+   [relay-custody-durability.md](relay-custody-durability.md).
+   1. Evidence is assessed per segment. Evidence for one segment, or a count
+      pooled across segments, never covers another segment.
+   2. R is at least 1. A missing, zero, or unreadable R MUST NOT be read as
+      "floor met"; it refuses the prune. Fewer listed record relays than R
+      means the floor cannot be met, so no pruning occurs behind the
+      checkpoint. This holds for a verse with no record relays at all.
+   3. The prune decision MUST take the floor evidence as a required input.
+      A prune or compaction path that can be reached without that input does
+      not conform. A refusal for this reason is distinct from every
+      tombstone and closure refusal, and it is checked first.
+   4. Floor evidence is necessary, not sufficient. Every other condition in
+      this section and in section 5.4 still applies, the verse's
+      `peer_prune_after_floor` setting (default off) must be on, and a local
+      policy MAY forbid pruning even when the floor is met.
+   5. Coverage is per released artifact, never vacuous. Each artifact released
+      MUST itself be in the custody set of a manifest whose floor is met. An
+      artifact in no custody set, such as a bulk artifact (SPEC-6 section 3.4)
+      like glTF asset bytes, or a snapshot component no manifest indexes, has
+      no floor evidence, so this rule refuses its release behind a checkpoint.
+      A release that "covers no sealed segment" is refused, not allowed.
+   6. Floor evidence permits only local release. It grants no relay authority
+      over history (section 5.2 relay row). It does not make a relay a
+      checkpoint source, and it never compacts a tombstone that section 5.4
+      requires.
 
 ### 5.3 GC leases
 
@@ -438,6 +473,16 @@ at least the following names and outcomes.
     continuity, has withdrawn any bootstrap/seed advertisement covering the
     released range, and still reports a missing causal closure rather than
     presenting the released range as complete history.
+19. **`prune_behind_checkpoint_requires_floor_evidence_per_segment`** — with
+    R = 2, a release covering a segment that has one qualifying receipt
+    is refused for the durability floor, and releases after a second
+    qualifying receipt. Each of the following fails to count toward R: a
+    duplicate relay, a relay with no `seed` capability, a relay not on the
+    list, a receipt naming another verse, and a bad signature. Receipts for
+    one segment never satisfy another segment, R = 0 never reads as met, an
+    artifact in no custody set (bulk artifact or unindexed snapshot
+    component) is refused, and a tombstone section 5.4 requires survives the
+    release.
 
 ## 7. Design notes
 
@@ -489,15 +534,39 @@ implementation depends on them.
   normative rule authorizing it. The §5.2 mobile-peer non-obligation cell now
   names header release explicitly.
 
+Owner decision D-CL39, 2026-11-20 (track `relay_record_warehouse_20261120`).
+
+- **RRW-4 (2026-11-20):** §5.2 gained rule 6, which makes floor evidence for
+  every covered segment a precondition of pruning behind a checkpoint. Rule 1
+  and the rule 4 table now cite it, §6 gained test 19, and §8 rule 2 drops
+  the stale "Workstream G remains blocked" text in favor of D-CL35. D-CL36 makes
+  relays the point of record. A checkpoint proves that a projection can be
+  rebuilt from history, not that the history survives anywhere once this peer
+  drops it. Without a floor, a peer could release the last copy outside the
+  relays. The evidence is per segment because a pooled count lets R receipts
+  for one segment cover a segment no relay holds. The input is required by
+  construction because an optional check gets skipped by the one caller that
+  matters. A consequence worth stating: a verse with fewer record relays than
+  R, including a verse that is not in warehouse mode, never prunes behind a
+  checkpoint. The G5 header-release permission now applies only when the floor
+  is met. Advocate review (same day) added rule 6.5: a bulk artifact has no
+  custody set, so it is never released behind a checkpoint. Without it the
+  glTF bytes D-CL47 brings into the record could be pruned with no relay
+  holding them. Critic review (same day) widened rule 6.5 to every released
+  artifact: "floor evidence for every sealed segment the release covers" was
+  vacuously true for a release covering no segment (snapshot components), a
+  silent allow. Rule 6.4 now names the per-verse `peer_prune_after_floor`
+  setting that SPEC-9 section 4.1 rule 1 requires.
+
 ## 8. Remaining implementation gates
 
 1. Retention durations, quotas, legal holds, archive acceptance, and any
    user-facing deletion promise remain owner-approved operational policy. They
    do not change the D-CL17 cryptographic contract or the D-CL19 frontier rule.
-2. Workstream G remains blocked. No branch control, checkpoint, retention,
-   crypto-shredding, relay, Iroh, peer-replication, or seeding implementation
-   is authorized until the owner approves the complete SPEC set and a separate
-   implementation/operations package.
+2. Workstream G is unlocked (see Status). D-CL35 lifted the network gate on
+   2026-11-20 for relay seeding, inbound canonical P2P, and the signed sync
+   plane, and D-CL39 sets the durability floor in section 5.2 rule 6.
+   Retention durations remain policy under rule 3.
 3. **Retention policy:** Ratify retention durations/quotas, legal-hold and
    audit rules, lease issuer/renewal/handoff requirements, archive acceptance
    boundaries, mobile recent-window expectations, and the exact wording of

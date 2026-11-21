@@ -33,7 +33,9 @@ This plan depends on [operation-envelope.md](operation-envelope.md),
    the legacy mutation and one correlated migration candidate set from the
    same original intent before either path observes mutable SurrealDB state. It
    does not mean a new transport, row-replication extension, or independently
-   authored user actions.
+   authored user actions. Its scope is exactly the commands in
+   `fe_runtime::scene_write::SCENE_WRITE_CENSUS` (D-CL37); a command outside
+   the census is not a dual-emit scene write.
 5. **Shadow materialization** is a non-authoritative projection reconstructed
    from migration candidates. It may compare its output with the live legacy
    projection, but it MUST NOT mutate, repair, or overwrite that projection.
@@ -43,22 +45,31 @@ This plan depends on [operation-envelope.md](operation-envelope.md),
    omitted, unsupported, unquantizable, or lossy-by-accident field is a
    validation failure unless the owner has approved its explicit exclusion
    before the run begins.
-7. This plan creates no implementation authority. In particular, it does not
-   authorize enabling Iroh, opening replicas, extending `WriteRowEntry`,
-   contacting a relay, or emitting canonical operations to another process.
+7. This plan creates no network authority of its own. D-CL35 and D-CL37
+   separately approve seeding admitted candidate members to the verse's record
+   relays (§2 rule 5). Nothing here authorizes extending `WriteRowEntry`, or
+   sending shadow evidence or unadmitted candidate bytes to another process.
 8. **Workstream G** means implementation of canonical envelope encoding,
    verified append, materialization, capabilities, branch/retention controls,
    commit wire behavior, segments, or relay seeding. It excludes the
    legacy-only `seam_ready` ingress hardening described in §3.
+9. An **admitted candidate member** is a candidate member that passed SPEC-4
+   §2 admission and was durably appended to the local verified log. It is a
+   canonical record, not shadow evidence. A **record relay** is a relay on the
+   verse's `record_relays` list, as defined in
+   [relay-custody-durability.md](relay-custody-durability.md).
 
 ## 2. Migration invariants
 
 1. The current local-only desktop editor MUST remain usable with canonical-log
    flags disabled. Flag-disabled behavior MUST retain the existing local write
    result and error semantics except for independently approved hardening work.
-2. Every future canonical-log mode MUST be opt-in, locally configured, and
-   disabled by default. A flag MUST state its mode in diagnostics and MUST NOT
-   be remotely activated by a peer, relay, WebSocket client, or replicated row.
+2. Every canonical-log mode MUST be locally configured. A flag MUST state its
+   mode in diagnostics and MUST NOT be remotely activated by a peer, relay,
+   WebSocket client, or replicated row. The project's own build defaults to
+   `dual_emit_shadow` (D-CL37, D-CL42); every other build defaults to
+   `legacy_only`. `legacy_only` MUST stay selectable in every build as a local
+   kill switch.
 3. A migration candidate MUST be derived from the original intent, including
    the original scope and authorization context. It MUST NOT be reverse-built
    from an already-mutated SurrealDB row, database-generated timestamp, old
@@ -66,10 +77,16 @@ This plan depends on [operation-envelope.md](operation-envelope.md),
 4. The canonical operation path MUST use the SPEC-1 canonical integer values
    and intent-only payload rules. Legacy display values may be explicitly
    quantized at the ingress boundary; they MUST NOT become signed floats.
-5. Shadow evidence, including candidate bytes, validation outcomes, and
-   projection roots, MUST remain local to the migration environment and obey
-   the applicable capability and privacy rules. It MUST NOT be exposed through
-   the current public asset, tile, API, or WebSocket surfaces.
+5. Shadow evidence, including unadmitted candidate bytes, correlation
+   records, validation outcomes, comparator exports, and shadow projection
+   roots, MUST remain local to the migration environment and obey the
+   applicable capability and privacy rules. Admitted candidate members are
+   canonical records (§1 rule 9): they MAY be sealed into segments and seeded
+   to the verse's record relays under SPEC-6 and
+   [relay-custody-durability.md](relay-custody-durability.md), and MAY be
+   served on the SPEC-7 canonical wire under its own authorization. Neither
+   class MAY be exposed through the legacy public asset, tile, REST API, or
+   WebSocket surfaces, and neither MAY ride legacy row replication.
 6. A shadow mismatch, missing candidate, failed append, failed materialization,
    ambiguous outcome, or unapproved comparator exclusion MUST fail validation.
    It MUST NOT be hidden by updating legacy rows, synthesizing a replacement
@@ -88,24 +105,34 @@ automatically from observed parity.
 | --- | --- | --- | --- | --- |
 | `legacy_only` | Execute current path. | Do not create one. | Legacy SurrealDB projection. | None. |
 | `seam_ready` | Execute current path through the single ingress. | Do not append, materialize, or publish one. | Legacy SurrealDB projection. | None. |
-| `dual_emit_shadow` | Execute current path once. | Derive, verify under approved local rules, and retain the local candidate artifacts plus correlation evidence. | Legacy SurrealDB projection. | None. |
-| `shadow_rebuild` | Execute current path once. | Retain and replay the approved local candidate set into a separate projection. | Legacy SurrealDB projection. | None. |
+| `dual_emit_shadow` | Execute current path once. | Derive before the legacy attempt; after a successful legacy attempt, admit the set all-or-nothing (SPEC-4 §10.4) into the local verified log and retain correlation evidence. | Legacy SurrealDB projection. | Admitted members only, to record relays (§2 rule 5). |
+| `shadow_rebuild` | Execute current path once. | As `dual_emit_shadow`, and replay the admitted set into a separate projection. | Legacy SurrealDB projection. | Admitted members only, to record relays (§2 rule 5). |
 | `canonical_authoritative_local` | Available only after the cutover gates in §7. | Use the approved verified-log and materializer path. | Approved canonical local projection. | None under this plan. |
 
-1. `legacy_only` is the default in every build and profile until an explicit
-   local operator changes it.
+1. The default mode is the one §2 rule 2 names. `legacy_only` is the local
+   kill switch: selecting it creates no candidate, admits nothing, seeds
+   nothing, and leaves the legacy reply and rows byte-identical to the
+   dual-emit path's.
 2. `seam_ready` is the only permitted first code change. It establishes the
    future ingress boundary without changing the authoritative data model.
 3. `dual_emit_shadow` and `shadow_rebuild` MUST be unavailable until the
    owner has approved the governing SPEC documents and the implementation can
    satisfy their applicable admission rules. A syntactically convenient
    placeholder signature, plaintext payload, or local-only authorization
-   bypass does not qualify.
+   bypass does not qualify. D-CL37 records that approval for
+   `dual_emit_shadow` over `SCENE_WRITE_CENSUS`.
 4. `canonical_authoritative_local` is a distinct, deliberate release step. It
    MUST NOT be enabled by a successful comparison, a process restart, a
-   database migration, or a peer message.
-5. None of these modes permits network behavior. Network or relay seeding is
-   outside this plan even if a local canonical projection is later approved.
+   database migration, or a peer message. D-CL37 does not approve it.
+5. The only network behavior a migration mode permits is seeding admitted
+   candidate members to the verse's record relays (§2 rule 5, D-CL35,
+   D-CL37), and only while the verse's `warehouse_mode` setting (D-CL43,
+   default off) is on and its `record_relays` list is non-empty. That
+   per-verse, Manager+-set setting gates seeding for the verse only; it never
+   selects or changes the local migration mode, which §2 rule 2 keeps local.
+   No mode sends shadow evidence to any process. Legacy row
+   replication stays the authoritative replication path until a cutover is
+   approved.
 
 ## 4. The future `commit_operation` ingress
 
@@ -154,13 +181,21 @@ automatically from observed parity.
 4. A mutation kind without a complete mapping MUST remain `legacy_only` for
    that kind. It reduces capture coverage and therefore prevents authoritative
    cutover; it MUST NOT be represented as a successful no-op candidate.
-5. The known initial coverage gap includes GLTF import, duplicate, rename, and
-   Verse, Fractal, and Petal creation, which do not yet have a complete
-   log-first intent/materializer contract. Before a formal promotion, the
-   mapping inventory MUST report `unmapped_bypass_count = 0` for every enabled
-   mutation surface. Each listed gap must either gain an approved mapping and
-   ingress test or remain outside the candidate-enabled product surface; the
-   latter blocks cutover. This plan does not define their payloads.
+5. The deferred D-CL20 kinds are `CreateVerse`, `CreateFractal`, and
+   `CreatePetal` only. They are hierarchy creation, not scene writes, and stay
+   outside the dual-emit scope until each gains an approved contract; that
+   blocks cutover. D-CL47 lifted D-CL20 for `ImportGltf`, `DuplicateNode`, and
+   `RenameNode`: their atomic contracts are SPEC-4 §10.1-§10.3, and each MUST
+   be mapped. Every `SCENE_WRITE_CENSUS` variant MUST have a mapping. A
+   remaining `Unsupported` mapping MUST be counted and named in the coverage
+   report, never silent, and blocks track closure. The mapping inventory MUST
+   report `unmapped_bypass_count = 0` for every census variant.
+6. Every row identifier a candidate names, such as a created node's id, MUST
+   be fixed at the boundary before either side effect and carried in the
+   candidate through the SPEC-10 §4.5 `legacy_identifier` mapping. The legacy
+   attempt MUST use the same identifier. A candidate MUST NOT learn an
+   identifier from the legacy result; if an identifier cannot be fixed first,
+   the intent is `candidate_unavailable` under §4.3 rule 1.
 
 ### 4.3 Failure and rollback behavior during shadow modes
 
@@ -193,6 +228,12 @@ automatically from observed parity.
    verified canonical bytes, identify the last approved compatible projection
    boundary, and require an owner-approved recovery decision. The ordinary
    shadow-mode fallback rules do not apply after authority has changed.
+7. In `dual_emit_shadow`, admission follows a successful legacy attempt. A
+   failed legacy attempt admits no member. A candidate set that fails
+   admission, wholly or in one member, appends no member (SPEC-4 §10.4),
+   leaves the legacy reply and rows unchanged, and is recorded as a new
+   shadow-ledger row with its disposition. It is never retried by repeating
+   the legacy attempt (§4.1 rule 5).
 
 ## 5. Shadow rebuild and comparison procedure
 
@@ -230,8 +271,9 @@ automatically from observed parity.
    shadow run or mark subsequent intents uncovered. It MUST NOT silently evict,
    rewrite, or merge evidence; an archival or disposition action requires
    owner approval.
-7. A run MUST use only local test or owner-authorized dogfood data. It MUST
-   neither contact a peer nor make candidate inventory discoverable to a peer,
+7. A run MUST use only local test or owner-authorized dogfood data. Apart
+   from §2 rule 5 seeding of admitted members, it MUST neither contact a peer
+   nor make candidate inventory or shadow evidence discoverable to a peer,
    relay, or untrusted local client.
 
 ### 5.2 Rebuild rules
@@ -288,7 +330,7 @@ mutation kind and scope class:
 | Measurement | Required value for promotion |
 | --- | --- |
 | Capture completeness | `legacy_success_with_candidate / legacy_success` is 100% for every supported mutation kind. Unsupported kinds are 0% coverage and block promotion. |
-| Ingress coverage | `unmapped_bypass_count` is 0 for every enabled editor and API mutation surface, including GLTF import, duplicate, rename, and Verse/Fractal/Petal creation. |
+| Ingress coverage | `unmapped_bypass_count` is 0 for every enabled editor and API mutation surface: every `SCENE_WRITE_CENSUS` variant, including GLTF import, duplicate, and rename, plus Verse/Fractal/Petal creation once their D-CL20 contracts exist. |
 | Candidate integrity | 100% of retained candidates decode/re-encode canonically, verify their derived IDs and signatures, and match the retained payload reference. |
 | Admission and replay completeness | 100% of candidates expected for the selected history are admitted or have an explicit non-success disposition; no required candidate is missing, opaque, pending, or quarantined at comparison time. |
 | Projection parity | 0 unapproved field differences across every captured prefix, final selection, and three independent empty-state replays. |
@@ -297,7 +339,7 @@ mutation kind and scope class:
 | Authorization and privacy | 0 instances of an unauthorized scope, payload, candidate inventory, comparison value, or preview becoming visible through the migration path. |
 | Local-editor service | The flag-disabled and shadow paths meet the owner-approved local interaction latency and error-rate budget measured against the recorded `legacy_only` baseline. |
 | Storage accounting | Every candidate, payload artifact, comparator export, and diagnostic is classified by local retention policy; 0 unbounded or unaccounted stores are permitted. |
-| Network prohibition | 0 canonical P2P listener/dial, peer fetch, relay request, replica open, or canonical network publication events occur in every migration mode. Existing legacy API/WS listeners may remain, but transmit 0 candidate, payload, capability, shadow, or comparator data. |
+| Network confinement | The only canonical network events a migration mode causes are record-relay seeding of admitted members (§2 rule 5). 0 shadow-evidence or unadmitted-candidate bytes leave the process. Legacy API/WS listeners and legacy row replication transmit 0 candidate, payload, capability, shadow, or comparator data. |
 
 1. The owner-approved run charter MUST declare the exact selected histories,
    mutation corpus, interruption points, device profiles, baseline window, and
@@ -341,12 +383,15 @@ names and outcomes:
    selected history's prefixes, tombstones, restart, and replay have exact
    disposition and parity evidence.
 8. **`migration_flags_are_local_default_off_and_isolated_from_networking`** —
-   every migration mode starts disabled, performs no canonical peer, relay,
-   replica, or publication operation, and sends no candidate/shadow data over
-   an existing legacy API or WebSocket listener.
+   the mode is local and starts at the §2 rule 2 default; `legacy_only`
+   remains selectable and creates, admits, and seeds nothing; no mode sends
+   shadow evidence or unadmitted candidate bytes to any process, and none
+   sends candidate data over a legacy API or WebSocket listener. The name
+   predates the D-CL37 erratum and is kept for test selection.
 9. **`unresolved_candidate_or_branch_contract_blocks_promotion`** — a missing
     candidate, materialization pending state, unresolved branch selection, or
-    missing D-CL20 multi-row materializer contract cannot advance
+    missing D-CL20 materializer contract for Verse/Fractal/Petal creation, or
+    a counted `Unsupported` census mapping cannot advance
     `canonical_authoritative_local`.
 10. **`authoritative_rollback_stops_writes_before_legacy_fallback`** — once
     authority changes, a failure stops writes and preserves canonical evidence;
@@ -367,10 +412,11 @@ The project owner records each approval with the reviewed evidence.
    lifecycle, exceptional identity correction, and sorted-frontier branch
    controls are specified, but their implementation remains blocked by the
    SPEC gate and Workstream G authorization. This plan does not enable them.
-3. **Legacy multi-row gate — D-CL20:** GLTF import, node duplicate/rename, and
-   Verse/Fractal/Petal creation remain deliberately deferred. Each needs an
-   approved atomic intent schema, candidate-set, materializer, replay, and
-   failure contract in SPEC-4/SPEC-8 before canonical cutover.
+3. **Legacy multi-row gate — D-CL20, D-CL47:** Verse/Fractal/Petal creation
+   remains deliberately deferred and needs an approved atomic intent schema,
+   candidate-set, materializer, replay, and failure contract in SPEC-4/SPEC-8
+   before canonical cutover. GLTF import, node duplicate, and node rename
+   left this gate under D-CL47; their contracts are SPEC-4 §10.1-§10.3.
 4. **Local cutover gate:** After the preceding applicable gates, every
    applicable normative conformance case from SPEC-1 through SPEC-7 and §6.2
    MUST pass for the enabled mode, including SPEC-4 reproducible analytics
@@ -379,10 +425,12 @@ The project owner records each approval with the reviewed evidence.
    materializer version, and rollback operator before
    `canonical_authoritative_local` is enabled.
 5. **Network gate:** Network, Iroh, relay, peer replication, and seeding are
-   not a migration stage. They require a separate owner-approved implementation
-   and operations package after the relevant specification, security, privacy,
-   availability, and retention gates have closed. A local cutover approval
-   does not imply this approval.
+   not a migration stage. D-CL35 lifted this gate on 2026-11-20 for relay
+   seeding, `/ws/canonical`, inbound canonical P2P, and the signed sync plane;
+   their behavior is governed by SPEC-6, SPEC-7, and
+   [relay-custody-durability.md](relay-custody-durability.md), not by this
+   plan. A local cutover approval does not imply any further network
+   approval.
 
 ## 8. Design notes
 
@@ -401,3 +449,37 @@ The project owner records each approval with the reviewed evidence.
   validates deterministic state reduction. It says nothing about capability
   privacy, relay retention, peer availability, or transport safety, which
   remain separately gated.
+
+### Errata
+
+Owner decisions D-CL37, D-CL42, and D-CL47, 2026-11-20 (track
+`relay_record_warehouse_20261120`).
+
+- **RRW-1 (2026-11-20, D-CL37, D-CL42):** §1 rules 4, 7, and 9, §2 rules 2
+  and 5, §3 (table and rules 1, 3, 4, 5), §4.3 rule 7, §5.1 rule 7, §6.1
+  network row, §6.2 test 8, and §7 gate 5 changed. Dual emit now covers every
+  `SCENE_WRITE_CENSUS` command, and its admitted members are canonical records
+  that may be seeded to the verse's record relays, because D-CL36 makes those
+  relays the durable record. Before this erratum §2 rule 5 kept all candidate
+  bytes local, which made a relay record impossible. The line that still
+  holds is between canonical records and shadow evidence: correlation rows,
+  comparator exports, and unadmitted bytes stay local, and nothing reaches the
+  legacy public surfaces or legacy row replication. The project's own build
+  now defaults to `dual_emit_shadow` (D-CL42). `legacy_only` stays as a local
+  kill switch so an operator can stop emission without a rebuild. Legacy row
+  replication stays authoritative, and `canonical_authoritative_local` stays
+  unapproved.
+- **RRW-2 (2026-11-20, D-CL47):** §4.2 rule 5 and §7 gate 3 now defer only
+  `CreateVerse`, `CreateFractal`, and `CreatePetal`. `ImportGltf`,
+  `DuplicateNode`, and `RenameNode` are mapped under the SPEC-4 §10
+  contracts, so the relay record has no gap for scene writes. §4.2 gained rule
+  6, which fixes row identifiers before either side effect. A multi-row
+  candidate that read its node or asset id back from the legacy result would
+  be reverse-built from database outcome (§2 rule 3), and two replays could
+  not agree on it. An `Unsupported` mapping is now counted and named, and it
+  blocks closure, rather than being a permitted state.
+- **RRW-1a (2026-11-20, critic review):** §3 rule 5 now gates seeding on the
+  verse's `warehouse_mode` (D-CL43, default off) and a non-empty
+  `record_relays` list. Without it, rule 5 let every dual-emit build seed by
+  default, and the replicated per-verse setting read as if it could switch the
+  local migration mode, which §2 rule 2 forbids for any replicated row.
