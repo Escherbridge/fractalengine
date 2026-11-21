@@ -1477,7 +1477,7 @@ leak grep before every public commit.
 
 ## 8. Session log
 
-### 2026-11-20 (later) — CLI phase 2 + core prerequisites pushed; swarm harness and land-feasibility in flight
+### 2026-11-20 (later) — CLI phase 2 + core prerequisites pushed; swarm harness and a commercial-layer extension in flight
 
 **Supersedes the "UNCOMMITTED" state of the entry below.** Owner said "push as needed just keep driving".
 
@@ -1502,10 +1502,10 @@ leak grep before every public commit.
   terrain yet; `--wait peers` is read-back, no per-verse digest route exists in fe-api; CLI `join` /
   `invite create` covered as dry runs only.
 - In flight at time of writing (check `git status` in both repos for their uncommitted output):
-  `tools/qa/swarm/` (CLI phase 3 swarm harness, public repo) and `extensions/land-feasibility/`
-  (commercial repo, Package 1 of `extensions/LAND-FEASIBILITY-SPEC.md`; the portal bundle is not started).
+  `tools/qa/swarm/` (CLI phase 3 swarm harness, public repo) and a private-layer extension
+  (wasm package; its portal bundle is not started — details live in the private repo's own docs).
 - Next: review + commit those two; run the swarm once against live instances (owner's word needed —
-  it launches instances); land-feasibility portal bundle; CLI phases 4-5 (`fe ext *`, relay token).
+  it launches instances); the private extension's portal bundle; CLI phases 4-5 (`fe ext *`, relay token).
 - **Update, same day (evening).** Landed since the lines above:
   - Public, committed LOCALLY and deliberately NOT pushed while CI run 44861927755 (on `5a7d1838`)
     is in progress (a push supersedes/cancels it — the first run on `13b6dd44` was cancelled that
@@ -1515,11 +1515,11 @@ leak grep before every public commit.
     `98470a73` sandbox fixture_version 2 (`commands[]`, `hooks[]`, stream + fuel traces through the
     real bus and scene-hook gate; `cargo test -p fe-ext -- j8` green). Push them once the run ends.
   - A background poll writes failures of that run to `.omc/research/ci-44861927755-20261120.log`.
-  - Commercial, pushed: `51a812d` land-feasibility extension, `3cc503f` scenario ported to native
+  - Commercial, pushed: `51a812d` the private-layer extension, `3cc503f` scenario ported to native
     sandbox commands/hooks (driver build deleted), `9fc8491` solver tree pass on a spatial grid +
     640-site cap (schema-legal args used to exhaust 20M fuel); tick fuel 17,500,000 measured.
     Sandbox scenario 104 checks, two identical traces. Never run in a live instance, not packed/signed.
-  - In flight: `extensions/land-feasibility-portal/` (Package 2 HUD bundle, commercial repo).
+  - In flight: the private extension's portal bundle (private repo).
   - Open owner decision: an extension's fuel limit is not part of the capability digest, so it can
     change without re-consent. Left as is.
   - Engine follow-ups found by extension authoring (not started): single-writer rule per petal for
@@ -1552,15 +1552,15 @@ Read this entry first; §2 State and §7 above are stale from 2026-11-17 onward.
   redaction, stream `subscribable` rule, `delete_node` refusal → exit 5). Not reviewed in depth: `cli_journey.rs`,
   dry-run/wait logic, `help.rs`. No `/security-review` skill run was recorded separately.
 
-**Commercial repo (`fractalengine-commercial`, on top of `189351d`, uncommitted):** reserved `x-fe-*` egress headers
-renamed in `tool-telemetry` and `device-env-transform` (both bumped 0.1.0 → 0.1.1, repacked, re-signed with the
+**Commercial repo (private, on top of `189351d`, uncommitted):** reserved `x-fe-*` egress headers
+renamed in two private-layer extensions (both bumped 0.1.0 → 0.1.1, repacked, re-signed with the
 existing keys in `~/.fractalengine/`, catalog re-verified); four `qa/ecosystem_harness.py` fixes; `qa/runs/` ignored.
 Live `--drive-ops` pass: `all_ok: true`, 13/13 steps, report `qa/runs/drive-ops-20261120b/report.json` (app was the
 `bc925ee7` stage, `-AllowStaleStage`).
 
 **Decisions (user, this session):** the CLI drives LOCAL instances only; remote use = sign into the server and run
 it there. Extensions may contribute CLI verbs (`fe x`). A small agent swarm will use the CLI for random goals to
-model real usage. Land-feasibility stays a commercial spec; "get the core in place".
+model real usage. The planned private-layer extension stays a spec; "get the core in place".
 
 **Assumptions (unconfirmed, highest reversal cost first):**
 1. Swarm = exploration whose journals replay without an LLM and graduate into `tools/qa/sim` scenarios, consistent
