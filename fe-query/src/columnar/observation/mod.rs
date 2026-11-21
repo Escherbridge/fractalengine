@@ -14,7 +14,12 @@
 
 mod profile;
 mod reader;
+#[cfg(feature = "datafusion")]
+mod scan;
 mod writer;
+
+#[cfg(feature = "datafusion")]
+pub use scan::ObservationScanTable;
 
 pub use profile::{
     HEXON_FORMAT_VERSION, MAX_ROW_GROUP_ROWS, MEMBER_ORDER, STATS_TABLE_PAYLOAD,

@@ -6,7 +6,7 @@ use crate::cbor::CborValue;
 use crate::envelope::{Hash32, Identifier32, Scope};
 
 use super::cursor::{CommittedDelta, DurableCursor, ProjectionIdentity};
-use super::error::{ProtocolErrorCategory, WireError};
+use super::error::{HeldReason, ProtocolErrorCategory, WireError};
 use super::session::SessionAuthorizationTable;
 use super::subscription::SubscriptionRecord;
 use super::{
@@ -117,6 +117,10 @@ pub enum CommitAckState {
     Committed(CommitBinding),
     /// Exact bytes were previously committed; the cursor identifies that or a later observation.
     AlreadyCommitted(CommitBinding),
+    /// Quarantined, not rejected (FR-7, D-CL40): retry by resubmitting the identical bytes.
+    /// SPEC-7 §4.2 rule 5: no category, cursor, branch, scope or projection identity (keys 4..8
+    /// absent), so the held reason stays in-process on [`PipelineResult::Held`].
+    Held,
 }
 
 /// The §4.2 `commit_ack` body.
@@ -186,6 +190,9 @@ impl CommitAckBody {
                 entries.push((CborValue::Uint(3), CborValue::Uint(3)));
                 encode_binding(&mut entries, binding)?;
             }
+            CommitAckState::Held => {
+                entries.push((CborValue::Uint(3), CborValue::Uint(4)));
+            }
         }
         Ok(CborValue::Map(entries))
     }
@@ -250,6 +257,14 @@ impl CommitAckBody {
                 }
                 CommitAckState::AlreadyCommitted(decode_binding(value)?)
             }
+            4 => {
+                if entries.len() != 4 {
+                    return Err(WireError::UnexpectedKeys {
+                        context: COMMIT_ACK_CONTEXT,
+                    });
+                }
+                CommitAckState::Held
+            }
             other => {
                 return Err(WireError::UnknownDiscriminant {
                     context: COMMIT_ACK_CONTEXT,
@@ -269,7 +284,10 @@ impl CommitAckBody {
 
     /// Reports whether the encoded body omits every binding-shaped key (5..8).
     pub fn carries_no_cursor_or_binding_fields(&self) -> bool {
-        matches!(self.state, CommitAckState::AcceptedPendingMaterialization)
+        matches!(
+            self.state,
+            CommitAckState::AcceptedPendingMaterialization | CommitAckState::Held
+        )
     }
 }
 
@@ -393,6 +411,9 @@ pub enum PipelineResult {
     Committed(CommitBinding),
     /// Exact bytes were already committed; identical resubmission returns this.
     AlreadyCommitted(CommitBinding),
+    /// Quarantined by SPEC-4 admission (FR-7, D-CL40): nothing was appended; resubmit the same
+    /// bytes once the missing evidence arrives.
+    Held(HeldReason),
 }
 
 /// The DB-free half of SPEC-4 commit admission: derive `op_id`, then admit/append/materialize
@@ -432,6 +453,7 @@ pub fn build_commit_ack(
         }
         PipelineResult::Committed(binding) => CommitAckState::Committed(binding),
         PipelineResult::AlreadyCommitted(binding) => CommitAckState::AlreadyCommitted(binding),
+        PipelineResult::Held(_) => CommitAckState::Held,
     };
     CommitAckBody {
         session_generation,

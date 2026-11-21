@@ -232,6 +232,8 @@ pub struct VerifiedAuthorization {
     pub leaf_principal: Author,
     /// Verified chain identifier.
     pub chain_id: Hash32,
+    /// Verified leaf certificate identifier; in-process only, never on the wire.
+    pub leaf_certificate_id: Hash32,
     /// Epoch scope the chain's root establishes.
     pub epoch_scope: Scope,
     /// Scope epoch relied upon.
@@ -381,7 +383,11 @@ mod tests {
             scope_epoch: 4,
             expires_at_ms: 1_700_000_000_000,
         };
-        let bytes = encode_canonical_checked(&body.to_cbor().expect("cbor")).expect("encode");
+        let value = body.to_cbor().expect("cbor");
+        // `VerifiedAuthorization::leaf_certificate_id` is in-process only: the wire body keeps
+        // exactly keys 0..6, so widening the verified facts never widens `authorized`.
+        assert_eq!(value.as_map().expect("map").len(), 7);
+        let bytes = encode_canonical_checked(&value).expect("encode");
         assert_eq!(
             AuthorizedBody::from_cbor(&decode_canonical(&bytes).expect("decode")).expect("decode"),
             body

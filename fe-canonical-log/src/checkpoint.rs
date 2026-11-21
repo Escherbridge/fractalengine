@@ -11,6 +11,7 @@ use crate::envelope::{
     Author, CapabilityRef, EnvelopeError, Hash32, Hlc, Identifier32, Scope, SIGNATURE_LENGTH,
 };
 use crate::frontier::SortedFrontier;
+use crate::retention::durability_floor::{DurabilityFloorEvidence, FloorShortfall};
 use crate::retention::tombstone::{
     assert_no_resurrection, TombstoneError, TombstoneRetentionRecord,
 };
@@ -473,6 +474,8 @@ pub enum CheckpointVerification {
     Verified {
         /// BLAKE3 of the complete claim bytes.
         checkpoint_id: Hash32,
+        /// The verse the verified claim names; binds compaction evidence to this verse.
+        verse_id: Identifier32,
     },
     /// Usable as an accelerator only; it MUST NOT be presented as replay-verified.
     UntrustedAccelerator {
@@ -489,7 +492,7 @@ impl CheckpointVerification {
     /// The checkpoint identifier when independent replay verification succeeded.
     pub fn verified_checkpoint_id(&self) -> Option<Hash32> {
         match self {
-            Self::Verified { checkpoint_id } => Some(*checkpoint_id),
+            Self::Verified { checkpoint_id, .. } => Some(*checkpoint_id),
             _ => None,
         }
     }
@@ -597,7 +600,10 @@ pub fn verify_checkpoint_claim(
                 replayed,
             })
         }
-        Some(_) => CheckpointVerification::Verified { checkpoint_id },
+        Some(_) => CheckpointVerification::Verified {
+            checkpoint_id,
+            verse_id: claim.verse_id,
+        },
     }
 }
 
@@ -618,6 +624,10 @@ pub struct BootstrapCoverage {
 pub enum CompactionRefusal {
     /// The checkpoint was not independently replay-verified.
     CheckpointNotVerified,
+    /// The floor evidence was assessed for a verse other than the checkpoint's.
+    FloorEvidenceForAnotherVerse,
+    /// The D-CL39 durability floor does not cover the release (SPEC-5 §5.2 rule 6).
+    DurabilityFloorNotMet(FloorShortfall),
     /// A head of the frontier has no retained bootstrap path.
     IncompleteBootstrapPaths,
     /// A retained bootstrap path does not prove the suppression survives replay through it.
@@ -634,6 +644,8 @@ pub enum CompactionDecision {
     Permitted {
         /// The verified checkpoint the decision rests on.
         checkpoint_id: Hash32,
+        /// Exactly the artifacts the floor evidence covered; the prune drops these and no others.
+        released_artifacts: Vec<Hash32>,
     },
     /// Local reclamation is refused.
     Refused(CompactionRefusal),
@@ -648,27 +660,49 @@ pub enum CompactionDecision {
 /// would reclaim, and each one's retained bootstrap paths are checked here through
 /// `retention::tombstone::assert_no_resurrection`. Pass an empty slice only when the compaction
 /// reclaims no tombstone at all.
+///
+/// `floor` is the REQUIRED D-CL39 evidence from `DurabilityFloorEvidence::assess`, assessed for
+/// the checkpoint's own verse; it is checked before every closure and tombstone refusal (SPEC-5
+/// §5.2 rule 6.3), and a met floor never releases a tombstone those later checks keep.
 pub fn compaction_decision(
     verification: &CheckpointVerification,
+    floor: &DurabilityFloorEvidence,
     coverage: BootstrapCoverage,
     suppressions: &[TombstoneRetentionRecord],
 ) -> CompactionDecision {
-    let Some(checkpoint_id) = verification.verified_checkpoint_id() else {
+    let CheckpointVerification::Verified {
+        checkpoint_id,
+        verse_id,
+    } = *verification
+    else {
         return CompactionDecision::Refused(CompactionRefusal::CheckpointNotVerified);
     };
+    if floor.verse_id() != verse_id {
+        return CompactionDecision::Refused(CompactionRefusal::FloorEvidenceForAnotherVerse);
+    }
+    if let Some(shortfall) = floor.shortfall() {
+        return CompactionDecision::Refused(CompactionRefusal::DurabilityFloorNotMet(
+            shortfall.clone(),
+        ));
+    }
     if !coverage.every_head_has_retained_bootstrap_path {
         return CompactionDecision::Refused(CompactionRefusal::IncompleteBootstrapPaths);
     }
     for record in suppressions {
-        if let Err(TombstoneError::MissingSuppressionProof { path_id }) =
-            assert_no_resurrection(record)
-        {
-            return CompactionDecision::Refused(CompactionRefusal::UnprovedSuppressionEvidence {
-                path_id,
-            });
+        // Exhaustive, no wildcard: a new `TombstoneError` must refuse here, never fall through.
+        match assert_no_resurrection(record) {
+            Ok(()) => {}
+            Err(TombstoneError::MissingSuppressionProof { path_id }) => {
+                return CompactionDecision::Refused(
+                    CompactionRefusal::UnprovedSuppressionEvidence { path_id },
+                );
+            }
         }
     }
-    CompactionDecision::Permitted { checkpoint_id }
+    CompactionDecision::Permitted {
+        checkpoint_id,
+        released_artifacts: floor.released_artifacts().to_vec(),
+    }
 }
 
 fn parse_claim_fields(value: &CborValue) -> Result<CheckpointClaimV1, CheckpointError> {
@@ -755,6 +789,7 @@ fn optional_hash_at(value: &CborValue, key: u64) -> Result<Option<Hash32>, Check
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retention::durability_floor::test_support::{met_floor, unmet_floor};
     use crate::signing::SIGNATURE_DOMAIN;
     use std::collections::BTreeSet;
 
@@ -1292,6 +1327,7 @@ mod tests {
             verification,
             CheckpointVerification::Verified {
                 checkpoint_id: Hash32::of(&bytes),
+                verse_id: VERSE,
             },
             "a multi-head frontier checkpoints under any arrival permutation"
         );
@@ -1314,15 +1350,46 @@ mod tests {
         let complete = BootstrapCoverage {
             every_head_has_retained_bootstrap_path: true,
         };
+        let met = met_floor(VERSE);
+        let unmet = unmet_floor(VERSE);
+        // The permit names exactly the release the floor covered, nothing wider.
+        let permitted = CompactionDecision::Permitted {
+            checkpoint_id: Hash32::of(&bytes),
+            released_artifacts: met.released_artifacts().to_vec(),
+        };
+        assert_eq!(met.released_artifacts().len(), 1);
         assert_eq!(
-            compaction_decision(&verification, complete, &[]),
-            CompactionDecision::Permitted {
-                checkpoint_id: Hash32::of(&bytes),
-            }
+            compaction_decision(&verification, &met, complete, &[]),
+            permitted
+        );
+        // A met floor assessed for another verse never releases this verse's history.
+        assert_eq!(
+            compaction_decision(
+                &verification,
+                &met_floor(Identifier32([0x0f; 32])),
+                complete,
+                &[]
+            ),
+            CompactionDecision::Refused(CompactionRefusal::FloorEvidenceForAnotherVerse)
+        );
+        // The floor is checked before the closure and tombstone refusals.
+        assert_eq!(
+            compaction_decision(
+                &verification,
+                &unmet,
+                BootstrapCoverage {
+                    every_head_has_retained_bootstrap_path: false,
+                },
+                std::slice::from_ref(&tombstone_record(false)),
+            ),
+            CompactionDecision::Refused(CompactionRefusal::DurabilityFloorNotMet(
+                FloorShortfall::PeerPruneAfterFloorOff
+            ))
         );
         assert_eq!(
             compaction_decision(
                 &verification,
+                &met,
                 BootstrapCoverage {
                     every_head_has_retained_bootstrap_path: false,
                 },
@@ -1332,17 +1399,15 @@ mod tests {
         );
 
         // Suppression evidence is inspected, not asserted: an unproven retained bootstrap path
-        // refuses compaction even though the checkpoint itself verified.
+        // refuses compaction even though the checkpoint verified and the floor is met.
         let proven = tombstone_record(true);
         let unproven = tombstone_record(false);
         assert_eq!(
-            compaction_decision(&verification, complete, std::slice::from_ref(&proven)),
-            CompactionDecision::Permitted {
-                checkpoint_id: Hash32::of(&bytes),
-            }
+            compaction_decision(&verification, &met, complete, std::slice::from_ref(&proven)),
+            permitted
         );
         assert_eq!(
-            compaction_decision(&verification, complete, &[proven, unproven.clone()]),
+            compaction_decision(&verification, &met, complete, &[proven, unproven.clone()]),
             CompactionDecision::Refused(CompactionRefusal::UnprovedSuppressionEvidence {
                 path_id: Hash32([0x3b; 32]),
             })
@@ -1355,12 +1420,17 @@ mod tests {
             &replay,
         );
         assert_eq!(
-            compaction_decision(&unverified, complete, &[]),
+            compaction_decision(&unverified, &met, complete, &[]),
             CompactionDecision::Refused(CompactionRefusal::CheckpointNotVerified),
-            "GC never rests on an unverified checkpoint"
+            "GC never rests on an unverified checkpoint, whatever the floor"
         );
         assert_eq!(
-            crate::retention::tombstone::may_compact_tombstone(&unproven, &unverified, complete),
+            crate::retention::tombstone::may_compact_tombstone(
+                &unproven,
+                &unverified,
+                &met,
+                complete
+            ),
             CompactionDecision::Refused(CompactionRefusal::CheckpointNotVerified),
             "the single-record spelling is the same gate, not a weaker one"
         );

@@ -21,7 +21,7 @@ use crate::segment::payload_shard::{PayloadShardBody, PayloadTopicScope};
 use crate::segment::store::{assert_immutable_write, SealedArtifactStore};
 use crate::segment::SegmentError;
 use crate::wire::commit::{CanonicalCommitPipeline, PipelineResult};
-use crate::wire::error::ProtocolErrorCategory;
+use crate::wire::error::{HeldReason, ProtocolErrorCategory};
 
 /// Raw content-addressed byte storage, injected into [`ByteStoreSealedArtifactStore`].
 ///
@@ -322,16 +322,11 @@ impl<V, S, E, P> VerifyingCommitPipeline<V, S, E, P> {
     }
 }
 
-/// Maps an admission refusal onto the closest SPEC-7 `protocol_error` category `wire/error.rs`
-/// (not owned by this slice) already defines. SPEC-4's own quarantine/reject vocabulary predates
-/// several of these outcomes (`UnknownKind` is D-CL28 gate G1; the three
-/// `AuthorizationEvidenceUnavailable` reasons are erratum E-W4-1), so three mappings below are
-/// judgment calls, not 1:1 correspondences, flagged here for the owner to ratify a dedicated
-/// category:
+/// Maps an admission outcome onto a SPEC-7 pipeline result. The five SPEC-4 quarantine
+/// dispositions (`MissingParent`, `UnknownSchema`, `UnknownKind`, `OpaquePayload`,
+/// `AuthorizationEvidenceUnavailable`) become the retryable [`PipelineResult::Held`] (FR-7,
+/// D-CL40), each with its own [`HeldReason`]; none is relabelled as another reason.
 ///
-/// - `UnknownKind` reuses `UnknownSchema` (same "retry once this build/registry catches up" shape).
-/// - `AuthorizationEvidenceUnavailable` (any of its three reasons) reuses `MissingParent` (same
-///   "retry once this process can resolve the missing evidence locally" shape).
 /// - `AuthorEquivocation` reuses `ConflictingOpBytes` (both are "two candidates conflict at one
 ///   identity", even though equivocation quarantines both rather than rejecting a substitution).
 ///
@@ -357,21 +352,13 @@ fn admission_outcome_to_pipeline_result(outcome: AdmissionOutcome) -> PipelineRe
         AdmissionOutcome::PreconditionFailed => {
             PipelineResult::Rejected(ProtocolErrorCategory::InvalidEnvelope)
         }
-        AdmissionOutcome::MissingParent { .. } => {
-            PipelineResult::Rejected(ProtocolErrorCategory::MissingParent)
-        }
-        AdmissionOutcome::UnknownSchema { .. } => {
-            PipelineResult::Rejected(ProtocolErrorCategory::UnknownSchema)
-        }
-        AdmissionOutcome::UnknownKind { .. } => {
-            PipelineResult::Rejected(ProtocolErrorCategory::UnknownSchema)
-        }
+        AdmissionOutcome::MissingParent { .. } => PipelineResult::Held(HeldReason::MissingParent),
+        AdmissionOutcome::UnknownSchema { .. } => PipelineResult::Held(HeldReason::UnknownSchema),
+        AdmissionOutcome::UnknownKind { .. } => PipelineResult::Held(HeldReason::UnknownKind),
         AdmissionOutcome::AuthorizationEvidenceUnavailable { .. } => {
-            PipelineResult::Rejected(ProtocolErrorCategory::MissingParent)
+            PipelineResult::Held(HeldReason::AuthorizationEvidenceUnavailable)
         }
-        AdmissionOutcome::OpaquePayload { .. } => {
-            PipelineResult::Rejected(ProtocolErrorCategory::OpaquePayload)
-        }
+        AdmissionOutcome::OpaquePayload { .. } => PipelineResult::Held(HeldReason::OpaquePayload),
         AdmissionOutcome::SameVerseParentViolation { .. } => {
             PipelineResult::Rejected(ProtocolErrorCategory::InvalidEnvelope)
         }
@@ -737,6 +724,41 @@ mod tests {
             _payload_ciphertext: Option<&[u8]>,
         ) -> Result<Option<PayloadFacts>, AdmissionOutcome> {
             Ok(None)
+        }
+    }
+
+    #[test]
+    fn each_quarantine_outcome_maps_to_its_own_held_reason() {
+        use crate::materialize::errors::AuthorizationEvidenceGap;
+        let id = Hash32([7; 32]);
+        for (outcome, expected) in [
+            (
+                AdmissionOutcome::MissingParent { missing: id },
+                HeldReason::MissingParent,
+            ),
+            (
+                AdmissionOutcome::UnknownSchema { schema_hash: id },
+                HeldReason::UnknownSchema,
+            ),
+            (
+                AdmissionOutcome::UnknownKind { operation_kind: 77 },
+                HeldReason::UnknownKind,
+            ),
+            (
+                AdmissionOutcome::OpaquePayload { op_id: id },
+                HeldReason::OpaquePayload,
+            ),
+            (
+                AdmissionOutcome::AuthorizationEvidenceUnavailable {
+                    reason: AuthorizationEvidenceGap::epoch_state_unavailable(),
+                },
+                HeldReason::AuthorizationEvidenceUnavailable,
+            ),
+        ] {
+            assert_eq!(
+                admission_outcome_to_pipeline_result(outcome),
+                PipelineResult::Held(expected)
+            );
         }
     }
 

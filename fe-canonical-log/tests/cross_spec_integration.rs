@@ -1008,3 +1008,482 @@ fn a_device_enrolment_gates_a_scope_key_wrap() {
         })
     );
 }
+
+/// Track `relay_record_warehouse_20261120` slice P2: custody receipts, the D-CL39 durability
+/// floor, and the compaction gate that requires it (SPEC-9 §3-§4, SPEC-5 §5.2 rule 6).
+mod durability_floor_journey {
+    use fe_canonical_log::capability::Principal;
+    use fe_canonical_log::cbor::{encode_canonical_checked, CborValue};
+    use fe_canonical_log::checkpoint::{
+        compaction_decision, sign_checkpoint_claim, verify_checkpoint_claim, AccessibleScopes,
+        BootstrapCoverage, CheckpointClaimV1, CheckpointConsumerView, CheckpointVerification,
+        CompactionDecision, CompactionRefusal, ManagerPlusAuthorizationView, ReplayRequest,
+        ReplayVerifier, CHECKPOINT_VERSION,
+    };
+    use fe_canonical_log::envelope::{Author, CapabilityRef, Hash32, Hlc, Identifier32, Scope};
+    use fe_canonical_log::frontier::SortedFrontier;
+    use fe_canonical_log::retention::durability_floor::{
+        DurabilityFloorEvidence, FloorShortfall, FloorSubject, FloorUnknownReason,
+        ManifestCustody, ManifestFloorState, ReceiptDisqualification, RejectedReceipt,
+        RelayQualificationView,
+    };
+    use fe_canonical_log::retention::tombstone::{BootstrapPath, TombstoneRetentionRecord};
+    use fe_canonical_log::segment::custody_receipt::{
+        issue_custody_receipt, verify_custody_receipt, CustodyReceiptError, CustodySet,
+        RecordRelayBinding, CUSTODY_RECEIPT_DOMAIN, WAREHOUSE_FORMAT_EPOCH,
+    };
+    use fe_canonical_log::segment::store::{InMemorySealedArtifactStore, SealedArtifactStore};
+    use fe_canonical_log::signing::sign_domain;
+
+    use super::support::{hash, signing_key, VERSE};
+
+    const OTHER_VERSE: Identifier32 = Identifier32([0x7f; 32]);
+    const PROJECTION_ROOT: Hash32 = Hash32([0xd1; 32]);
+    const AUTHORIZATION_ROOT: Hash32 = Hash32([0xd2; 32]);
+
+    /// The durable record-relay list (Q6) and current `seed` holders (Q7) of [`VERSE`].
+    struct RecordRelays {
+        listed: Vec<String>,
+        seeders: Vec<[u8; 32]>,
+    }
+
+    impl RelayQualificationView for RecordRelays {
+        fn is_listed_record_relay(&self, verse_id: Identifier32, relay_did: &str) -> bool {
+            verse_id == VERSE && self.listed.iter().any(|did| did == relay_did)
+        }
+
+        fn holds_current_segment_seed(&self, verse_id: Identifier32, relay: &Principal) -> bool {
+            verse_id == VERSE && self.seeders.contains(&relay.public_key)
+        }
+    }
+
+    struct ManagerSigned;
+
+    impl ManagerPlusAuthorizationView for ManagerSigned {
+        fn is_manager_plus_for_checkpoint(
+            &self,
+            verse_id: Identifier32,
+            _signer: &Author,
+            _capability: &CapabilityRef,
+        ) -> bool {
+            verse_id == VERSE
+        }
+
+        fn capability_permits_append_checkpoint(
+            &self,
+            verse_scope: &Scope,
+            _signer: &Author,
+            _capability: &CapabilityRef,
+        ) -> bool {
+            verse_scope.verse_id() == VERSE
+        }
+
+        fn authorization_view_root(
+            &self,
+            _verse_id: Identifier32,
+            _branch_id: Identifier32,
+            _frontier_commitment: Hash32,
+        ) -> Option<Hash32> {
+            Some(AUTHORIZATION_ROOT)
+        }
+    }
+
+    struct Replays;
+
+    impl ReplayVerifier for Replays {
+        fn replay_projection_root(&self, _request: &ReplayRequest) -> Option<Hash32> {
+            Some(PROJECTION_ROOT)
+        }
+    }
+
+    fn principal(seed: u8) -> Principal {
+        Principal::from_public_key(signing_key([seed; 32]).verifying_key().to_bytes())
+    }
+
+    fn receipt(
+        seed: u8,
+        binding: RecordRelayBinding,
+        set: &CustodySet,
+        store: &InMemorySealedArtifactStore,
+        held_at_ms: u64,
+    ) -> Vec<u8> {
+        issue_custody_receipt(&signing_key([seed; 32]), &binding, set, store, held_at_ms)
+            .expect("relay holds the whole set")
+            .encode_canonical()
+            .expect("receipt bytes")
+    }
+
+    /// A receipt an older binary signed before its §6 reset, hand-built from the SPEC-9 §3.1 table.
+    fn pre_reset_receipt(seed: u8, set: &CustodySet, epoch: u64) -> Vec<u8> {
+        let key = signing_key([seed; 32]);
+        let relay = Principal::from_public_key(key.verifying_key().to_bytes());
+        let custody_set_id = set.custody_set_id().expect("custody set id");
+        let mut entries = vec![
+            (CborValue::Uint(0), CborValue::Uint(1)),
+            (CborValue::Uint(1), CborValue::Bytes(VERSE.0.to_vec())),
+            (CborValue::Uint(2), CborValue::Bytes(set.manifest_id().0.to_vec())),
+            (CborValue::Uint(3), CborValue::Bytes(custody_set_id.0.to_vec())),
+            (CborValue::Uint(4), relay.to_cbor()),
+            (CborValue::Uint(5), CborValue::Uint(17)),
+            (CborValue::Uint(6), CborValue::Uint(epoch)),
+        ];
+        let unsigned =
+            encode_canonical_checked(&CborValue::Map(entries.clone())).expect("unsigned");
+        let signature = sign_domain(&key, CUSTODY_RECEIPT_DOMAIN, &unsigned);
+        entries.push((CborValue::Uint(7), CborValue::Bytes(signature.to_vec())));
+        let bytes = encode_canonical_checked(&CborValue::Map(entries)).expect("receipt");
+        verify_custody_receipt(&bytes).expect("an old-epoch receipt still verifies (Q1)");
+        bytes
+    }
+
+    fn verified_checkpoint(manifest_id: Hash32) -> CheckpointVerification {
+        let selected = SortedFrontier::try_new([hash(0xe1)]).expect("frontier");
+        let manager = signing_key([0x4d; 32]);
+        let claim = CheckpointClaimV1 {
+            checkpoint_version: CHECKPOINT_VERSION,
+            verse_id: VERSE,
+            branch_id: Identifier32([0xb1; 32]),
+            frontier_commitment: selected.commitment(),
+            segment_manifest_id: manifest_id,
+            materializer_id: Identifier32([0x11; 32]),
+            materializer_version: 1,
+            projection_root_hash: PROJECTION_ROOT,
+            authorization_view_root: AUTHORIZATION_ROOT,
+            snapshot_manifest_id: None,
+            signer: Author::from_public_key(manager.verifying_key().to_bytes()),
+            capability: CapabilityRef {
+                chain_id: hash(0x60),
+                scope_epoch: 1,
+            },
+            issued_hlc: Hlc::new(1_700_000_000_000, 1),
+        };
+        let bytes = sign_checkpoint_claim(&manager, &claim)
+            .expect("sign")
+            .encode_canonical()
+            .expect("claim bytes");
+        let required = [Scope::verse_wide(VERSE)];
+        let accessible = AccessibleScopes::new([Scope::verse_wide(VERSE)]);
+        let verification = verify_checkpoint_claim(
+            &bytes,
+            &CheckpointConsumerView {
+                selected_frontier: &selected,
+                segment_manifest_id: manifest_id,
+                required_payload_scopes: &required,
+                accessible_scopes: &accessible,
+            },
+            &ManagerSigned,
+            &Replays,
+        );
+        assert!(verification.verified_checkpoint_id().is_some());
+        verification
+    }
+
+    fn floor_refusal(shortfall: FloorShortfall) -> CompactionDecision {
+        CompactionDecision::Refused(CompactionRefusal::DurabilityFloorNotMet(shortfall))
+    }
+
+    #[test]
+    fn durability_floor_counts_distinct_qualifying_relays_and_gates_prune() {
+        // Manifest M covers itself plus payload shard P; manifest M2 covers only itself.
+        let manifest = b"sealed manifest M".to_vec();
+        let shard = b"sealed payload shard P".to_vec();
+        let second = b"sealed manifest M2".to_vec();
+        let (m, p, m2) = (Hash32::of(&manifest), Hash32::of(&shard), Hash32::of(&second));
+        let bulk = hash(0xb7);
+        let mut store = InMemorySealedArtifactStore::new();
+        for bytes in [&manifest, &shard, &second] {
+            store.put_verified(Hash32::of(bytes), bytes).expect("held");
+        }
+        let set = CustodySet::for_manifest(
+            m,
+            [(p, shard.len() as u64), (m, manifest.len() as u64)],
+        )
+        .expect("custody set");
+        let partial = CustodySet::for_manifest(m, [(m, manifest.len() as u64)]).expect("subset");
+        let second_set =
+            CustodySet::for_manifest(m2, [(m2, second.len() as u64)]).expect("second set");
+        let current = RecordRelayBinding::current(VERSE);
+        // A and B are listed seeders; N is listed without `seed`; U holds `seed` but is unlisted.
+        let (a, b, n, u) = (0xa1u8, 0xb2u8, 0xc3u8, 0xd4u8);
+        let view = RecordRelays {
+            listed: [a, b, n].iter().map(|seed| principal(*seed).did).collect(),
+            seeders: [a, b, u]
+                .iter()
+                .map(|seed| principal(*seed).public_key)
+                .collect(),
+        };
+
+        // SPEC-9 §8 test 1: byte-exact round trip, receipt_id over the complete bytes.
+        let first = receipt(a, current, &set, &store, 10);
+        let verified = verify_custody_receipt(&first).expect("verifies");
+        assert_eq!(verified.receipt_id(), Hash32::of(&first));
+        assert_eq!(verified.manifest_id(), m);
+        assert_eq!(verified.custody_set_id(), set.custody_set_id().expect("id"));
+        assert_eq!(verified.warehouse_format_epoch(), WAREHOUSE_FORMAT_EPOCH);
+        // A relay's decoded seed commitment carries the same members and id, but stays marked as
+        // a peer's statement, so it can be receipted and never stands in for the walk (§2 rule 2).
+        let received = CustodySet::decode_canonical(m, &set.encode_canonical().expect("set bytes"))
+            .expect("seed commitment decodes");
+        assert_eq!(received.members(), set.members());
+        assert_eq!(received.custody_set_id(), set.custody_set_id());
+        assert!(set.is_walked() && !received.is_walked());
+
+        // SPEC-9 §8 test 7: no receipt without every member re-hashed at its exact length.
+        let missing = CustodySet::for_manifest(m, [(m, manifest.len() as u64), (bulk, 4)])
+            .expect("set naming an unheld artifact");
+        let wrong_length =
+            CustodySet::for_manifest(m, [(m, manifest.len() as u64 + 1)]).expect("set");
+        let stale = RecordRelayBinding::stamped(VERSE, WAREHOUSE_FORMAT_EPOCH + 1);
+        for (binding, bad_set, expected) in [
+            (
+                current,
+                &missing,
+                CustodyReceiptError::CustodyMemberMissing { artifact_id: bulk },
+            ),
+            (
+                current,
+                &wrong_length,
+                CustodyReceiptError::CustodyMemberMismatch { artifact_id: m },
+            ),
+            (
+                stale,
+                &set,
+                CustodyReceiptError::StaleFormatEpoch {
+                    stamped: WAREHOUSE_FORMAT_EPOCH + 1,
+                    current: WAREHOUSE_FORMAT_EPOCH,
+                },
+            ),
+        ] {
+            assert_eq!(
+                issue_custody_receipt(&signing_key([a; 32]), &binding, bad_set, &store, 1),
+                Err(expected)
+            );
+        }
+
+        // AC-5.2 / SPEC-9 §8 test 4: every row but the first adds nothing to the count.
+        let mut tampered = receipt(b, current, &set, &store, 11);
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        let rows: Vec<(&str, Vec<u8>, Option<ReceiptDisqualification>)> = vec![
+            ("qualifying relay A", first.clone(), None),
+            (
+                "duplicate from A",
+                receipt(a, current, &set, &store, 99),
+                Some(ReceiptDisqualification::DuplicateRelay),
+            ),
+            (
+                "listed relay without seed",
+                receipt(n, current, &set, &store, 12),
+                Some(ReceiptDisqualification::NoSeedCapability),
+            ),
+            (
+                "seeder not on the list",
+                receipt(u, current, &set, &store, 13),
+                Some(ReceiptDisqualification::RelayNotListed),
+            ),
+            (
+                "receipt naming another verse",
+                receipt(b, RecordRelayBinding::current(OTHER_VERSE), &set, &store, 14),
+                Some(ReceiptDisqualification::ForeignVerse),
+            ),
+            (
+                "receipt for a manifest outside the release",
+                receipt(b, current, &second_set, &store, 15),
+                Some(ReceiptDisqualification::UnrelatedManifest),
+            ),
+            (
+                "receipt attesting a different custody set",
+                receipt(b, current, &partial, &store, 16),
+                Some(ReceiptDisqualification::CustodySetMismatch),
+            ),
+            (
+                "receipt from a stale format epoch",
+                pre_reset_receipt(b, &set, WAREHOUSE_FORMAT_EPOCH + 1),
+                Some(ReceiptDisqualification::FormatEpochMismatch),
+            ),
+            (
+                "bad signature",
+                tampered,
+                Some(ReceiptDisqualification::NotVerified),
+            ),
+        ];
+        let receipts: Vec<Vec<u8>> = rows.iter().map(|(_, bytes, _)| bytes.clone()).collect();
+        let expected_rejections: Vec<RejectedReceipt> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(receipt_index, (_, _, reason))| {
+                reason.map(|reason| RejectedReceipt {
+                    receipt_index,
+                    reason,
+                })
+            })
+            .collect();
+        let manifests = [ManifestCustody::Computed(set.clone())];
+        let released = [m, p];
+        let subject = FloorSubject {
+            verse_id: VERSE,
+            peer_prune_after_floor: true,
+            manifests: &manifests,
+            released_artifacts: &released,
+        };
+        let one_relay =
+            DurabilityFloorEvidence::assess(&subject, receipts.as_slice(), Some(2), &view);
+        assert_eq!(one_relay.rejected_receipts(), expected_rejections.as_slice());
+        assert_eq!(one_relay.manifests()[0].qualifying_relays, 1);
+        assert_eq!(one_relay.manifests()[0].state, ManifestFloorState::BelowFloor);
+
+        // A malicious seeder's list handed in as the assessor's set is unknown, never counted.
+        let laundered = [ManifestCustody::Computed(received.clone())];
+        let from_seed_commitment = DurabilityFloorEvidence::assess(
+            &FloorSubject {
+                manifests: &laundered,
+                ..subject
+            },
+            receipts.as_slice(),
+            Some(1),
+            &view,
+        );
+        assert_eq!(
+            from_seed_commitment.manifests()[0].state,
+            ManifestFloorState::Unknown(FloorUnknownReason::CustodySetUnavailable)
+        );
+        assert!(!from_seed_commitment.is_met());
+
+        // AC-5.1: R = 2 with one qualifying relay refuses; a second distinct relay releases.
+        let checkpoint = verified_checkpoint(m);
+        let complete = BootstrapCoverage {
+            every_head_has_retained_bootstrap_path: true,
+        };
+        assert_eq!(
+            compaction_decision(&checkpoint, &one_relay, complete, &[]),
+            floor_refusal(FloorShortfall::BelowFloor {
+                artifact_id: m,
+                manifest_id: m,
+                qualifying_relays: 1,
+                required: 2,
+            })
+        );
+        let mut with_b = receipts.clone();
+        with_b.push(receipt(b, current, &set, &store, 20));
+        let met = DurabilityFloorEvidence::assess(&subject, with_b.as_slice(), Some(2), &view);
+        assert!(met.is_met());
+        assert_eq!(
+            compaction_decision(&checkpoint, &met, complete, &[]),
+            CompactionDecision::Permitted {
+                checkpoint_id: checkpoint.verified_checkpoint_id().expect("verified"),
+                // The permit carries exactly the assessed release, ascending, never wider.
+                released_artifacts: {
+                    let mut expected = released.to_vec();
+                    expected.sort();
+                    expected
+                },
+            }
+        );
+
+        // AC-5.3: a met floor never releases a tombstone no-resurrection still needs.
+        let unproven = TombstoneRetentionRecord {
+            tombstone_op_id: hash(0x3a),
+            scope: Scope::verse_wide(VERSE),
+            suppressed_object_id: Identifier32([0x3c; 32]),
+            retained_bootstrap_paths: vec![BootstrapPath {
+                path_id: hash(0x3b),
+                carries_suppression_proof: false,
+            }],
+        };
+        assert_eq!(
+            compaction_decision(&checkpoint, &met, complete, &[unproven]),
+            CompactionDecision::Refused(CompactionRefusal::UnprovedSuppressionEvidence {
+                path_id: hash(0x3b),
+            })
+        );
+
+        // Release-shape rows: each refuses with its own shortfall over the same met receipts.
+        let two_manifests = [
+            ManifestCustody::Computed(set.clone()),
+            ManifestCustody::Computed(second_set.clone()),
+        ];
+        let unknown_set = [ManifestCustody::Unavailable { manifest_id: m }];
+        let with_bulk = [m, bulk];
+        let both_manifests = [m, m2];
+        let release_rows: Vec<(&str, FloorSubject<'_>, Option<u64>, FloorShortfall)> = vec![
+            ("R missing", subject, None, FloorShortfall::ReplicationFactorUnknown),
+            ("R zero", subject, Some(0), FloorShortfall::ReplicationFactorUnknown),
+            (
+                "peer_prune_after_floor off",
+                FloorSubject {
+                    peer_prune_after_floor: false,
+                    ..subject
+                },
+                Some(2),
+                FloorShortfall::PeerPruneAfterFloorOff,
+            ),
+            (
+                "release covering nothing",
+                FloorSubject {
+                    released_artifacts: &[],
+                    ..subject
+                },
+                Some(2),
+                FloorShortfall::NothingReleased,
+            ),
+            (
+                "bulk artifact in no custody set",
+                FloorSubject {
+                    released_artifacts: &with_bulk,
+                    ..subject
+                },
+                Some(2),
+                FloorShortfall::ArtifactNotCovered { artifact_id: bulk },
+            ),
+            (
+                "receipts for M never cover M2",
+                FloorSubject {
+                    manifests: &two_manifests,
+                    released_artifacts: &both_manifests,
+                    ..subject
+                },
+                Some(2),
+                // B's one M2 receipt counts for M2 only; M's two receipts never pool into it.
+                FloorShortfall::BelowFloor {
+                    artifact_id: m2,
+                    manifest_id: m2,
+                    qualifying_relays: 1,
+                    required: 2,
+                },
+            ),
+            (
+                "assessor without the custody set",
+                FloorSubject {
+                    manifests: &unknown_set,
+                    ..subject
+                },
+                Some(2),
+                FloorShortfall::ArtifactNotCovered { artifact_id: m },
+            ),
+        ];
+        for (row, row_subject, r, shortfall) in release_rows {
+            let evidence =
+                DurabilityFloorEvidence::assess(&row_subject, with_b.as_slice(), r, &view);
+            assert_eq!(
+                compaction_decision(&checkpoint, &evidence, complete, &[]),
+                floor_refusal(shortfall),
+                "{row}"
+            );
+        }
+
+        // SPEC-9 §8 test 5: without the custody set the floor is unknown, never met.
+        let blind = DurabilityFloorEvidence::assess(
+            &FloorSubject {
+                manifests: &unknown_set,
+                ..subject
+            },
+            with_b.as_slice(),
+            Some(2),
+            &view,
+        );
+        assert_eq!(
+            blind.manifests()[0].state,
+            ManifestFloorState::Unknown(FloorUnknownReason::CustodySetUnavailable)
+        );
+    }
+}

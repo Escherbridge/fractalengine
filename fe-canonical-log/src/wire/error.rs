@@ -245,6 +245,23 @@ impl ProtocolErrorCategory {
     }
 }
 
+/// Why a candidate was held (FR-7, D-CL40): the five SPEC-4 quarantine dispositions. Retryable by
+/// resubmitting the identical bytes; a closed type, so a non-quarantine category is not expressible.
+/// In-process only: SPEC-7 §4.2 rule 5 keeps it off the `held` ack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HeldReason {
+    /// A declared parent is not yet locally admitted.
+    MissingParent,
+    /// `schema_hash` names a schema this build does not have.
+    UnknownSchema,
+    /// `operation_kind` is not known to this build.
+    UnknownKind,
+    /// The payload could not be opened with a currently available key.
+    OpaquePayload,
+    /// A capability chain, epoch state or payload key is not locally resolvable.
+    AuthorizationEvidenceUnavailable,
+}
+
 /// §6.3 `protocol_error` body: exactly one stable, public category. No other field — a
 /// diagnostic beyond the category could disclose whether a private operation, artifact,
 /// branch, or cursor exists, which §6.3 rule 3 forbids.

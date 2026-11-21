@@ -107,6 +107,7 @@ impl<V: ManagerAuthorityView, C: Clock> CapabilityVerifier for ChainCapabilityVe
         Ok(VerifiedAuthorization {
             leaf_principal: verified.leaf_audience,
             chain_id: verified.chain_id,
+            leaf_certificate_id: verified.leaf_certificate_id,
             epoch_scope: verified.epoch_scope,
             scope_epoch: verified.scope_epoch,
             expires_at_ms: verified.effective_not_after_ms,
@@ -130,6 +131,10 @@ mod tests {
         let fetch = Verb::Fetch.bit();
         let operation = ObjectClass::Operation.bit();
 
+        let leaf_certificate_id = Chain::decode_canonical(&chain)
+            .expect("fixture chain decodes")
+            .leaf_certificate_id;
+
         // The author's own connection binds its own chain.
         let owner = ChainCapabilityVerifier::for_requester(
             principal(AUTHOR_SEED),
@@ -141,6 +146,7 @@ mod tests {
             Ok(VerifiedAuthorization {
                 leaf_principal: principal(AUTHOR_SEED),
                 chain_id: Hash32::of(&chain),
+                leaf_certificate_id,
                 epoch_scope: verse_scope(),
                 scope_epoch: EPOCH,
                 expires_at_ms: NOT_BEFORE_MS + ONE_HOUR_MS,

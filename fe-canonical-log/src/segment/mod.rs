@@ -5,6 +5,7 @@
 
 pub mod artifact;
 pub mod checkpoint_proof;
+pub mod custody_receipt;
 pub mod discovery_labels;
 pub mod hashseq;
 pub mod header_lane;

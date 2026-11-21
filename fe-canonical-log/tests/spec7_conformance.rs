@@ -12,13 +12,14 @@ use fe_canonical_log::cbor::{decode_canonical, encode_canonical_checked, CborVal
 use fe_canonical_log::envelope::{Hash32, Identifier32, Scope};
 use fe_canonical_log::wire::commit::{
     build_commit_ack, handle_commit_submit, is_delta_authorized_for_subscription,
-    CanonicalCommitPipeline, CommitAckState, CommitDeltaBody, CommitSubmitBody, PipelineResult,
+    CanonicalCommitPipeline, CommitAckBody, CommitAckState, CommitDeltaBody, CommitSubmitBody,
+    PipelineResult,
 };
 use fe_canonical_log::wire::cursor::{
     verify_frontier_commitment, BranchRegistry, CommittedDelta, CursorTuple, DurableCursor,
     ProjectionIdentity, ReplayOutcome,
 };
-use fe_canonical_log::wire::error::{ProtocolErrorBody, ProtocolErrorCategory, WireError};
+use fe_canonical_log::wire::error::{HeldReason, ProtocolErrorBody, ProtocolErrorCategory, WireError};
 use fe_canonical_log::wire::preview::{reject_reserved_preview_keys, PreviewSendBody};
 use fe_canonical_log::wire::preview_limiter::{PreviewRateLimit, PreviewRateLimiter};
 use fe_canonical_log::wire::session::SessionAuthorizationTable;
@@ -630,4 +631,93 @@ async fn cursor_binds_sorted_frontier_and_branch_control_replay() {
     )
     .expect("commitment matches the single committed op_id");
     assert_eq!(recomputed, real_cursor.frontier_commitment());
+}
+
+/// Holds a candidate as `MissingParent` until the parent "arrives", then defers to the mock log.
+struct HoldsUntilParentArrives {
+    parent_arrived: Arc<std::sync::atomic::AtomicBool>,
+    log: MockCommitPipeline,
+}
+
+#[async_trait]
+impl CanonicalCommitPipeline for HoldsUntilParentArrives {
+    fn derive_op_id(&self, complete_envelope_bytes: &[u8]) -> Hash32 {
+        self.log.derive_op_id(complete_envelope_bytes)
+    }
+
+    async fn submit_candidate(
+        &self,
+        complete_envelope_bytes: &[u8],
+        payload_ciphertext: Option<&[u8]>,
+    ) -> PipelineResult {
+        if !self
+            .parent_arrived
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return PipelineResult::Held(HeldReason::MissingParent);
+        }
+        self.log
+            .submit_candidate(complete_envelope_bytes, payload_ciphertext)
+            .await
+    }
+}
+
+/// SPEC-7 §8 test 14.
+#[tokio::test]
+async fn held_dispositions_answer_held_and_retry_identical_bytes() {
+    // Every held reason: ack state `held`, exactly keys 0..=3; key 4 (category) and keys 5-8
+    // (branch, scope, projection, cursor) structurally absent (§4.2 rule 5); the wire round-trips.
+    for reason in [
+        HeldReason::MissingParent,
+        HeldReason::UnknownSchema,
+        HeldReason::UnknownKind,
+        HeldReason::OpaquePayload,
+        HeldReason::AuthorizationEvidenceUnavailable,
+    ] {
+        let ack = build_commit_ack(1, [0xaa; 16], hash(0x01), PipelineResult::Held(reason));
+        assert_eq!(ack.state, CommitAckState::Held);
+        assert!(ack.carries_no_cursor_or_binding_fields());
+        let value = ack.to_cbor().expect("cbor");
+        assert_eq!(value.as_map().expect("map").len(), 4);
+        assert_eq!(value.get_uint_key(3).and_then(CborValue::as_uint), Some(4));
+        for forbidden in [4u64, 5, 6, 7, 8] {
+            assert!(value.get_uint_key(forbidden).is_none());
+        }
+        let bytes = encode_canonical_checked(&value).expect("encode");
+        assert_eq!(
+            CommitAckBody::from_cbor(&decode_canonical(&bytes).expect("decode")).expect("decode"),
+            ack
+        );
+    }
+
+    // A held candidate is retried by resubmitting identical bytes once the parent has arrived.
+    let parent_arrived = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pipeline = HoldsUntilParentArrives {
+        parent_arrived: parent_arrived.clone(),
+        log: MockCommitPipeline::new(Arc::new(InMemoryBranchRegistry::new()), tuple()),
+    };
+    let (sessions, generation) = accepted_sessions();
+    let envelope_bytes = vec![4, 4, 4];
+    let body = CommitSubmitBody {
+        session_generation: generation,
+        authorization_binding_id: [1; 16],
+        claimed_op_id: pipeline.derive_op_id(&envelope_bytes),
+        complete_envelope: envelope_bytes,
+        payload_ciphertext: None,
+    };
+
+    let held = handle_commit_submit(&pipeline, &sessions, &body).await;
+    assert_eq!(held.state, CommitAckState::Held);
+    // Still held while the parent is missing: a retry never mints a different outcome early.
+    let still_held = handle_commit_submit(&pipeline, &sessions, &body).await;
+    assert_eq!(still_held.state, CommitAckState::Held);
+
+    parent_arrived.store(true, std::sync::atomic::Ordering::SeqCst);
+    let retried = handle_commit_submit(&pipeline, &sessions, &body).await;
+    let CommitAckState::Committed(binding) = retried.state else {
+        panic!("identical bytes commit once the parent arrives: {:?}", retried.state);
+    };
+    // Exactly one append: the next identical resubmission is idempotent, at the same binding.
+    let again = handle_commit_submit(&pipeline, &sessions, &body).await;
+    assert_eq!(again.state, CommitAckState::AlreadyCommitted(binding));
 }

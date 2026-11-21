@@ -48,6 +48,7 @@ pub mod timeseries;
 pub mod terrain_grant;
 pub mod usage;
 pub mod vision;
+pub mod warehouse;
 pub mod wiring;
 pub use channels::{ApiChannels, CHANNEL_BUFFER, TRANSFORM_BROADCAST_BUFFER};
 pub use messages::EntityType;
